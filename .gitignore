@@ -1,0 +1,30 @@
+# dependencies
+node_modules/
+.direnv/
+
+# this is a Bun-only project - pnpm artifacts break server-side @mfw/* resolution
+pnpm-lock.yaml
+pnpm-workspace.yaml
+
+# build output
+dist/
+*.tsbuildinfo
+
+# runtime / data
+# when mfw manages this repo itself, its project state (board, runtime) lives
+# elsewhere; a local `.mfw/` here is never source
+/.mfw/
+worktrees/
+**/.mfw/runs/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# generated: `bun packages/board/src/cli.ts skill install` writes this from
+# packages/board/skill/SKILL.md, the one source of truth
+.claude/skills/mfwb/
+
+# editor / os
+.DS_Store
+*.log
+/~

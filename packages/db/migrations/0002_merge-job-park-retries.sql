@@ -1,0 +1,1 @@
+ALTER TABLE `merge_jobs` ADD `park_retries` integer DEFAULT 0 NOT NULL;

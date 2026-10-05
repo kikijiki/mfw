@@ -1,0 +1,267 @@
+/*
+ * UI v2 design tokens (ui.md §6).
+ *
+ * Every token is prefixed `--mfw-` so it cannot collide with the unprefixed
+ * shadcn names (`--accent`, `--border`, `--muted`, ...) in styles.css.
+ *
+ * Theme resolution:
+ *   - no `data-theme`            → follow the OS (`prefers-color-scheme`)
+ *   - `data-theme="light|dark"`  → the explicit choice wins both ways
+ * The explicit blocks use `:root[data-theme=...]` (specificity 0,2,0) so they
+ * outrank the media block's `:root:not([data-theme="light"])` and the bare
+ * `:root` default.
+ *
+ * Colors are OKLCH so light/dark pairs are perceptually matched. Nothing
+ * outside this file may write a raw color.
+ */
+
+:root {
+	/* ---- surfaces ---- */
+	--mfw-bg: oklch(0.985 0.002 250);
+	--mfw-bg-subtle: oklch(0.965 0.003 250);
+	--mfw-bg-raised: oklch(1 0 0);
+	--mfw-bg-inset: oklch(0.94 0.004 250);
+	--mfw-bg-hover: oklch(0.955 0.004 250);
+
+	/* ---- hairlines ---- */
+	--mfw-border: oklch(0.9 0.005 250);
+	--mfw-border-strong: oklch(0.82 0.008 250);
+
+	/* ---- text ---- */
+	--mfw-fg: oklch(0.22 0.01 255);
+	--mfw-fg-muted: oklch(0.45 0.01 255);
+	--mfw-fg-faint: oklch(0.62 0.008 255);
+	--mfw-fg-on-accent: oklch(0.99 0 0);
+
+	/*
+	 * The accent is the interactive hue (links, focus, primary buttons). It is
+	 * deliberately NOT a semantic status color, so "clickable" and
+	 * "informational" are never confused.
+	 */
+	--mfw-accent: oklch(0.55 0.16 275);
+	--mfw-accent-hover: oklch(0.48 0.17 275);
+	--mfw-accent-subtle: oklch(0.94 0.03 275);
+
+	/* ---- semantic status (meaning, never decoration) ---- */
+	--mfw-ok: oklch(0.55 0.15 150);
+	--mfw-warn: oklch(0.62 0.15 80);
+	--mfw-critical: oklch(0.55 0.19 25);
+	--mfw-info: oklch(0.55 0.12 225);
+	--mfw-neutral: oklch(0.62 0.008 255);
+
+	/* ---- task status ramp (ui.md §6.1) ---- */
+	--mfw-status-backlog: var(--mfw-neutral);
+	--mfw-status-ready: var(--mfw-info);
+	--mfw-status-in-progress: oklch(0.62 0.14 60);
+	--mfw-status-blocked: oklch(0.58 0.14 40);
+	--mfw-status-review: oklch(0.55 0.14 300);
+	--mfw-status-done: var(--mfw-ok);
+	--mfw-status-archived: oklch(0.72 0.006 255);
+
+	/* ---- diff (review screen) ---- */
+	--mfw-diff-add-bg: oklch(0.55 0.15 150 / 12%);
+	--mfw-diff-del-bg: oklch(0.55 0.19 25 / 12%);
+	--mfw-diff-add-hl: oklch(0.55 0.15 150 / 28%);
+	--mfw-diff-del-hl: oklch(0.55 0.19 25 / 28%);
+
+	/* ---- elevation ---- */
+	--mfw-shadow-raised: 0 1px 2px oklch(0.2 0.01 255 / 8%);
+	--mfw-shadow-overlay: 0 8px 24px oklch(0.2 0.01 255 / 14%);
+
+	/* ---- type scale (ui.md §6.2) ----
+	 * 13px is the BASE for data surfaces; a 16px base would halve the rows on screen. */
+	--mfw-text-2xs: 11px;
+	--mfw-text-xs: 12px;
+	--mfw-text-sm: 13px;
+	--mfw-text-md: 14px;
+	--mfw-text-lg: 16px;
+	--mfw-text-xl: 18px;
+	--mfw-text-2xl: 24px;
+	--mfw-leading-data: 1.35;
+	--mfw-leading-prose: 1.45;
+
+	--mfw-font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+	--mfw-font-mono:
+		ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", monospace;
+
+	/* ---- 4px grid ---- */
+	--mfw-space-1: 4px;
+	--mfw-space-2: 8px;
+	--mfw-space-3: 12px;
+	--mfw-space-4: 16px;
+	--mfw-space-5: 20px;
+	--mfw-space-6: 24px;
+	--mfw-space-8: 32px;
+
+	/* ---- radii: no pill radii except status dots ---- */
+	--mfw-radius-sm: 4px;
+	--mfw-radius-md: 6px;
+	--mfw-radius-lg: 10px;
+
+	/* ---- density (ui.md §6.4); overridden by [data-density] ---- */
+	--mfw-row-h: 36px;
+	--mfw-font-data: var(--mfw-text-sm);
+
+	--mfw-sidebar-w: 232px;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root:not([data-theme="light"]) {
+		--mfw-bg: oklch(0.16 0.01 255);
+		--mfw-bg-subtle: oklch(0.19 0.01 255);
+		--mfw-bg-raised: oklch(0.21 0.011 255);
+		--mfw-bg-inset: oklch(0.14 0.01 255);
+		--mfw-bg-hover: oklch(0.25 0.012 255);
+
+		--mfw-border: oklch(0.28 0.01 255);
+		--mfw-border-strong: oklch(0.36 0.012 255);
+
+		--mfw-fg: oklch(0.93 0.005 250);
+		--mfw-fg-muted: oklch(0.7 0.008 250);
+		--mfw-fg-faint: oklch(0.55 0.008 250);
+		--mfw-fg-on-accent: oklch(0.16 0.01 255);
+
+		--mfw-accent: oklch(0.72 0.14 275);
+		--mfw-accent-hover: oklch(0.79 0.13 275);
+		--mfw-accent-subtle: oklch(0.28 0.06 275);
+
+		--mfw-ok: oklch(0.72 0.15 150);
+		--mfw-warn: oklch(0.78 0.14 80);
+		--mfw-critical: oklch(0.68 0.18 25);
+		--mfw-info: oklch(0.74 0.11 225);
+		--mfw-neutral: oklch(0.6 0.008 255);
+
+		--mfw-status-in-progress: oklch(0.76 0.13 60);
+		--mfw-status-blocked: oklch(0.72 0.13 40);
+		--mfw-status-review: oklch(0.72 0.13 300);
+		--mfw-status-archived: oklch(0.45 0.006 255);
+
+		--mfw-diff-add-bg: oklch(0.72 0.15 150 / 18%);
+		--mfw-diff-del-bg: oklch(0.68 0.18 25 / 18%);
+		--mfw-diff-add-hl: oklch(0.72 0.15 150 / 36%);
+		--mfw-diff-del-hl: oklch(0.68 0.18 25 / 36%);
+
+		--mfw-shadow-raised: 0 1px 2px oklch(0 0 0 / 40%);
+		--mfw-shadow-overlay: 0 8px 24px oklch(0 0 0 / 55%);
+	}
+}
+
+:root[data-theme="light"] {
+	color-scheme: light;
+}
+
+/* Explicit dark repeats the palette: CSS cannot share a declaration block
+   between a media query and an attribute selector. */
+:root[data-theme="dark"] {
+	color-scheme: dark;
+
+	--mfw-bg: oklch(0.16 0.01 255);
+	--mfw-bg-subtle: oklch(0.19 0.01 255);
+	--mfw-bg-raised: oklch(0.21 0.011 255);
+	--mfw-bg-inset: oklch(0.14 0.01 255);
+	--mfw-bg-hover: oklch(0.25 0.012 255);
+
+	--mfw-border: oklch(0.28 0.01 255);
+	--mfw-border-strong: oklch(0.36 0.012 255);
+
+	--mfw-fg: oklch(0.93 0.005 250);
+	--mfw-fg-muted: oklch(0.7 0.008 250);
+	--mfw-fg-faint: oklch(0.55 0.008 250);
+	--mfw-fg-on-accent: oklch(0.16 0.01 255);
+
+	--mfw-accent: oklch(0.72 0.14 275);
+	--mfw-accent-hover: oklch(0.79 0.13 275);
+	--mfw-accent-subtle: oklch(0.28 0.06 275);
+
+	--mfw-ok: oklch(0.72 0.15 150);
+	--mfw-warn: oklch(0.78 0.14 80);
+	--mfw-critical: oklch(0.68 0.18 25);
+	--mfw-info: oklch(0.74 0.11 225);
+	--mfw-neutral: oklch(0.6 0.008 255);
+
+	--mfw-status-in-progress: oklch(0.76 0.13 60);
+	--mfw-status-blocked: oklch(0.72 0.13 40);
+	--mfw-status-review: oklch(0.72 0.13 300);
+	--mfw-status-archived: oklch(0.45 0.006 255);
+
+	--mfw-diff-add-bg: oklch(0.72 0.15 150 / 18%);
+	--mfw-diff-del-bg: oklch(0.68 0.18 25 / 18%);
+	--mfw-diff-add-hl: oklch(0.72 0.15 150 / 36%);
+	--mfw-diff-del-hl: oklch(0.68 0.18 25 / 36%);
+
+	--mfw-shadow-raised: 0 1px 2px oklch(0 0 0 / 40%);
+	--mfw-shadow-overlay: 0 8px 24px oklch(0 0 0 / 55%);
+}
+
+:root[data-density="compact"] {
+	--mfw-row-h: 30px;
+	--mfw-font-data: var(--mfw-text-xs);
+}
+
+/* The single element every v2 screen renders inside; scopes `color-scheme` for native controls and scrollbars. */
+.mfw-v2 {
+	background: var(--mfw-bg);
+	color: var(--mfw-fg);
+	font-family: var(--mfw-font-ui);
+	font-size: var(--mfw-font-data);
+	line-height: var(--mfw-leading-data);
+	-webkit-font-smoothing: antialiased;
+}
+
+:root:not([data-theme="light"]) .mfw-v2 {
+	color-scheme: light dark;
+}
+
+/* Numerals that sit in a column must not jitter as they tick. */
+.mfw-num {
+	font-family: var(--mfw-font-mono);
+	font-variant-numeric: tabular-nums;
+}
+
+/* One shared focus treatment; every interactive v2 element opts in. */
+.mfw-focus:focus-visible {
+	outline: 2px solid var(--mfw-accent);
+	outline-offset: 1px;
+}
+
+@keyframes mfw-pulse {
+	0%,
+	100% {
+		opacity: 1;
+	}
+	50% {
+		opacity: 0.35;
+	}
+}
+
+.mfw-pulse {
+	animation: mfw-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes mfw-shimmer {
+	from {
+		background-position: 200% 0;
+	}
+	to {
+		background-position: -200% 0;
+	}
+}
+
+.mfw-skeleton {
+	background: linear-gradient(
+		90deg,
+		var(--mfw-bg-subtle) 25%,
+		var(--mfw-bg-hover) 37%,
+		var(--mfw-bg-subtle) 63%
+	);
+	background-size: 200% 100%;
+	animation: mfw-shimmer 1.4s ease-in-out infinite;
+	border-radius: var(--mfw-radius-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.mfw-pulse,
+	.mfw-skeleton {
+		animation: none;
+	}
+}

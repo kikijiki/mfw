@@ -1,0 +1,21 @@
+{
+	"extends": "./tsconfig.base.json",
+	"compilerOptions": {
+		"baseUrl": ".",
+		"paths": {
+			"@mfw/board-core": ["packages/board-core/src/index.ts"],
+			"@mfw/board-core/*": ["packages/board-core/src/*.ts"],
+			"@mfw/board": ["packages/board/src/index.ts"],
+			"@mfw/board/*": ["packages/board/src/*.ts"],
+			"@mfw/core": ["packages/core/src/index.ts"],
+			"@mfw/core/*": ["packages/core/src/*.ts"],
+			"@mfw/db": ["packages/db/src/index.ts"],
+			"@mfw/db/*": ["packages/db/src/*.ts"],
+			"@mfw/api": ["packages/api/src/index.ts"],
+			"@mfw/api/*": ["packages/api/src/*.ts"],
+			"@mfw/daemon": ["packages/daemon/src/daemon.ts"],
+			"@mfw/daemon/*": ["packages/daemon/src/*.ts"]
+		}
+	},
+	"include": ["packages/*/src/**/*", "packages/*/test/**/*"]
+}

@@ -1,0 +1,25 @@
+<?xml version="1.0" ?>
+<nvidia_smi_log>
+  <gpu id="00000000:65:00.0">
+    <uuid>GPU-00000000-0000-0000-0000-000000000001</uuid>
+    <processes>
+      <process_info>
+        <pid>6161</pid>
+        <type>G</type>
+        <process_name>sanitized-graphics-context</process_name>
+        <used_memory>0 MiB</used_memory>
+      </process_info>
+    </processes>
+  </gpu>
+  <gpu id="00000000:b3:00.0">
+    <uuid>GPU-00000000-0000-0000-0000-000000000002</uuid>
+    <processes>
+      <process_info>
+        <pid>6162</pid>
+        <type>M</type>
+        <process_name>sanitized-mps-context</process_name>
+        <used_memory>N/A</used_memory>
+      </process_info>
+    </processes>
+  </gpu>
+</nvidia_smi_log>

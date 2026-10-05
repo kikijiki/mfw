@@ -1,0 +1,5 @@
+{
+	"outcome": "missing-tool",
+	"stderr": "sanitized: executable unavailable",
+	"exitCode": 127
+}

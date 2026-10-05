@@ -1,0 +1,16 @@
+{
+	"files": [
+		{
+			"path": "/sys/kernel/debug/kfd/proc/4242/vram_3101",
+			"content": "18504421376\n"
+		},
+		{
+			"path": "/sys/kernel/debug/kfd/proc/4242/queues/7001/gpuid",
+			"content": "3101\n"
+		},
+		{
+			"path": "/sys/kernel/debug/kfd/proc/4242/queues/7002/gpuid",
+			"content": "3101\n"
+		}
+	]
+}

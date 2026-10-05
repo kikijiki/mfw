@@ -1,0 +1,12 @@
+# `src/routeTree.gen.ts` is deliberately NOT ignored. Only `vite dev` and
+# `vite build` generate it, and on a machine running the daemon neither is free:
+# dev boots a second orchestrator against the live checkout, and build
+# overwrites the artifact the service restarts into. Committed, route changes
+# show up as an ordinary diff.
+.nitro/
+.output/
+.output.deploy-*/
+.output.previous-*/
+.mfw-deploy.lock
+.tanstack/
+dist/

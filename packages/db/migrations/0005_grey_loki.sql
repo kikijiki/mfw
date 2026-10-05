@@ -1,0 +1,1 @@
+ALTER TABLE `clarifications` ADD `continuation_run_id` text;

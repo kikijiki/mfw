@@ -1,0 +1,5 @@
+{
+	"outcome": "permission-denied",
+	"stderr": "sanitized: permission denied",
+	"exitCode": 13
+}

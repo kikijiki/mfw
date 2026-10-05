@@ -1,0 +1,5 @@
+{
+	"outcome": "timeout",
+	"stderr": "sanitized: deadline exceeded",
+	"exitCode": null
+}

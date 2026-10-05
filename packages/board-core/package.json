@@ -1,0 +1,19 @@
+{
+	"name": "@mfw/board-core",
+	"version": "0.8.1",
+	"author": "Matteo Bernacchia <dev@kikijiki.com>",
+	"license": "MIT",
+	"type": "module",
+	"main": "src/index.ts",
+	"exports": {
+		".": "./src/index.ts",
+		"./*": "./src/*.ts"
+	},
+	"files": [
+		"src"
+	],
+	"dependencies": {
+		"yaml": "^2.9.0",
+		"zod": "^4.4.3"
+	}
+}

@@ -1,0 +1,17 @@
+[
+	{
+		"gpu": 0,
+		"process_list": [
+			{
+				"process_info": {
+					"pid": 4242,
+					"memory_usage": {
+						"gtt_mem": { "value": 0, "unit": "B" },
+						"vram_mem": { "value": 18504421376, "unit": "B" }
+					},
+					"cu_occupancy": 1
+				}
+			}
+		]
+	}
+]

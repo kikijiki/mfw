@@ -1,0 +1,19 @@
+{
+	"name": "@mfw/api",
+	"version": "0.1.0",
+	"author": "Matteo Bernacchia <dev@kikijiki.com>",
+	"license": "MIT",
+	"type": "module",
+	"main": "src/index.ts",
+	"exports": {
+		".": "./src/index.ts",
+		"./*": "./src/*.ts"
+	},
+	"dependencies": {
+		"@mfw/core": "workspace:*",
+		"@mfw/daemon": "workspace:*",
+		"@trpc/server": "^11.18.0",
+		"superjson": "^2.2.6",
+		"zod": "^4.4.3"
+	}
+}

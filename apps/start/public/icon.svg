@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-labelledby="t">
+  <title id="t">mfw</title>
+  <!--
+    A task DAG: one task fanning out to two — the dependency graph is the app's
+    signature view, and it is the rare thing here still legible as three shapes
+    and two strokes once a browser has scaled it to 16 pixels.
+
+    The nodes are cards, not dots, and that is the whole reason they are square.
+    Drawn as circles this composition is precisely the share glyph every OS ships
+    — checked at 16px, where it was unmistakably "share" and not "graph". Squares
+    cost nothing at that size and read as task cards, which is what they are.
+
+    Amber on purpose. The UI theme is entirely achromatic (every `oklch(… 0 0)`
+    in styles.css), so there is no brand hue to inherit and a grayscale mark
+    would be a smudge in the tab strip.
+
+    Mark on a filled field rather than a transparent glyph: the tab strip is
+    light or dark depending on the browser, and a field carries its own contrast
+    into either one.
+  -->
+  <rect width="512" height="512" rx="112" fill="#f59e0b"/>
+  <g fill="#1c1917">
+    <!--
+      Edges run centre-to-centre and the cards are drawn over them, so each one
+      only shows in the gap. The cards are wide enough that the two strokes have
+      already diverged by ~28 units of clear field before either leaves the root
+      — draw them narrower or the cards smaller and the fan collapses into one
+      solid blob at the root, which is what the first pass did.
+    -->
+    <path d="M128 256 L384 128 M128 256 L384 384" stroke="#1c1917" stroke-width="38" stroke-linecap="round" fill="none"/>
+    <rect x="62" y="190" width="132" height="132" rx="30"/>
+    <rect x="318" y="62" width="132" height="132" rx="30"/>
+    <rect x="318" y="318" width="132" height="132" rx="30"/>
+  </g>
+</svg>

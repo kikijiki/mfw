@@ -1,0 +1,4 @@
+[
+	{ "GPU": 0, "GFX": 0, "VRAM_USED": { "value": 0, "unit": "B" } },
+	{ "GPU": 1, "GFX": 0, "VRAM_USED": { "value": 0, "unit": "B" } }
+]

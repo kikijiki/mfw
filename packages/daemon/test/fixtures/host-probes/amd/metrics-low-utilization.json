@@ -1,0 +1,7 @@
+[
+	{
+		"gpu": 0,
+		"usage": { "gfx_activity": { "value": 1, "unit": "%" } },
+		"vram": { "used": { "value": 18504421376, "unit": "B" } }
+	}
+]

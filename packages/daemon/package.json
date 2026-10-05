@@ -1,0 +1,30 @@
+{
+	"name": "@mfw/daemon",
+	"version": "0.1.0",
+	"author": "Matteo Bernacchia <dev@kikijiki.com>",
+	"license": "MIT",
+	"type": "module",
+	"main": "src/daemon.ts",
+	"exports": {
+		".": "./src/daemon.ts",
+		"./config": "./src/config.ts",
+		"./daemon": "./src/daemon.ts",
+		"./scheduler": "./src/scheduler.ts",
+		"./git": "./src/git.ts",
+		"./providers": "./src/providers/index.ts",
+		"./*": "./src/*.ts"
+	},
+	"dependencies": {
+		"@libsql/client": "^0.17.4",
+		"@mfw/board": "workspace:*",
+		"@mfw/board-core": "workspace:*",
+		"@mfw/core": "workspace:*",
+		"@mfw/db": "workspace:*",
+		"pino": "^10.3.1",
+		"yaml": "^2.9.0",
+		"zod": "^4.4.3"
+	},
+	"devDependencies": {
+		"pino-pretty": "^13.1.3"
+	}
+}

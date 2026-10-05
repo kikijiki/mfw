@@ -1,0 +1,20 @@
+{
+	"name": "@mfw/board",
+	"version": "0.4.1",
+	"author": "Matteo Bernacchia <dev@kikijiki.com>",
+	"license": "MIT",
+	"type": "module",
+	"main": "src/index.ts",
+	"exports": {
+		".": "./src/index.ts",
+		"./*": "./src/*.ts"
+	},
+	"bin": {
+		"mfwb": "src/cli.ts"
+	},
+	"dependencies": {
+		"@mfw/board-core": "workspace:*",
+		"yaml": "^2.9.0",
+		"zod": "^4.4.3"
+	}
+}

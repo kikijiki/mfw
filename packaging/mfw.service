@@ -1,0 +1,43 @@
+# mfw daemon: systemd user service.
+# Install:  cp packaging/mfw.service ~/.config/systemd/user/
+#           systemctl --user daemon-reload
+#           systemctl --user enable --now mfw
+# Logs:     journalctl --user -u mfw -f
+[Unit]
+Description=mfw: local autonomous project orchestrator
+After=network.target
+
+[Service]
+Type=simple
+# Adjust WorkingDirectory to your checkout. The single app serves UI + /api/trpc
+# and boots the orchestrator in-process. Build once (`bun run build`) then run the
+# Nitro (bun-preset) server output under Bun.
+WorkingDirectory=%h/dev/mfw
+ExecStart=/usr/bin/env bun run apps/start/.output/server/index.mjs
+Restart=on-failure
+RestartSec=2
+Environment=MFW_HOME=%h/.local/share/mfw
+Environment=PORT=7777
+Environment=HOST=127.0.0.1
+
+# Agent runs are detached tmux sessions that are meant to survive a daemon
+# restart, the supervisor re-adopts them on boot. The default KillMode of
+# control-group kills the entire cgroup on stop/restart, which silently broke
+# that: every restart killed the in-flight runs, and they finalized as
+# "session ended without recording an exit". `process` signals only the daemon.
+#
+# Trade-off: `systemctl --user stop mfw` now leaves running agents alive. Stop
+# them from the UI first, or `tmux -L mfw kill-server` to clear them by hand.
+KillMode=process
+
+# A child being OOM-killed must not tear down the orchestrator with it.
+OOMPolicy=continue
+
+# Runs live under this unit's cgroup, so a runaway agent build is accounted here.
+# Uncomment to cap it, leave generous headroom, since a legitimate agent may run
+# a full build or test suite.
+#MemoryHigh=24G
+#MemoryMax=32G
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,69 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1786230235114,
+      "tag": "0000_board-on-disk",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1786736885928,
+      "tag": "0001_project-triggers",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1786796926194,
+      "tag": "0002_merge-job-park-retries",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1786989690832,
+      "tag": "0003_escalation-sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1787074086591,
+      "tag": "0004_run-launch-metadata",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1787098562097,
+      "tag": "0005_grey_loki",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1787501199038,
+      "tag": "0006_execution-targets",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1787504302263,
+      "tag": "0007_dispatch-admission",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1787511307410,
+      "tag": "0008_faulty_black_tom",
+      "breakpoints": true
+    }
+  ]
+}
