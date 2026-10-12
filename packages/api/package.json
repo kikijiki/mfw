@@ -12,6 +12,7 @@
 	"dependencies": {
 		"@mfw/core": "workspace:*",
 		"@mfw/daemon": "workspace:*",
+		"@mfw/db": "workspace:*",
 		"@trpc/server": "^11.18.0",
 		"superjson": "^2.2.6",
 		"zod": "^4.4.3"

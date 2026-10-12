@@ -7,8 +7,37 @@ import { runProc } from "./proc.ts";
  * notifier is noticed before it is needed.
  */
 
+/**
+ * Every kind of notification mfw sends. Closed on purpose: `notify(kind)` is
+ * typed against it, so a new kind is added here (and to the operator's sink
+ * scripts, which switch on `MFW_NOTIFY_TYPE`) rather than cast in.
+ */
+export const NOTIFICATION_TYPES = [
+	"blocked",
+	"review",
+	"clarify",
+	"main_red",
+	"merge_parked",
+	"finalize_error",
+	"draft_expand_exhausted",
+	"rate_limit_warning",
+	"trigger",
+	"trigger_failed",
+	"needs_answer",
+	"approval_pending",
+	"stalled",
+	"scope_violation",
+	"review_verdict",
+	/** The project brain failed repeatedly and its circuit is open. */
+	"brain_stuck",
+	/** The project brain asked a person for something (`notify_human`). */
+	"brain_escalation",
+] as const;
+
+export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
+
 export interface Notification {
-	type: "blocked" | "review" | "clarify" | "main_red" | "merge_parked";
+	type: NotificationType;
 	project: string;
 	taskId?: string | null;
 	runId?: string | null;
@@ -33,7 +62,7 @@ export interface NotifyConfig {
 
 export interface Notifier {
 	notify(
-		kind: string,
+		kind: NotificationType,
 		detail: Record<string, unknown>,
 	): Promise<DeliveryResult[]>;
 	send(n: Notification): Promise<DeliveryResult[]>;
@@ -63,11 +92,11 @@ export class ConfigNotifier implements Notifier {
 
 	/** Convenience shape used by the finalization steps. */
 	async notify(
-		kind: string,
+		kind: NotificationType,
 		detail: Record<string, unknown>,
 	): Promise<DeliveryResult[]> {
 		return this.send({
-			type: (kind as Notification["type"]) ?? "blocked",
+			type: kind,
 			project: String(detail.project ?? ""),
 			taskId: detail.taskId as string | undefined,
 			runId: detail.runId as string | undefined,

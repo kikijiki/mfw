@@ -32,14 +32,28 @@ const verification = {
 };
 const criteria = {
 	type: "array",
+	description:
+		"Acceptance criteria (observable outcomes). Replaces the whole list; keep each item's id as read so it stays the same item. To change one item use the criteria tool.",
 	items: {
 		type: "object",
 		properties: {
+			id: { type: "string" },
 			text: { type: "string" },
 			checked: { type: "boolean" },
 		},
 		required: ["text"],
 	},
+};
+
+const provider = {
+	type: ["string", "null"],
+	description:
+		"Optional routing pin: the harness that runs this task (claude-cli, codex-cli) or a project endpoint id (Codex via an OpenAI-compatible endpoint). Omit to let the project decide; null clears.",
+};
+const model = {
+	type: ["string", "null"],
+	description:
+		"Optional routing pin: the exact model id. Omit to let the task's model_tier and the project decide; null clears.",
 };
 
 const TOOLS = [
@@ -88,6 +102,8 @@ const TOOLS = [
 				requiresResources: { type: "array", items: { type: "string" } },
 				verification,
 				criteria,
+				provider,
+				model,
 			},
 			required: ["project", "title"],
 		},
@@ -113,10 +129,34 @@ const TOOLS = [
 						labels: { type: "array", items: { type: "string" } },
 						dependsOn: { type: "array", items: { type: "string" } },
 						requiresResources: { type: "array", items: { type: "string" } },
+						criteria,
+						provider,
+						model,
 					},
 				},
 			},
 			required: ["project", "id", "patch"],
+		},
+	},
+	{
+		name: "criteria",
+		description:
+			"Change one acceptance criterion of a task: add, toggle, set (checked true/false), edit (new text) or remove. selector is the item id (c1, c2, ...) or a unique text prefix. Board rules apply: a refused change fails with PRECONDITION_FAILED naming the rule.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				project,
+				id: { type: "string" },
+				baseRev: { type: "number" },
+				op: {
+					type: "string",
+					enum: ["add", "toggle", "set", "edit", "remove"],
+				},
+				selector: { type: "string" },
+				text: { type: "string" },
+				checked: { type: "boolean" },
+			},
+			required: ["project", "id", "op"],
 		},
 	},
 	{

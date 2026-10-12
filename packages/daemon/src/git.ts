@@ -4,10 +4,14 @@ import { runProc } from "./proc.ts";
 export async function git(
 	args: string[],
 	cwd: string,
+	opts: { env?: Record<string, string> } = {},
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
 	// Git is fast and bounded; a hung invocation must not wedge a finalize
 	// step, so it inherits runProc's mandatory timeout.
-	const r = await runProc(["git", ...args], { cwd });
+	const r = await runProc(["git", ...args], {
+		cwd,
+		...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
+	});
 	return {
 		exitCode: r.exitCode ?? -1,
 		stdout: r.stdout.trim(),
@@ -15,8 +19,12 @@ export async function git(
 	};
 }
 
-export async function gitOk(args: string[], cwd: string): Promise<string> {
-	const r = await git(args, cwd);
+export async function gitOk(
+	args: string[],
+	cwd: string,
+	opts: { env?: Record<string, string> } = {},
+): Promise<string> {
+	const r = await git(args, cwd, opts);
 	if (r.exitCode !== 0) {
 		throw new Error(
 			`git ${args.join(" ")} failed (${r.exitCode}): ${r.stderr || r.stdout}`,

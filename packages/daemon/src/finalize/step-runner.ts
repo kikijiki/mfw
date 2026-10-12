@@ -2,13 +2,22 @@ import { createHash } from "node:crypto";
 import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { normalizeOwnsPattern, validateOwnsPattern } from "@mfw/board";
+import { filesOutsideOwns } from "@mfw/board-core";
+import type { BackgroundJob } from "@mfw/core/activity";
+import type { SettleClass } from "@mfw/core/events";
 import type { TaskStatus } from "@mfw/core/types";
 import type { ProjectDbHandle } from "@mfw/db/client";
 import { appendEvent, type EventBus } from "@mfw/db/eventlog";
-import { ulid } from "@mfw/db/ids";
-import { engineKv, type KillReason, type RunState } from "@mfw/db/schema";
+import {
+	engineKv,
+	groupIdOf,
+	type KillReason,
+	type RunState,
+	runs,
+} from "@mfw/db/schema";
 import { eq, sql } from "drizzle-orm";
 import type { RunExit } from "../agent-host.ts";
+import { finalActivity } from "../agents/activity.ts";
 import { adapterFor } from "../agents/adapter.ts";
 import { parseAgentEvents } from "../agents/events.ts";
 import { git } from "../git.ts";
@@ -20,9 +29,22 @@ import {
 } from "../leftover-processes.ts";
 import type { Logger } from "../log.ts";
 import { updateInfraState } from "../maintenance.ts";
+import type { NotificationType } from "../notify.ts";
 import { detectRateLimit } from "../rate-limit.ts";
+import type {
+	ReviewFailureCause,
+	ReviewFinding,
+	ReviewMode,
+	ReviewVerdict,
+} from "../review-verdict.ts";
+import { parseRoutingRecord } from "../routing.ts";
+import { RunEventTail } from "../run-event-tail.ts";
 import type { BeginStepResult, RunRegistry, RunRow } from "../run-registry.ts";
-import type { RaiseInput } from "../session.ts";
+import {
+	changedFiles,
+	SCOPE_KILL_REASONS,
+	type ScopePolicy,
+} from "../scope-watchdog.ts";
 import type { TaskService, TaskWithRefs } from "../task-service.ts";
 import {
 	type DefinitionOfDone,
@@ -39,11 +61,11 @@ import {
 	type Directive,
 	type FinalizeCtx,
 	next,
-	type ReplanAction,
 	type RunOutcome,
 	type StepName,
 	type Terminal,
 } from "./machine.ts";
+import { recordSettled } from "./settle-event.ts";
 
 /**
  * IO half of finalization. The pure machine (`machine.ts`) decides what happens
@@ -79,6 +101,33 @@ const KILL_REASONS: ReadonlySet<string> = new Set([
 	"watchdog-wall",
 	"watchdog-turns",
 	"watchdog-timebox",
+	...SCOPE_KILL_REASONS,
+]);
+
+/**
+ * Settle classes that count as a non-progressing run on the task's
+ * informational stall counter (the brain reads it; nothing caps on it).
+ */
+const STALLING_CLASSES: ReadonlySet<SettleClass> = new Set([
+	"verify_failed",
+	"watchdog_killed",
+	"scope_violation",
+]);
+
+/** Every numeric key of a driver `usage` event that is kept on the run row. */
+const USAGE_KEYS = [
+	"inputTokens",
+	"outputTokens",
+	"cachedInputTokens",
+	"reasoningOutputTokens",
+	"costUsd",
+	"turns",
+] as const;
+
+/** Statuses a task holds while one of its runs is working on it. */
+const RUN_HELD_STATUSES: ReadonlySet<TaskStatus> = new Set([
+	"in_progress",
+	"draft",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -94,8 +143,6 @@ export interface BrainCallCtx {
 	baseSha: string | null;
 	verify: VerificationResult | null;
 	report: unknown;
-	/** import runs only: the task list the importer proposed. */
-	proposal?: unknown;
 }
 
 export interface CriticResult {
@@ -109,36 +156,29 @@ export interface CriticResult {
 		evidenceClass?: "reproduced" | "source-confirmed" | "claimed";
 	}[];
 	reason?: string;
-}
-export interface ReplanResult {
-	status: "ok" | "failed";
-	action?: ReplanAction;
-	reason?: string;
-}
-export interface ImportReviewResult {
-	status: "ok" | "failed";
-	approved?: boolean;
-	reason?: string;
+	/** The floored verdict; absent on journals that predate verdicts. */
+	verdict?: ReviewVerdict;
+	/** What the reviewer said before the floor. */
+	modelVerdict?: ReviewVerdict;
+	findings?: ReviewFinding[];
+	mode?: ReviewMode;
+	/** Review round this verdict belongs to (1-based). */
+	round?: number;
+	reviewer?: { harness: string | null; model: string };
+	independent?: boolean;
+	/** Why a failed review produced no usable verdict. */
+	cause?: ReviewFailureCause;
 }
 
-/** Brain decisions: every call resolves with a status, never throws. Fail-closed handling is in the machine's tables (T14/T24/I5). */
+/** One-shot judges: every call resolves with a status, never throws. Fail-closed handling is in the machine's tables (T14/I5). What happens to a failed run is the project brain's, through `settle`. */
 export interface BrainPort {
 	/** Project-level gate: false = the project opted out of the brain. */
 	enabled: boolean;
 	readonly criticEnabled?: boolean;
 	/** Semantic acceptance is decided by a human instead of an assisted review. */
 	readonly humanReviewEnabled?: boolean;
-	readonly replanEnabled?: boolean;
-	readonly importReviewEnabled?: boolean;
 	critic(ctx: BrainCallCtx): Promise<CriticResult>;
-	replan(ctx: BrainCallCtx): Promise<ReplanResult>;
-	importReview(ctx: BrainCallCtx): Promise<ImportReviewResult>;
 }
-
-export type SpawnFn = (
-	parentRunId: string,
-	childRunId: string,
-) => Promise<void>;
 
 /** The one call finalization makes into the clarify gate. */
 export interface ClarifyPort {
@@ -167,7 +207,10 @@ export interface StepRunnerDeps {
 	host: { readExit(runDir: string): Promise<RunExit> };
 	brain: BrainPort;
 	notifier: {
-		notify(kind: string, detail: Record<string, unknown>): Promise<void>;
+		notify(
+			kind: NotificationType,
+			detail: Record<string, unknown>,
+		): Promise<void>;
 	};
 	projectRoot: string;
 	/** Wrapper command for DoD checks (e.g. a sandbox entrypoint, or the
@@ -179,10 +222,21 @@ export interface StepRunnerDeps {
 	verification?: {
 		foreground<T>(work: () => Promise<T>): Promise<T>;
 	};
+	/**
+	 * Machine-wide per-provider rate-limit holds (`provider-holds.ts`). A
+	 * rate-limited run holds only its own route's provider account. Absent =
+	 * the legacy project-wide `dispatch_hold`.
+	 */
+	providerHolds?: {
+		hold(
+			key: string,
+			hold: { until: number; reason: string; runId?: string; project?: string },
+		): Promise<unknown>;
+	};
+	/** Project name recorded on a provider hold (which project hit the limit). */
+	projectName?: string;
 	log: Logger;
 	config: {
-		maxStalls: number;
-		maxResumes: number;
 		/** Failed expansion runs a `draft` task tolerates before the
 		 *  bounded retry gives up and files it on `mergeChecks`. */
 		draftExpandMaxAttempts: number;
@@ -190,16 +244,16 @@ export interface StepRunnerDeps {
 		 *  nothing else supplied one. */
 		mergeChecks: DefinitionOfDone;
 	};
-	/** Late-bound (assignable after construction) to break the RunEngine cycle. */
-	spawnRepair?: SpawnFn;
-	spawnResume?: SpawnFn;
-	/** Raises a pre-loaded human session when a task lands on `blocked` (T4, T10, T18, T24). Absent = skip composing; the task still blocks. */
-	sessions?: { raise(input: RaiseInput): Promise<unknown> };
 	/** Leftover-process scan and stop for `reap_leftovers`; defaults to the real /proc ones. */
 	leftovers?: {
 		find(run: RunRow): Promise<LeftoverProcess[]>;
 		stop(processes: readonly LeftoverProcess[]): Promise<CleanupResult>;
 	};
+	/** Transcript fold shared with RunEngine/Supervisor; absent = a private one. */
+	eventTail?: RunEventTail;
+	/** The live scope watchdog policy (settings `watchdog.scope`). Absent = no
+	 *  finish-time scope check. */
+	scopePolicy?: () => Pick<ScopePolicy, "onFinish">;
 }
 
 // ---------------------------------------------------------------------------
@@ -211,6 +265,21 @@ interface ClassifyResult {
 	exitCode?: number;
 	killReason?: string;
 	resetsAt?: number;
+	/** Background jobs the transcript shows started and never seen to finish. */
+	background?: BackgroundJob[];
+}
+
+/** `scope_check`: the finished run's changes outside its task's `owns`. */
+interface ScopeCheckResult {
+	files: number;
+	outside: number;
+	outsideFiles: string[];
+}
+
+/** `archive_wip`: where a scope-killed run's work was saved (null = nothing beyond base). */
+interface ArchiveWipResult {
+	ref: string | null;
+	sha: string | null;
 }
 
 interface PlanEntry {
@@ -434,22 +503,48 @@ function normalizeQuestions(v: unknown): string[] {
 }
 
 interface FoldedReport {
-	escalation: "drop" | "needs-replan" | "blocked" | null;
+	escalation: "drop" | "needs-replan" | "blocked" | "question" | null;
+	/** `escalation: "question"` only: what the agent asked, and its suggested answers. */
+	question: { text: string; options: string[] } | null;
 	subtasks: unknown;
 	followUps: FollowUpEntry[];
 	raw: unknown;
 }
 
-/** Pull the report out of the journaled `ingest_report` result. */
-function foldReport(result: unknown): FoldedReport | null {
+const ESCALATIONS = new Set(["drop", "needs-replan", "blocked", "question"]);
+
+/**
+ * Pull the report out of the journaled `ingest_report` result. The agent's
+ * declaration is `escalation` (or `status`, the key the scope prompt names);
+ * a question needs its text, or it is no question at all.
+ */
+export function foldReport(result: unknown): FoldedReport | null {
 	const report = (result as { report?: unknown } | undefined)?.report;
 	if (typeof report !== "object" || report === null) return null;
 	const o = report as Record<string, unknown>;
-	const esc = o.escalation;
+	const declared = [o.escalation, o.status].find(
+		(v): v is string => typeof v === "string" && ESCALATIONS.has(v),
+	);
+	const questionText =
+		typeof o.question === "string" && o.question.trim()
+			? o.question.trim()
+			: null;
+	const options = Array.isArray(o.options)
+		? o.options.filter(
+				(v): v is string => typeof v === "string" && v.trim() !== "",
+			)
+		: [];
+	const escalation =
+		declared === "question"
+			? questionText
+				? "question"
+				: null
+			: ((declared as FoldedReport["escalation"]) ?? null);
 	return {
-		escalation:
-			esc === "drop" || esc === "needs-replan" || esc === "blocked"
-				? esc
+		escalation,
+		question:
+			escalation === "question" && questionText
+				? { text: questionText, options }
 				: null,
 		subtasks: o.subtasks,
 		followUps: normalizeFollowUps(o.follow_ups),
@@ -499,20 +594,20 @@ function foldReportIdentity(
 // ---------------------------------------------------------------------------
 
 export class StepRunner {
-	/** Late-bound spawn hooks (RunEngine wires these after construction). */
-	spawnRepair?: SpawnFn;
-	spawnResume?: SpawnFn;
-
 	private readonly deps: StepRunnerDeps;
 	private readonly log: Logger;
+	private readonly tail: RunEventTail;
 	/** In-process single-flight. */
 	private readonly inflight = new Map<string, Promise<void>>();
 
 	constructor(deps: StepRunnerDeps) {
 		this.deps = deps;
 		this.log = deps.log.child({ svc: "step-runner" });
-		this.spawnRepair = deps.spawnRepair;
-		this.spawnResume = deps.spawnResume;
+		this.tail =
+			deps.eventTail ??
+			new RunEventTail((runId, offset) =>
+				deps.registry.readOutput(runId, "events.jsonl", offset),
+			);
 	}
 
 	/** Drive the run's finalization to a Terminal (or a parked step failure).
@@ -651,33 +746,15 @@ export class StepRunner {
 			| { passed?: boolean; crashed?: boolean }
 			| undefined;
 		const criticRes = results.get("critic") as CriticResult | undefined;
-		const replanRes = results.get("replan_decide") as ReplanResult | undefined;
-		const reviewRes = results.get("import_review") as
-			| ImportReviewResult
-			| undefined;
 		const reapRes = results.get("reap_leftovers") as
 			| { processes?: unknown[] }
 			| undefined;
 		const planRes = results.get("parse_plan") as
 			| { parsed?: boolean; plan?: ParsedProposal }
 			| undefined;
+		const scopeRes = results.get("scope_check") as ScopeCheckResult | undefined;
 
 		const task = run.taskId ? await this.deps.tasks.get(run.taskId) : null;
-		const resumeStep = stepRows.find((s) => s.step === "spawn_resume");
-		const resumeGuard = resumeStep?.result as
-			| { resumeOrdinal?: number }
-			| undefined;
-		// Older journals predate decide_resume. Starting a spawn already chose
-		// the disposition; never revisit that choice against a child's counters.
-		const resumeDecision =
-			(results.get("decide_resume") as FinalizeCtx["resumeDecision"]) ??
-			(resumeStep
-				? {
-						selected: true,
-						ordinal:
-							resumeGuard?.resumeOrdinal ?? Math.max(1, task?.resumeCount ?? 0),
-					}
-				: null);
 		const worktreeDirty =
 			run.kind === "task" && run.worktreePath
 				? await this.isDirty(
@@ -686,10 +763,15 @@ export class StepRunner {
 					)
 				: false;
 
+		const group =
+			run.role === "attempt" && run.groupId
+				? await this.deps.registry.getGroup(run.groupId)
+				: null;
 		const ctx: FinalizeCtx = {
 			kind: run.kind,
 			outcome: classify?.outcome ?? run.outcome ?? null,
 			done,
+			...(group?.kind === "competing" ? { group: { competing: true } } : {}),
 			isDraftExpand: run.kind === "plan" && run.taskId != null,
 			task:
 				run.kind === "task" || run.kind === "repair"
@@ -704,11 +786,6 @@ export class StepRunner {
 								) != null,
 							escalation: report?.escalation ?? null,
 							attempt: run.attempt,
-							maxRepairs: run.maxRepairs ?? 1,
-							stallCount: task?.stallCount ?? 0,
-							maxStalls: this.deps.config.maxStalls,
-							resumeCount: task?.resumeCount ?? 0,
-							maxResumes: this.deps.config.maxResumes,
 							worktreeDirty,
 							exitCode: classify?.exitCode ?? run.exitCode ?? null,
 						}
@@ -722,10 +799,14 @@ export class StepRunner {
 					(this.deps.brain.humanReviewEnabled ?? false),
 				brainEnabled: this.deps.brain.enabled,
 				criticEnabled: this.deps.brain.criticEnabled ?? this.deps.brain.enabled,
-				replanEnabled: this.deps.brain.replanEnabled ?? this.deps.brain.enabled,
-				importReviewEnabled:
-					this.deps.brain.importReviewEnabled ?? this.deps.brain.enabled,
+				// Only a task that declared a scope can leave it.
+				scopeOnFinish:
+					run.kind === "task" &&
+					(task?.owns.length ?? 0) > 0 &&
+					this.deps.scopePolicy?.().onFinish === "review",
 			},
+			killReason: classify?.killReason ?? run.killReason ?? null,
+			scope: scopeRes ? { outside: scopeRes.outside } : null,
 			verify: verifyRes
 				? {
 						passed: verifyRes.passed === true,
@@ -736,36 +817,19 @@ export class StepRunner {
 				? {
 						status: criticRes.status === "ok" ? "ok" : "failed",
 						flagged: criticRes.flagged === true,
-					}
-				: null,
-			replan: replanRes
-				? {
-						status: replanRes.status === "ok" ? "ok" : "failed",
-						action: replanRes.action ?? null,
-					}
-				: null,
-			importReview: reviewRes
-				? {
-						status: reviewRes.status === "ok" ? "ok" : "failed",
-						approved: reviewRes.approved === true,
+						verdict: criticRes.verdict ?? null,
+						round: criticRes.round ?? null,
+						cause: criticRes.cause ?? null,
 					}
 				: null,
 			planParsed: planRes ? planRes.parsed === true : null,
-			reportHasSubtasks: Array.isArray(
-				foldReport(results.get("ingest_report"))?.subtasks,
-			)
-				? (foldReport(results.get("ingest_report"))?.subtasks as unknown[])
-						.length > 0
-				: false,
 			reportHasFollowUps: (report?.followUps.length ?? 0) > 0,
 			localWorktree:
 				run.kind !== "brain" &&
 				run.executionTarget === "local" &&
 				run.worktreePath !== null,
 			leftBackground: (reapRes?.processes?.length ?? 0) > 0,
-			resumeDecision,
-			planHasSpecs: (planRes?.plan?.specs?.length ?? 0) > 0,
-			planHasQuestions: (planRes?.plan?.questions?.length ?? 0) > 0,
+			backgroundOutstanding: (classify?.background?.length ?? 0) > 0,
 		};
 
 		return { run, task, ctx, results, statuses };
@@ -849,17 +913,23 @@ export class StepRunner {
 		detail?: string,
 	): Promise<void> {
 		try {
-			const stored = await this.deps.handle.withTx((tx) =>
-				appendEvent(tx, {
+			const stored = await this.deps.handle.withTx(async (tx) => {
+				// Task-indexed so a task's activity feed finds its run steps.
+				const [run] = await tx
+					.select({ taskId: runs.taskId })
+					.from(runs)
+					.where(eq(runs.id, runId));
+				return appendEvent(tx, {
 					type: "run.finalize_step",
 					runId,
+					...(run?.taskId ? { taskId: run.taskId } : {}),
 					payload: {
 						step,
 						ok,
 						...(detail ? { detail: detail.slice(0, 500) } : {}),
 					},
-				}),
-			);
+				});
+			});
 			this.deps.bus.publish([stored]);
 		} catch (e) {
 			this.log.warn({ runId, step, err: e }, "finalize_step audit failed");
@@ -881,15 +951,6 @@ export class StepRunner {
 				return this.classify(built, initialState);
 			case "reap_leftovers":
 				return this.reapLeftovers(built, begin);
-			case "decide_resume":
-				return Promise.resolve({
-					selected:
-						!!built.ctx.task &&
-						built.ctx.task.resumeCount < built.ctx.task.maxResumes &&
-						(built.ctx.outcome !== "interrupted" ||
-							built.ctx.task.worktreeDirty),
-					ordinal: (built.ctx.task?.resumeCount ?? 0) + 1,
-				});
 			case "hold_rate_limit":
 				return this.holdRateLimit(built);
 			case "ingest_report":
@@ -900,31 +961,24 @@ export class StepRunner {
 				return this.verifyStep(built);
 			case "critic":
 				return this.brainCall(built, "critic");
-			case "replan_decide":
-				return this.brainCall(built, "replan");
-			case "import_review":
-				return this.brainCall(built, "import_review");
 			case "parse_plan":
 				return this.parsePlan(built);
-			case "create_tasks":
-				return this.createTasks(built);
-			case "create_specs":
-				return this.createSpecs(built);
-			case "record_questions":
-				return this.recordQuestions(built);
-			case "spawn_repair":
-			case "spawn_resume":
-				return this.spawnChild(built, d.step, begin);
+			case "record_question":
+				return this.recordQuestion(built);
+			case "settle":
+				return this.settle(built, d, begin);
 			case "enqueue_merge":
 				return this.enqueueMerge(built);
 			case "release_task":
 				return this.releaseTask(built, d);
-			case "bump_stall":
-				return this.bumpStall(built);
 			case "clear_stall":
 				return this.clearStall(built);
 			case "gc_worktree":
 				return this.gcWorktree(built, d.args?.force === true);
+			case "archive_wip":
+				return this.archiveWip(built);
+			case "scope_check":
+				return this.scopeCheck(built);
 			case "notify":
 				return this.notifyStep(built, d);
 			case "finish_decision":
@@ -937,8 +991,7 @@ export class StepRunner {
 
 	/**
 	 * A plan run expanding a `draft` task ended without a usable proposal.
-	 * Bounded-retry bookkeeping is in `TaskService.recordDraftExpandFailure`. A
-	 * notice fires only once the retry budget is exhausted.
+	 * Bounded-retry bookkeeping is in `TaskService.recordDraftExpandFailure`.
 	 *
 	 * It returns null when the task is no longer a draft (deleted or archived
 	 * mid-run); `release` is skipped then to avoid a pointless call and a
@@ -962,13 +1015,8 @@ export class StepRunner {
 				? "draft expansion exhausted"
 				: "draft expansion will retry",
 		);
-		if (result.exhausted) {
-			await this.deps.notifier
-				.notify("draft_expand_exhausted", { taskId: run.taskId })
-				.catch(() => {
-					// best-effort: a lost notification never blocks finalization
-				});
-		}
+		// Nobody is paged: a draft whose expansion keeps failing shows as
+		// `draftPhase: failed` in the brain's digest and the inbox.
 		return result;
 	}
 
@@ -989,13 +1037,18 @@ export class StepRunner {
 		// Cost/token accounting: the last usage event wins (the CLI reports
 		// cumulative totals in its final result).
 		let usage: Record<string, number> | null = null;
+		let nativeSessionId: string | null = null;
 		for (const e of parseAgentEvents(eventsTail)) {
+			if (e.type === "session") {
+				nativeSessionId = e.sessionId;
+				continue;
+			}
 			if (e.type === "usage") {
 				const u: Record<string, number> = {};
-				if (typeof e.inputTokens === "number") u.inputTokens = e.inputTokens;
-				if (typeof e.outputTokens === "number") u.outputTokens = e.outputTokens;
-				if (typeof e.costUsd === "number") u.costUsd = e.costUsd;
-				if (typeof e.turns === "number") u.turns = e.turns;
+				for (const key of USAGE_KEYS) {
+					const v = e[key];
+					if (typeof v === "number") u[key] = v;
+				}
 				if (Object.keys(u).length > 0) usage = u;
 				continue;
 			}
@@ -1010,6 +1063,11 @@ export class StepRunner {
 		}
 		if (usage) {
 			await this.deps.registry.transition(run.id, run.state, { usage });
+		}
+		// A run that ended between supervisor passes never had its session id
+		// recorded live; the transcript still has it.
+		if (nativeSessionId && nativeSessionId !== run.nativeSessionId) {
+			await this.deps.registry.recordNativeSession(run.id, nativeSessionId);
 		}
 		if (approachingUtilization !== null && !limited) {
 			await this.deps.notifier
@@ -1068,21 +1126,76 @@ export class StepRunner {
 			outcome,
 		});
 		await this.deps.registry.transition(run.id, "finalizing");
+		const background = await this.labelActivity(run, null);
 		return {
 			outcome,
 			...(exitCode !== null ? { exitCode } : {}),
 			...(killReason ? { killReason } : {}),
 			...(resetsAt !== null ? { resetsAt } : {}),
+			...(background.length ? { background } : {}),
 		};
 	}
 
-	/** engine_kv["dispatch_hold"] upsert, keeping the furthest `until`. */
+	/**
+	 * Label the finished run's activity from its whole transcript (and the
+	 * report's question, once ingested). Returns the background jobs it ended
+	 * on. A label only: the machine reads the journal, never this column.
+	 */
+	private async labelActivity(
+		run: RunRow,
+		question: { text: string; options: string[] } | null,
+	): Promise<BackgroundJob[]> {
+		if (run.kind === "brain") return [];
+		try {
+			const fold = await this.tail.fold(run.id);
+			// The whole transcript is read: settle the subagent rows with it.
+			if (fold.subagents.size > 0) {
+				await this.deps.registry.recordSubagents(run.id, [
+					...fold.subagents.values(),
+				]);
+			}
+			const label = finalActivity(
+				fold,
+				question
+					? { question: question.text, options: question.options }
+					: null,
+			);
+			await this.deps.registry.setActivity(
+				run.id,
+				label.activity,
+				label.detail,
+			);
+			return [...fold.background.values()];
+		} catch (e) {
+			this.log.warn({ err: e, runId: run.id }, "could not label run activity");
+			return [];
+		}
+	}
+
+	/**
+	 * Hold the provider account the run was routed to (machine-wide, so every
+	 * project's tasks on that account wait and nothing else does), keeping the
+	 * furthest `until`. Without a provider hold store: the legacy
+	 * engine_kv["dispatch_hold"], which holds every provider of this project.
+	 */
 	private async holdRateLimit(built: Built): Promise<unknown> {
 		const classify = built.results.get("classify") as
 			| ClassifyResult
 			| undefined;
 		const until = classify?.resetsAt ?? Date.now() + HOLD_FALLBACK_MS;
 		const value = { until, reason: `rate-limited run ${built.run.id}` };
+		if (this.deps.providerHolds) {
+			const key =
+				parseRoutingRecord(built.run.routing)?.holdKey ??
+				built.run.providerId ??
+				"unknown";
+			await this.deps.providerHolds.hold(key, {
+				...value,
+				runId: built.run.id,
+				...(this.deps.projectName ? { project: this.deps.projectName } : {}),
+			});
+			return { ...value, key };
+		}
 		await this.deps.handle.db
 			.insert(engineKv)
 			.values({ key: "dispatch_hold", value, updatedAt: new Date() })
@@ -1139,6 +1252,8 @@ export class StepRunner {
 				// Corrupt: journaled as no usable report (bytes were observed, unlike a read failure).
 			}
 		}
+		const question = foldReport({ report })?.question ?? null;
+		if (question) await this.labelActivity(built.run, question);
 		return { report, worktreeReport };
 	}
 
@@ -1217,11 +1332,8 @@ export class StepRunner {
 		return result;
 	}
 
-	/** Brain steps never throw; failure is a journaled `failed` status routed to a human by T14/T24/I5. */
-	private async brainCall(
-		built: Built,
-		point: "critic" | "replan" | "import_review",
-	): Promise<unknown> {
+	/** Judge steps never throw; failure is a journaled `failed` status the machine turns into a settle (T14) or a human gate (I5). */
+	private async brainCall(built: Built, point: "critic"): Promise<unknown> {
 		const { run } = built;
 		const ctx: BrainCallCtx = {
 			runId: run.id,
@@ -1232,22 +1344,66 @@ export class StepRunner {
 			verify:
 				(built.results.get("verify") as VerificationResult | undefined) ?? null,
 			report: foldReport(built.results.get("ingest_report"))?.raw ?? null,
-			// The importer's proposal is its output; it writes no code, so no diff to review.
-			proposal: point === "import_review" ? this.proposal(built) : null,
 		};
 		try {
 			switch (point) {
-				case "critic":
-					return await this.deps.brain.critic(ctx);
-				case "replan":
-					return await this.deps.brain.replan(ctx);
-				case "import_review":
-					return await this.deps.brain.importReview(ctx);
+				case "critic": {
+					const result = await this.deps.brain.critic(ctx);
+					await this.tickMetCriteria(built, result).catch((e) => {
+						// best-effort: a missed tick never changes the verdict
+						this.log.warn(
+							{ runId: run.id, err: String(e) },
+							"criteria ticking failed",
+						);
+					});
+					return result;
+				}
 			}
 		} catch (e) {
 			const reason = e instanceof Error ? e.message : String(e);
 			this.log.warn({ runId: run.id, point, err: reason }, "brain call threw");
 			return { status: "failed", reason };
+		}
+	}
+
+	/**
+	 * A reviewer that found a criterion met on real evidence (reproduced or
+	 * source-confirmed) ticks it on the task's acceptance checklist. Never
+	 * unticks; idempotent, so a re-executed critic step is harmless. A board
+	 * rule refusing the write only costs the tick.
+	 */
+	private async tickMetCriteria(
+		built: Built,
+		result: CriticResult,
+	): Promise<void> {
+		const taskId = built.run.taskId;
+		if (!taskId || result.status !== "ok" || !result.criteria) return;
+		const task = await this.deps.tasks.get(taskId);
+		if (!task) return;
+		const met = new Set(
+			result.criteria
+				.filter(
+					(c) =>
+						c.verdict === "met" &&
+						c.evidenceClass !== undefined &&
+						c.evidenceClass !== "claimed",
+				)
+				.map((c) => c.criterion.trim()),
+		);
+		for (const item of task.criteria) {
+			if (item.checked || !met.has(item.text.trim())) continue;
+			try {
+				await this.deps.tasks.editCriteria(
+					taskId,
+					{ op: "set", selector: item.id ?? item.text, checked: true },
+					{ source: "brain" },
+				);
+			} catch (e) {
+				this.log.warn(
+					{ taskId, criterion: item.text, err: String(e) },
+					"could not tick a criterion the reviewer found met",
+				);
+			}
 		}
 	}
 
@@ -1272,116 +1428,6 @@ export class StepRunner {
 			questions: normalizeQuestions(obj?.questions),
 		};
 		return { parsed: true, plan };
-	}
-
-	/** Guarded: an entry whose exact title+source already exists is reused, so
-	 *  re-execution after a crash-between-effect-and-journal never duplicates.
-	 *  The created id map is journaled via finishStep after creation. */
-	private async createTasks(built: Built): Promise<unknown> {
-		const { run } = built;
-		const source =
-			run.kind === "plan"
-				? "planner"
-				: run.kind === "import"
-					? "importer"
-					: "split";
-		const entries =
-			run.kind === "plan" || run.kind === "import"
-				? (this.proposal(built)?.tasks ?? [])
-				: normalizePlanEntries(
-						foldReport(built.results.get("ingest_report"))?.subtasks,
-					);
-
-		const existing = await this.deps.tasks.list();
-		const byTitle = new Map<string, string>();
-		for (const t of existing) {
-			if (t.source === source) byTitle.set(t.title, t.id);
-		}
-		const knownIds = new Set(existing.map((t) => t.id));
-
-		/**
-		 * A plan run expanding a `draft` (`FinalizeCtx.isDraftExpand`) applies its
-		 * FIRST entry to that task in place (same id, so dependents keep working).
-		 * Remaining entries are created below; `ids[0]` is set before that loop so
-		 * `dependsOn` index 0 resolves to the expanded task.
-		 *
-		 * A human may archive the draft mid-run after the claim is gone. Check the
-		 * task's current status first: if it is gone or no longer `draft`, apply
-		 * and create nothing, rather than resurrect a discarded idea.
-		 */
-		const draftTaskId = run.kind === "plan" ? run.taskId : null;
-		const ids: string[] = [];
-		let rest = entries;
-		if (draftTaskId) {
-			const draftTask = await this.deps.tasks.get(draftTaskId);
-			if (draftTask?.status !== "draft") {
-				return { ids: [], skipped: "draft task no longer exists" };
-			}
-			if (entries.length > 0) {
-				const [first, ...tail] = entries;
-				const e = first as PlanEntry;
-				const expanded = await this.deps.tasks.applyDraftExpansion(
-					draftTaskId,
-					{
-						title: e.title,
-						body: e.body,
-						verification: e.verification,
-						criteria: e.criteria.map((text) => ({ text })),
-						owns: e.owns,
-						modelTier: e.modelTier,
-					},
-					this.deps.config.mergeChecks,
-				);
-				await this.deps.tasks.release(
-					draftTaskId,
-					run.id,
-					expanded.afterExpansion,
-					"brain",
-					"draft expansion completed",
-				);
-				ids.push(expanded.id);
-				byTitle.set(expanded.title, expanded.id);
-				knownIds.add(expanded.id);
-				rest = tail;
-			}
-		}
-
-		for (const e of rest) {
-			const prior = byTitle.get(e.title);
-			if (prior) {
-				ids.push(prior);
-				continue;
-			}
-			const dependsOn: string[] = [];
-			for (const ref of e.dependsOn) {
-				if (typeof ref === "number") {
-					const id = ids[ref];
-					if (id) dependsOn.push(id);
-					continue;
-				}
-				const sibling = byTitle.get(ref);
-				if (sibling) dependsOn.push(sibling);
-				else if (knownIds.has(ref)) dependsOn.push(ref);
-			}
-			const row = await this.deps.tasks.create({
-				title: e.title,
-				body: e.body ?? "",
-				dependsOn,
-				verification: e.verification,
-				criteria: e.criteria.map((text) => ({ text })),
-				owns: e.owns,
-				modelTier: e.modelTier,
-				source,
-				// Only an import may state a status (it describes existing work). Plans
-				// and splits go to `backlog` and through the DoR gate.
-				status: run.kind === "import" ? (e.status ?? "backlog") : "backlog",
-				parentId: run.kind === "task" ? run.taskId : null,
-			});
-			ids.push(row.id);
-			byTitle.set(e.title, row.id);
-			knownIds.add(row.id);
-		}
-		return { ids };
 	}
 
 	/**
@@ -1491,130 +1537,232 @@ export class StepRunner {
 	}
 
 	/**
-	 * Write the proposal's specs. Each spec becomes an `epic` container task in
-	 * the backlog (`ready_mode: manual`, empty body, so the DoR gate never runs
-	 * it) whose children, linked via `parent`, are the tasks it covers.
-	 *
-	 * Children resolve positionally like `depends_on` (index `2` = third task in
-	 * the proposal); an explicit id also works. A task that already has a parent
-	 * keeps it. An existing epic with the same title is reused so re-running
-	 * after a crash never duplicates.
+	 * T10Q: the agent's question becomes a clarification on its run (answering
+	 * it resumes a child in the same worktree), and the worktree pointer is kept
+	 * so housekeeping never collects the work the answer continues. Idempotent
+	 * by runId.
 	 */
-	private async createSpecs(built: Built): Promise<unknown> {
-		const entries = this.proposal(built)?.specs ?? [];
-		if (entries.length === 0) return { ids: [] };
-		const created = (
-			built.results.get("create_tasks") as { ids?: string[] } | undefined
-		)?.ids;
-		if (!created) {
-			// The machine never orders create_specs before create_tasks; fail loudly
-			// rather than write a container with a silently empty children list.
-			throw new Error("create_specs ran before create_tasks journaled its ids");
+	private async recordQuestion(built: Built): Promise<unknown> {
+		const { run } = built;
+		const question = foldReport(built.results.get("ingest_report"))?.question;
+		if (!question) return { count: 0 };
+		const text = question.options.length
+			? `${question.text}\n\nSuggested answers: ${question.options.join(" | ")}`
+			: question.text;
+		await this.deps.clarify.raise({
+			runId: run.id,
+			kind: "task",
+			goal: null,
+			questions: [text],
+		});
+		if (run.taskId && run.worktreePath && run.branch) {
+			await this.deps.tasks.recordPreservedWorktree(
+				run.taskId,
+				run.worktreePath,
+				run.branch,
+			);
 		}
-		const all = await this.deps.tasks.list();
-		const knownTaskIds = new Set(all.map((t) => t.id));
-		const containers = new Map<string, TaskWithRefs>(
-			all.filter((t) => t.type === "epic").map((t) => [t.title, t] as const),
-		);
-
-		const ids: string[] = [];
-		for (const e of entries) {
-			const childIds: string[] = [];
-			for (const ref of e.tasks) {
-				if (typeof ref === "number") {
-					const id = created[ref];
-					if (id) childIds.push(id);
-					continue;
-				}
-				if (knownTaskIds.has(ref)) childIds.push(ref);
-			}
-			let container = containers.get(e.title);
-			if (!container) {
-				container = await this.deps.tasks.create({
-					title: e.title,
-					type: "epic",
-					status: "backlog",
-					readyMode: "manual",
-					source: built.run.kind === "import" ? "importer" : "planner",
-				});
-				containers.set(e.title, container);
-			}
-			// Never overwrite: a human may have edited the spec since.
-			if (
-				e.body.trim() &&
-				!(await this.deps.tasks.getSpec(container.id))?.exists
-			) {
-				await this.deps.tasks.setSpec(container.id, e.body);
-			}
-			for (const childId of childIds) {
-				const child = await this.deps.tasks.get(childId);
-				if (child && child.parentId === null) {
-					await this.deps.tasks.edit(
-						childId,
-						{ parentId: container.id },
-						{ source: "brain" },
-					);
-				}
-			}
-			ids.push(container.id);
-		}
-		return { ids };
+		return { count: 1 };
 	}
 
 	/**
-	 * Persist the clarifying questions. Idempotent by runId (see ClarifyService).
+	 * The terminal that replaces every policy row (design §6.2): the run's
+	 * finalize ends here with a CLASS and the facts the brain decides from.
 	 *
-	 * Skipped when the draft opted out of human review (`requireReview === false`,
-	 * the default; the planner is told to decide, this is the backstop). The
-	 * plan from the same proposal still applies.
+	 *  - the task's claim is released to `ready` (a dirty worktree keeps its
+	 *    pointer so a `continue:` spawn can reuse it); a competing attempt
+	 *    leaves the group's claim alone;
+	 *  - the task is parked `awaiting_brain` (a hold, not a board status);
+	 *  - `run.settled{runId, taskId, groupId, class, facts}` is appended once
+	 *    (a replay finds it), which is what wakes the brain.
 	 *
-	 * Also skipped when the draft is gone or no longer a draft (archived after
-	 * its claim was released), which would otherwise leave an unanswerable Inbox item.
+	 * Nothing here decides repair, resume, split or escalation. The informational
+	 * stall counter and the review round number are bookkeeping, not policy.
 	 */
-	private async recordQuestions(built: Built): Promise<unknown> {
-		const { run } = built;
-		const questions = this.proposal(built)?.questions ?? [];
-		if (questions.length === 0) return { count: 0 };
-		if (run.kind === "plan" && run.taskId) {
-			const task = await this.deps.tasks.get(run.taskId);
-			if (task?.status !== "draft" || !task.requireReview) {
-				return { count: 0, skipped: true };
-			}
-		}
-		await this.deps.clarify.raise({
-			runId: run.id,
-			kind: run.kind === "import" ? "importer" : "planner",
-			goal: run.goal,
-			questions,
-		});
-		return { count: questions.length };
-	}
-
-	/** Guarded: the child run id is journaled before the spawn so a crash resumes with the same id (RunEngine's spawn is idempotent by child id). */
-	private async spawnChild(
+	private async settle(
 		built: Built,
-		step: "spawn_repair" | "spawn_resume",
+		d: Directive,
 		begin: BeginStepResult,
 	): Promise<unknown> {
-		const fn = step === "spawn_repair" ? this.spawnRepair : this.spawnResume;
-		if (!fn) throw new Error(`${step}: spawn hook not wired`);
-		const prior = (begin.result ??
-			(await this.deps.registry.journalGuard(built.run.id, step))) as {
-			childRunId?: string;
-		} | null;
-		const childRunId = prior?.childRunId ?? ulid();
-		const resumeOrdinal = built.ctx.resumeDecision?.ordinal;
-		await this.deps.registry.saveStepGuard(built.run.id, step, {
-			childRunId,
-			resumeOrdinal,
-		});
-		if (step === "spawn_resume" && built.run.taskId) {
-			if (resumeOrdinal === undefined)
-				throw new Error("spawn_resume requires a durable resume decision");
-			await this.deps.tasks.setResumeOrdinal(built.run.taskId, resumeOrdinal);
+		const cls = d.args?.settle;
+		if (!cls) throw new Error("settle: directive carries no class");
+		const { run, ctx } = built;
+		const competing = ctx.group?.competing === true;
+		const groupId = groupIdOf(run);
+		const taskId = run.taskId;
+
+		if (taskId && run.kind === "plan") {
+			// A plan run expanding a draft holds the draft's claim; the draft stays
+			// a draft and the brain applies the proposal with the board tools.
+			const held = await this.deps.tasks.get(taskId);
+			if (held && held.claimedByRunId === run.id) {
+				await this.deps.tasks.release(
+					taskId,
+					run.id,
+					"draft",
+					"scheduler",
+					`settled: ${cls}`,
+				);
+			}
+		} else if (taskId && !competing) {
+			const prior = begin.result as { counted?: boolean } | null;
+			if (!prior?.counted) {
+				await this.deps.registry.saveStepGuard(run.id, "settle", {
+					counted: true,
+				});
+				if (STALLING_CLASSES.has(cls)) await this.deps.tasks.bumpStall(taskId);
+				else await this.deps.tasks.clearStall(taskId);
+				if (cls === "review_fix") await this.deps.tasks.bumpReviewRound(taskId);
+			}
+			await this.releaseTask(built, {
+				kind: "step",
+				step: "release_task",
+				args: { to: "ready" },
+				row: d.row,
+			});
 		}
-		await fn(built.run.id, childRunId);
-		return { childRunId };
+
+		const facts = await this.settleFacts(built, cls);
+		await recordSettled(this.deps, {
+			runId: run.id,
+			taskId,
+			groupId,
+			class: cls,
+			facts,
+		});
+		return { class: cls, groupId, competing, counted: true };
+	}
+
+	/** The parsed proposal of a plan, import or draft-expansion run, capped. */
+	private proposalFacts(built: Built): Record<string, unknown> {
+		const plan = this.proposal(built);
+		if (!plan) return { parsed: false };
+		const MAX_TASKS = 40;
+		const cut = (v: string | undefined, n: number) =>
+			v ? v.slice(0, n) : undefined;
+		return {
+			parsed: true,
+			tasks: plan.tasks.slice(0, MAX_TASKS).map((t, i) => ({
+				index: i,
+				title: t.title.slice(0, 200),
+				...(cut(t.body, 600) ? { body: cut(t.body, 600) } : {}),
+				dependsOn: t.dependsOn,
+				criteria: t.criteria.slice(0, 10).map((c) => c.slice(0, 200)),
+				owns: t.owns,
+				...(t.status ? { status: t.status } : {}),
+				...(t.modelTier ? { modelTier: t.modelTier } : {}),
+				...(t.verification ? { verification: t.verification } : {}),
+			})),
+			...(plan.tasks.length > MAX_TASKS
+				? { truncatedTasks: plan.tasks.length - MAX_TASKS }
+				: {}),
+			specs: plan.specs.slice(0, 10).map((sp) => ({
+				title: sp.title.slice(0, 200),
+				body: sp.body.slice(0, 1200),
+				tasks: sp.tasks,
+			})),
+			questions: plan.questions.slice(0, 20).map((q) => q.slice(0, 300)),
+		};
+	}
+
+	/** What a settled run's journal says, trimmed to what a decision needs. */
+	private async settleFacts(
+		built: Built,
+		cls: SettleClass,
+	): Promise<Record<string, unknown>> {
+		const { run, results, ctx } = built;
+		const classify = results.get("classify") as ClassifyResult | undefined;
+		const verifyRes = results.get("verify") as
+			| {
+					passed?: boolean;
+					crashed?: boolean;
+					checks?: {
+						check: string;
+						ok: boolean;
+						detail?: string;
+						classification?: string;
+					}[];
+			  }
+			| undefined;
+		const scope = results.get("scope_check") as ScopeCheckResult | undefined;
+		const critic = results.get("critic") as CriticResult | undefined;
+		const archive = results.get("archive_wip") as ArchiveWipResult | undefined;
+		const report = foldReport(results.get("ingest_report"));
+		const raw =
+			typeof report?.raw === "object" && report.raw !== null
+				? (report.raw as Record<string, unknown>)
+				: null;
+		const str = (v: unknown, n: number) =>
+			typeof v === "string" && v.trim() ? v.trim().slice(0, n) : undefined;
+		const failing = (verifyRes?.checks ?? []).filter((c) => !c.ok).slice(0, 5);
+		return {
+			class: cls,
+			attempt: run.attempt,
+			outcome: classify?.outcome ?? run.outcome ?? null,
+			exitCode: classify?.exitCode ?? run.exitCode ?? null,
+			...(classify?.killReason ? { killReason: classify.killReason } : {}),
+			branch: run.branch,
+			worktree: run.worktreePath,
+			...(ctx.task && !verifyRes && ctx.task.exitCode !== 0
+				? { noChecks: true }
+				: {}),
+			...(verifyRes
+				? {
+						verify: {
+							passed: verifyRes.passed === true,
+							crashed: verifyRes.crashed === true,
+							failing: failing.map((c) => ({
+								check: c.check,
+								...(c.classification
+									? { classification: c.classification }
+									: {}),
+								tail: (c.detail ?? "").slice(-300),
+							})),
+						},
+					}
+				: {}),
+			...(scope
+				? {
+						scope: {
+							files: scope.files,
+							outside: scope.outside,
+							outsideFiles: scope.outsideFiles.slice(0, 10),
+						},
+					}
+				: {}),
+			...(critic
+				? {
+						review: {
+							status: critic.status,
+							verdict: critic.verdict ?? null,
+							round: critic.round ?? null,
+							...(critic.cause ? { cause: critic.cause } : {}),
+							...(critic.reason ? { reason: critic.reason.slice(0, 300) } : {}),
+							findings: (critic.findings ?? []).slice(0, 8).map((f) => ({
+								severity: f.severity,
+								file: f.file,
+								change: f.change.slice(0, 200),
+							})),
+						},
+					}
+				: {}),
+			...(archive?.ref ? { archivedRef: archive.ref } : {}),
+			...(cls === "plan_output" ? { proposal: this.proposalFacts(built) } : {}),
+			...(report
+				? {
+						report: {
+							escalation: report.escalation,
+							...(str(raw?.status, 80) ? { status: str(raw?.status, 80) } : {}),
+							...(str(raw?.summary, 400)
+								? { summary: str(raw?.summary, 400) }
+								: {}),
+							...(report.question
+								? { question: report.question.text.slice(0, 400) }
+								: {}),
+						},
+					}
+				: {}),
+		};
 	}
 
 	/** Idempotent by runId (merge_jobs UNIQUE), the queue upserts. */
@@ -1639,6 +1787,24 @@ export class StepRunner {
 		const { run } = built;
 		const to = (d.args?.to ?? "ready") as TaskStatus;
 		if (!run.taskId) return { released: false, detail: "run has no task" };
+		// A human who stopped this run and moved its task (`tasks.move` with
+		// `cancelRun`) already released the claim: their destination wins. An
+		// unclaimed task still in a run-held status, or already at `to` (a
+		// replayed step), is released as usual.
+		const current = await this.deps.tasks.get(run.taskId);
+		if (
+			current &&
+			current.claimedByRunId === null &&
+			current.status !== to &&
+			!RUN_HELD_STATUSES.has(current.status)
+		) {
+			return {
+				released: false,
+				to: current.status,
+				detail:
+					"claim already released; the task keeps the status it was moved to",
+			};
+		}
 		const terminal = this.simulateTerminal(built.ctx);
 		const reason = terminal?.note ?? terminal?.state ?? `finalize ${d.row}`;
 		// Resume-not-restart: a dirty worktree going back to ready keeps its
@@ -1659,62 +1825,82 @@ export class StepRunner {
 			);
 		}
 		await this.deps.tasks.release(run.taskId, run.id, to, "scheduler", reason);
-		if (to === "blocked") {
-			await this.raiseBlockedSession(built, reason).catch((e) => {
-				this.deps.log.warn(
-					{ err: e, taskId: run.taskId },
-					"could not raise a session for the blocked task",
-				);
-			});
-		}
 		return { released: true, to, reason };
 	}
 
-	/** Every row releasing to `blocked` has exhausted automatic recovery (T4, T10, T18, T24); the brief is the same whichever fired. */
-	private async raiseBlockedSession(
-		built: Built,
-		reason: string,
-	): Promise<void> {
-		const taskId = built.run.taskId;
-		if (!this.deps.sessions || !taskId) return;
-		const { run, ctx } = built;
-		// The verify tail is not gathered here; `SessionService.compose()` pulls it from the journal via `runId`.
-		const tried: string[] = [
-			`attempt ${run.attempt} of ${run.maxRepairs ?? "an unlimited number of"} allowed repairs`,
-		];
-		if (ctx.task) {
-			tried.push(
-				`stalled ${ctx.task.stallCount} of ${ctx.task.maxStalls} allowed times`,
-				`resumed ${ctx.task.resumeCount} of ${ctx.task.maxResumes} allowed times`,
-			);
-		}
-		const hypothesis =
-			ctx.replan?.status === "ok" && ctx.replan.action
-				? `the brain's last opinion on this task was "${ctx.replan.action}": that is why it stopped repairing rather than trying again`
-				: ctx.replan?.status === "failed"
-					? "the brain's own replan call failed: there is no brain opinion to weigh here, only the fixed repair budget above"
-					: "the brain was not consulted for this task (disabled, or the repair budget ran out before it would have been asked)";
-		await this.deps.sessions.raise({
-			source: "blocked",
-			sourceKey: taskId,
-			taskId,
-			runId: run.id,
-			title: `blocked: ${taskId}`,
-			summary: reason,
-			whatWasTried: tried,
-			environment:
-				"This ran in an isolated git worktree off the integration branch, " +
-				"possibly sandboxed: not the shell you are reading this in. The " +
-				"worktree path above (if still present) has the exact state mfw " +
-				"stopped in; nothing has touched it since.",
-			hypothesis,
-		} satisfies RaiseInput);
+	/**
+	 * Save a scope-killed run's work to `wip/<task>-<run>` before T4s
+	 * force-removes the worktree. A throw fails the step, so nothing removes
+	 * the worktree until the snapshot is journaled.
+	 */
+	private async archiveWip(built: Built): Promise<ArchiveWipResult> {
+		const { run } = built;
+		if (!run.branch || !run.baseSha) return { ref: null, sha: null };
+		const archive = await new WorktreeManager(this.deps.projectRoot).archiveWip(
+			{
+				// No worktree: archiveWip saves the branch tip instead.
+				path: run.worktreePath ?? join(this.deps.projectRoot, ".mfw", "none"),
+				branch: run.branch,
+				baseSha: run.baseSha,
+			},
+			{ runId: run.id, taskId: run.taskId },
+		);
+		const stored = await this.deps.handle.withTx((tx) =>
+			appendEvent(tx, {
+				type: "run.wip_archived",
+				runId: run.id,
+				...(run.taskId ? { taskId: run.taskId } : {}),
+				payload: {
+					ref: archive?.ref ?? null,
+					sha: archive?.sha ?? null,
+					actor: "scheduler",
+					reason: built.ctx.killReason ?? "scope watchdog",
+				},
+			}),
+		);
+		this.deps.bus.publish([stored]);
+		return { ref: archive?.ref ?? null, sha: archive?.sha ?? null };
 	}
 
-	private async bumpStall(built: Built): Promise<unknown> {
-		if (!built.run.taskId) return { skipped: true };
-		const stallCount = await this.deps.tasks.bumpStall(built.run.taskId);
-		return { stallCount };
+	/**
+	 * Finish-time scope fact (T12s): what the run changed since its base,
+	 * against its task's own `owns`. Reads the worktree when it is still here,
+	 * else the branch.
+	 */
+	private async scopeCheck(built: Built): Promise<ScopeCheckResult> {
+		const { run, task } = built;
+		const owns = task?.owns ?? [];
+		let files: string[] = [];
+		const wt = run.worktreePath;
+		const present =
+			wt !== null &&
+			(await access(wt).then(
+				() => true,
+				() => false,
+			));
+		if (present && wt && run.baseSha) {
+			files = (await changedFiles(wt, run.baseSha)).files;
+		} else if (run.branch && run.baseSha) {
+			const diff = await git(
+				[
+					"diff",
+					"--name-only",
+					"--no-renames",
+					"-z",
+					`${run.baseSha}..${run.branch}`,
+				],
+				this.deps.projectRoot,
+			);
+			if (diff.exitCode !== 0)
+				throw new Error(`could not list the run's changes: ${diff.stderr}`);
+			files = diff.stdout.split("\0").filter(Boolean);
+		}
+		const outside = filesOutsideOwns(owns, files);
+		return {
+			files: files.length,
+			outside: outside.length,
+			outsideFiles: outside.slice(0, 20),
+		};
 	}
 
 	private async clearStall(built: Built): Promise<unknown> {
@@ -1783,11 +1969,16 @@ export class StepRunner {
 	}
 
 	private async notifyStep(built: Built, d: Directive): Promise<unknown> {
-		const reason = d.args?.reason ?? "attention";
+		const reason = d.args?.reason ?? "blocked";
+		const scopeNote =
+			reason === "scope_violation"
+				? this.simulateTerminal(built.ctx)?.note
+				: undefined;
 		try {
 			await this.deps.notifier.notify(reason, {
 				runId: built.run.id,
 				...(built.run.taskId ? { taskId: built.run.taskId } : {}),
+				...(scopeNote ? { message: scopeNote } : {}),
 			});
 		} catch (e) {
 			// best-effort: notify is re-send-acceptable; losing a ping must not

@@ -304,6 +304,16 @@ const frontmatterSchema = z.object({
 	owns: nullish(OwnsSchema.default([])),
 	/** Model class for the run; null = the project model. */
 	model_tier: nullish(z.enum(MODEL_TIERS).nullable().default(null)),
+	/** Routing pin: a harness (`claude-cli`, `codex-cli`) or a project endpoint id. */
+	provider: nullish(
+		z
+			.string()
+			.regex(/^[A-Za-z0-9_-]+$/)
+			.nullable()
+			.default(null),
+	),
+	/** Routing pin: an exact model id. */
+	model: nullish(z.string().min(1).nullable().default(null)),
 	/** The task whose run discovered this follow-up. */
 	discovered_from: nullish(z.string().nullable().default(null)),
 	/** Immutable follow-up replay identity. */
@@ -341,6 +351,8 @@ export interface TaskFrontmatter {
 	capture_id?: string | null;
 	owns: string[];
 	model_tier: ModelTier | null;
+	provider?: string | null;
+	model?: string | null;
 	discovered_from: string | null;
 	discovery_key?: string | null;
 	reopen_when: ReopenCondition[];
@@ -653,6 +665,8 @@ function frontmatterObject(
 	if (fm.capture_id != null) out.capture_id = fm.capture_id;
 	if (fm.owns.length > 0) out.owns = fm.owns;
 	if (fm.model_tier !== null) out.model_tier = fm.model_tier;
+	if (fm.provider != null) out.provider = fm.provider;
+	if (fm.model != null) out.model = fm.model;
 	if (fm.discovered_from !== null) out.discovered_from = fm.discovered_from;
 	if (fm.discovery_key != null) out.discovery_key = fm.discovery_key;
 	if (fm.reopen_when.length > 0) out.reopen_when = fm.reopen_when;

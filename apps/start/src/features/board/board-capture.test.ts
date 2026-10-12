@@ -19,7 +19,9 @@ describe("mobile quick capture", () => {
 			/onSuccess: \(task\) => \{([\s\S]*?)\n\t\t\t\},\n\t\t\}\),/,
 		)?.[1];
 
-		expect(successFlow).toContain("setMobileStatus(task.status)");
+		// The captured task's column (by role), not a hardcoded status.
+		expect(successFlow).toContain("setMobileStatus(");
+		expect(successFlow).toContain("c.role === task.status");
 		expect(successFlow).not.toContain("setCollapsedColumns");
 		expect(successFlow).not.toContain("writeCollapsedColumns");
 		expect(source).toContain("It will move to ready after expansion.");
@@ -34,15 +36,13 @@ describe("mobile quick capture", () => {
 	});
 
 	test("draft expansion state and safe moves are visible", () => {
-		expect(source).toContain(
-			'task.status === "draft" ? "expanding" : "working"',
-		);
+		// A draft's live run reads "expanding" in the card's agent strip
+		// (CardAgentStrip.test.tsx); the move rules live in columns.test.ts.
+		expect(source).toContain('isDraft={task.status === "draft"}');
 		expect(source).toContain("draftPhaseLabel(task.draftPhase");
 		expect(source).toContain("task.afterExpansion");
 		expect(source).toContain("draggable={draggable && !locked}");
-		expect(source).toContain(
-			'task.status !== "draft" || status === "archived"',
-		);
+		expect(source).toContain("dropVerdict(c, task).ok");
 		expect(source).toContain("Questions · action required");
 		expect(source).toContain(
 			'owned || task.draftPhase === "waiting_for_answers"',
@@ -66,7 +66,7 @@ describe("mobile quick capture", () => {
 		expect(source).toContain("function ColumnMoveControls");
 		expect(source).toContain("trpc.tasks.moveMany.mutationOptions");
 		expect(source).toContain("Move all shown tasks to");
-		expect(source).toContain("Expansion moves Drafts");
+		expect(source).toContain("bulkMoveTarget(column, next");
 		expect(source).toContain('confirmLabel="Move all"');
 	});
 
@@ -79,16 +79,14 @@ describe("mobile quick capture", () => {
 		expect(header).toContain("compact");
 		expect(header).toContain('size="icon-xs"');
 		expect(source).toContain('size={compact ? "icon-xs" : "xs"}');
-		expect(source).toContain(
-			'compact ? "ml-auto flex gap-1" : "grid grid-cols-2 gap-1"',
-		);
+		expect(source).toContain('cn("flex gap-1", !vertical && "ml-auto")');
 	});
 
 	test("human controls cannot manufacture an unclaimed In progress task", () => {
-		expect(source).toContain('acceptsDrop={status !== "in_progress"}');
-		expect(source).toContain('previous !== "in_progress"');
-		expect(source).toContain('next !== "in_progress"');
-		expect(source).toContain('status !== "in_progress" &&');
-		expect(source).toContain("Tasks enter In progress when a run starts");
+		// Every drop, bulk move and phone move goes through the one rule
+		// (columns.ts, tested in columns.test.ts), which names its reason.
+		expect(source).toContain("dropVerdict(column, task)");
+		expect(source).toContain("bulkMoveTarget(column, previous");
+		expect(source).toContain("dropVerdict(c, task).ok");
 	});
 });

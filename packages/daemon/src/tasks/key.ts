@@ -11,9 +11,9 @@ import { parse as parseYaml } from "yaml";
  * mismatched key silently quarantines every existing file. So it is discovered,
  * in order of authority:
  *
- *   1. `.mfw/state/board.json`
- *   2. `.mfw/config.yaml` `taskKey`
- *   3. the ids on the board
+ *   1. `<repo>/.mfw/state/board.json`
+ *   2. `<repo>/.mfw/config.yaml` `taskKey`
+ *   3. the ids on the board (`<board folder>/tasks/`)
  *   4. the directory name (new project)
  *
  * The winner is written back to `board.json` so it stays stable if the
@@ -47,8 +47,8 @@ async function fromConfig(mfwDir: string): Promise<string | null> {
 }
 
 /** The most common id prefix among the files on the board. */
-async function fromExistingFiles(mfwDir: string): Promise<string | null> {
-	const tasksDir = join(mfwDir, "tasks");
+async function fromExistingFiles(boardDir: string): Promise<string | null> {
+	const tasksDir = join(boardDir, "tasks");
 	const counts = new Map<string, number>();
 	let names: string[];
 	try {
@@ -78,11 +78,12 @@ async function fromExistingFiles(mfwDir: string): Promise<string | null> {
 export async function resolveTaskKey(
 	mfwDir: string,
 	projectRoot: string,
+	boardDir: string = mfwDir,
 ): Promise<string> {
 	const key =
 		(await fromBoardState(mfwDir)) ??
 		(await fromConfig(mfwDir)) ??
-		(await fromExistingFiles(mfwDir)) ??
+		(await fromExistingFiles(boardDir)) ??
 		deriveKey(basename(projectRoot));
 
 	// Persist, merging so the counters written by the store survive.

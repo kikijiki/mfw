@@ -17,6 +17,7 @@ export const eventsRouter = createTRPCRouter({
 				limit: z.number().int().positive().max(200).default(100),
 				types: z.array(z.string()).optional(),
 				taskId: z.string().optional(),
+				runId: z.string().optional(),
 			}),
 		)
 		.query(({ ctx, input }) => ctx.svc.events.list(input)),

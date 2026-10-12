@@ -15,8 +15,10 @@ import {
 	type AdmissionTransition,
 	InjectedAdmissionCrashError,
 } from "../src/project-dispatch-admission.ts";
+import { REFUSAL_FIXES, refusalFix } from "../src/refusal-fix.ts";
 import type { ProjectServices } from "../src/services.ts";
 import { TaskOwnershipHeldError } from "../src/tasks/index.ts";
+import { brainSpawn, STUB_BRAIN } from "./support/brain-spawn.ts";
 
 const roots: string[] = [];
 const orchestrators: Awaited<ReturnType<typeof boot>>[] = [];
@@ -61,12 +63,11 @@ function config(name: string, root: string): ProjectConfig {
 		root,
 		integrationBranch: "main",
 		maxConcurrent: 4,
-		maxRepairs: 0,
 		assistance: {
-			failureDiagnosis: "escalate",
-			conflictResolution: "escalate",
 			changeReview: "human",
 		},
+		// A route that never wakes: tests spawn as the brain would.
+		brain: STUB_BRAIN,
 	};
 }
 
@@ -208,6 +209,52 @@ function projectSlotOwner(service: ProjectServices) {
 	).deps.projectSlots;
 }
 
+describe("every refusal carries its exact fix", () => {
+	test("each refusal code has a specific, non-empty fix", () => {
+		const generic = refusalFix("no-such-code", ["r"]).text;
+		expect(generic.length).toBeGreaterThan(0);
+		for (const code of Object.keys(REFUSAL_FIXES)) {
+			const fix = refusalFix(code, ["r"]);
+			expect(fix.text.length).toBeGreaterThan(0);
+			expect(fix.text).not.toBe(generic);
+		}
+	});
+});
+
+describe("dispatch preflight refuses early, with the fix, before any claim", () => {
+	test("a host below the memory floor holds the task without claiming it", async () => {
+		const orchestrator = await startFixture(["demo"]);
+		const service = orchestrator.get("demo");
+		(
+			service.engine as unknown as {
+				deps: { preflight: Record<string, unknown> };
+			}
+		).deps.preflight = {
+			memoryFloorBytes: 1024n << 20n,
+			memAvailableBytes: async () => 100n << 20n,
+		};
+		const task = await service.tasks.create({ title: "starved" });
+		await service.tasks.move(task.id, "ready", "human");
+
+		const refused = await service.engine.startTask(task.id).catch((e) => e);
+
+		expect(refused).toBeInstanceOf(AdmissionHeldError);
+		expect(refused).toMatchObject({
+			code: "memory_floor",
+			fix: {
+				kind: "setting",
+				text: expect.stringContaining("minFreeMemoryMb"),
+			},
+		});
+		expect((await service.tasks.get(task.id))?.claimedByRunId).toBeNull();
+		expect(await service.registry.list({ taskId: task.id })).toEqual([]);
+		expect((await admissions(service))[0]).toMatchObject({
+			state: "waiting_host",
+			holdCode: "memory_floor",
+		});
+	});
+});
+
 describe("project-to-host task admission", () => {
 	test("two projects share exact RAM quota/headroom without partial local acquisition", async () => {
 		const orchestrator = await startFixture(["alpha", "beta"]);
@@ -227,6 +274,7 @@ describe("project-to-host task admission", () => {
 				],
 			});
 			await service.tasks.move(task.id, "ready", "human");
+			await brainSpawn(service, task.id);
 		}
 		const stats = await Promise.all(
 			services.map((service) => service.scheduler.tick()),
@@ -254,6 +302,13 @@ describe("project-to-host task admission", () => {
 			(event) => event.type === "task.held_for_resource",
 		).length;
 		expect(heldAfter).toBe(heldBefore);
+		const held = (await loser.handle.db.select().from(events)).find(
+			(event) => event.type === "task.held_for_resource",
+		);
+		expect(held?.payload).toMatchObject({
+			code: "headroom-exhausted",
+			fix: { kind: "ui", text: expect.stringContaining("Free memory") },
+		});
 	});
 
 	test("accounting/unit mismatches hold before claim or durable host allocation", async () => {
@@ -276,6 +331,7 @@ describe("project-to-host task admission", () => {
 			await service.tasks.move(task.id, "ready", "human");
 			await expect(service.engine.startTask(task.id)).rejects.toMatchObject({
 				code: "invalid_amount",
+				fix: { text: expect.stringContaining("requires_resources") },
 			});
 			expect(await service.registry.list({ taskId: task.id })).toEqual([]);
 		}
@@ -336,10 +392,12 @@ describe("project-to-host task admission", () => {
 			alpha.resources.register({ id: "serial", maxConcurrent: 1 }),
 			beta.resources.register({ id: "serial", maxConcurrent: 1 }),
 		]);
-		await Promise.all([
+		const [alphaTask, betaTask] = await Promise.all([
 			hostTask(alpha, "alpha task"),
 			hostTask(beta, "beta task"),
 		]);
+		await brainSpawn(alpha, alphaTask.id);
+		await brainSpawn(beta, betaTask.id);
 
 		const stats = await Promise.all([
 			alpha.scheduler.tick(),
@@ -447,7 +505,14 @@ describe("project-to-host task admission", () => {
 				.readModel()
 				.leases.filter((lease) => lease.state !== "released"),
 		).toEqual([]);
-		expect(await service.admission.issues()).toHaveLength(3);
+		const issues = await service.admission.issues();
+		expect(issues).toHaveLength(3);
+		for (const issue of issues)
+			expect(issue.fix.text.length).toBeGreaterThan(0);
+		expect(
+			(await service.inbox.list()).find((item) => item.kind === "admission")
+				?.fix,
+		).toBeTruthy();
 	});
 
 	test("manual Run uses the same admission fence while retaining queue-policy bypass", async () => {
@@ -815,16 +880,40 @@ describe("project-to-host task admission", () => {
 		});
 	});
 
-	test("repair lineage releases the parent fence and reacquires capacity for the child", async () => {
+	test("a continue: spawn releases the settled parent's fence and reacquires capacity for the child", async () => {
 		const orchestrator = await startFixture(["demo"]);
 		await orchestrator.hostResources.putDefinition(slotDefinition("gpu"));
 		const service = orchestrator.get("demo");
 		await service.resources.register({ id: "serial", maxConcurrent: 1 });
-		const task = await hostTask(service, "repair lineage");
+		const task = await hostTask(service, "continue lineage");
 		const parent = await service.engine.startTask(task.id);
+		const parentRow = await service.registry.get(parent.runId);
+		if (!parentRow?.worktreePath) throw new Error("parent has no worktree");
+		// Work in the worktree, so it survives finalization for the continuation.
+		await writeFile(join(parentRow.worktreePath, "wip.txt"), "work\n");
+		await service.engine.stop(parent.runId);
+		for (let i = 0; i < 40; i++) {
+			await service.supervisor.pass();
+			const row = await service.registry.get(parent.runId);
+			if (
+				row &&
+				["killed", "failed", "completed", "interrupted"].includes(row.state)
+			)
+				break;
+			await Bun.sleep(100);
+		}
+		expect((await service.tasks.get(task.id))?.claimedByRunId).toBeNull();
 		const childRunId = ulid();
 
-		await service.engine.startRepair(parent.runId, childRunId);
+		await service.engine.startGroupRun({
+			runId: childRunId,
+			taskId: task.id,
+			groupId: childRunId,
+			groupKind: "single",
+			role: "implement",
+			actionId: "act-continue",
+			worktree: { mode: "continue", runId: parent.runId },
+		});
 
 		const leases = orchestrator.hostResources.readModel().leases;
 		expect(
@@ -835,7 +924,10 @@ describe("project-to-host task admission", () => {
 		);
 		expect(await service.scheduler.heldSlots(parent.runId)).toEqual([]);
 		expect(await service.scheduler.heldSlots(childRunId)).toHaveLength(1);
-		expect((await service.tasks.get(task.id))?.claimedByRunId).toBe(childRunId);
+		const child = await service.registry.get(childRunId);
+		expect(child?.parentRunId).toBe(parent.runId);
+		expect(child?.relation).toBe("continue");
+		expect(child?.worktreePath).toBe(parentRow.worktreePath);
 	});
 
 	test("restart compensates an activated pre-launch lease before dispatch resumes", async () => {

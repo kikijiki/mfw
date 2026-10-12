@@ -1,3 +1,6 @@
+import { recordHumanAction } from "@mfw/daemon/human-actions";
+import { RoutingError, resolveProviderRef } from "@mfw/daemon/routing";
+import type { ProjectServices } from "@mfw/daemon/services";
 import { TaskClaimedError } from "@mfw/daemon/task-service";
 import {
 	LocalStagingResourceRequirementSchema,
@@ -33,10 +36,102 @@ const creatableStatusEnum = z.enum([
 	"archived",
 ]);
 
+/** Routing pin: a harness (`claude-cli`, `codex-cli`) or a project endpoint id; null clears. */
+const providerPin = z
+	.string()
+	.regex(/^[A-Za-z0-9_-]+$/)
+	.nullish();
+/** Routing pin: an exact model id; null clears. */
+const modelPin = z.string().trim().min(1).nullish();
+
+/** Refuse a provider pin the project cannot route, with the fix, before anything is written. */
+async function assertRoutable(
+	svc: ProjectServices,
+	provider: string | null | undefined,
+): Promise<void> {
+	if (!provider) return;
+	const { values } = await svc.settings.get();
+	try {
+		resolveProviderRef(provider, values.routing);
+	} catch (e) {
+		if (e instanceof RoutingError)
+			throw new TRPCError({ code: "BAD_REQUEST", message: e.message });
+		throw e;
+	}
+}
+
+type MoveInput = {
+	id: string;
+	to: z.infer<typeof statusEnum>;
+	reason?: string | undefined;
+	cancelRun?: boolean | undefined;
+	discard?: boolean | undefined;
+};
+
+/** The guarded human move, with the cancel-run escape. */
+async function moveTask(svc: ProjectServices, input: MoveInput) {
+	try {
+		return await svc.tasks.move(input.id, input.to, "human", input.reason, {
+			discard: input.discard,
+		});
+	} catch (e) {
+		if (!(e instanceof TaskClaimedError) || !input.cancelRun) throw e;
+		// Stopping a run that already committed work and closing its task
+		// would strand that work: refuse before killing anything.
+		await svc.tasks.assertClosable(input.id, input.to);
+		try {
+			await svc.engine.stop(e.runId);
+		} catch (stopErr) {
+			// Best-effort: the run may already be dead; the claim is cleared anyway.
+			svc.log.warn(
+				{ err: stopErr, runId: e.runId, taskId: input.id },
+				"cancelRun: engine.stop failed, releasing the claim anyway",
+			);
+		}
+		svc.supervisor.wake(); // finalize promptly, never inline
+		const released = await svc.tasks.release(
+			input.id,
+			e.runId,
+			input.to,
+			"human",
+			input.reason,
+		);
+		// Claim was reassigned since the guard (a resume): re-run the guarded
+		// move so a live claim surfaces as a conflict.
+		return (
+			released ??
+			(await svc.tasks.move(input.id, input.to, "human", input.reason))
+		);
+	}
+}
+
+/** One acceptance criterion; `id` is the checklist item id as read (omit for a new item). */
 const criterionInput = z.object({
+	id: z.string().min(1).optional(),
 	text: z.string().min(1),
 	checked: z.boolean().default(false),
 });
+
+/** One operation on the acceptance checklist; a selector is an item id or a unique text prefix. */
+const criteriaOpInput = z.discriminatedUnion("op", [
+	z.object({
+		op: z.literal("add"),
+		text: z.string().min(1),
+		checked: z.boolean().optional(),
+	}),
+	z.object({ op: z.literal("toggle"), selector: z.string().min(1) }),
+	z.object({ op: z.literal("remove"), selector: z.string().min(1) }),
+	z.object({
+		op: z.literal("set"),
+		selector: z.string().min(1),
+		checked: z.boolean(),
+	}),
+	z.object({
+		op: z.literal("edit"),
+		selector: z.string().min(1),
+		text: z.string().min(1),
+	}),
+]);
 
 /** Shared core schema: the parser, verifier and this endpoint all validate against it. */
 const verificationInput = VerificationPlanSchema.nullable();
@@ -92,18 +187,31 @@ export const tasksRouter = createTRPCRouter({
 				requireReview: z.boolean().default(false),
 				owns: OwnsSchema.default([]),
 				modelTier: z.enum(MODEL_TIERS).nullish(),
+				provider: providerPin,
+				model: modelPin,
 				reopenWhen: z.array(ReopenConditionSchema).default([]),
 				/** Usually omitted (backlog, through the DoR gate); lets a human file straight into `ready`. */
 				status: creatableStatusEnum.optional(),
 			}),
 		)
-		.mutation(({ ctx, input }) =>
-			ctx.svc.tasks.create({
+		.mutation(async ({ ctx, input }) => {
+			await assertRoutable(ctx.svc, input.provider);
+			const created = await ctx.svc.tasks.create({
 				...input,
 				readyMode: input.status === "backlog" ? "manual" : "automatic",
 				source: "human",
-			}),
-		),
+			});
+			await recordHumanAction(ctx.svc, {
+				action: "tasks.create",
+				taskId: created.id,
+				input: {
+					title: input.title,
+					type: input.type,
+					...(input.status ? { status: input.status } : {}),
+				},
+			});
+			return created;
+		}),
 
 	/** Quick capture: one line in, a `draft` card out with no LLM call. Expansion runs async with bounded retries; the raw text is kept as `draftPrompt`. */
 	captureQuick: projectProcedure
@@ -116,14 +224,20 @@ export const tasksRouter = createTRPCRouter({
 				requestId: z.string().min(1).max(128).optional(),
 			}),
 		)
-		.mutation(({ ctx, input }) =>
-			ctx.svc.tasks.captureQuick(
+		.mutation(async ({ ctx, input }) => {
+			const captured = await ctx.svc.tasks.captureQuick(
 				input.text,
 				input.requestId,
 				input.afterExpansion,
 				input.requireReview,
-			),
-		),
+			);
+			await recordHumanAction(ctx.svc, {
+				action: "tasks.capture",
+				taskId: captured.id,
+				input: { afterExpansion: input.afterExpansion },
+			});
+			return captured;
+		}),
 
 	/** `baseRev` is the optimistic-concurrency token; omitting it is last-write-wins. The UI always sends it so concurrent edits raise CONFLICT. */
 	update: projectProcedure
@@ -154,12 +268,40 @@ export const tasksRouter = createTRPCRouter({
 					afterExpansion: z.enum(["backlog", "ready"]).optional(),
 					owns: OwnsSchema.optional(),
 					modelTier: z.enum(MODEL_TIERS).nullish(),
+					provider: providerPin,
+					model: modelPin,
 					reopenWhen: z.array(ReopenConditionSchema).optional(),
 				}),
 			}),
 		)
+		.mutation(async ({ ctx, input }) => {
+			await assertRoutable(ctx.svc, input.patch.provider);
+			const edited = await ctx.svc.tasks.edit(input.id, input.patch, {
+				baseRev: input.baseRev,
+				source: "api",
+			});
+			await recordHumanAction(ctx.svc, {
+				action: "tasks.update",
+				taskId: input.id,
+				input: {
+					fields: Object.keys(input.patch),
+					...(input.baseRev !== undefined ? { baseRev: input.baseRev } : {}),
+				},
+			});
+			return edited;
+		}),
+
+	/** One acceptance checklist operation, applied under the task's lock (concurrent toggles both land). A board rule that refuses it is `PRECONDITION_FAILED`, listing the violations. */
+	criteria: projectProcedure
+		.input(
+			z.object({
+				id: z.string(),
+				baseRev: z.number().int().optional(),
+				op: criteriaOpInput,
+			}),
+		)
 		.mutation(({ ctx, input }) =>
-			ctx.svc.tasks.edit(input.id, input.patch, {
+			ctx.svc.tasks.editCriteria(input.id, input.op, {
 				baseRev: input.baseRev,
 				source: "api",
 			}),
@@ -173,42 +315,23 @@ export const tasksRouter = createTRPCRouter({
 				to: statusEnum,
 				reason: z.string().optional(),
 				cancelRun: z.boolean().optional(),
+				/** Closing (done/archived) over unmerged work: save it to `wip/` and remove the branch instead of refusing with `TaskUnmergedError`. */
+				discard: z.boolean().optional(),
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
-			try {
-				return await ctx.svc.tasks.move(
-					input.id,
-					input.to,
-					"human",
-					input.reason,
-				);
-			} catch (e) {
-				if (!(e instanceof TaskClaimedError) || !input.cancelRun) throw e;
-				try {
-					await ctx.svc.engine.stop(e.runId);
-				} catch (stopErr) {
-					// Best-effort: the run may already be dead; the claim is cleared anyway.
-					ctx.svc.log.warn(
-						{ err: stopErr, runId: e.runId, taskId: input.id },
-						"cancelRun: engine.stop failed, releasing the claim anyway",
-					);
-				}
-				ctx.svc.supervisor.wake(); // finalize promptly, never inline
-				const released = await ctx.svc.tasks.release(
-					input.id,
-					e.runId,
-					input.to,
-					"human",
-					input.reason,
-				);
-				// Claim was reassigned since the guard (a resume): re-run the guarded
-				// move so a live claim surfaces as a conflict.
-				return (
-					released ??
-					(await ctx.svc.tasks.move(input.id, input.to, "human", input.reason))
-				);
-			}
+			const moved = await moveTask(ctx.svc, input);
+			await recordHumanAction(ctx.svc, {
+				action: "tasks.move",
+				taskId: input.id,
+				reason: input.reason ?? null,
+				input: {
+					to: input.to,
+					...(input.cancelRun ? { cancelRun: true } : {}),
+					...(input.discard ? { discard: true } : {}),
+				},
+			});
+			return moved;
 		}),
 
 	/** Moves a column's cards through the guarded transition path; `from` stops a stale screen moving cards that changed state. */
@@ -220,9 +343,22 @@ export const tasksRouter = createTRPCRouter({
 				to: statusEnum,
 			}),
 		)
-		.mutation(({ ctx, input }) =>
-			ctx.svc.tasks.moveMany(input.ids, input.from, input.to, "human"),
-		),
+		.mutation(async ({ ctx, input }) => {
+			const result = await ctx.svc.tasks.moveMany(
+				input.ids,
+				input.from,
+				input.to,
+				"human",
+			);
+			for (const id of result.moved) {
+				await recordHumanAction(ctx.svc, {
+					action: "tasks.move",
+					taskId: id,
+					input: { from: input.from, to: input.to, bulk: true },
+				});
+			}
+			return result;
+		}),
 
 	/** Approval goes through the merge queue, the single serialized path to the integration branch. */
 	approve: projectProcedure
@@ -251,18 +387,17 @@ export const tasksRouter = createTRPCRouter({
 			return { queued: true };
 		}),
 
-	/** The reason is required: it feeds the repair prompt. */
+	/** The reason is required: it feeds the next run's prompt. */
 	reject: projectProcedure
 		.input(z.object({ id: z.string(), reason: z.string().min(1) }))
-		.mutation(async ({ ctx, input }) => {
-			const task = await ctx.svc.tasks.get(input.id);
-			if (!task) throw new Error(`unknown task ${input.id}`);
-			if (task.status !== "review")
-				throw new Error(
-					`task ${input.id} is not awaiting review (status: ${task.status})`,
-				);
-			return ctx.svc.tasks.move(input.id, "ready", "human", input.reason);
-		}),
+		.mutation(({ ctx, input }) =>
+			ctx.svc.review.reject(input.id, input.reason),
+		),
+
+	/** Archive every finished run of the task to `wip/` and remove its worktrees and branches. PRECONDITION_FAILED (`RunLiveError`) while one is live. */
+	discard: projectProcedure
+		.input(z.object({ id: z.string() }))
+		.mutation(({ ctx, input }) => ctx.svc.lifecycle.discardTask(input.id)),
 
 	promoteReady: projectProcedure.mutation(({ ctx }) =>
 		ctx.svc.tasks.promoteReady(),
@@ -271,9 +406,16 @@ export const tasksRouter = createTRPCRouter({
 	/** Delete one task. Irreversible here; see `wipe` on the git safety net. */
 	remove: projectProcedure
 		.input(z.object({ id: z.string() }))
-		.mutation(async ({ ctx, input }) => ({
-			removed: await ctx.svc.tasks.remove(input.id),
-		})),
+		.mutation(async ({ ctx, input }) => {
+			const removed = await ctx.svc.tasks.remove(input.id);
+			if (removed) {
+				await recordHumanAction(ctx.svc, {
+					action: "tasks.remove",
+					taskId: input.id,
+				});
+			}
+			return { removed };
+		}),
 
 	/**
 	 * Delete every task on the board. `confirm` is a typed literal so a default or
@@ -291,8 +433,8 @@ export const tasksRouter = createTRPCRouter({
 				versioned,
 				recovery: versioned
 					? "The board is tracked in git: `git revert` the mfw commit that " +
-						"removed these files, or `git checkout <sha> -- .mfw/tasks`."
-					: "This board is NOT in git (not a repository, or .mfw/tasks is " +
+						"removed these files, or `git checkout <sha> -- tasks`."
+					: "This board is NOT in git (not a repository, or tasks/ is " +
 						"ignored). Nothing here is recoverable.",
 			};
 		}),

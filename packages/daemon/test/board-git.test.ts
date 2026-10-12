@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
 import { EventBus } from "@mfw/db/eventlog";
 import { boot } from "../src/boot.ts";
+import { defaultBoardYaml } from "../src/default-board-config.ts";
 import { git } from "../src/git.ts";
 import { silentLogger } from "../src/log.ts";
 import type { TaskService } from "../src/task-service.ts";
@@ -49,7 +50,7 @@ async function env(root?: string, branch = "main"): Promise<Env> {
 	const warnings: string[] = [];
 	const board = new BoardRepo({
 		projectRoot,
-		mfwDir,
+		boardDir: mfwDir,
 		integrationBranch: branch,
 		log: {
 			...silentLogger(),
@@ -381,8 +382,9 @@ describe("setup", () => {
 describe("an existing board is tracked immediately", () => {
 	test("attach commits the board without waiting for a transition", async () => {
 		const root = await repo();
-		const taskDir = join(root, ".mfw", "tasks", "MFW-1-carried-over");
+		const taskDir = join(root, "tasks", "MFW-1-carried-over");
 		await mkdir(taskDir, { recursive: true });
+		await writeFile(join(root, "board.yaml"), defaultBoardYaml("MFW"));
 		await writeFile(
 			join(taskDir, "task.md"),
 			"---\nmfw: 1\nid: MFW-1\nrev: 1\ntitle: carried over\ntype: implementation\nstatus: done\npriority: medium\n---\n",
@@ -398,7 +400,7 @@ describe("an existing board is tracked immediately", () => {
 		// passes if attach marked the board dirty.
 		await svc.board.tick();
 
-		const tracked = await git(["ls-files", "--", ".mfw/tasks"], root);
+		const tracked = await git(["ls-files", "--", "tasks"], root);
 		expect(tracked.stdout).toContain("MFW-1-carried-over/task.md");
 		const status = await git(["status", "--porcelain", "--", ".mfw"], root);
 		expect(status.stdout.trim()).toBe("");

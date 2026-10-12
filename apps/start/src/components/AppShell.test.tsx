@@ -17,49 +17,54 @@ function between(source: string, start: string, end: string): string {
 }
 
 describe("machine navigation", () => {
-	test("keeps Resources and global RunPod operations fixed above Projects", () => {
+	test("keeps one Fleet entry fixed above Projects", () => {
 		const sidebar = between(shell, "function Sidebar", "function Divider");
 		expect(shell).toContain(
-			'{ label: "Resources", to: href.resources(), icon: Boxes }',
+			'{ label: "Fleet", to: href.fleet(), icon: Boxes }',
 		);
-		expect(shell).toContain(
-			'{ label: "RunPod", to: href.runpod(), icon: Cloud }',
-		);
-		expect(shell).toContain(
-			'{ label: "OpenRouter", to: href.openrouter(), icon: RouteIcon }',
-		);
+		// The four pages Fleet replaced have no entry of their own.
+		for (const label of ["Models", "Resources", "RunPod", "OpenRouter"]) {
+			expect(shell).not.toContain(`label: "${label}"`);
+		}
 		expect(sidebar.indexOf("{PRIMARY_NAV.map")).toBeLessThan(
 			sidebar.indexOf("Projects"),
 		);
-		expect(routes).toContain('path: "/resources"');
-		expect(routes).toContain('path: "/runpod"');
-		expect(routes).toContain('path: "/openrouter"');
+		expect(routes).toContain('path: "/fleet"');
+		expect(routes).toContain('path: "/fleet/runpod"');
+		expect(routes).toContain('path: "/fleet/openrouter"');
 	});
 
 	test("preserves Add Project, dynamic rows, per-project controls, and detach location", () => {
 		const sidebar = between(shell, "function Sidebar", "function Divider");
+		const entry = read("features/shell/SidebarProject.tsx");
 		expect(sidebar).toContain('aria-label="Add project"');
 		expect(sidebar).toContain("(projects.data ?? []).map");
-		expect(sidebar).toContain("href.board(p.name)");
-		expect(sidebar).toContain(
-			'<ProjectDispatchButton project={p.name} variant="icon" />',
-		);
+		// One entry per project; its link and dispatch toggle live in the entry.
+		expect(sidebar).toContain("<ProjectEntry");
+		expect(entry).toContain("href.board(name)");
+		expect(entry).toContain("useProjectDispatch(name)");
 		expect(projectSettings).toContain("<DetachProject");
 	});
 
-	test("places the global dispatch row directly above Settings", () => {
+	test("puts the global mfw switch and status in the title row, Settings at the bottom", () => {
 		const sidebar = between(shell, "function Sidebar", "function Divider");
-		const globalControl =
-			'<GlobalDispatchButton variant="navigation" compact={!expanded} />';
-		const settings = '<NavLink\n\t\t\t\tentry={{ label: "Settings"';
-
-		expect(sidebar).toContain(globalControl);
+		const group = '<GlobalDispatchButton variant="status" compact />';
+		expect(sidebar).toContain(group);
+		expect(sidebar).toContain("<GlobalDispatchButton");
+		expect(sidebar).not.toContain('<GlobalDispatchButton variant="navigation"');
 		expect(sidebar).not.toContain('<GlobalDispatchButton variant="icon" />');
-		expect(sidebar.indexOf(globalControl)).toBeLessThan(
-			sidebar.indexOf(settings),
+		// Title, then the status group, then the collapse control: one row.
+		const title = sidebar.indexOf(">\n\t\t\t\t\t\tmfw\n");
+		const status = sidebar.indexOf("<GlobalDispatchButton");
+		const collapse = sidebar.indexOf(
+			'aria-label={expanded ? "Collapse sidebar"',
 		);
-		expect(sidebar.slice(sidebar.indexOf(globalControl))).toContain(
-			`${globalControl}\n\t\t\t${settings}`,
+		expect(title).toBeGreaterThan(-1);
+		expect(title).toBeLessThan(status);
+		expect(status).toBeLessThan(collapse);
+		expect(collapse).toBeLessThan(sidebar.indexOf("{PRIMARY_NAV.map"));
+		expect(sidebar.lastIndexOf('label: "Settings"')).toBeGreaterThan(
+			sidebar.indexOf("{PRIMARY_NAV.map"),
 		);
 	});
 
@@ -77,16 +82,15 @@ describe("machine navigation", () => {
 		).toBeLessThan(sidebar.indexOf("{PRIMARY_NAV.map"));
 	});
 
-	test("mobile is exactly Now, Inbox, Resources, RunPod, More", () => {
+	test("mobile is exactly Home, Fleet, More", () => {
 		const mobile = between(shell, "const MOBILE_NAV", "function Sidebar");
 		const tabBar = between(shell, "function TabBar", "function MobileHeader");
-		expect(mobile.match(/label: /g)).toHaveLength(4);
-		for (const label of ["Now", "Inbox", "Resources", "RunPod"]) {
+		expect(mobile.match(/label: /g)).toHaveLength(2);
+		for (const label of ["Home", "Fleet"]) {
 			expect(mobile).toContain(`label: "${label}"`);
 		}
 		expect(tabBar).toContain(">More</span>");
 		expect(tabBar).toContain('aria-controls="mobile-more-menu"');
-		expect(tabBar).toContain('label: "History"');
 		expect(tabBar).toContain('label: "Settings"');
 		expect(tabBar).not.toContain("{PRIMARY_NAV.map");
 		expect(shell).toContain("<TabBar key={path}");
@@ -104,9 +108,11 @@ describe("machine navigation", () => {
 		const navLink = between(shell, "function NavLink", "function CountBadge");
 		expect(navLink).toContain("href={withBase(entry.to)}");
 		expect(shell).toContain("isActive(path, entry.to)");
-		expect(routes).toMatch(/resources: \(\) => `\$\{APP_ROOT\}\/resources`/);
-		expect(routes).toMatch(/runpod: \(\) => `\$\{APP_ROOT\}\/runpod`/);
-		expect(routes).toMatch(/openrouter: \(\) => `\$\{APP_ROOT\}\/openrouter`/);
+		expect(routes).toMatch(/fleet: \(\) => `\$\{APP_ROOT\}\/fleet`/);
+		expect(routes).toMatch(/runpod: \(\) => `\$\{APP_ROOT\}\/fleet\/runpod`/);
+		expect(routes).toMatch(
+			/openrouter: \(\) => `\$\{APP_ROOT\}\/fleet\/openrouter`/,
+		);
 		expect(routes).toContain("pathname.startsWith(prefix)");
 	});
 });

@@ -4,7 +4,7 @@ import { writeFileAtomic } from "@mfw/board-core";
 
 /**
  * The claim lease, as disposable machine state — never in markdown (ADR-0001's
- * sidecar boundary). `.mfw/state/tasks/<ID>.json`, relative to the board root
+ * sidecar boundary). `state/tasks/<ID>.json`, relative to the board root
  * (the directory `board.yaml` lives in).
  *
  * This is deliberately narrow: just enough for `claim`/`releaseClaim` to work
@@ -13,7 +13,17 @@ import { writeFileAtomic } from "@mfw/board-core";
  * board state, and stays in `@mfw/daemon`.
  */
 export interface TaskLease {
-	claimedByRunId: string | null;
+	/**
+	 * The attempt group that holds the claim. A group of one is named after its
+	 * only run, so a pre-group sidecar's `claimedByRunId` value IS this id and
+	 * the migration only renames the key.
+	 */
+	claimedByGroupId: string | null;
+	/**
+	 * Display only: the run that leads the holding group (the first attempt, or
+	 * the latest continuation). Null means the group id is itself a run id.
+	 */
+	leadRunId?: string | null;
 	claimedAt: number | null;
 	leaseExpiresAt: number | null;
 	statusChangedAt: number | null;
@@ -23,7 +33,8 @@ export interface TaskLease {
 
 export function emptyLease(): TaskLease {
 	return {
-		claimedByRunId: null,
+		claimedByGroupId: null,
+		leadRunId: null,
 		claimedAt: null,
 		leaseExpiresAt: null,
 		statusChangedAt: null,
@@ -39,8 +50,15 @@ export async function readLease(root: string, id: string): Promise<TaskLease> {
 	try {
 		const raw = JSON.parse(
 			await readFile(stateFile(root, id), "utf8"),
-		) as Partial<TaskLease>;
-		return { ...emptyLease(), ...raw };
+		) as Partial<TaskLease> & { claimedByRunId?: string | null };
+		// A sidecar written before attempt groups names its holder `claimedByRunId`;
+		// the value is already the group id of a group of one.
+		const { claimedByRunId: legacy, ...rest } = raw;
+		return {
+			...emptyLease(),
+			...rest,
+			claimedByGroupId: rest.claimedByGroupId ?? legacy ?? null,
+		};
 	} catch {
 		return emptyLease();
 	}
@@ -65,7 +83,7 @@ export async function writeLease(
  */
 export async function clearLease(root: string, id: string): Promise<void> {
 	const lease = await readLease(root, id);
-	if (lease.claimedByRunId === null && lease.leaseExpiresAt === null) return;
+	if (lease.claimedByGroupId === null && lease.leaseExpiresAt === null) return;
 	await writeLease(root, id, {
 		...emptyLease(),
 		statusChangedAt: Date.now(),

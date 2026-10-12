@@ -1,17 +1,14 @@
 import {
-	blockedAfterCompletion,
 	effectiveDependencies,
 	impactOf,
-	isLive,
 	matchesQueryFilters,
 	parseQueryFilters,
 	readyDocuments,
 } from "@mfw/board-core";
-import { CliError, type Command } from "./types.ts";
+import type { Command } from "./types.ts";
 import {
 	allDocuments,
 	checkUnder,
-	descendantsOf,
 	optionalType,
 	requireNoPositional,
 	requireStatusClasses,
@@ -27,7 +24,6 @@ export const ready: Command = {
 	name: "ready",
 	usage: [
 		"ready [--type <type>] [--under <id>] [--json] [--unblocks] [field=a|b ...] [field~a|b ...]",
-		"ready --check [--under <id>] [--json]",
 	],
 	async run(ctx, args) {
 		requireNoPositional(args.positional);
@@ -37,41 +33,6 @@ export const ready: Command = {
 		const docs = await allDocuments(ctx);
 		checkUnder(config, docs, args.under);
 		const opts = args.under !== undefined ? { under: args.under } : {};
-
-		if (args.check) {
-			const blocked = blockedAfterCompletion(config, docs, opts);
-			const ids = [...blocked.keys()].sort();
-			if (ctx.json) {
-				console.log(
-					JSON.stringify({
-						blocked: Object.fromEntries(ids.map((i) => [i, blocked.get(i)])),
-						ok: ids.length === 0,
-					}),
-				);
-			} else {
-				for (const id of ids) {
-					console.error(
-						`blocked ${id}: unresolved dependencies ${(blocked.get(id) ?? []).join(",")}`,
-					);
-				}
-			}
-			if (ids.length > 0) throw new CliError("", 1);
-			if (!ctx.json) {
-				const within =
-					args.under !== undefined
-						? descendantsOf(config, docs, args.under)
-						: undefined;
-				const live = docs.filter(
-					(d) =>
-						isLive(config, d.type, statusValueOf(config, d)) &&
-						(within === undefined || within.has(d.id)),
-				).length;
-				console.log(
-					`Queue liveness: ${live} live documents, all remaining reachable`,
-				);
-			}
-			return;
-		}
 
 		const deps = effectiveDependencies(config, docs);
 		const impact = impactOf(config, docs);

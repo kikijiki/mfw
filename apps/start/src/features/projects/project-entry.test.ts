@@ -34,23 +34,35 @@ describe("project attachment placement", () => {
 
 	test("opens project attachment from the sidebar Projects section", () => {
 		const shell = source("components/AppShell.tsx");
-		const projectsStart = shell.indexOf(">\n\t\t\t\t\t\tProjects");
-		const projectRows = shell.indexOf("(projects.data ?? []).map");
-		const projectSection = shell.slice(projectsStart, projectRows);
-		expect(projectsStart).toBeGreaterThan(-1);
-		expect(projectSection).toContain('aria-label="Add project"');
-		expect(projectSection).toContain("setAddingProject(true)");
+		const sidebar = shell.slice(
+			shell.indexOf("function Sidebar"),
+			shell.indexOf("function Divider"),
+		);
+		expect(sidebar).toContain(">\n\t\t\t\t\t\tProjects");
+		expect(sidebar).toContain('aria-label="Add project"');
+		expect(sidebar).toContain("setAddingProject(true)");
 		expect(shell).toContain("<AddProjectDialog");
 		expect(shell).not.toContain("Add one in Settings");
 	});
 
 	test("chooses a daemon-visible repository instead of typing a path", () => {
 		const picker = source("features/projects/AddProjectDialog.tsx");
-		expect(picker).toContain("system.projectDirectory");
-		expect(picker).toContain("entry.isRepository");
-		expect(picker).toContain("add.mutate({ root: selected.path })");
+		const browser = source("features/projects/DirectoryBrowser.tsx");
+		expect(browser).toContain("system.projectDirectory");
+		expect(browser).toContain("entry.isRepository");
+		expect(picker).toContain("onSelectRepo");
+		// The board is inspected live and submitted through the pure builder.
+		expect(picker).toContain("system.inspectBoardFolder");
+		expect(picker).toContain("system.boardTemplates");
+		expect(picker).toContain("buildAddInput(");
 		expect(picker).not.toContain("<Input");
 		expect(picker).not.toContain('aria-label="Repository root"');
+		// The only text field names a NEW folder in the viewed one; it is
+		// validated as a single segment, never a typed path.
+		const folders = source("features/projects/FolderPicker.tsx");
+		expect(folders).toContain('aria-label="New folder name"');
+		expect(folders).toContain("validateFolderName(");
+		expect(browser).not.toContain("<Input");
 	});
 
 	test("keeps shared dialog and Add Project close targets touch-sized on mobile", () => {
@@ -60,6 +72,13 @@ describe("project attachment placement", () => {
 			'className="absolute top-2 right-2 max-md:size-11"',
 		);
 		expect(picker).toContain('className="max-md:min-h-11"');
+		for (const file of [
+			"features/projects/DirectoryBrowser.tsx",
+			"features/projects/BoardStep.tsx",
+			"features/projects/FolderPicker.tsx",
+		]) {
+			expect(source(file)).toContain("min-h-11");
+		}
 	});
 
 	test("project removal is detach-only", () => {

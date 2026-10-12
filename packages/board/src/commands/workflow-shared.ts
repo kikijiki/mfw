@@ -1,10 +1,8 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import {
 	type BoardConfig,
 	type BoardDocument,
+	loadOwnershipExemptions,
 	type OwnershipExemptions,
-	parseOwnershipExemptions,
 } from "@mfw/board-core";
 import { CliError, type CommandContext, UsageError } from "./types.ts";
 
@@ -157,30 +155,21 @@ export function requireNoPositional(positional: string[]): void {
 	if (positional.length > 0) throw new UsageError();
 }
 
-/**
- * The exemptions file a type's `ownership.exemptions` points at (relative to the
- * board root), parsed against the ids of that type; undefined when none is
- * declared. A missing or invalid file is a board error (exit 3).
- */
+/** The type's ownership exemptions (see board-core), a failure being a board error (exit 3). */
 export async function loadExemptions(
 	ctx: CommandContext,
 	typeName: string,
 	docs: readonly BoardDocument[],
 ): Promise<OwnershipExemptions | undefined> {
-	const file = ctx.project.config.types[typeName]?.ownership?.exemptions;
-	if (!file) return undefined;
-	const path = join(ctx.project.root, file);
 	try {
-		const raw = Bun.YAML.parse(await readFile(path, "utf8"));
-		const ids = new Set(
-			docs.filter((d) => d.type === typeName).map((d) => d.id),
+		return await loadOwnershipExemptions(
+			ctx.project.root,
+			ctx.project.config,
+			typeName,
+			docs,
 		);
-		return parseOwnershipExemptions(raw, ids);
 	} catch (e) {
-		throw new CliError(
-			`${path}: ${e instanceof Error ? e.message : String(e)}`,
-			3,
-		);
+		throw new CliError(e instanceof Error ? e.message : String(e), 3);
 	}
 }
 

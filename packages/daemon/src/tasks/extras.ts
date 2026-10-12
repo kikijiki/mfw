@@ -7,6 +7,7 @@ import { writeFileAtomic } from "@mfw/core/fsatomic";
  * inline rather than depend on anything for. */
 const SPEC_FILE = "spec.md";
 const ATTACHMENTS_DIR = "files";
+const TASK_FILE = "task.md";
 
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
@@ -39,6 +40,33 @@ export class ExtrasError extends Error {
 	}
 }
 
+/**
+ * What every spec/attachment write on a flat board refuses with: a flat task
+ * is one file (`tasks/POOT-1.md`), so it has no directory of its own to hold
+ * anything beside it.
+ */
+export function flatBoardError(): ExtrasError {
+	return new ExtrasError(
+		"spec and attachments are not supported by a flat board: " +
+			"a flat task is one file, with no directory of its own",
+	);
+}
+
+/**
+ * Is `dir` a directory-layout task's own directory? Every such directory
+ * holds the primary file it was scanned through. A flat board's type
+ * directory — what `dirname()` of a flat task's path is — holds the task
+ * files themselves and no `task.md`, so nothing of a task's own lives there.
+ */
+async function isTaskDir(dir: string): Promise<boolean> {
+	try {
+		await stat(join(dir, TASK_FILE));
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 /** What `getSpec` returns: the text and the token to save it back against. */
 export interface SpecDoc {
 	body: string;
@@ -57,6 +85,7 @@ export interface AttachmentInfo {
 // --- spec -------------------------------------------------------------------
 
 export async function readSpec(dir: string): Promise<SpecDoc> {
+	if (!(await isTaskDir(dir))) return { body: "", hash: "", exists: false };
 	try {
 		const body = await readFile(join(dir, SPEC_FILE), "utf8");
 		return { body, hash: sha256(body), exists: true };
@@ -75,6 +104,7 @@ export async function writeSpec(
 	body: string,
 	baseHash: string | undefined,
 ): Promise<SpecDoc | null> {
+	if (!(await isTaskDir(dir))) throw flatBoardError();
 	if (Buffer.byteLength(body, "utf8") > CAPS.specBytes) {
 		throw new ExtrasError(
 			`a spec is capped at ${CAPS.specBytes / 1024} KiB, split the work or link a file`,
@@ -113,6 +143,7 @@ function attachmentsDir(dir: string): string {
 }
 
 export async function listAttachments(dir: string): Promise<AttachmentInfo[]> {
+	if (!(await isTaskDir(dir))) return [];
 	let names: string[];
 	try {
 		names = await readdir(attachmentsDir(dir));
@@ -139,6 +170,7 @@ export async function putAttachment(
 	name: string,
 	bytes: Uint8Array,
 ): Promise<AttachmentInfo> {
+	if (!(await isTaskDir(dir))) throw flatBoardError();
 	assertAttachmentName(name);
 	if (bytes.byteLength === 0) throw new ExtrasError("attachment is empty");
 	if (bytes.byteLength > CAPS.attachmentBytes) {
@@ -171,6 +203,7 @@ export async function readAttachment(
 	dir: string,
 	name: string,
 ): Promise<Buffer | null> {
+	if (!(await isTaskDir(dir))) return null;
 	assertAttachmentName(name);
 	try {
 		return await readFile(join(attachmentsDir(dir), name));
@@ -183,6 +216,7 @@ export async function deleteAttachment(
 	dir: string,
 	name: string,
 ): Promise<boolean> {
+	if (!(await isTaskDir(dir))) throw flatBoardError();
 	assertAttachmentName(name);
 	const path = join(attachmentsDir(dir), name);
 	try {

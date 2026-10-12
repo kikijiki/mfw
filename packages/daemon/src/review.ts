@@ -1,5 +1,6 @@
 import { filesOutsideOwns } from "@mfw/core/ownership";
 import type { ProjectDbHandle } from "@mfw/db/client";
+import { listReviewVerdicts, type ReviewVerdictRow } from "@mfw/db/outcomes";
 import {
 	decisions,
 	events,
@@ -72,14 +73,16 @@ export interface ReviewBundle {
 		implementerModel: string | null;
 		reviewerModel: string | null;
 		sameModel: boolean;
+		/** Floored verdict; null for decisions that predate verdicts. */
+		verdict: "merge" | "fix" | "reject" | null;
+		mode: "critic" | "agent" | null;
+		/** 1-based review round of this verdict. */
+		round: number | null;
+		independent: boolean | null;
 	} | null;
 	/** Why this candidate stopped for a human. This is distinct from the task's
 	 * `require_review` preference: a critic can independently flag concerns. */
-	reviewCause:
-		| "critic_flagged"
-		| "critic_unavailable"
-		| "human_required"
-		| null;
+	reviewCause: ReviewCause | null;
 	/** @deprecated Compatibility alias for acceptance. */
 	critic: { outcome: string; detail: string } | null;
 	run: {
@@ -101,6 +104,35 @@ export interface ReviewBundle {
 	} | null;
 }
 
+export type ReviewCause =
+	| "critic_flagged"
+	| "critic_unavailable"
+	| "human_required"
+	/** The finish-time scope check found files outside the task's `owns`. */
+	| "scope_outside"
+	| "review_rounds_exhausted"
+	| "reviewer_not_independent"
+	| "reviewer_modified_checkout";
+
+/** One reviewer verdict as the review and task pages show it. */
+export interface ReviewVerdictView {
+	id: string;
+	subjectRunId: string;
+	mode: "critic" | "agent" | "human";
+	verdict: "merge" | "fix" | "reject";
+	round: number;
+	reviewerModel: string | null;
+	reviewerHarness: string | null;
+	independent: boolean | null;
+	findings: {
+		file: string;
+		line?: number | null;
+		severity: string;
+		change: string;
+	}[];
+	createdAt: number;
+}
+
 type EvidenceClass = "reproduced" | "source-confirmed" | "claimed";
 const EVIDENCE_CLASSES: readonly unknown[] = [
 	"reproduced",
@@ -119,6 +151,8 @@ export class ReviewService {
 			registry: RunRegistry;
 			tasks: TaskService;
 			projectRoot: string;
+			/** Review `fix` rounds auto-repaired before a human decides. */
+			maxReviewRounds?: number;
 			mergeQueue?: {
 				byRun(
 					runId: string,
@@ -129,14 +163,15 @@ export class ReviewService {
 	) {}
 
 	/** The whole judgement payload for a task awaiting review. */
-	async bundle(taskId: string): Promise<ReviewBundle> {
+	async bundle(taskId: string, runId?: string): Promise<ReviewBundle> {
 		const task = await this.deps.tasks.get(taskId);
 		const acceptanceCriteria =
 			task?.criteria.map((criterion) => criterion.text) ?? [];
 		const runRows = await this.deps.registry.list({ taskId });
+		// `runId` pins one attempt (the group compare view); else the newest run with a branch.
 		const run =
 			runRows
-				.filter((r) => r.branch)
+				.filter((r) => r.branch && (!runId || r.id === runId))
 				.sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime())[0] ??
 			null;
 
@@ -217,11 +252,20 @@ export class ReviewService {
 			const payload = row.payload as { to?: unknown; reason?: unknown };
 			if (payload.to !== "review") continue;
 			const reason = typeof payload.reason === "string" ? payload.reason : "";
+			for (const cause of [
+				"review_rounds_exhausted",
+				"reviewer_not_independent",
+				"reviewer_modified_checkout",
+			] as const) {
+				if (reason.includes(cause)) return cause;
+			}
 			if (reason.includes("critic gate")) {
 				return acceptance?.outcome === "flagged"
 					? "critic_flagged"
 					: "critic_unavailable";
 			}
+			// Before "review gate": the scope note says "scope gate → review".
+			if (reason.includes("scope gate")) return "scope_outside";
 			if (reason.includes("review gate")) return "human_required";
 			return null;
 		}
@@ -340,6 +384,10 @@ export class ReviewService {
 			implementerModel?: unknown;
 			reviewerModel?: unknown;
 			sameModel?: unknown;
+			verdict?: unknown;
+			mode?: unknown;
+			round?: unknown;
+			independent?: unknown;
 		};
 		const criteria = (output.criteria ?? [])
 			.filter(
@@ -358,7 +406,7 @@ export class ReviewService {
 				evidence: typeof item.evidence === "string" ? item.evidence : "",
 			}));
 		// Older critic decisions predate the model record.
-		const review =
+		const review: ReviewBundle["review"] =
 			typeof output.reviewerModel === "string"
 				? {
 						implementerModel:
@@ -367,6 +415,21 @@ export class ReviewService {
 								: null,
 						reviewerModel: output.reviewerModel,
 						sameModel: output.sameModel === true,
+						verdict:
+							output.verdict === "merge" ||
+							output.verdict === "fix" ||
+							output.verdict === "reject"
+								? (output.verdict as "merge" | "fix" | "reject")
+								: null,
+						mode:
+							output.mode === "critic" || output.mode === "agent"
+								? (output.mode as "critic" | "agent")
+								: null,
+						round: typeof output.round === "number" ? output.round : null,
+						independent:
+							typeof output.independent === "boolean"
+								? output.independent
+								: null,
 					}
 				: null;
 		return {
@@ -377,6 +440,38 @@ export class ReviewService {
 			},
 			review,
 		};
+	}
+
+	// ---------- verdict history ----------
+
+	/** Every verdict on the task (oldest first) and the rounds consumed so far. */
+	async verdicts(taskId: string): Promise<{
+		round: number;
+		maxRounds: number;
+		verdicts: ReviewVerdictView[];
+	}> {
+		const task = await this.deps.tasks.get(taskId);
+		const rows = await listReviewVerdicts(this.deps.handle.db, { taskId });
+		return {
+			round: task?.reviewRound ?? 0,
+			maxRounds: this.deps.maxReviewRounds ?? 2,
+			verdicts: rows.map(toVerdictView),
+		};
+	}
+
+	/** The newest verdict per task, for board card chips. */
+	async latestVerdicts(): Promise<
+		Record<string, { verdict: ReviewVerdictView["verdict"]; round: number }>
+	> {
+		const rows = await listReviewVerdicts(this.deps.handle.db);
+		const out: Record<
+			string,
+			{ verdict: ReviewVerdictView["verdict"]; round: number }
+		> = {};
+		for (const r of rows) {
+			if (r.taskId) out[r.taskId] = { verdict: r.verdict, round: r.round };
+		}
+		return out;
 	}
 
 	// ---------- structured inline comments ----------
@@ -417,9 +512,30 @@ export class ReviewService {
 	}
 
 	/**
-	 * The rejection feedback the repair run actually receives: the human's
-	 * reason plus every unresolved inline comment, addressed to its file and
-	 * line. v1 discarded all of this.
+	 * Human rejection: snapshot the brief (reason plus unresolved comments)
+	 * into the task's run-state sidecar, then send the task back to `ready`.
+	 * The next run's prompt carries the brief (`buildPrompts`).
+	 */
+	async reject(taskId: string, reason: string) {
+		const task = await this.deps.tasks.get(taskId);
+		if (!task) throw new Error(`unknown task ${taskId}`);
+		if (task.status !== "review")
+			throw new Error(
+				`task ${taskId} is not awaiting review (status: ${task.status})`,
+			);
+		await this.deps.tasks.setPendingFeedback(
+			taskId,
+			await this.repairBrief(taskId, reason),
+		);
+		// The next attempt is a fresh chain with a fresh review budget.
+		await this.deps.tasks.clearReviewRound(taskId);
+		return this.deps.tasks.move(taskId, "ready", "human", reason);
+	}
+
+	/**
+	 * The rejection feedback the next run receives: the human's reason plus
+	 * every unresolved inline comment, addressed to its file and line.
+	 * `reject` stores it; the API also exposes it as a preview.
 	 */
 	async repairBrief(taskId: string, reason: string): Promise<string> {
 		const open = (await this.listComments(taskId)).filter((c) => !c.resolved);
@@ -443,6 +559,26 @@ export class ReviewService {
 }
 
 const BINARY_SENTINEL = " __mfw_binary__";
+
+function toVerdictView(r: ReviewVerdictRow): ReviewVerdictView {
+	return {
+		id: r.id,
+		subjectRunId: r.subjectRunId,
+		mode: r.mode,
+		verdict: r.verdict,
+		round: r.round,
+		reviewerModel: r.reviewerModel ?? null,
+		reviewerHarness: r.reviewerHarness ?? null,
+		independent: r.independent ?? null,
+		findings: (Array.isArray(r.findings) ? r.findings : []).filter(
+			(f): f is ReviewVerdictView["findings"][number] =>
+				typeof f === "object" &&
+				f !== null &&
+				typeof (f as { change?: unknown }).change === "string",
+		),
+		createdAt: r.createdAt.getTime(),
+	};
+}
 
 /** Which runs are still awaiting a human decision (for the review queue). */
 export async function reviewQueue(

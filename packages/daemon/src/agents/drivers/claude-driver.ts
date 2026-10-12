@@ -137,14 +137,24 @@ function translate(o: Record<string, unknown>): void {
 		const message = (o.message ?? {}) as {
 			content?: { type?: string; [k: string]: unknown }[];
 		};
+		// A subagent's traffic names the tool call that started it.
+		const parentId =
+			typeof o.parent_tool_use_id === "string" ? o.parent_tool_use_id : "";
+		const sub = (value: Record<string, unknown>) =>
+			emit(parentId ? { ...value, parent: { toolUseId: parentId } } : value);
 		for (const part of message.content ?? []) {
 			if (part.type === "text" && typeof part.text === "string") {
 				// `--replay-user-messages` echoes back exactly what `send()` just
 				// wrote to stdin; `send()` already emitted this text once, so a
 				// user-role echo here would double it in the transcript. An
 				// assistant text part is never an echo and always new.
-				if (type === "assistant") {
-					emit({ type: "message", role: "assistant", text: part.text });
+				// A user text with a parent is the subagent's prompt, not an echo.
+				if (type === "assistant" || parentId) {
+					sub({
+						type: "message",
+						role: type === "assistant" ? "assistant" : "user",
+						text: part.text,
+					});
 				}
 			} else if (
 				part.type === "thinking" &&
@@ -154,9 +164,9 @@ function translate(o: Record<string, unknown>): void {
 				// thinking block per turn with a `signature` and an empty `thinking` string
 				// (reasoning is not streamed), which would fill the transcript with empty rows.
 				if (part.thinking.trim())
-					emit({ type: "thinking", text: part.thinking });
+					sub({ type: "thinking", text: part.thinking });
 			} else if (part.type === "tool_use") {
-				emit({
+				sub({
 					type: "tool_call",
 					id: String(part.id ?? ""),
 					name: String(part.name ?? "tool"),
@@ -175,7 +185,7 @@ function translate(o: Record<string, unknown>): void {
 					: typeof content === "string"
 						? content
 						: JSON.stringify(content ?? "");
-				emit({
+				sub({
 					type: "tool_result",
 					id: String(part.tool_use_id ?? ""),
 					ok: part.is_error !== true,

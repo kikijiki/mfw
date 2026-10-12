@@ -528,7 +528,7 @@ describe("MergeQueue v2, real git matrix", () => {
 		await f.cleanup();
 	});
 
-	test("MFW-58: exhausted retries hand off to an automatic unblock run instead of a human", async () => {
+	test("P3: exhausted retries reach onParked exactly once and spawn nothing: the brain decides from the merge_parked settle", async () => {
 		const f = await fixture();
 		const r1 = await f.makeBranchRun("mfw/t1", "base.txt", "from t1\n");
 		const r2 = await f.makeBranchRun("mfw/t2", "base.txt", "base\nfrom t2\n");
@@ -544,68 +544,6 @@ describe("MergeQueue v2, real git matrix", () => {
 		});
 		expect(await f.queue.tick()).toBe("merged");
 		expect(await f.queue.tick()).toBe("parked");
-
-		const unblocked: { job: MergeJobView; reason: string }[] = [];
-		f.queue.unblock = async (job, reason) => {
-			unblocked.push({ job, reason });
-			return { runId: "01UNBLOCKCHILDRUNXXXXXXXXX" };
-		};
-
-		for (let i = 0; i < 5; i++) {
-			if (unblocked.length > 0) break;
-			await f.queue.retryParked();
-			await f.queue.tick();
-		}
-
-		expect(unblocked.length).toBe(1);
-		expect(unblocked[0]?.reason).toBeTruthy();
-		// not escalated to a human
-		expect(f.parked.length).toBe(0);
-
-		const [job] = await f.handle.db
-			.select()
-			.from(mergeJobs)
-			.where(eq(mergeJobs.runId, r2));
-		expect(job?.state).toBe("abandoned");
-		expect(job?.parkRetries).toBe(3);
-		expect(job?.error).toBeTruthy();
-
-		const [ev] = await f.handle.db
-			.select()
-			.from(eventsTable)
-			.where(eq(eventsTable.type, "merge.unblock_started"));
-		expect(
-			(ev?.payload as { childRunId?: string; retries?: number } | undefined)
-				?.childRunId,
-		).toBe("01UNBLOCKCHILDRUNXXXXXXXXX");
-
-		// Terminal: the retry sweep leaves it alone.
-		expect(await f.queue.retryParked()).toBe(0);
-		await f.cleanup();
-	});
-
-	test("MFW-58: a declined (or failed) unblock attempt still escalates to a human", async () => {
-		const f = await fixture();
-		const r1 = await f.makeBranchRun("mfw/t1", "base.txt", "from t1\n");
-		const r2 = await f.makeBranchRun("mfw/t2", "base.txt", "base\nfrom t2\n");
-		await f.queue.enqueue({
-			runId: r1,
-			branch: "mfw/t1",
-			targetBranch: "main",
-		});
-		await f.queue.enqueue({
-			runId: r2,
-			branch: "mfw/t2",
-			targetBranch: "main",
-		});
-		expect(await f.queue.tick()).toBe("merged");
-		expect(await f.queue.tick()).toBe("parked");
-
-		let calls = 0;
-		f.queue.unblock = async () => {
-			calls++;
-			return null; // brain disabled, or the spawn itself failed
-		};
 
 		for (let i = 0; i < 5; i++) {
 			if (f.parked.length > 0) break;
@@ -613,13 +551,19 @@ describe("MergeQueue v2, real git matrix", () => {
 			await f.queue.tick();
 		}
 
-		expect(calls).toBe(1); // asked once, at exhaustion
-		expect(f.parked.length).toBe(1); // declined → escalates to a human
+		expect(f.parked.length).toBe(1);
+		expect(f.parked[0]?.reason).toContain("the brain decides");
 		const [job] = await f.handle.db
 			.select()
 			.from(mergeJobs)
 			.where(eq(mergeJobs.runId, r2));
 		expect(job?.state).toBe("parked");
+		expect(job?.parkRetries).toBe(3);
+		const unblocks = await f.handle.db
+			.select()
+			.from(eventsTable)
+			.where(eq(eventsTable.type, "merge.unblock_started"));
+		expect(unblocks).toEqual([]);
 		await f.cleanup();
 	});
 

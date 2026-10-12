@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { detectMac } from "./platform";
 
 /**
  * The keyboard registry: one `keydown` listener for the whole app. Features
@@ -10,7 +11,8 @@ import { useEffect, useRef } from "react";
 export interface KeyBinding {
 	/**
 	 * `j`, `Enter`, `[`, `?`, `mod+s`, `shift+n`. `mod` is Cmd on macOS and
-	 * Ctrl elsewhere, so a binding is written once.
+	 * Ctrl elsewhere, so a binding is written once. A space separates the steps
+	 * of a sequence: `g h` is two key presses in a row (see `SEQUENCE_TIMEOUT_MS`).
 	 */
 	key: string;
 	/** Shown in the cheat sheet. Imperative voice: "Approve", "Next file". */
@@ -37,6 +39,12 @@ interface Scope {
 const scopes: Scope[] = [];
 let listening = false;
 
+/** How long a half-typed sequence (`g` of `g h`) waits for its next key. */
+export const SEQUENCE_TIMEOUT_MS = 1500;
+
+/** The keys of an unfinished sequence, and when the last one was pressed. */
+let pending: { combos: string[]; at: number } | null = null;
+
 /** True for a character the Shift key produced a *letter* case change on. */
 function isShiftedLetter(key: string): boolean {
 	return key.length === 1 && key !== key.toLowerCase();
@@ -58,6 +66,30 @@ function normalize(key: string): string {
 		.join("+");
 }
 
+/** The steps of a binding key: `g h` is `["g", "h"]`, `mod+k` one step. A bare space is the Space key. */
+export function keySteps(key: string): string[] {
+	if (key.trim() === "") return [normalize(" ")];
+	return key.trim().split(/\s+/).map(normalize);
+}
+
+export type SequenceMatch = "none" | "prefix" | "full";
+
+/**
+ * Does the run of pressed combos (already normalized, as `eventCombo` gives
+ * them) spell this binding, or is it the start of it?
+ */
+export function matchSequence(
+	key: string,
+	pressed: readonly string[],
+): SequenceMatch {
+	const steps = keySteps(key);
+	if (pressed.length === 0 || pressed.length > steps.length) return "none";
+	for (let i = 0; i < pressed.length; i++) {
+		if (steps[i] !== pressed[i]) return "none";
+	}
+	return pressed.length === steps.length ? "full" : "prefix";
+}
+
 function eventCombo(e: KeyboardEvent): string {
 	const mods: string[] = [];
 	if (e.metaKey || e.ctrlKey) mods.push("mod");
@@ -72,6 +104,7 @@ function eventCombo(e: KeyboardEvent): string {
 }
 
 function isTextEntry(target: EventTarget | null): boolean {
+	if (typeof HTMLElement === "undefined") return false;
 	if (!(target instanceof HTMLElement)) return false;
 	if (target.isContentEditable) return true;
 	const tag = target.tagName;
@@ -82,35 +115,94 @@ function isTextEntry(target: EventTarget | null): boolean {
 	return !["checkbox", "radio", "button", "submit", "range"].includes(type);
 }
 
-function onKeyDown(e: KeyboardEvent): void {
-	if (e.isComposing) return;
-	const combo = eventCombo(e);
-	const inText = isTextEntry(e.target);
+/**
+ * Try `pressed` against every enabled binding, newest scope first. A full
+ * match runs; otherwise a prefix match arms the sequence. Returns whether the
+ * key was consumed.
+ */
+function dispatch(
+	e: KeyboardEvent,
+	pressed: string[],
+	inText: boolean,
+	now: number,
+): boolean {
+	let sawPrefix = false;
 	// Newest scope first: the innermost mounted surface owns the key.
 	for (let i = scopes.length - 1; i >= 0; i--) {
 		const scope = scopes[i];
 		if (!scope) continue;
 		for (const binding of scope.bindings) {
 			if (binding.enabled === false) continue;
-			if (normalize(binding.key) !== combo) continue;
-			if (inText && !binding.allowInInput && !combo.startsWith("mod")) continue;
+			const m = matchSequence(binding.key, pressed);
+			if (m === "none") continue;
+			const first = pressed[0] ?? "";
+			if (inText && !binding.allowInInput && !first.startsWith("mod")) continue;
+			if (m === "prefix") {
+				sawPrefix = true;
+				continue;
+			}
+			pending = null;
 			e.preventDefault();
 			binding.run(e);
-			return;
+			return true;
 		}
 	}
+	if (sawPrefix) {
+		pending = { combos: pressed, at: now };
+		e.preventDefault();
+		return true;
+	}
+	return false;
+}
+
+/** The one key handler; exported so tests can drive it without a DOM. `now` is injectable for the sequence timeout. */
+export function handleKeyDown(e: KeyboardEvent, now = Date.now()): void {
+	if (e.isComposing) return;
+	const combo = eventCombo(e);
+	const inText = isTextEntry(e.target);
+	if (pending && now - pending.at > SEQUENCE_TIMEOUT_MS) pending = null;
+	if (pending) {
+		const carried = [...pending.combos, combo];
+		pending = null;
+		// Escape abandons the half-typed sequence and nothing else.
+		if (combo === "escape") return;
+		if (dispatch(e, carried, inText, now)) return;
+		// Not a continuation: the key is a fresh press.
+	}
+	dispatch(e, [combo], inText, now);
+}
+
+/** Forget a half-typed sequence (tests, and anything that moves focus away). */
+export function resetSequence(): void {
+	pending = null;
+}
+
+/** Register a scope without a component (tests, non-React callers); returns its disposer. */
+export function registerScope(bindings: KeyBinding[]): () => void {
+	const scope: Scope = { bindings };
+	scopes.push(scope);
+	attach();
+	return () => {
+		const i = scopes.indexOf(scope);
+		if (i >= 0) scopes.splice(i, 1);
+		detach();
+	};
+}
+
+function onKeyDownEvent(e: KeyboardEvent): void {
+	handleKeyDown(e);
 }
 
 function attach(): void {
 	if (listening || typeof window === "undefined") return;
 	listening = true;
-	window.addEventListener("keydown", onKeyDown);
+	window.addEventListener("keydown", onKeyDownEvent);
 }
 
 function detach(): void {
 	if (!listening || scopes.length > 0) return;
 	listening = false;
-	window.removeEventListener("keydown", onKeyDown);
+	window.removeEventListener("keydown", onKeyDownEvent);
 }
 
 /**
@@ -149,18 +241,28 @@ export function activeBindings(): KeyBinding[] {
 	return out;
 }
 
-/** Pretty-print a binding for the cheat sheet: `mod+s` → `⌘S` / `Ctrl+S`. */
-export function describeKey(key: string): string {
-	const mac =
-		typeof navigator !== "undefined" &&
-		/Mac|iPhone|iPad/.test(navigator.platform);
-	return key
-		.split("+")
-		.map((part) => {
-			if (part === "mod") return mac ? "⌘" : "Ctrl";
-			if (part === "shift") return mac ? "⇧" : "Shift";
-			if (part === "alt") return mac ? "⌥" : "Alt";
-			return part.length === 1 ? part.toUpperCase() : part;
-		})
-		.join(mac ? "" : "+");
+/**
+ * Pretty-print a binding for the cheat sheet: `mod+s` is the command-key
+ * symbol and `S` on macOS, `Ctrl+S` elsewhere. Pass `mac` (from `useIsMac`)
+ * so a render matches what the server drew; it defaults to the live platform.
+ * `spaced` joins non-Mac steps with a space (`Ctrl K`) for a compact hint.
+ */
+export function describeKey(
+	key: string,
+	mac: boolean = detectMac(),
+	spaced = false,
+): string {
+	const step = (one: string) =>
+		one
+			.split("+")
+			.map((part) => {
+				if (part === "mod") return mac ? "⌘" : "Ctrl";
+				if (part === "shift") return mac ? "⇧" : "Shift";
+				if (part === "alt") return mac ? "⌥" : "Alt";
+				return part.length === 1 ? part.toUpperCase() : part;
+			})
+			.join(mac ? "" : spaced ? " " : "+");
+	// A sequence reads as "G then H"; a lone space is the Space key.
+	const steps = key.trim() === "" ? [key] : key.trim().split(/\s+/);
+	return steps.map(step).join(" then ");
 }

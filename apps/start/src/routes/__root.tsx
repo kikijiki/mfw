@@ -17,6 +17,7 @@ import { useState } from "react";
 
 import { AppShell } from "~/components/AppShell";
 import { KeyboardHelp } from "~/components/KeyboardHelp";
+import { CommandPalette } from "~/features/palette/CommandPalette";
 import { useGo } from "~/lib/nav";
 import { useDarkClassSync } from "~/lib/theme";
 import { makeQueryClient, makeTRPCClient, TRPCProvider } from "~/lib/trpc";
@@ -81,6 +82,7 @@ function Shell() {
 		<AppShell project={params.project} activePath={pathname} navigate={go}>
 			<Outlet />
 			<KeyboardHelp />
+			<CommandPalette project={params.project} />
 		</AppShell>
 	);
 }

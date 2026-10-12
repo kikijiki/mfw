@@ -53,8 +53,6 @@ interface Look {
 	/** A CSS custom property name from tokens.css, never a literal color. */
 	token: string;
 	label?: string;
-	/** Live states pulse so a stalled board is visibly not a running one. */
-	live?: boolean;
 }
 
 const TASK_LOOK: Record<TaskStatus, Look> = {
@@ -64,7 +62,6 @@ const TASK_LOOK: Record<TaskStatus, Look> = {
 	in_progress: {
 		icon: CircleDot,
 		token: "--mfw-status-in-progress",
-		live: true,
 	},
 	blocked: { icon: CircleSlash, token: "--mfw-status-blocked" },
 	review: { icon: Eye, token: "--mfw-status-review" },
@@ -74,10 +71,10 @@ const TASK_LOOK: Record<TaskStatus, Look> = {
 
 const RUN_LOOK: Record<RunState, Look> = {
 	starting: { icon: Hourglass, token: "--mfw-neutral" },
-	running: { icon: Play, token: "--mfw-status-in-progress", live: true },
+	running: { icon: Play, token: "--mfw-status-in-progress" },
 	ended: { icon: CircleStop, token: "--mfw-neutral" },
-	finalizing: { icon: Wrench, token: "--mfw-info", live: true },
-	merging: { icon: GitMerge, token: "--mfw-info", live: true },
+	finalizing: { icon: Wrench, token: "--mfw-info" },
+	merging: { icon: GitMerge, token: "--mfw-info" },
 	completed: { icon: CircleCheck, token: "--mfw-ok" },
 	failed: { icon: CircleX, token: "--mfw-critical" },
 	killed: { icon: Ban, token: "--mfw-warn" },
@@ -119,7 +116,7 @@ export function StatusPill(props: StatusPillProps) {
 			<Icon
 				aria-label={label}
 				role="img"
-				className={cn("size-3.5 shrink-0", look.live && "mfw-pulse", className)}
+				className={cn("size-3.5 shrink-0", className)}
 				style={{ color: `var(${look.token})` }}
 			/>
 		);
@@ -140,10 +137,7 @@ export function StatusPill(props: StatusPillProps) {
 				fontSize: "var(--mfw-text-2xs)",
 			}}
 		>
-			<Icon
-				aria-hidden
-				className={cn("size-3 shrink-0", look.live && "mfw-pulse")}
-			/>
+			<Icon aria-hidden className="size-3 shrink-0" />
 			{label}
 		</span>
 	);

@@ -1,0 +1,271 @@
+{
+  "generatedAt": "2026-10-12T15:33:28.335Z",
+  "commit": "ea07b6b",
+  "scale": 2,
+  "themes": [
+    "dark"
+  ],
+  "screenshots": [
+    {
+      "name": "add-project-board",
+      "title": "Add project: board",
+      "path": "add-project-board-dark-1440x900.png",
+      "file": "add-project-board-dark-1440x900.png",
+      "viewport": {
+        "w": 1440,
+        "h": 900
+      },
+      "scale": 2,
+      "theme": "dark",
+      "route": "/"
+    },
+    {
+      "name": "add-project",
+      "title": "Add project: repository",
+      "path": "add-project-dark-1440x900.png",
+      "file": "add-project-dark-1440x900.png",
+      "viewport": {
+        "w": 1440,
+        "h": 900
+      },
+      "scale": 2,
+      "theme": "dark",
+      "route": "/"
+    },
+    {
+      "name": "board-columns",
+      "title": "Board, columns layout",
+      "path": "board-columns-dark-1440x900.png",
+      "file": "board-columns-dark-1440x900.png",
+      "viewport": {
+        "w": 1440,
+        "h": 900
+      },
+      "scale": 2,
+      "theme": "dark",
+      "route": "/p/harbor-api/board"
+    },
+    {
+      "name": "board-inspector",
+      "title": "Board with the task inspector docked (Story)",
+      "path": "board-inspector-dark-1440x900.png",
+      "file": "board-inspector-dark-1440x900.png",
+      "viewport": {
+        "w": 1440,
+        "h": 900
+      },
+      "scale": 2,
+      "theme": "dark",
+      "route": "/p/harbor-api/board?node=task:HARBORAPI-4&tab=story"
+    },
+    {
+      "name": "board",
+      "title": "Board",
+      "path": "board-dark-1440x900.png",
+      "file": "board-dark-1440x900.png",
+      "viewport": {
+        "w": 1440,
+        "h": 900
+      },
+      "scale": 2,
+      "theme": "dark",
+      "route": "/p/harbor-api/board"
+    },
+    {
+      "name": "brain",
+      "title": "Brain inspector: decisions",
+      "path": "brain-dark-1440x900.png",
+      "file": "brain-dark-1440x900.png",
+      "viewport": {
+        "w": 1440,
+        "h": 900
+      },
+      "scale": 2,
+      "theme": "dark",
+      "route": "/p/harbor-api/flow?node=brain&w=7d"
+    },
+    {
+      "name": "docs",
+      "title": "Docs",
+      "path": "docs-dark-1440x900.png",
+      "file": "docs-dark-1440x900.png",
+      "viewport": {
+        "w": 1440,
+        "h": 900
+      },
+      "scale": 2,
+      "theme": "dark",
+      "route": "/p/harbor-api/docs"
+    },
+    {
+      "name": "fleet",
+      "title": "Fleet: hosts, accounts, budgets, usage",
+      "path": "fleet-dark-1440x900.png",
+      "file": "fleet-dark-1440x900.png",
+      "viewport": {
+        "w": 1440,
+        "h": 900
+      },
+      "scale": 2,
+      "theme": "dark",
+      "route": "/fleet"
+    },
+    {
+      "name": "flow-run",
+      "title": "Flow with a run inspector",
+      "path": "flow-run-dark-1440x900.png",
+      "file": "flow-run-dark-1440x900.png",
+      "viewport": {
+        "w": 1440,
+        "h": 900
+      },
+      "scale": 2,
+      "theme": "dark",
+      "route": "/p/harbor-api/flow?node=run:01M4RACHBKN662F1DAAMF4QBBX&w=7d"
+    },
+    {
+      "name": "flow",
+      "title": "Flow: work tree and timeline",
+      "path": "flow-dark-1440x900.png",
+      "file": "flow-dark-1440x900.png",
+      "viewport": {
+        "w": 1440,
+        "h": 900
+      },
+      "scale": 2,
+      "theme": "dark",
+      "route": "/p/harbor-api/flow?w=7d"
+    },
+    {
+      "name": "group-compare",
+      "title": "Competing attempts, compared",
+      "path": "group-compare-dark-1440x900.png",
+      "file": "group-compare-dark-1440x900.png",
+      "viewport": {
+        "w": 1440,
+        "h": 900
+      },
+      "scale": 2,
+      "theme": "dark",
+      "route": "/p/harbor-api/flow?node=group:01M4RA1HSK4Z25EXTA9M4JM4X6&w=7d"
+    },
+    {
+      "name": "home",
+      "title": "Home: needs you, live runs, since you left",
+      "path": "home-dark-1440x900.png",
+      "file": "home-dark-1440x900.png",
+      "viewport": {
+        "w": 1440,
+        "h": 900
+      },
+      "scale": 2,
+      "theme": "dark",
+      "route": "/"
+    },
+    {
+      "name": "palette",
+      "title": "Command palette",
+      "path": "palette-dark-1440x900.png",
+      "file": "palette-dark-1440x900.png",
+      "viewport": {
+        "w": 1440,
+        "h": 900
+      },
+      "scale": 2,
+      "theme": "dark",
+      "route": "/p/harbor-api/board"
+    },
+    {
+      "name": "phone-board",
+      "title": "Board on a phone",
+      "path": "phone-board-dark-390x844.png",
+      "file": "phone-board-dark-390x844.png",
+      "viewport": {
+        "w": 390,
+        "h": 844
+      },
+      "scale": 2,
+      "theme": "dark",
+      "route": "/p/harbor-api/board"
+    },
+    {
+      "name": "phone-home",
+      "title": "Home on a phone",
+      "path": "phone-home-dark-390x844.png",
+      "file": "phone-home-dark-390x844.png",
+      "viewport": {
+        "w": 390,
+        "h": 844
+      },
+      "scale": 2,
+      "theme": "dark",
+      "route": "/"
+    },
+    {
+      "name": "repo",
+      "title": "Repo: files with the README rendered",
+      "path": "repo-dark-1440x900.png",
+      "file": "repo-dark-1440x900.png",
+      "viewport": {
+        "w": 1440,
+        "h": 900
+      },
+      "scale": 2,
+      "theme": "dark",
+      "route": "/p/harbor-api/repo?file=README.md"
+    },
+    {
+      "name": "settings",
+      "title": "Project settings",
+      "path": "settings-dark-1440x900.png",
+      "file": "settings-dark-1440x900.png",
+      "viewport": {
+        "w": 1440,
+        "h": 900
+      },
+      "scale": 2,
+      "theme": "dark",
+      "route": "/p/harbor-api/settings"
+    },
+    {
+      "name": "sidebar-collapsed",
+      "title": "Collapsed sidebar rail",
+      "path": "sidebar-collapsed-dark-1440x900.png",
+      "file": "sidebar-collapsed-dark-1440x900.png",
+      "viewport": {
+        "w": 1440,
+        "h": 900
+      },
+      "scale": 2,
+      "theme": "dark",
+      "route": "/p/harbor-api/board"
+    },
+    {
+      "name": "task-changes",
+      "title": "Changes: the diff of a task in review",
+      "path": "task-changes-dark-1440x900.png",
+      "file": "task-changes-dark-1440x900.png",
+      "viewport": {
+        "w": 1440,
+        "h": 900
+      },
+      "scale": 2,
+      "theme": "dark",
+      "route": "/p/harbor-api/n/task:HARBORAPI-5?tab=changes"
+    },
+    {
+      "name": "task-definition",
+      "title": "Task definition",
+      "path": "task-definition-dark-1440x900.png",
+      "file": "task-definition-dark-1440x900.png",
+      "viewport": {
+        "w": 1440,
+        "h": 900
+      },
+      "scale": 2,
+      "theme": "dark",
+      "route": "/p/harbor-api/n/task:HARBORAPI-5?tab=definition"
+    }
+  ],
+  "skipped": []
+}

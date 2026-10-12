@@ -1,0 +1,1 @@
+ALTER TABLE `runs` ADD `transcript_summary` text;

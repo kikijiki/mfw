@@ -1,35 +1,31 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
-import { type FilesLocation, FilesPage } from "~/features/files/FilesPage";
+import { href } from "~/routes";
 
 /**
- * The workspace browser. All three coordinates are URL state: `run` picks the
- * base (project root when absent), `path` is the open directory and `file` the
- * open file.
+ * The workspace browser moved under the repository view
+ * (`/p/$project/repo/files`). This path survives so bookmarks, notifications
+ * and old links keep working; `run`, `path` and `file` are carried over.
  */
 export const Route = createFileRoute("/p/$project/files")({
-	validateSearch: (search: Record<string, unknown>): FilesLocation => ({
+	validateSearch: (
+		search: Record<string, unknown>,
+	): { run?: string; path?: string; file?: string } => ({
 		run: asPath(search.run),
 		path: asPath(search.path),
 		file: asPath(search.file),
 	}),
-	component: FilesRoute,
+	beforeLoad: ({ params, search }) => {
+		throw redirect({
+			to: href.files(params.project, search),
+			replace: true,
+		});
+	},
 });
 
-/**
- * The router's search parser coerces bare numbers and `true`/`false`
- * (`router-core/qss.ts`), so a directory named `2024` arrives as a number.
- * Stringify it back so such paths stay openable.
- */
 function asPath(value: unknown): string | undefined {
 	if (typeof value === "number" || typeof value === "boolean") {
 		return String(value);
 	}
 	return typeof value === "string" && value ? value : undefined;
-}
-
-function FilesRoute() {
-	const { project } = Route.useParams();
-	const at = Route.useSearch();
-	return <FilesPage project={project} at={at} />;
 }

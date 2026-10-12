@@ -22,6 +22,12 @@ export interface DispatchStatusLike {
 	running: boolean;
 	enabled: boolean;
 	state: DispatchState;
+	/**
+	 * Set when no switch can start work: the project has no brain route
+	 * (`brain.routes`), so nothing decides what runs. Reported with state
+	 * `held`; this field is what names it.
+	 */
+	blocked?: "no_brain_route" | null;
 	reason: string | null;
 	/** The engine stopped itself; pressing play will not clear it. */
 	selfStopped: boolean;
@@ -36,8 +42,13 @@ export interface DispatchStatusLike {
 
 export type Tone = "neutral" | "accent" | "ok" | "warn" | "critical" | "info";
 
+/** The one sentence for a project with no brain route; the UI links it to project settings. */
+export const NO_BRAIN_HINT =
+	"Brain not configured \u2014 set brain.routes in project settings";
+
 /** The two-or-three word chip. */
 export function dispatchLabel(status: DispatchStatusLike): string {
+	if (status.blocked === "no_brain_route") return "Brain not configured";
 	switch (status.state) {
 		case "dispatching":
 			return "Dispatching";
@@ -56,6 +67,7 @@ export function dispatchLabel(status: DispatchStatusLike): string {
 
 /** Manual stops are neutral; a hold or red main is the engine refusing to spend, which play cannot fix. */
 export function dispatchTone(status: DispatchStatusLike): Tone {
+	if (status.blocked === "no_brain_route") return "warn";
 	switch (status.state) {
 		case "dispatching":
 			return "ok";
@@ -74,6 +86,9 @@ export function dispatchTone(status: DispatchStatusLike): Tone {
 
 /** The full sentence. Every non-dispatching state says WHO stopped it: play does nothing against a hold, and a manual stop never clears itself. */
 export function dispatchExplain(status: DispatchStatusLike): string {
+	if (status.blocked === "no_brain_route") {
+		return `${NO_BRAIN_HINT}. Nothing starts until a brain route is configured; there is no headless fallback.`;
+	}
 	const because = status.reason ? `: ${status.reason}` : "";
 	switch (status.state) {
 		case "dispatching":

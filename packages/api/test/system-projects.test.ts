@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Orchestrator, ProjectServices } from "@mfw/daemon/services";
@@ -81,6 +81,45 @@ describe("the project repository picker", () => {
 
 		expect(attachedName).toBe("demo-2");
 		expect(result.name).toBe("demo-2");
+	});
+
+	test("passes the board template and board folder to attach, and can create the folder", async () => {
+		const root = await mkdtemp(join(tmpdir(), "mfw-project-"));
+		scratch.push(root);
+		const repo = join(root, "demo");
+		await mkdir(repo);
+		const boards = join(root, "boards");
+		await mkdir(boards);
+		const boardRoot = join(boards, "demo-board");
+		let seen: Record<string, unknown> = {};
+		const api = caller([], async (config) => {
+			seen = { ...config };
+			return {
+				name: config.name,
+				root: config.root,
+				integrationBranch: "main",
+			} as ProjectServices;
+		});
+
+		await api.system.addProject({
+			root: repo,
+			boardRoot,
+			template: "kanban",
+			createBoardFolder: true,
+		});
+
+		expect(seen.template).toBe("kanban");
+		expect(seen.boardRoot).toBe(boardRoot);
+		expect(seen).not.toHaveProperty("createBoardFolder");
+		expect((await stat(boardRoot)).isDirectory()).toBe(true);
+
+		await expect(
+			api.system.addProject({
+				root: repo,
+				boardRoot: join(root, "no-parent", "board"),
+				createBoardFolder: true,
+			}),
+		).rejects.toThrow("cannot create");
 	});
 
 	test("removes an attachment without exposing a data-deletion option", async () => {

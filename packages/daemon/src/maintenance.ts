@@ -14,16 +14,21 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { ProjectDbHandle } from "@mfw/db/client";
 import { appendEvent, type EventBus } from "@mfw/db/eventlog";
-import { engineKv, events as eventRows } from "@mfw/db/schema";
+import { engineKv, events as eventRows, runs } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
 import { git } from "./git.ts";
 import type { Logger } from "./log.ts";
 import { runProc } from "./proc.ts";
 import { loadReopenPolicies, reopenDefinitionHash } from "./reopen-policy.ts";
-import { CLAIM_HOLDING_RUN_STATES, type RunRegistry } from "./run-registry.ts";
+import {
+	CLAIM_HOLDING_RUN_STATES,
+	type RunRegistry,
+	type RunRow,
+} from "./run-registry.ts";
 import type { RaiseInput } from "./session.ts";
 import type { TaskService } from "./task-service.ts";
 import type { DefinitionOfDone, DoDCheck } from "./tasks/types.ts";
+import { summarizeTranscript } from "./transcript-summary.ts";
 import {
 	describeVerificationEnvironment,
 	type EnvPolicy,
@@ -79,12 +84,8 @@ export interface MaintenanceDeps {
 	/** Renewal window applied to a live run's lease during a groom pass. */
 	leaseMs?: number;
 	now?: () => number;
-	/** Late-bound to `RunEngine.startPlan(prompt, {taskId})` (Maintenance is built first). Absent disables `expandDrafts`. */
-	startExpand?: (taskId: string, prompt: string) => Promise<{ runId: string }>;
-	/** Late-bound to the scheduler's `status().playing` (project and global); `expandDrafts` only runs while playing. Absent always dispatches. */
+	/** Late-bound to the scheduler's `status().playing` (project and global); command reopening only runs while playing. Absent always dispatches. */
 	dispatching?: () => Promise<boolean>;
-	/** System-wide cap on simultaneous draft-expansion runs (default 1). */
-	maxConcurrentDraftExpansions?: number;
 	/** Advisory second opinion for a sweep failure neither `result.crashed` nor `isInfrastructural` placed. Absent or `enabled: false` treats it as a regression. */
 	diagnose?: DiagnosePort;
 	/** Raises a pre-loaded human session when a regression crosses `ESCALATE_AFTER_SWEEPS`. Absent skips it; `main_red` is unaffected. */
@@ -95,6 +96,12 @@ export interface MaintenanceDeps {
 		incidentId: string,
 		detail: string,
 	) => Promise<{ runId: string } | null>;
+	/**
+	 * Which terminal run directories gc keeps (`maintenance.runRetention`): any
+	 * run that finished within `days`, plus the newest `keep` regardless of age.
+	 * Defaults: 30 days, 200 runs.
+	 */
+	runRetention?: { days?: number; keep?: number };
 }
 
 export interface SweepResult {
@@ -118,6 +125,10 @@ interface TrackedRegression {
 
 /** Sweeps a regression survives before self-repair is disabled and a human is asked. Exported so `InboxService` uses the same threshold for persistent infra failures. */
 export const ESCALATE_AFTER_SWEEPS = 3;
+
+/** gc keeps the newest N terminal run directories, and any younger than D days. */
+export const DEFAULT_RUN_KEEP = 200;
+export const DEFAULT_RUN_RETENTION_DAYS = 30;
 
 /** Persisted infra alarm; `engineKv` value for `sweep_infra` and `verify_infra`. */
 export interface InfraState {
@@ -199,6 +210,8 @@ export const REOPEN_CHECK_INTERVAL_MS = 10 * 60_000;
 export interface GcResult {
 	runDirsPruned: number;
 	worktreesRemoved: number;
+	/** Merged `mfw/<runId>` branches of finished runs (never `wip/*`). */
+	branchesDeleted: number;
 }
 
 export class Maintenance {
@@ -1353,58 +1366,23 @@ export class Maintenance {
 	}
 
 	/**
-	 * Start (or retry) an expansion pass for every `draft` not already
-	 * mid-expansion. Gated on the same `dispatching` switch as the scheduler. The
-	 * per-task attempt cap is `TaskService.recordDraftExpandFailure`;
-	 * `maxConcurrentDraftExpansions` caps starts per sweep.
-	 */
-	async expandDrafts(): Promise<{ started: string[] }> {
-		if (!this.deps.startExpand) return { started: [] };
-		if (this.deps.dispatching && !(await this.deps.dispatching())) {
-			return { started: [] };
-		}
-		const cap = this.deps.maxConcurrentDraftExpansions ?? 1;
-		const live = await this.deps.registry.list({
-			kinds: ["plan"],
-			states: [...CLAIM_HOLDING_RUN_STATES],
-		});
-		const busy = new Set(
-			live.filter((r) => r.taskId != null).map((r) => r.taskId as string),
-		);
-		let inFlight = busy.size;
-		const started: string[] = [];
-		if (inFlight >= cap) return { started };
-
-		const drafts = (await this.deps.tasks.list()).filter(
-			(t) =>
-				t.status === "draft" &&
-				(t.draftPhase === "queued" || t.draftPhase === "retrying"),
-		);
-		for (const t of drafts) {
-			if (inFlight >= cap) break;
-			if (busy.has(t.id)) continue;
-			const prompt = t.draftPrompt || t.body || t.title;
-			try {
-				await this.deps.startExpand(t.id, prompt);
-				started.push(t.id);
-				inFlight++;
-			} catch (e) {
-				this.deps.log.error(
-					{ err: e, taskId: t.id },
-					"draft expansion failed to start",
-				);
-			}
-		}
-		return { started };
-	}
-
-	/**
 	 * Bounded history: prune old terminal run directories, and remove only
 	 * positively owned, clean, integrated worktrees no live run or preserved-work
-	 * pointer still references. Historical rows never authorize branch deletion.
+	 * pointer still references. A historical row never authorizes deleting an
+	 * unmerged branch; a finished run's `mfw/` branch whose tip the integration
+	 * branch already contains is deleted, since that loses nothing.
 	 */
-	async gc(opts: { keepRuns?: number } = {}): Promise<GcResult> {
-		const keepRuns = opts.keepRuns ?? 200;
+	async gc(
+		opts: { keepRuns?: number; retentionDays?: number } = {},
+	): Promise<GcResult> {
+		const keepRuns =
+			opts.keepRuns ?? this.deps.runRetention?.keep ?? DEFAULT_RUN_KEEP;
+		const retentionDays =
+			opts.retentionDays ??
+			this.deps.runRetention?.days ??
+			DEFAULT_RUN_RETENTION_DAYS;
+		const cutoff =
+			(this.deps.now?.() ?? Date.now()) - retentionDays * 86_400_000;
 		const allRuns = await this.deps.registry.list({});
 		const pendingCleanup = new Set<string>();
 		for (const run of allRuns) {
@@ -1431,10 +1409,32 @@ export class Maintenance {
 		let runDirsPruned = 0;
 		for (const run of terminal.slice(keepRuns)) {
 			if (pendingCleanup.has(run.id)) continue;
-			await rm(this.deps.registry.runDir(run.id), {
-				recursive: true,
-				force: true,
-			});
+			// Younger than the retention window: kept regardless of count.
+			if ((run.finishedAt ?? run.startedAt).getTime() > cutoff) continue;
+			const dir = this.deps.registry.runDir(run.id);
+			// The summary is written first; a run whose summary cannot be
+			// recorded keeps its transcript for the next pass.
+			if (run.transcriptSummary === null) {
+				try {
+					const summary = await summarizeTranscript(
+						join(dir, "events.jsonl"),
+						this.deps.now?.() ?? Date.now(),
+					);
+					await this.deps.handle.db
+						.update(runs)
+						.set({
+							transcriptSummary: summary as unknown as Record<string, unknown>,
+						})
+						.where(eq(runs.id, run.id));
+				} catch (e) {
+					this.deps.log.warn(
+						{ err: e, runId: run.id },
+						"transcript summary failed; keeping the run directory",
+					);
+					continue;
+				}
+			}
+			await rm(dir, { recursive: true, force: true });
 			runDirsPruned++;
 		}
 
@@ -1550,19 +1550,86 @@ export class Maintenance {
 		}
 		await git(["worktree", "prune"], this.deps.projectRoot);
 
-		// Branch refs are deleted only with a freshly proven owned worktree (compare-and-delete); historical rows never authorize it, since a human may have recreated the branch name.
-		return { runDirsPruned, worktreesRemoved };
+		const branchesDeleted = await this.gcMergedBranches(
+			allRuns,
+			liveRuns,
+			keepPaths,
+		);
+		return { runDirsPruned, worktreesRemoved, branchesDeleted };
 	}
 
-	/** The scheduler's maintenance hook: everything, failures logged not hidden. */
-	async tick(signal?: AbortSignal): Promise<void> {
-		for (const [name, fn] of [
+	/**
+	 * Delete `mfw/<runId>` branches that can lose nothing: the run row exists
+	 * and is finished, no worktree has the branch checked out, nothing keeps
+	 * the run's worktree (live, preserved, awaiting a human), and the tip is
+	 * already contained in the integration branch. Deletion is
+	 * compare-and-delete on the tip just checked. `wip/*` and every other
+	 * namespace are never touched; an unmerged branch is never deleted.
+	 */
+	private async gcMergedBranches(
+		allRuns: RunRow[],
+		liveRuns: RunRow[],
+		keepPaths: Set<string>,
+	): Promise<number> {
+		const root = this.deps.projectRoot;
+		const refs = await git(
+			["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/mfw/"],
+			root,
+		);
+		if (refs.exitCode !== 0 || !refs.stdout) return 0;
+		const checkedOut = new Set(
+			(await git(["worktree", "list", "--porcelain"], root)).stdout
+				.split("\n")
+				.filter((line) => line.startsWith("branch "))
+				.map((line) => line.slice("branch ".length)),
+		);
+		const byId = new Map(allRuns.map((run) => [run.id, run]));
+		const live = new Set(liveRuns.map((run) => run.id));
+		let deleted = 0;
+		for (const line of refs.stdout.split("\n")) {
+			const [ref, sha] = line.split(" ");
+			if (!ref || !sha || checkedOut.has(ref)) continue;
+			const runId = ref.slice("refs/heads/mfw/".length);
+			const run = byId.get(runId);
+			if (!run || run.branch !== `mfw/${runId}` || live.has(run.id)) continue;
+			if (run.worktreePath && keepPaths.has(resolve(run.worktreePath)))
+				continue;
+			const integrated = await git(
+				[
+					"merge-base",
+					"--is-ancestor",
+					sha,
+					`refs/heads/${run.integrationBranch ?? this.deps.integrationBranch}`,
+				],
+				root,
+			);
+			if (integrated.exitCode !== 0) continue;
+			const removed = await git(["update-ref", "-d", ref, sha], root);
+			if (removed.exitCode === 0) deleted++;
+		}
+		return deleted;
+	}
+
+	/**
+	 * The supervisor's maintenance hook, failures logged not hidden. Exclusive
+	 * (the default, no provider run live) runs everything. Non-exclusive runs
+	 * only the cheap steps, groom and gc; operator commands and the regression
+	 * sweep wait for an idle pass. Draft expansion is not a maintenance step:
+	 * the brain spawns a `plan`-role run for each draft.
+	 */
+	async tick(
+		signal?: AbortSignal,
+		opts: { exclusive?: boolean } = {},
+	): Promise<void> {
+		const exclusive = opts.exclusive ?? true;
+		const steps = [
 			["groom", () => this.groom()],
 			["reopenByCommand", () => this.reopenByCommand(signal)],
-			["expandDrafts", () => this.expandDrafts()],
 			["gc", () => this.gc()],
 			["regressionSweep", () => this.regressionSweep(25, signal)],
-		] as const) {
+		] as const;
+		for (const [name, fn] of steps) {
+			if (!exclusive && name !== "groom" && name !== "gc") continue;
 			try {
 				const result = await fn();
 				this.deps.log.debug({ maintenance: name, result }, "maintenance step");

@@ -1,11 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
-import {
-	redactSecretValues,
-	SecretEnvironment,
-} from "./execution-environment.ts";
+import { SecretEnvironment } from "./execution-environment.ts";
 import type {
 	CollectExecutionResult,
 	DisposeExecutionResult,
@@ -24,6 +20,15 @@ import {
 	RemoteTransportError,
 	RunPodSshTransport,
 } from "./remote-agent-host.ts";
+import {
+	assertCollectionHasNoSecrets,
+	assertPublicEnvironmentHasNoCredentials,
+	bundledRemoteRuntime,
+	bundleRemoteSupport,
+	RemoteEvidenceSecretsUnavailableError,
+	remoteErrorCode,
+	syncRemoteArtifacts,
+} from "./remote-execution-support.ts";
 import { applyRemoteCollection, createRemoteStage } from "./remote-worktree.ts";
 import type {
 	RunPodAccountService,
@@ -35,6 +40,11 @@ import {
 	mfwRunPodCpuBootstrapCommand,
 } from "./runpod-runtime.ts";
 import { type Worktree, WorktreeManager } from "./worktree.ts";
+
+export {
+	RemoteEvidenceSecretsUnavailableError,
+	RemoteSecretLeakError,
+} from "./remote-execution-support.ts";
 
 const DEFAULT_READINESS_MS = 10 * 60_000;
 const DEFAULT_TRANSFER_BYTES = 64 * 1024 * 1024;
@@ -104,107 +114,6 @@ function paths(ref: string, remoteRoot: string): RemotePaths {
 		bridge: `${root}/support/bridge.js`,
 		config: `${root}/support/runtime-config.json`,
 	};
-}
-
-async function bundle(entrypoint: string): Promise<Uint8Array> {
-	if (!isAbsolute(entrypoint))
-		throw new Error("remote support entrypoint is not absolute");
-	const built = await Bun.build({
-		entrypoints: [entrypoint],
-		target: "bun",
-		format: "esm",
-		minify: false,
-		sourcemap: "none",
-	});
-	if (!built.success || !built.outputs[0]) {
-		throw new Error("could not bundle remote execution support");
-	}
-	return new Uint8Array(await built.outputs[0].arrayBuffer());
-}
-
-function runtimeEntrypoint(): string {
-	return fileURLToPath(new URL("./runpod-remote-runtime.ts", import.meta.url));
-}
-
-let runtimeBundle: Promise<Uint8Array> | undefined;
-function bundledRuntime(): Promise<Uint8Array> {
-	runtimeBundle ??= bundle(runtimeEntrypoint());
-	return runtimeBundle;
-}
-
-function errorCode(error: unknown): string {
-	return error instanceof RemoteTransportError
-		? error.failure
-		: error instanceof Error
-			? error.name
-			: "unknown";
-}
-
-function assertPublicEnvironmentHasNoCredentials(
-	environment: Readonly<Record<string, string>>,
-): void {
-	const unsafe = Object.keys(environment).filter(
-		(name) =>
-			/(?:^|_)(?:API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS?)$/i.test(name) ||
-			name.toUpperCase().startsWith("RUNPOD"),
-	);
-	if (unsafe.length > 0) {
-		throw new Error(
-			`remote public environment contains credential-like names: ${unsafe.sort().join(", ")}`,
-		);
-	}
-}
-
-export class RemoteSecretLeakError extends Error {
-	constructor() {
-		super("remote collection contains a workload secret and was rejected");
-		this.name = "RemoteSecretLeakError";
-	}
-}
-
-export class RemoteEvidenceSecretsUnavailableError extends Error {
-	constructor() {
-		super(
-			"remote evidence cannot be synchronized because workload secrets are unavailable",
-		);
-		this.name = "RemoteEvidenceSecretsUnavailableError";
-	}
-}
-
-function assertCollectionHasNoSecrets(
-	bytes: Uint8Array,
-	secrets: SecretEnvironment,
-): void {
-	if (secrets.isEmpty()) return;
-	const materialized = secrets.materializeForLaunch();
-	const text = new TextDecoder().decode(bytes);
-	if (
-		Object.values(materialized).some((value) => value && text.includes(value))
-	) {
-		throw new RemoteSecretLeakError();
-	}
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(text);
-	} catch {
-		return;
-	}
-	if (!parsed || typeof parsed !== "object" || !("snapshot" in parsed)) return;
-	const snapshot = (parsed as { snapshot?: unknown }).snapshot;
-	if (!Array.isArray(snapshot)) return;
-	for (const item of snapshot) {
-		if (!item || typeof item !== "object") continue;
-		const content = (item as { content?: unknown }).content;
-		if (typeof content !== "string") continue;
-		const decoded = Buffer.from(content, "base64").toString("utf8");
-		if (
-			Object.values(materialized).some(
-				(value) => value && decoded.includes(value),
-			)
-		) {
-			throw new RemoteSecretLeakError();
-		}
-	}
 }
 
 /** Provider capacity + secure SSH expressed through the shared target contract. */
@@ -329,9 +238,9 @@ export class RunPodExecutionTarget implements ExecutionTarget {
 		const [stageBytes, runtimeBytes, driverBytes, bridgeBytes] =
 			await Promise.all([
 				readFile(staged.stagePath),
-				bundledRuntime(),
-				bundle(request.driver.driverScript),
-				bridgeLocal ? bundle(bridgeLocal) : Promise.resolve(null),
+				bundledRemoteRuntime(),
+				bundleRemoteSupport(request.driver.driverScript),
+				bridgeLocal ? bundleRemoteSupport(bridgeLocal) : Promise.resolve(null),
 			]);
 		await transport.upload(remote.stage, stageBytes);
 		await transport.upload(remote.runtime, runtimeBytes);
@@ -589,7 +498,10 @@ export class RunPodExecutionTarget implements ExecutionTarget {
 					observation: await this.observe(ref),
 				});
 			} catch (error) {
-				errors.push({ ownerKey: ref.owner.ownerKey, code: errorCode(error) });
+				errors.push({
+					ownerKey: ref.owner.ownerKey,
+					code: remoteErrorCode(error),
+				});
 			}
 		}
 		return { observations, errors };
@@ -685,31 +597,13 @@ export class RunPodExecutionTarget implements ExecutionTarget {
 		localRunDir: string,
 		secrets: SecretEnvironment | undefined,
 	): Promise<void> {
-		for (const name of ["events.jsonl", "raw.log", "exit"] as const) {
-			let bytes: Uint8Array;
-			try {
-				bytes = await transport.download(`${remote.runDir}/${name}`);
-			} catch (error) {
-				if (
-					error instanceof RemoteTransportError &&
-					error.failure === "remote_exit"
-				)
-					continue;
-				throw error;
-			}
-			if (bytes.byteLength > this.maxTransferBytes) {
-				throw new Error(`remote ${name} exceeds the configured transfer bound`);
-			}
-			const safeBytes =
-				!secrets || secrets.isEmpty()
-					? bytes
-					: new TextEncoder().encode(
-							redactSecretValues(new TextDecoder().decode(bytes), secrets),
-						);
-			await writeFileAtomic(join(localRunDir, name), safeBytes, {
-				mode: 0o600,
-			});
-		}
+		await syncRemoteArtifacts(
+			transport,
+			remote.runDir,
+			localRunDir,
+			secrets,
+			this.maxTransferBytes,
+		);
 	}
 }
 

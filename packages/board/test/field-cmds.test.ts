@@ -132,11 +132,11 @@ describe("scalar commands", () => {
 	});
 });
 
-describe("check command", () => {
+describe("checklist command", () => {
 	test("add prints the item id; toggle/done/undone/edit/remove", async () => {
 		const d = await board();
 		const a = await mfwb(d, [
-			"check",
+			"checklist",
 			"TK-1",
 			"acceptance",
 			"add",
@@ -146,7 +146,7 @@ describe("check command", () => {
 		expect(a.code).toBe(0);
 		expect(a.stdout).toContain("added c1");
 		const j = await mfwb(d, [
-			"check",
+			"checklist",
 			"TK-1",
 			"acceptance",
 			"add",
@@ -154,15 +154,22 @@ describe("check command", () => {
 			"--json",
 		]);
 		expect(JSON.parse(j.stdout).itemId).toBe("c2");
-		await mfwb(d, ["check", "TK-1", "acceptance", "toggle", "c1"]);
-		await mfwb(d, ["check", "TK-1", "acceptance", "done", "ship"]);
-		await mfwb(d, ["check", "TK-1", "acceptance", "undone", "ship"]);
-		await mfwb(d, ["check", "TK-1", "acceptance", "edit", "c2", "release it"]);
+		await mfwb(d, ["checklist", "TK-1", "acceptance", "toggle", "c1"]);
+		await mfwb(d, ["checklist", "TK-1", "acceptance", "done", "ship"]);
+		await mfwb(d, ["checklist", "TK-1", "acceptance", "undone", "ship"]);
+		await mfwb(d, [
+			"checklist",
+			"TK-1",
+			"acceptance",
+			"edit",
+			"c2",
+			"release it",
+		]);
 		expect((await fields(d)).acceptance).toEqual([
 			{ id: "c1", text: "write tests", done: true },
 			{ id: "c2", text: "release it", done: false },
 		]);
-		await mfwb(d, ["check", "TK-1", "acceptance", "remove", "c1"]);
+		await mfwb(d, ["checklist", "TK-1", "acceptance", "remove", "c1"]);
 		expect(((await fields(d)).acceptance as unknown[]).length).toBe(1);
 		const raw = await readFile(join(d, "tasks", "TK-1.md"), "utf8");
 		expect(raw).toContain("  - id: c2\n    text: release it\n    done: false");
@@ -170,10 +177,10 @@ describe("check command", () => {
 
 	test("ambiguous and missing selectors list candidates", async () => {
 		const d = await board();
-		await mfwb(d, ["check", "TK-1", "acceptance", "add", "write a"]);
-		await mfwb(d, ["check", "TK-1", "acceptance", "add", "write b"]);
+		await mfwb(d, ["checklist", "TK-1", "acceptance", "add", "write a"]);
+		await mfwb(d, ["checklist", "TK-1", "acceptance", "add", "write b"]);
 		const amb = await mfwb(d, [
-			"check",
+			"checklist",
 			"TK-1",
 			"acceptance",
 			"toggle",
@@ -183,10 +190,12 @@ describe("check command", () => {
 		expect(amb.stderr).toContain('c1 "write a"');
 		expect(amb.stderr).toContain('c2 "write b"');
 		expect(
-			(await mfwb(d, ["check", "TK-1", "acceptance", "toggle", "zzz"])).stderr,
+			(await mfwb(d, ["checklist", "TK-1", "acceptance", "toggle", "zzz"]))
+				.stderr,
 		).toContain("no checklist item");
 		expect(
-			(await mfwb(d, ["check", "TK-1", "acceptance", "frobnicate", "x"])).code,
+			(await mfwb(d, ["checklist", "TK-1", "acceptance", "frobnicate", "x"]))
+				.code,
 		).toBe(2);
 	});
 
@@ -256,7 +265,7 @@ describe("verbs", () => {
 			"dec",
 			"toggle",
 			"unset",
-			"check",
+			"checklist",
 			"note",
 			"row",
 		]) {
@@ -274,13 +283,13 @@ describe("argument parsing", () => {
 		return JSON.parse((await mfwb(d, ["show", "--json", "TK-1"])).stdout).body;
 	}
 
-	test("-- makes the rest positional text (note, check add)", async () => {
+	test("-- makes the rest positional text (note, checklist add)", async () => {
 		const d = await board();
 		const n = await mfwb(d, ["note", "TK-1", "--", "--weird text a=b ~c"]);
 		expect(n.code).toBe(0);
 		expect(await bodyOf(d)).toContain("--weird text a=b ~c");
 		const c = await mfwb(d, [
-			"check",
+			"checklist",
 			"TK-1",
 			"acceptance",
 			"add",

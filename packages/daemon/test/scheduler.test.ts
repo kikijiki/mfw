@@ -5,18 +5,29 @@ import { join } from "node:path";
 import type { Priority as TaskPriority } from "@mfw/core/types";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
 import { EventBus } from "@mfw/db/eventlog";
+import { ulid } from "@mfw/db/ids";
 import { engineKv, events, resourceSlots, resources } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
+import type {
+	LaunchOutcome,
+	PendingSpawn,
+	TaskHolds,
+} from "../src/brain-runtime/executor.ts";
 import type { HostAdmissionSnapshot } from "../src/host-resources/index.ts";
 import { silentLogger } from "../src/log.ts";
+import { AdmissionHeldError } from "../src/project-dispatch-admission.ts";
+import { ProviderHoldStore } from "../src/provider-holds.ts";
+import { routeWith } from "../src/routing.ts";
 import { RunRegistry } from "../src/run-registry.ts";
 import {
-	type DispatchPlanInput,
-	type DispatchPlanner,
+	NO_BRAIN_ROUTE_REASON,
 	Scheduler,
+	type SchedulerDeps,
 	SlotConflictError,
+	type SpawnSource,
 } from "../src/scheduler.ts";
 import type { TaskService } from "../src/task-service.ts";
+import { TaskOwnershipHeldError } from "../src/tasks/index.ts";
 import { makeTasks } from "./fixtures/board.ts";
 
 /** RunEngine double: claims the task and creates a real `runs` row (for the slot FK and concurrency count). No tmux/git. */
@@ -55,7 +66,13 @@ class FakeEngine {
 			this.hostSnapshotsSeen.push(opts?.hostSnapshot);
 			if (this.delayMs) await Bun.sleep(this.delayMs);
 			if (this.failOn.has(taskId)) throw new Error(`start failed: ${taskId}`);
+			// Claim before the row exists, as the real engine's prepare does: a
+			// task that cannot be claimed leaves no run behind.
+			const id = ulid();
+			if (!(await this.tasks.tryClaim(taskId, id, 60_000)))
+				throw new Error(`task ${taskId} is not claimable`);
 			const run = await this.registry.create({
+				id,
 				kind: "task",
 				taskId,
 				label: taskId,
@@ -63,12 +80,96 @@ class FakeEngine {
 				cwd: this.cwd,
 			});
 			await this.registry.transition(run.id, "running");
-			if (!(await this.tasks.tryClaim(taskId, run.id, 60_000)))
-				throw new Error(`task ${taskId} is not claimable`);
 			this.runIds.set(taskId, run.id);
 			return { runId: run.id };
 		} finally {
 			this.concurrent--;
+		}
+	}
+}
+
+/**
+ * The brain's accepted spawn actions, as the scheduler sees them: an ordered
+ * list the test fills (`spawn`), launched through the FakeEngine. The order is
+ * the brain's order; a failed or held launch stays pending for the next tick.
+ */
+class FakeSpawns implements SpawnSource {
+	jobs: (PendingSpawn & { done: boolean })[] = [];
+	holdsNow: TaskHolds = {};
+	launches: string[] = [];
+	private n = 0;
+
+	constructor(
+		private readonly engine: FakeEngine,
+		private readonly routeHold?: SchedulerDeps["routeHold"],
+		private readonly tasks?: TaskService,
+	) {}
+
+	spawn(taskId: string): string {
+		const actionId = `action-${++this.n}`;
+		this.jobs.push({
+			actionId,
+			tool: "spawn",
+			taskId,
+			runIds: [`run-${this.n}`],
+			createdAt: this.n,
+			done: false,
+		});
+		return actionId;
+	}
+
+	async pending(): Promise<PendingSpawn[]> {
+		const out: PendingSpawn[] = [];
+		for (const j of this.jobs) {
+			if (j.done) continue;
+			const task = await this.tasks?.get(j.taskId);
+			// A spawn whose task is no longer ready is not launchable (the real
+			// executor fails the action when the claim is refused).
+			if (task && task.status !== "ready") continue;
+			if (
+				task &&
+				this.routeHold &&
+				(await this.routeHold(task).catch(() => null))
+			) {
+				continue; // the real launch would be refused by the held route
+			}
+			out.push(j);
+		}
+		return out;
+	}
+
+	async holds(): Promise<TaskHolds> {
+		return this.holdsNow;
+	}
+
+	async launch(
+		actionId: string,
+		ctx: { hostSnapshot?: HostAdmissionSnapshot },
+	): Promise<LaunchOutcome> {
+		const job = this.jobs.find((j) => j.actionId === actionId);
+		if (!job || job.done) return { outcome: "noop" };
+		this.launches.push(actionId);
+		try {
+			const r = await this.engine.startTask(job.taskId, {
+				hostSnapshot: ctx.hostSnapshot,
+			});
+			job.done = true;
+			return { outcome: "applied", runIds: [r.runId] };
+		} catch (e) {
+			if (e instanceof TaskOwnershipHeldError) {
+				return { outcome: "held", kind: "overlap", reason: e.message };
+			}
+			if (e instanceof AdmissionHeldError) {
+				return {
+					outcome: "held",
+					kind: e.code === "provider_held" ? "provider" : "resource",
+					reason: e.message,
+				};
+			}
+			return {
+				outcome: "failed",
+				error: e instanceof Error ? e.message : String(e),
+			};
 		}
 	}
 }
@@ -79,8 +180,11 @@ interface Fixture {
 	registry: RunRegistry;
 	tasks: TaskService;
 	engine: FakeEngine;
+	/** The brain's spawn actions. */
+	spawns: FakeSpawns;
 	sched: Scheduler;
 	now: { value: number };
+	/** Create a task; unless `spawn: false`, the brain spawns it right away. */
 	seed: (over?: SeedOpts) => Promise<string>;
 	resource: (id: string, maxConcurrent: number) => Promise<void>;
 	/** Park a slot under a throwaway run row (simulates another run holding it). */
@@ -102,6 +206,9 @@ interface SeedOpts {
 	owns?: string[];
 	withDod?: boolean;
 	body?: string;
+	provider?: string;
+	/** The brain makes no spawn action for this task (default: it does). */
+	spawn?: boolean;
 }
 
 async function fixture(
@@ -113,7 +220,10 @@ async function fixture(
 	maintenance?: () => Promise<void>,
 	/** The machine-wide master stop, as boot injects it. */
 	globalPaused?: () => { reason: string } | null,
-	dispatchPlanner?: DispatchPlanner,
+	extra: Pick<SchedulerDeps, "routeHold" | "providerHolds"> & {
+		/** Default true; false models a project with no brain route. */
+		brainRoute?: boolean;
+	} = {},
 ): Promise<Fixture> {
 	const root = await mkdtemp(join(tmpdir(), "mfw-sched-"));
 	const mfwDir = join(root, ".mfw");
@@ -126,7 +236,9 @@ async function fixture(
 	});
 	const tasks = await makeTasks(handle, bus, mfwDir);
 	const engine = new FakeEngine(registry, tasks, root);
+	const spawns = new FakeSpawns(engine, extra.routeHold, tasks);
 	const now = { value: Date.now() };
+	const { brainRoute, ...schedExtra } = extra;
 	const sched = new Scheduler({
 		handle,
 		bus,
@@ -137,8 +249,10 @@ async function fixture(
 		config: { maxConcurrent: config.maxConcurrent ?? 5, ...config },
 		maintenance,
 		globalPaused,
-		dispatchPlanner,
+		spawns,
+		brainRoute: () => brainRoute !== false,
 		now: () => now.value,
+		...schedExtra,
 	});
 
 	return {
@@ -147,6 +261,7 @@ async function fixture(
 		registry,
 		tasks,
 		engine,
+		spawns,
 		sched,
 		now,
 		seed: async (over: SeedOpts = {}) => {
@@ -159,6 +274,7 @@ async function fixture(
 				requiresResources: over.requiresResources ?? [],
 				dependsOn: over.dependsOn ?? [],
 				owns: over.owns ?? [],
+				...(over.provider ? { provider: over.provider } : {}),
 				dod: over.withDod
 					? {
 							verifier: "deterministic",
@@ -166,6 +282,7 @@ async function fixture(
 						}
 					: null,
 			});
+			if (over.spawn !== false) spawns.spawn(t.id);
 			return t.id;
 		},
 		resource: async (id, maxConcurrent) => {
@@ -207,143 +324,72 @@ async function fixture(
 }
 
 describe("Scheduler v2: picking", () => {
-	test("does not ask the brain when an idle frontier has only one possible run", async () => {
-		let calls = 0;
-		const planner: DispatchPlanner = {
-			planDispatch: async () => {
-				calls++;
-				throw new Error("there is no parallel decision to make");
-			},
-		};
-		const f = await fixture(
-			{ maxConcurrent: 8 },
-			undefined,
-			undefined,
-			planner,
-		);
-		const only = await f.seed({ title: "only ready task" });
+	test("a ready task with no spawn action never starts", async () => {
+		const f = await fixture({ maxConcurrent: 4 });
+		const ready = await f.seed({ title: "ready but not chosen", spawn: false });
 
 		const stats = await f.sched.tick();
-		expect(stats.started).toEqual([only]);
-		expect(stats.planning).toBe("not_needed");
-		expect(calls).toBe(0);
+		expect(stats.ready).toBe(1);
+		expect(stats.started).toEqual([]);
+		expect(stats.pendingSpawns).toBe(0);
+		expect(f.engine.calls).toEqual([]);
+		expect((await f.tasks.get(ready))?.status).toBe("ready");
+
+		// Once the brain spawns it, the next tick starts it.
+		f.spawns.spawn(ready);
+		expect((await f.sched.tick()).started).toEqual([ready]);
 		await f.cleanup();
 	});
 
-	test("the brain chooses which task goes first even when the maximum is one", async () => {
-		let calls = 0;
-		let second = "";
-		const planner: DispatchPlanner = {
-			planDispatch: async (input) => {
-				calls++;
-				expect(input.maxToStart).toBe(1);
-				return {
-					status: "ok",
-					selectedTaskIds: [second],
-					reason: "the second task is safer to do first",
-				};
-			},
-		};
-		const f = await fixture(
-			{ maxConcurrent: 1 },
-			undefined,
-			undefined,
-			planner,
-		);
-		await f.seed({ title: "first by creation order" });
-		second = await f.seed({ title: "chosen by the brain" });
+	test("the brain's order is kept: a later critical task does not jump the queue", async () => {
+		const f = await fixture({ maxConcurrent: 1 });
+		const chosen = await f.seed({ title: "chosen first", priority: "low" });
+		await f.seed({ title: "critical but spawned later", priority: "critical" });
 
 		const stats = await f.sched.tick();
-		expect(stats.started).toEqual([second]);
-		expect(stats.planning).toBe("brain");
-		expect(calls).toBe(1);
+		expect(stats.started).toEqual([chosen]);
 		await f.cleanup();
 	});
 
-	test("the brain chooses the wave below the hard maximum", async () => {
-		const calls: DispatchPlanInput[] = [];
-		let selected: string[] = [];
-		const planner: DispatchPlanner = {
-			planDispatch: async (input) => {
-				calls.push(input);
-				return {
-					status: "ok",
-					selectedTaskIds: selected,
-					reason: "these tasks have disjoint scope",
-				};
-			},
-		};
-		const f = await fixture(
-			{ maxConcurrent: 4 },
-			undefined,
-			undefined,
-			planner,
-		);
-		const first = await f.seed({ title: "first", labels: ["frontend"] });
-		await f.seed({ title: "second", labels: ["frontend"] });
-		const third = await f.seed({
-			title: "third",
-			labels: ["backend"],
-			requiresResources: ["gpu"],
+	test("no brain route: nothing starts and the status says why", async () => {
+		const f = await fixture({ maxConcurrent: 4 }, undefined, undefined, {
+			brainRoute: false,
 		});
-		selected = [first, third];
+		await f.seed({ title: "would run" });
 
 		const stats = await f.sched.tick();
-		expect(stats.started).toEqual([first, third]);
-		expect(stats.planning).toBe("brain");
-		expect(stats.planReason).toContain("disjoint scope");
-		expect(calls).toHaveLength(1);
-		expect(calls[0]?.maxToStart).toBe(4);
-		expect(calls[0]?.candidates[2]).toMatchObject({
-			id: third,
-			labels: ["backend"],
-			requiresResources: ["gpu"],
-		});
+		expect(stats.started).toEqual([]);
+		expect(stats.skipped).toBe("no_brain");
+		expect(stats.reason).toBe(NO_BRAIN_ROUTE_REASON);
+		expect(f.engine.calls).toEqual([]);
+
+		const status = await f.sched.status();
+		expect(status.blocked).toBe("no_brain_route");
+		expect(status.playing).toBe(false);
+		expect(status.reason).toContain("no brain route");
+		expect(status.reason).toContain("brain.routes");
 		await f.cleanup();
 	});
 
-	test("a failed brain decision degrades to serial work and never fills the cap", async () => {
-		const planner: DispatchPlanner = {
-			planDispatch: async () => ({
-				status: "failed",
-				selectedTaskIds: [],
-				reason: "model unavailable",
-			}),
+	test("a task the brain paused waits; its spawn stays accepted", async () => {
+		const f = await fixture({ maxConcurrent: 4 });
+		const a = await f.seed({ title: "paused" });
+		const b = await f.seed({ title: "free" });
+		f.spawns.holdsNow = {
+			[a]: { by: "pause", reason: "wait", actionId: "x", at: 1 },
 		};
-		const f = await fixture(
-			{ maxConcurrent: 4 },
-			undefined,
-			undefined,
-			planner,
-		);
-		for (let index = 0; index < 4; index++) {
-			await f.seed({ title: `fallback-${index}` });
-		}
 
-		const first = await f.sched.tick();
-		expect(first.started).toHaveLength(1);
-		expect(first.planning).toBe("fallback");
-		expect(first.planReason).toContain("conservative serial fallback");
-		const second = await f.sched.tick();
-		expect(second.started).toEqual([]);
-		expect(second.planning).toBe("fallback");
+		const stats = await f.sched.tick();
+		expect(stats.started).toEqual([b]);
+		expect(stats.heldByBrain).toEqual([a]);
+
+		f.spawns.holdsNow = {};
+		expect((await f.sched.tick()).started).toEqual([a]);
 		await f.cleanup();
 	});
 
-	test("resource admission remains authoritative after a brain selection", async () => {
-		const planner: DispatchPlanner = {
-			planDispatch: async (input) => ({
-				status: "ok",
-				selectedTaskIds: input.candidates.map((task) => task.id),
-				reason: "attempt the ready wave",
-			}),
-		};
-		const f = await fixture(
-			{ maxConcurrent: 3 },
-			undefined,
-			undefined,
-			planner,
-		);
+	test("resource admission remains authoritative for spawned tasks", async () => {
+		const f = await fixture({ maxConcurrent: 3 });
 		await f.resource("gpu", 1);
 		const first = await f.seed({ title: "gpu-a", requiresResources: ["gpu"] });
 		const second = await f.seed({
@@ -402,17 +448,7 @@ describe("Scheduler v2: picking", () => {
 		await f.cleanup();
 	});
 
-	test("priority rank beats creation order", async () => {
-		const f = await fixture({ maxConcurrent: 1 });
-		await f.seed({ title: "meh", priority: "medium" });
-		const critical = await f.seed({ title: "now", priority: "critical" });
-
-		const stats = await f.sched.tick();
-		expect(stats.started).toEqual([critical]);
-		await f.cleanup();
-	});
-
-	test("ties break on task number, oldest first", async () => {
+	test("equal priority: the spawn order decides", async () => {
 		const f = await fixture({ maxConcurrent: 1 });
 		const first = await f.seed({ title: "a", priority: "high" });
 		await f.seed({ title: "b", priority: "high" });
@@ -421,14 +457,16 @@ describe("Scheduler v2: picking", () => {
 		await f.cleanup();
 	});
 
-	test("a task whose dependency is not done is never dispatched", async () => {
+	test("a spawn on a task whose dependency is not done is refused at the claim", async () => {
 		const f = await fixture();
 		const dep = await f.seed({ title: "dep", status: "backlog" });
 		const blocked = await f.seed({ title: "blocked", dependsOn: [dep] });
 
 		const started = (await f.sched.tick()).started;
 		expect(started).not.toContain(blocked);
-		expect(f.engine.calls).toEqual([]);
+		// The claim refuses it: no run row, no claim, the task is still ready.
+		expect(await f.registry.list({ taskId: blocked })).toEqual([]);
+		expect((await f.tasks.get(blocked))?.claimedByGroupId).toBeNull();
 
 		await f.tasks.move(dep, "done", "human");
 		expect((await f.sched.tick()).started).toEqual([blocked]);
@@ -473,32 +511,13 @@ describe("Scheduler: declared ownership (owns)", () => {
 		await f.cleanup();
 	});
 
-	test("without a planner, skips intra-wave conflicts until capacity is filled", async () => {
+	test("skips intra-wave conflicts until capacity is filled", async () => {
 		const f = await fixture({ maxConcurrent: 2 });
 		const first = await f.seed({ priority: "high", owns: ["src/a"] });
 		const held = await f.seed({ priority: "high", owns: ["src/a/**"] });
 		const independent = await f.seed({ priority: "low", owns: ["src/b"] });
 		const stats = await f.sched.tick();
 		expect(stats.started).toEqual([first, independent]);
-		expect(stats.heldForOverlap).toEqual([held]);
-		await f.cleanup();
-	});
-
-	test("filters running overlaps before the planner frontier and honors its subset", async () => {
-		const seen: DispatchPlanInput[] = [];
-		const f = await fixture({ maxConcurrent: 2 }, undefined, undefined, {
-			async planDispatch(input) {
-				seen.push(input);
-				return { status: "ok", selectedTaskIds: [], reason: "hold for review" };
-			},
-		});
-		const running = await f.seed({ owns: ["src/a"] });
-		expect((await f.sched.tick()).started).toEqual([running]);
-		const held = await f.seed({ priority: "high", owns: ["src/a/**"] });
-		const independent = await f.seed({ priority: "low", owns: ["src/b"] });
-		const stats = await f.sched.tick();
-		expect(seen[0]?.candidates.map((task) => task.id)).toEqual([independent]);
-		expect(stats.started).toEqual([]);
 		expect(stats.heldForOverlap).toEqual([held]);
 		await f.cleanup();
 	});
@@ -524,9 +543,11 @@ describe("Scheduler: declared ownership (owns)", () => {
 			waitingFor: string[];
 			code?: string;
 			reason?: string;
+			fix?: { text: string };
 		};
 		expect(payload.waitingFor).toEqual([running]);
 		expect(payload.code).toBe("owns-overlap");
+		expect(payload.fix?.text).toContain(`'${running}'`);
 		expect(payload.reason).toContain("src/api/**/*.ts");
 		expect(payload.reason).toContain("src/api");
 
@@ -538,14 +559,23 @@ describe("Scheduler: declared ownership (owns)", () => {
 		await f.cleanup();
 	});
 
-	test("two overlapping candidates in one wave: only the higher priority starts", async () => {
+	test("two overlapping candidates in one wave: only the one the brain spawned first starts", async () => {
 		const f = await fixture({ maxConcurrent: 5 });
-		const low = await f.seed({ title: "low", priority: "low", owns: ["a.ts"] });
+		const low = await f.seed({
+			title: "low",
+			priority: "low",
+			owns: ["a.ts"],
+			spawn: false,
+		});
 		const high = await f.seed({
 			title: "high",
 			priority: "high",
 			owns: ["a.ts", "b.ts"],
+			spawn: false,
 		});
+		// The brain's order: the one it spawned first wins the overlap.
+		f.spawns.spawn(high);
+		f.spawns.spawn(low);
 
 		const stats = await f.sched.tick();
 		expect(stats.started).toEqual([high]);
@@ -743,6 +773,58 @@ describe("Scheduler v2: gates", () => {
 		expect(after.started.length).toBe(1);
 		expect((await f.sched.status()).hold).toBeNull();
 		await f.cleanup();
+	});
+
+	test("a Claude provider hold does not block a Codex-routed task", async () => {
+		const home = await mkdtemp(join(tmpdir(), "mfw-holds-"));
+		const holds = ProviderHoldStore.at(home);
+		const router = {
+			settings: () => ({
+				provider: { id: "claude-cli", type: "claude-cli" as const },
+				model: "sonnet",
+			}),
+			holds,
+		};
+		const f = await fixture({}, undefined, undefined, {
+			routeHold: async (task) =>
+				(
+					await routeWith(router, {
+						kind: "task",
+						task: {
+							provider: task.provider,
+							model: task.model,
+							modelTier: task.modelTier,
+						},
+					})
+				).held,
+			providerHolds: holds,
+		});
+		const onClaude = await f.seed({ title: "project default (claude)" });
+		const onCodex = await f.seed({ title: "pinned", provider: "codex-cli" });
+		// Another project on this machine hit the Claude limit.
+		await holds.hold("claude-cli", {
+			until: Date.now() + 60_000,
+			reason: "rate-limited run R",
+			project: "other",
+		});
+
+		const stats = await f.sched.tick();
+		expect(stats.skipped).toBeNull();
+		expect(stats.started).toEqual([onCodex]);
+		expect(stats.heldForProvider).toEqual([onClaude]);
+		expect(f.engine.calls).toEqual([onCodex]);
+		const status = await f.sched.status();
+		// A provider hold is never the project-wide gate.
+		expect(status.hold).toBeNull();
+		expect(status.state).not.toBe("held");
+		expect(status.providerHolds?.map((h) => h.key)).toEqual(["claude-cli"]);
+		expect(await f.eventTypes()).toContain("task.held_for_resource");
+
+		// Cleared: the Claude task starts on the next tick.
+		await holds.clear("claude-cli");
+		expect((await f.sched.tick()).started).toEqual([onClaude]);
+		await f.cleanup();
+		await rm(home, { recursive: true, force: true });
 	});
 
 	test("hold keeps the FURTHEST until: a short hold never shortens a long one", async () => {
@@ -1186,7 +1268,9 @@ describe("resource slots are released when a run terminates", () => {
 			return t;
 		};
 		const a = await mk("first");
-		await mk("second");
+		const second = await mk("second");
+		f.spawns.spawn(a.id);
+		f.spawns.spawn(second.id);
 
 		await f.sched.tick();
 		expect(f.engine.calls.length).toBe(1); // the semaphore holds the second
@@ -1276,5 +1360,43 @@ describe("Scheduler: the machine-wide master stop", () => {
 		} finally {
 			await f.cleanup();
 		}
+	});
+});
+
+describe("the retired dispatch planner stays deleted", () => {
+	test("no source or test references the wave planner, its cache or its role writer", async () => {
+		const { readdir, readFile, stat } = await import("node:fs/promises");
+		// Built from pieces so this file does not match its own pattern.
+		const retired = [
+			["plan", "Dispatch"],
+			["cached", "Plan"],
+			["dispatch", "Planner"],
+			["Dispatch", "PlanInput"],
+			["build", "DispatchPlanPrompt"],
+			["conservative serial", " fallback"],
+		].map((p) => p.join(""));
+		const roots = [
+			join(import.meta.dir, "..", "src"),
+			join(import.meta.dir, "..", "test"),
+			join(import.meta.dir, "..", "..", "api", "src"),
+		];
+		const hits: string[] = [];
+		const walk = async (dir: string): Promise<void> => {
+			for (const name of await readdir(dir)) {
+				const path = join(dir, name);
+				if ((await stat(path)).isDirectory()) {
+					await walk(path);
+				} else if (/\.tsx?$/.test(name)) {
+					const text = await readFile(path, "utf8");
+					for (const word of retired) {
+						if (text.includes(word) && !path.endsWith("scheduler.test.ts")) {
+							hits.push(`${path}: ${word}`);
+						}
+					}
+				}
+			}
+		};
+		for (const r of roots) await walk(r);
+		expect(hits).toEqual([]);
 	});
 });

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
 import { EventBus } from "@mfw/db/eventlog";
-import { decisions, mergeJobs, runs } from "@mfw/db/schema";
+import { decisions, mergeJobs, runs, spendLedger } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
 import { Health } from "../src/health.ts";
 import { RunRegistry } from "../src/run-registry.ts";
@@ -166,6 +166,64 @@ describe("Health metrics", () => {
 		expect(m.durationMs.max).toBe(3000);
 		expect(m.durationMs.p50).toBeGreaterThan(0);
 		expect(m.byKind.task).toBe(4);
+		await f.cleanup();
+	});
+
+	test("usage ingested through the registry lands in the ledger once, and spend reads it", async () => {
+		const f = await fixture();
+		const run = await seedRun(f, { state: "ended", taskId: "T-1" });
+		const usage = { costUsd: 0.4, inputTokens: 80, outputTokens: 12 };
+		await f.registry.transition(run.id, "ended", { usage });
+		// A finalize resume re-ingests the same usage.
+		await f.registry.transition(run.id, "ended", { usage });
+
+		const rows = await f.handle.db
+			.select()
+			.from(spendLedger)
+			.where(eq(spendLedger.runId, run.id));
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			kind: "agent",
+			source: "run_usage",
+			taskId: "T-1",
+			usd: 0.4,
+			tokensIn: 80,
+			tokensOut: 12,
+		});
+
+		// Health reads the ledger: a divergent runs.usage must not change the total.
+		await f.handle.db
+			.update(runs)
+			.set({ usage: { costUsd: 99, inputTokens: 1, outputTokens: 1 } })
+			.where(eq(runs.id, run.id));
+		const m = await f.health.metrics();
+		expect(m.spend.costUsd).toBeCloseTo(0.4, 9);
+		expect(m.spend.inputTokens).toBe(80);
+		await f.cleanup();
+	});
+
+	test("a brain call's usage becomes one brain ledger row keyed by its provider", async () => {
+		const f = await fixture();
+		const run = await f.registry.create({
+			kind: "brain",
+			label: "critic",
+			model: "opus",
+			providerId: "claude-cli",
+			cwd: "/tmp",
+		});
+		await f.registry.transition(run.id, "completed", {
+			usage: { costUsd: 0.1, inputTokens: 10, outputTokens: 2 },
+		});
+		const [row] = await f.handle.db
+			.select()
+			.from(spendLedger)
+			.where(eq(spendLedger.runId, run.id));
+		expect(row).toMatchObject({
+			kind: "brain",
+			source: "brain_usage",
+			accountKey: "claude-cli",
+			usd: 0.1,
+		});
 		await f.cleanup();
 	});
 

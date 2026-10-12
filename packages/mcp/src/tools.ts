@@ -40,7 +40,10 @@ export function mcpTools(client: MfwClient) {
 			requiresResources?: string[];
 			/** Focused task evidence; project merge checks still run. */
 			verification?: VerificationPlan | null;
-			criteria?: { text: string; checked?: boolean }[];
+			criteria?: { id?: string; text: string; checked?: boolean }[];
+			/** Routing pins: harness or endpoint id, exact model id. */
+			provider?: string | null;
+			model?: string | null;
 		}) => client.tasks.create.mutate(a),
 
 		/** `baseRev` is `contentRev` as last read; a concurrent edit becomes a retryable CONFLICT. */
@@ -57,8 +60,40 @@ export function mcpTools(client: MfwClient) {
 				labels?: string[];
 				dependsOn?: string[];
 				requiresResources?: string[];
+				criteria?: { id?: string; text: string; checked?: boolean }[];
+				provider?: string | null;
+				model?: string | null;
 			};
 		}) => client.tasks.update.mutate(a),
+
+		/** One acceptance checklist op; the flat MCP arguments become the API's tagged op. */
+		criteria: (a: {
+			project: string;
+			id: string;
+			baseRev?: number;
+			op: "add" | "toggle" | "set" | "edit" | "remove";
+			selector?: string;
+			text?: string;
+			checked?: boolean;
+		}) => {
+			const selector = a.selector ?? "";
+			const op =
+				a.op === "add"
+					? { op: "add" as const, text: a.text ?? "", checked: a.checked }
+					: a.op === "set"
+						? { op: "set" as const, selector, checked: a.checked ?? true }
+						: a.op === "edit"
+							? { op: "edit" as const, selector, text: a.text ?? "" }
+							: a.op === "toggle"
+								? { op: "toggle" as const, selector }
+								: { op: "remove" as const, selector };
+			return client.tasks.criteria.mutate({
+				project: a.project,
+				id: a.id,
+				baseRev: a.baseRev,
+				op,
+			});
+		},
 
 		move_task: (a: {
 			project: string;

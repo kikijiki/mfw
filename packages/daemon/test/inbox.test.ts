@@ -5,7 +5,15 @@ import { join } from "node:path";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
 import { EventBus } from "@mfw/db/eventlog";
 import { ulid } from "@mfw/db/ids";
-import { engineKv, mergeJobs, type RunState, runs } from "@mfw/db/schema";
+import {
+	brainActions,
+	brainSessions,
+	brainTurns,
+	engineKv,
+	mergeJobs,
+	type RunState,
+	runs,
+} from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
 import { InboxService } from "../src/inbox.ts";
 import { silentLogger } from "../src/log.ts";
@@ -817,6 +825,197 @@ describe("inbox: follow-ups to triage", () => {
 		expect((await inbox.list()).some((i) => i.kind === "followups")).toBe(
 			false,
 		);
+		await f.cleanup();
+	});
+});
+
+/** Live runs whose activity needs a person surface on their own. */
+describe("inbox: live run activity", () => {
+	test("a pending approval and a stall are attention items; working and finished runs are not", async () => {
+		const f = await fixture();
+		const registry = new RunRegistry({
+			handle: f.handle,
+			bus: new EventBus(),
+			runsDir: join(f.root, ".mfw", "runs"),
+		});
+		const make = async (label: string) => {
+			const run = await registry.create({
+				kind: "task",
+				label,
+				model: "sonnet",
+				cwd: f.root,
+			});
+			await registry.transition(run.id, "running");
+			return run;
+		};
+		const waiting = await make("waits");
+		await registry.setActivity(waiting.id, "awaiting_approval", {
+			pendingApprovals: ["r1"],
+			approvalSummary: "rm -rf dist",
+			background: [],
+			turns: 1,
+			lastEventAt: null,
+		});
+		const stalled = await make("stalls");
+		await registry.setActivity(stalled.id, "stalled", {
+			pendingApprovals: [],
+			background: [{ callId: "b1", tool: "Bash", summary: "bun test" }],
+			stallCause: "background",
+			turns: 1,
+			lastEventAt: null,
+		});
+		const working = await make("works");
+		await registry.setActivity(working.id, "working", {
+			pendingApprovals: [],
+			background: [],
+			turns: 1,
+			lastEventAt: null,
+		});
+		const done = await make("done");
+		await registry.setActivity(done.id, "awaiting_approval", {
+			pendingApprovals: ["r2"],
+			background: [],
+			turns: 1,
+			lastEventAt: null,
+		});
+		await registry.finish(done.id, "killed");
+
+		const inbox = new InboxService({
+			handle: f.handle,
+			project: "demo",
+			tasks: f.tasks,
+		});
+		const items = await inbox.list();
+		expect(items.map((i) => [i.kind, i.runId, i.severity]).sort()).toEqual(
+			[
+				["approval_pending", waiting.id, "attention"],
+				["stalled", stalled.id, "attention"],
+			].sort(),
+		);
+		expect(items.find((i) => i.kind === "approval_pending")?.detail).toBe(
+			"rm -rf dist",
+		);
+		await f.cleanup();
+	});
+});
+
+describe("inbox: the brain needs a person", () => {
+	async function failedBrain(f: F) {
+		await f.handle.db.insert(brainSessions).values({
+			id: "S1",
+			scope: { kind: "project" },
+			status: "failed",
+			harness: "claude-cli",
+			model: "opus",
+			nativeHost: "h",
+			generationStartedAt: new Date(),
+			consecutiveFailures: 3,
+			createdAt: new Date(),
+		});
+		await f.handle.db.insert(brainTurns).values({
+			runId: "t1",
+			sessionId: "S1",
+			seq: 1,
+			generation: 0,
+			wakeClass: "heartbeat",
+			eventsFrom: 0,
+			eventsTo: 0,
+			resumed: false,
+			status: "failed",
+			startedAt: new Date(),
+			endedAt: new Date(),
+			error: "no conversation found",
+		});
+	}
+	const act = (
+		id: string,
+		args: Record<string, unknown>,
+		status = "proposed",
+	) =>
+		({
+			id,
+			idemKey: id,
+			sessionId: "S1",
+			turnRunId: "t1",
+			tool: "notify_human",
+			args,
+			status,
+			createdAt: new Date(),
+		}) as typeof brainActions.$inferInsert;
+
+	test("a failed session is a critical brain_stuck item that names the node", async () => {
+		const f = await fixture();
+		await failedBrain(f);
+		const inbox = new InboxService({
+			handle: f.handle,
+			project: "demo",
+			tasks: f.tasks,
+		});
+		const items = await inbox.list();
+		const stuck = items.find((i) => i.kind === "brain_stuck");
+		expect(stuck).toMatchObject({
+			severity: "critical",
+			ref: "brain",
+			id: "brain_stuck:S1",
+		});
+		expect(stuck?.detail).toContain("no conversation found");
+		await f.cleanup();
+	});
+
+	test("notify_human surfaces (even as a shadow proposal) unless it is fyi or rejected", async () => {
+		const f = await fixture();
+		await f.handle.db.insert(brainSessions).values({
+			id: "S1",
+			scope: { kind: "project" },
+			status: "idle",
+			harness: "claude-cli",
+			model: "opus",
+			nativeHost: "h",
+			generationStartedAt: new Date(),
+			createdAt: new Date(),
+		});
+		await f.handle.db.insert(brainActions).values([
+			act("a1", {
+				kind: "credential",
+				title: "Need an API key",
+				body: "for X",
+			}),
+			act("a2", { kind: "fyi", title: "just so you know", body: "" }),
+			act(
+				"a3",
+				{ kind: "product_decision", title: "rejected", body: "" },
+				"rejected",
+			),
+		]);
+		const inbox = new InboxService({
+			handle: f.handle,
+			project: "demo",
+			tasks: f.tasks,
+		});
+		const items = (await inbox.list()).filter((i) => i.kind === "brain_notice");
+		expect(items.map((i) => i.id)).toEqual(["brain_notice:a1"]);
+		expect(items[0]).toMatchObject({
+			severity: "attention",
+			title: "brain: Need an API key",
+			ref: "brain",
+		});
+		await inbox.dismiss("brain_notice:a1");
+		expect((await inbox.list()).some((i) => i.kind === "brain_notice")).toBe(
+			false,
+		);
+		await f.cleanup();
+	});
+
+	test("no brain rows, no brain items", async () => {
+		const f = await fixture();
+		const inbox = new InboxService({
+			handle: f.handle,
+			project: "demo",
+			tasks: f.tasks,
+		});
+		expect(
+			(await inbox.list()).filter((i) => i.kind.startsWith("brain")),
+		).toEqual([]);
 		await f.cleanup();
 	});
 });

@@ -61,9 +61,8 @@ describe("the shell's reconnecting overlay", () => {
 	test("reconnecting is absolutely positioned and cannot consume shell space", () => {
 		const classes = classesAfter(errorState, 'role="status"');
 		expect(classes).toContain("absolute");
-		expect(classes).toContain("inset-x-0");
-		expect(classes).toContain("top-0");
-		expect(classes).toContain("z-30");
+		expect(classes).toContain("top-2");
+		expect(classes).toContain("z-50");
 		expect(classes).toContain("pointer-events-none");
 	});
 

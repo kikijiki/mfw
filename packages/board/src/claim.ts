@@ -112,20 +112,21 @@ function dependenciesMet(
 export async function claimTask(
 	store: BoardStore,
 	taskId: string,
-	runId: string,
+	/** The holder: an attempt group's id (a group of one is named after its run). */
+	groupId: string,
 	leaseMs: number,
 	fromStatus: string,
 	cfg: ClaimConfig,
-	opts: { start?: boolean; worktree?: string } = {},
+	opts: { start?: boolean; worktree?: string; leadRunId?: string } = {},
 ): Promise<BoardDocument | null> {
 	const start = opts.start ?? true;
 	return withClaimLock(cfg, async () => {
 		const lease = await readLease(cfg.root, taskId);
 		if (start) {
-			if (lease.claimedByRunId !== null) return null;
+			if (lease.claimedByGroupId !== null) return null;
 		} else if (
-			lease.claimedByRunId !== null &&
-			lease.claimedByRunId !== runId &&
+			lease.claimedByGroupId !== null &&
+			lease.claimedByGroupId !== groupId &&
 			isLive(lease)
 		) {
 			return null;
@@ -157,7 +158,7 @@ export async function claimTask(
 				const otherLease = await readLease(cfg.root, other.id);
 				const otherActive =
 					other.fields[cfg.statusField] === cfg.activeStatus ||
-					(otherLease.claimedByRunId !== null && isLive(otherLease));
+					(otherLease.claimedByGroupId !== null && isLive(otherLease));
 				if (!otherActive) continue;
 				waitingFor.push(other.id);
 				patterns.push(...overlap);
@@ -178,7 +179,8 @@ export async function claimTask(
 			return dependenciesMet(cfg, current, await store.listDocuments("task"));
 		};
 		const lease0 = (now: number) => ({
-			claimedByRunId: runId,
+			claimedByGroupId: groupId,
+			leadRunId: opts.leadRunId ?? null,
 			claimedAt: now,
 			leaseExpiresAt: now + leaseMs,
 			statusChangedAt: start ? now : lease.statusChangedAt,
@@ -213,19 +215,22 @@ function isLive(lease: { leaseExpiresAt: number | null }): boolean {
 
 /**
  * Clear a claim and move the task's status (`to` null: clear the lease only). A compare-and-swap on
- * `expectedRunId`: returns null if a different run holds the claim (only a
+ * `expectedGroupId`: returns null if a different group holds the claim (only a
  * claim held by a DIFFERENT run refuses — an unclaimed task must go through,
  * since e.g. `review → done` releases a claim this call already cleared once).
  */
 export async function releaseClaim(
 	store: BoardStore,
 	taskId: string,
-	expectedRunId: string | null,
+	expectedGroupId: string | null,
 	toStatus: string | null,
 	cfg: Pick<ClaimConfig, "root" | "statusField">,
 ): Promise<BoardDocument | null> {
 	const lease = await readLease(cfg.root, taskId);
-	if (lease.claimedByRunId !== null && lease.claimedByRunId !== expectedRunId)
+	if (
+		lease.claimedByGroupId !== null &&
+		lease.claimedByGroupId !== expectedGroupId
+	)
 		return null;
 	const record =
 		toStatus === null
@@ -234,7 +239,8 @@ export async function releaseClaim(
 					fields: { [cfg.statusField]: toStatus },
 				});
 	await writeLease(cfg.root, taskId, {
-		claimedByRunId: null,
+		claimedByGroupId: null,
+		leadRunId: null,
 		claimedAt: null,
 		leaseExpiresAt: null,
 		statusChangedAt: toStatus === null ? lease.statusChangedAt : Date.now(),

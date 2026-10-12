@@ -12,7 +12,12 @@
 	},
 	"files": {
 		"ignoreUnknown": false,
-		"includes": ["**", "!**/routeTree.gen.ts", "!packages/db/migrations/meta"]
+		"includes": [
+			"**",
+			"!**/routeTree.gen.ts",
+			"!packages/db/migrations/meta",
+			"!docs/screenshots"
+		]
 	},
 	"formatter": {
 		"enabled": true,

@@ -208,6 +208,10 @@ describe("vendor adapters preserve occupancy independently of utilization", () =
 		const device = sample.result.value[0];
 		expect(device?.identity.pciAddress).toBe("0000:c6:00.0");
 		expect(device?.occupancy.state).toBe("unknown");
+		// The cause is named by a code, not only by "partial-observation".
+		expect(sample.result.diagnostics.map((d) => d.code)).toContain(
+			"tool-missing",
+		);
 		expect(device?.occupancy.occupants[0]?.evidence).toHaveLength(3);
 		expect(
 			runtime.fileReads.filter((path) => path === "/proc/4242/stat"),

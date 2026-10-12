@@ -7,7 +7,6 @@ import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
 import { EventBus } from "@mfw/db/eventlog";
 import { engineKv, events as eventsTable } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
-import { ClarifyService } from "../src/clarify.ts";
 import { git } from "../src/git.ts";
 import { silentLogger } from "../src/log.ts";
 import { Maintenance } from "../src/maintenance.ts";
@@ -1284,12 +1283,95 @@ describe("gc", () => {
 			dead.push(r);
 		}
 
-		const res = await f.maint.gc({ keepRuns: 2 });
+		// this test is about the count cap; the age rule has its own tests below
+		f.now.value = Date.now() + 1;
+		const res = await f.maint.gc({ keepRuns: 2, retentionDays: 0 });
 		expect(res.runDirsPruned).toBe(2);
 		// the live run's dir survives regardless of the cap
 		expect(
 			await Bun.file(join(f.registry.runDir(live.id), "meta.json")).exists(),
 		).toBe(true);
+		await f.cleanup();
+	});
+
+	/** A finished run whose events.jsonl carries a recognizable transcript. */
+	async function finishedRun(
+		f: Awaited<ReturnType<typeof fixture>>,
+		label: string,
+		finishedDaysAgo: number,
+	) {
+		const r = await f.registry.create({
+			kind: "task",
+			label,
+			model: "s",
+			cwd: f.root,
+		});
+		await f.registry.finish(r.id, "completed");
+		await f.handle.client.execute({
+			sql: "UPDATE runs SET finished_at = ? WHERE id = ?",
+			args: [Date.now() - finishedDaysAgo * 86_400_000, r.id],
+		});
+		const line = (o: Record<string, unknown>, seq: number) =>
+			JSON.stringify({ ts: new Date().toISOString(), seq, ...o });
+		await writeFile(
+			join(f.registry.runDir(r.id), "events.jsonl"),
+			[
+				line({ type: "tool_call", id: "1", name: "Read", input: {} }, 1),
+				line(
+					{
+						type: "tool_call",
+						id: "2",
+						name: "Edit",
+						input: { file_path: "src/a.ts" },
+					},
+					2,
+				),
+				line({ type: "error", message: "first boom", fatal: false }, 3),
+				line({ type: "error", message: "second boom", fatal: false }, 4),
+				line({ type: "message", role: "assistant", text: `done ${label}` }, 5),
+			].join("\n"),
+		);
+		return r;
+	}
+
+	test("runs younger than the retention window survive regardless of the count cap", async () => {
+		const f = await fixture();
+		const fresh = await finishedRun(f, "fresh", 1);
+		const old = await finishedRun(f, "old", 40);
+		const res = await f.maint.gc({ keepRuns: 0 });
+		expect(res.runDirsPruned).toBe(1);
+		expect(
+			await Bun.file(
+				join(f.registry.runDir(fresh.id), "events.jsonl"),
+			).exists(),
+		).toBe(true);
+		expect(
+			await Bun.file(join(f.registry.runDir(old.id), "events.jsonl")).exists(),
+		).toBe(false);
+		expect((await f.registry.get(fresh.id))?.transcriptSummary).toBeNull();
+		await f.cleanup();
+	});
+
+	test("a pruned run keeps a transcript summary written before its directory went", async () => {
+		const f = await fixture();
+		const old = await finishedRun(f, "old", 40);
+		await f.maint.gc({ keepRuns: 0 });
+		const row = await f.registry.get(old.id);
+		expect(row?.transcriptSummary).toMatchObject({
+			lastAssistant: "done old",
+			toolCalls: { Read: 1, Edit: 1 },
+			filesTouched: ["src/a.ts"],
+			firstError: "first boom",
+			events: 5,
+		});
+		expect(
+			typeof (row?.transcriptSummary as { prunedAt?: unknown }).prunedAt,
+		).toBe("number");
+		// a second pass finds nothing left to prune and keeps the summary
+		await f.maint.gc({ keepRuns: 0 });
+		expect((await f.registry.get(old.id))?.transcriptSummary).toEqual(
+			row?.transcriptSummary as never,
+		);
 		await f.cleanup();
 	});
 
@@ -1327,6 +1409,7 @@ describe("gc", () => {
 			expect(await f.maint.gc({ keepRuns: 0 })).toEqual({
 				runDirsPruned: 0,
 				worktreesRemoved: 0,
+				branchesDeleted: 0,
 			});
 			expect(
 				await Bun.file(join(f.registry.runDir(run.id), "meta.json")).exists(),
@@ -1356,6 +1439,33 @@ describe("gc", () => {
 			integrationBranch: "main",
 		});
 		await broken.tick(); // must not reject
+		await f.cleanup();
+	}, 30_000);
+
+	test("a non-exclusive tick (provider runs live) runs groom and gc, never the sweep", async () => {
+		const f = await fixture();
+		const calls: string[] = [];
+		const spy = (name: string) =>
+			(async () => {
+				calls.push(name);
+				return {};
+			}) as never;
+		f.maint.groom = spy("groom");
+		f.maint.reopenByCommand = spy("reopenByCommand");
+		f.maint.gc = spy("gc");
+		f.maint.regressionSweep = spy("regressionSweep");
+
+		await f.maint.tick(undefined, { exclusive: false });
+		expect(calls).toEqual(["groom", "gc"]);
+
+		calls.length = 0;
+		await f.maint.tick();
+		expect(calls).toEqual([
+			"groom",
+			"reopenByCommand",
+			"gc",
+			"regressionSweep",
+		]);
 		await f.cleanup();
 	}, 30_000);
 });
@@ -1540,6 +1650,71 @@ describe("gc retention for work awaiting a human", () => {
 		await f.cleanup();
 	}, 30_000);
 
+	test("merged mfw/* branches of finished runs are deleted; wip/*, unmerged, live and unknown ones are kept", async () => {
+		const f = await fixture();
+		const run = async (
+			runId: string,
+			opts: { merge: boolean; state?: "running" },
+		) => {
+			const owned = await new WorktreeManager(f.root).create(runId, "main");
+			await writeFile(join(owned.path, `${runId}.txt`), "work\n");
+			await git(["add", "-A"], owned.path);
+			await git(["commit", "-qm", runId], owned.path);
+			await f.registry.create({
+				id: runId,
+				kind: "task",
+				label: runId,
+				model: "test",
+				cwd: owned.path,
+				worktreePath: owned.path,
+				branch: owned.branch,
+				integrationBranch: "main",
+				baseSha: owned.baseSha,
+			});
+			if (opts.state === "running")
+				await f.registry.transition(runId, "running");
+			else await f.registry.finish(runId, "completed");
+			if (opts.merge) {
+				await git(
+					["merge", "-q", "--no-ff", "-m", runId, owned.branch],
+					f.root,
+				);
+			}
+			return owned;
+		};
+		// Worktree still present: gc removes it and then its merged branch.
+		await run("merged-wt", { merge: true });
+		// Worktree already gone, branch left behind (the leak).
+		const leaked = await run("merged-leak", { merge: true });
+		await git(["worktree", "remove", "--force", leaked.path], f.root);
+		const unmerged = await run("unmerged", { merge: false });
+		await git(["worktree", "remove", "--force", unmerged.path], f.root);
+		const live = await run("live", { merge: true, state: "running" });
+		await git(["worktree", "remove", "--force", live.path], f.root);
+		await git(["branch", "wip/MFW-1-old", "main"], f.root);
+		await git(["branch", "mfw/no-row", "main"], f.root);
+
+		const result = await f.maint.gc({ keepRuns: 0 });
+
+		const branches = (
+			await git(
+				["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+				f.root,
+			)
+		).stdout
+			.split("\n")
+			.sort();
+		expect(branches).toEqual([
+			"main",
+			"mfw/live",
+			"mfw/no-row",
+			"mfw/unmerged",
+			"wip/MFW-1-old",
+		]);
+		expect(result.branchesDeleted).toBe(2);
+		await f.cleanup();
+	}, 30_000);
+
 	test("a clean integrated worktree with exact durable MFW ownership is removed", async () => {
 		const f = await fixture();
 		const runId = "owned-run";
@@ -1566,201 +1741,4 @@ describe("gc retention for work awaiting a human", () => {
 		expect(listed.stdout).not.toContain(`worktree ${owned.path}`);
 		await f.cleanup();
 	}, 30_000);
-});
-
-describe("expandDrafts: MFW-49", () => {
-	function withExpand(
-		f: F,
-		opts: {
-			startExpand?: (
-				taskId: string,
-				prompt: string,
-			) => Promise<{ runId: string }>;
-			maxConcurrentDraftExpansions?: number;
-			dispatching?: () => Promise<boolean>;
-		} = {},
-	): Maintenance {
-		return new Maintenance({
-			handle: f.handle,
-			bus: f.bus,
-			tasks: f.tasks,
-			registry: f.registry,
-			log: silentLogger(),
-			projectRoot: f.root,
-			integrationBranch: "main",
-			startExpand: opts.startExpand,
-			maxConcurrentDraftExpansions: opts.maxConcurrentDraftExpansions,
-			dispatching: opts.dispatching,
-		});
-	}
-
-	test("does nothing when no startExpand is wired", async () => {
-		const f = await fixture();
-		await f.tasks.captureQuick("do the thing");
-		const r = await f.maint.expandDrafts(); // f.maint has no startExpand
-		expect(r.started).toEqual([]);
-		await f.cleanup();
-	});
-
-	test("does not start expansion while the project is stopped", async () => {
-		const f = await fixture();
-		await f.tasks.captureQuick("do the thing");
-		const started: string[] = [];
-		const maint = withExpand(f, {
-			startExpand: async (taskId) => {
-				started.push(taskId);
-				return { runId: `run-${taskId}` };
-			},
-			maxConcurrentDraftExpansions: 5,
-			dispatching: async () => false,
-		});
-		const r = await maint.expandDrafts();
-		expect(r.started).toEqual([]);
-		expect(started).toEqual([]);
-		await f.cleanup();
-	});
-
-	test("starts expansion when dispatching resolves true", async () => {
-		const f = await fixture();
-		const a = await f.tasks.captureQuick("do the thing");
-		const started: string[] = [];
-		const maint = withExpand(f, {
-			startExpand: async (taskId) => {
-				started.push(taskId);
-				return { runId: `run-${taskId}` };
-			},
-			maxConcurrentDraftExpansions: 5,
-			dispatching: async () => true,
-		});
-		const r = await maint.expandDrafts();
-		expect(r.started).toEqual([a.id]);
-		await f.cleanup();
-	});
-
-	test("starts an expansion for every draft under the concurrency cap", async () => {
-		const f = await fixture();
-		const a = await f.tasks.captureQuick("first");
-		const b = await f.tasks.captureQuick("second");
-		const started: string[] = [];
-		const maint = withExpand(f, {
-			startExpand: async (taskId) => {
-				started.push(taskId);
-				return { runId: `run-${taskId}` };
-			},
-			maxConcurrentDraftExpansions: 5,
-		});
-		const r = await maint.expandDrafts();
-		expect(new Set(r.started)).toEqual(new Set([a.id, b.id]));
-		expect(new Set(started)).toEqual(new Set([a.id, b.id]));
-		await f.cleanup();
-	});
-
-	test("never starts a second expansion for a task that already has a live plan run", async () => {
-		const f = await fixture();
-		const a = await f.tasks.captureQuick("first");
-		const run = await f.registry.create({
-			kind: "plan",
-			taskId: a.id,
-			label: "plan#expand",
-			model: "sonnet",
-			cwd: f.root,
-		});
-		await f.registry.transition(run.id, "running");
-
-		const started: string[] = [];
-		const maint = withExpand(f, {
-			startExpand: async (taskId) => {
-				started.push(taskId);
-				return { runId: "new" };
-			},
-			maxConcurrentDraftExpansions: 5,
-		});
-		const r = await maint.expandDrafts();
-		expect(r.started).toEqual([]);
-		expect(started).toEqual([]);
-		await f.cleanup();
-	});
-
-	test("an open clarification pauses automatic expansion after its run releases the draft", async () => {
-		const f = await fixture();
-		const draft = await f.tasks.captureQuick("first");
-		const source = await f.registry.create({
-			kind: "plan",
-			taskId: draft.id,
-			label: "plan#expand",
-			model: "sonnet",
-			cwd: f.root,
-		});
-		await f.registry.transition(source.id, "running");
-		await f.registry.transition(source.id, "ended");
-		await f.registry.transition(source.id, "finalizing");
-		await f.registry.transition(source.id, "completed");
-		const clarify = new ClarifyService({
-			handle: f.handle,
-			bus: f.bus,
-			log: silentLogger(),
-		});
-		await clarify.raise({
-			runId: source.id,
-			kind: "planner",
-			goal: "first",
-			questions: ["Which behavior?"],
-		});
-
-		const started: string[] = [];
-		const maint = withExpand(f, {
-			startExpand: async (taskId) => {
-				started.push(taskId);
-				return { runId: "unexpected" };
-			},
-			maxConcurrentDraftExpansions: 5,
-		});
-		expect((await f.tasks.get(draft.id))?.draftPhase).toBe(
-			"waiting_for_answers",
-		);
-		expect((await maint.expandDrafts()).started).toEqual([]);
-		expect(started).toEqual([]);
-		await expect(
-			f.tasks.edit(draft.id, { title: "changed under stale questions" }),
-		).rejects.toThrow("waiting for clarification answers");
-		await expect(f.tasks.move(draft.id, "archived", "human")).rejects.toThrow(
-			"waiting for clarification answers",
-		);
-		await f.cleanup();
-	});
-
-	test("respects the system-wide concurrency cap across a sweep pass", async () => {
-		const f = await fixture();
-		await f.tasks.captureQuick("first");
-		await f.tasks.captureQuick("second");
-		await f.tasks.captureQuick("third");
-		const started: string[] = [];
-		const maint = withExpand(f, {
-			startExpand: async (taskId) => {
-				started.push(taskId);
-				return { runId: `run-${taskId}` };
-			},
-			maxConcurrentDraftExpansions: 2,
-		});
-		const r = await maint.expandDrafts();
-		expect(r.started.length).toBe(2);
-		expect(started.length).toBe(2);
-		await f.cleanup();
-	});
-
-	test("a startExpand failure for one draft does not stop the rest", async () => {
-		const f = await fixture();
-		const a = await f.tasks.captureQuick("first");
-		const b = await f.tasks.captureQuick("second");
-		const maint = withExpand(f, {
-			startExpand: async (taskId) => {
-				if (taskId === a.id) throw new Error("boom");
-				return { runId: "ok" };
-			},
-			maxConcurrentDraftExpansions: 5,
-		});
-		const r = await maint.expandDrafts();
-		expect(r.started).toEqual([b.id]);
-		await f.cleanup();
-	});
 });

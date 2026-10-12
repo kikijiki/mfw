@@ -21,6 +21,7 @@ import {
 	DialogTitle,
 } from "~/components/ui/dialog";
 import { Textarea } from "~/components/ui/textarea";
+import { TipLi, TipSpan } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
 import { AppLink } from "../../components/AppLink";
 import { Cost, Duration, Mono, Tokens } from "../../components/Cost";
@@ -35,7 +36,8 @@ import type { RouterOutputs } from "../../lib/trpc";
 import { useTRPC } from "../../lib/trpc";
 import { href } from "../../routes";
 import { DiffView } from "./DiffView";
-import { afterReviewDecisionHref, type ReviewOrigin } from "./navigation";
+import { nextAfterDecision, reviewQueue, stepReview } from "./navigation";
+import { VerdictChip, VerdictHistory } from "./VerdictHistory";
 
 /**
  * REVIEW: diff, verification, acceptance verdict, agent report, cost and
@@ -49,26 +51,46 @@ const REVIEW_CAUSE_LABEL = {
 	critic_flagged: "Assisted review flagged concerns",
 	critic_unavailable: "Assisted review could not decide",
 	human_required: "Human review required by policy",
+	scope_outside: "Changed files outside the task's owns",
+	review_rounds_exhausted: "Review asked for fixes too many times",
+	reviewer_not_independent: "No reviewer independent of the worker",
+	reviewer_modified_checkout:
+		"Reviewer edited the work; its verdict was discarded",
 } as const;
 
+/**
+ * The review screen, mountable as the task inspector's Changes tab. All of
+ * its navigation is props: it never reads or writes the URL itself, so the
+ * dock, the sheet and the full page can each decide what "next" means.
+ */
 export function ReviewPage({
 	project,
 	taskId,
-	origin,
 	selectedFile,
 	onSelectFile,
+	onOpenTask,
+	onDecided,
+	embedded = false,
 }: {
 	project: string;
 	taskId: string;
-	origin?: ReviewOrigin;
 	selectedFile?: string;
 	onSelectFile: (path: string | undefined) => void;
+	/** `[` / `]` walked the review queue to another task. */
+	onOpenTask?: (taskId: string) => void;
+	/**
+	 * Approve or reject landed. `next` is the next task waiting for review in
+	 * this project, or null when the queue is empty.
+	 */
+	onDecided?: (next: { taskId: string } | null) => void;
+	/** Mounted inside the inspector: no page chrome of its own, and the narrow layout. */
+	embedded?: boolean;
 }) {
 	const trpc = useTRPC();
 	const queryClient = useQueryClient();
 	const go = useGo();
 	const { toast } = useToast();
-	const wide = useWideViewport();
+	const wide = useWideViewport() && !embedded;
 
 	const bundle = useQuery(trpc.review.bundle.queryOptions({ project, taskId }));
 	const comments = useQuery(
@@ -92,31 +114,22 @@ export function ReviewPage({
 	);
 	const unresolved = (comments.data ?? []).filter((c) => !c.resolved);
 
-	// The queue follows the inbox that opened the review; don't leak across projects.
+	// The queue is this project's review items in `inbox.list`, the same list
+	// the needs count is made of.
 	const queue = useMemo(
-		() =>
-			(inbox.data?.items ?? []).filter(
-				(i): i is typeof i & { taskId: string } =>
-					i.kind === "review" &&
-					Boolean(i.taskId) &&
-					(origin !== "project-inbox" || i.project === project),
-			),
-		[inbox.data, origin, project],
+		() => reviewQueue(inbox.data?.items, project),
+		[inbox.data, project],
 	);
-	const position = queue.findIndex(
-		(i) => i.project === project && i.taskId === taskId,
-	);
+	const position = queue.findIndex((i) => i.taskId === taskId);
 
 	const goToQueue = (delta: number) => {
-		if (queue.length === 0) return;
-		const from = position === -1 ? 0 : position;
-		const next = queue[(from + delta + queue.length) % queue.length];
-		if (next) go(href.reviewTask(next.project, next.taskId, origin));
+		const next = stepReview(queue, taskId, delta);
+		if (next) onOpenTask?.(next.taskId);
 	};
 
-	/** Where to land once this item leaves the queue. */
+	/** Hand over to whoever mounted us once this item leaves the queue. */
 	const afterDecision = () => {
-		go(afterReviewDecisionHref(project, taskId, origin, queue));
+		onDecided?.(nextAfterDecision(queue, taskId));
 	};
 
 	const dropInboxItem = () => {
@@ -390,21 +403,15 @@ export function ReviewPage({
 		<Page className="h-full">
 			<PageHeader
 				back={
-					<Button size="xs" variant="ghost" asChild>
-						<AppLink
-							to={
-								origin === "project-inbox"
-									? href.projectInbox(project)
-									: origin === "inbox"
-										? href.inbox()
-										: href.review(project)
-							}
-						>
-							<ArrowLeft aria-hidden />
-							{origin ? "Inbox" : "Review queue"}
-							{position >= 0 ? ` (${position + 1} of ${queue.length})` : ""}
-						</AppLink>
-					</Button>
+					embedded ? undefined : (
+						<Button size="xs" variant="ghost" asChild>
+							<AppLink to={href.board(project)}>
+								<ArrowLeft aria-hidden />
+								Board
+								{position >= 0 ? ` (${position + 1} of ${queue.length})` : ""}
+							</AppLink>
+						</Button>
+					)
 				}
 				title={
 					<span className="flex flex-wrap items-baseline gap-2">
@@ -430,18 +437,24 @@ export function ReviewPage({
 								/>
 							) : null}
 							{bundle.data?.branch ? (
-								<span className="mfw-num">
+								<AppLink
+									to={href.repoBranch(project, bundle.data.branch)}
+									className="mfw-num"
+									title="Open this branch in the repo view"
+								>
 									{bundle.data.branch} → integration
-								</span>
+								</AppLink>
 							) : null}
 						</>
 					) : null
 				}
 				actions={
 					<>
-						<Button size="sm" variant="ghost" asChild>
-							<AppLink to={href.task(project, taskId)}>Task</AppLink>
-						</Button>
+						{embedded ? null : (
+							<Button size="sm" variant="ghost" asChild>
+								<AppLink to={href.task(project, taskId)}>Task</AppLink>
+							</Button>
+						)}
 						{run ? (
 							<Button size="sm" variant="ghost" asChild>
 								<AppLink to={href.run(project, run.runId)}>
@@ -449,10 +462,22 @@ export function ReviewPage({
 								</AppLink>
 							</Button>
 						) : null}
-						<Button size="sm" variant="outline" onClick={() => goToQueue(-1)}>
+						<Button
+							size="sm"
+							variant="outline"
+							title="Previous task in the review queue ([)"
+							aria-label="Previous task in the review queue"
+							onClick={() => goToQueue(-1)}
+						>
 							[
 						</Button>
-						<Button size="sm" variant="outline" onClick={() => goToQueue(1)}>
+						<Button
+							size="sm"
+							variant="outline"
+							title="Next task in the review queue (])"
+							aria-label="Next task in the review queue"
+							onClick={() => goToQueue(1)}
+						>
 							]
 						</Button>
 					</>
@@ -524,6 +549,7 @@ export function ReviewPage({
 
 					<Verdict
 						project={project}
+						taskId={taskId}
 						acceptanceCriteria={bundle.data.acceptanceCriteria}
 						checks={bundle.data.checks}
 						acceptance={bundle.data.acceptance}
@@ -641,13 +667,14 @@ function FileList({
 													: "var(--mfw-warn)",
 									}}
 								/>
-								<span
+								<TipSpan
 									className="mfw-num min-w-0 flex-1 truncate"
-									title={`${f.path} (${f.status})`}
+									tip={`${f.path} (${f.status})`}
+									clipped
 									dir="rtl"
 								>
 									{f.path}
-								</span>
+								</TipSpan>
 								{open > 0 ? <Chip tone="accent">{open}</Chip> : null}
 							</button>
 						</li>
@@ -660,6 +687,7 @@ function FileList({
 
 function Verdict({
 	project,
+	taskId,
 	acceptanceCriteria,
 	checks,
 	acceptance,
@@ -668,6 +696,7 @@ function Verdict({
 	runId,
 }: {
 	project: string;
+	taskId: string;
 	acceptanceCriteria: RouterOutputs["review"]["bundle"]["acceptanceCriteria"];
 	checks: RouterOutputs["review"]["bundle"]["checks"];
 	acceptance: RouterOutputs["review"]["bundle"]["acceptance"];
@@ -765,14 +794,15 @@ function Verdict({
 					</p>
 					<ul className="mt-1 flex flex-col gap-0.5">
 						{scope.outside.map((path) => (
-							<li
+							<TipLi
 								key={path}
 								className="mfw-num min-w-0 truncate"
-								title={path}
+								tip={path}
+								clipped
 								style={{ color: "var(--mfw-warn)" }}
 							>
 								{path}
-							</li>
+							</TipLi>
 						))}
 					</ul>
 				</Panel>
@@ -826,9 +856,14 @@ function Verdict({
 				{acceptance ? (
 					<div className="flex flex-col gap-1">
 						<Field label="verdict">
-							<Chip tone={acceptance.outcome === "accepted" ? "ok" : "warn"}>
-								{acceptance.outcome}
-							</Chip>
+							{review?.verdict ? (
+								<VerdictChip verdict={review.verdict} round={review.round} />
+							) : (
+								<Chip tone={acceptance.outcome === "accepted" ? "ok" : "warn"}>
+									{acceptance.outcome}
+								</Chip>
+							)}
+							{review?.mode ? <Chip>{review.mode}</Chip> : null}
 						</Field>
 						{review ? (
 							<Field label="reviewer">
@@ -857,6 +892,8 @@ function Verdict({
 					</p>
 				)}
 			</Panel>
+
+			<VerdictHistory project={project} taskId={taskId} />
 
 			<Panel title="Agent report">
 				{steps.isLoading ? (

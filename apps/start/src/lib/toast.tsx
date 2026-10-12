@@ -182,9 +182,14 @@ export function humanizeError(error: unknown): string {
 		if (error.message.toLowerCase().includes("failed to fetch")) {
 			return "Daemon unreachable: the request never left the browser.";
 		}
-		return data?.code && !error.message.includes(data.code)
-			? `${error.message} (${data.code})`
-			: error.message;
+		const base =
+			data?.code && !error.message.includes(data.code)
+				? `${error.message} (${data.code})`
+				: error.message;
+		// A refusal's exact remedy, when the daemon sent one (`data.fix`).
+		const fix = (error as { data?: { fix?: { text?: unknown } | null } }).data
+			?.fix?.text;
+		return typeof fix === "string" && fix ? `${base}. Fix: ${fix}` : base;
 	}
 	return String(error);
 }

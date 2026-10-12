@@ -68,6 +68,12 @@
 	--mfw-shadow-raised: 0 1px 2px oklch(0.2 0.01 255 / 8%);
 	--mfw-shadow-overlay: 0 8px 24px oklch(0.2 0.01 255 / 14%);
 
+	/* ---- project swatches: lightness per theme, hue per key (see `.mfw-swatch`) ---- */
+	--mfw-swatch-l-bg: 0.9;
+	--mfw-swatch-l-fg: 0.38;
+	--mfw-swatch-c-bg: 0.05;
+	--mfw-swatch-c-fg: 0.09;
+
 	/* ---- type scale (ui.md §6.2) ----
 	 * 13px is the BASE for data surfaces; a 16px base would halve the rows on screen. */
 	--mfw-text-2xs: 11px;
@@ -143,6 +149,9 @@
 
 		--mfw-shadow-raised: 0 1px 2px oklch(0 0 0 / 40%);
 		--mfw-shadow-overlay: 0 8px 24px oklch(0 0 0 / 55%);
+
+		--mfw-swatch-l-bg: 0.34;
+		--mfw-swatch-l-fg: 0.86;
 	}
 }
 
@@ -191,6 +200,49 @@
 
 	--mfw-shadow-raised: 0 1px 2px oklch(0 0 0 / 40%);
 	--mfw-shadow-overlay: 0 8px 24px oklch(0 0 0 / 55%);
+
+	--mfw-swatch-l-bg: 0.34;
+	--mfw-swatch-l-fg: 0.86;
+}
+
+/* A project's avatar tile: one muted swatch per key, lightness from the theme tokens above. */
+.mfw-swatch {
+	--sw-h: 250;
+	--sw-c-bg: var(--mfw-swatch-c-bg);
+	--sw-c-fg: var(--mfw-swatch-c-fg);
+	background: oklch(var(--mfw-swatch-l-bg) var(--sw-c-bg) var(--sw-h));
+	color: oklch(var(--mfw-swatch-l-fg) var(--sw-c-fg) var(--sw-h));
+}
+.mfw-swatch[data-swatch="slate"] {
+	--sw-c-bg: 0.012;
+	--sw-c-fg: 0.02;
+}
+.mfw-swatch[data-swatch="red"] {
+	--sw-h: 25;
+}
+.mfw-swatch[data-swatch="orange"] {
+	--sw-h: 55;
+}
+.mfw-swatch[data-swatch="amber"] {
+	--sw-h: 85;
+}
+.mfw-swatch[data-swatch="green"] {
+	--sw-h: 145;
+}
+.mfw-swatch[data-swatch="teal"] {
+	--sw-h: 190;
+}
+.mfw-swatch[data-swatch="blue"] {
+	--sw-h: 250;
+}
+.mfw-swatch[data-swatch="indigo"] {
+	--sw-h: 275;
+}
+.mfw-swatch[data-swatch="violet"] {
+	--sw-h: 305;
+}
+.mfw-swatch[data-swatch="pink"] {
+	--sw-h: 350;
 }
 
 :root[data-density="compact"] {
@@ -264,4 +316,37 @@
 	.mfw-skeleton {
 		animation: none;
 	}
+}
+
+/* Flow timeline (features/flow): hover and focus feedback for bars and marks,
+   and the pointer crosshair, driven by `--flow-x` on the lens root. */
+.mfw-flow-mark {
+	transition: transform 80ms ease-out;
+	border-radius: 3px;
+}
+.mfw-flow-mark:hover,
+.mfw-flow-mark:focus-visible {
+	transform: scale(1.25);
+	z-index: 2;
+}
+.mfw-flow-bar:hover {
+	filter: brightness(1.25);
+	stroke: var(--mfw-fg);
+	stroke-width: 1;
+}
+.mfw-flow-crosshair {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	left: var(--flow-x, -10px);
+	width: 1px;
+	background: var(--mfw-fg-muted);
+	opacity: 0.55;
+	pointer-events: none;
+}
+[data-time-readout] {
+	opacity: 0;
+}
+[data-hovering] [data-time-readout] {
+	opacity: 1;
 }

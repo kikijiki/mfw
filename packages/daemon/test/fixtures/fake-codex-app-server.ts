@@ -87,6 +87,55 @@ for await (const bytes of Bun.stdin.stream()) {
 					},
 				}),
 			);
+			if (JSON.stringify(m.params ?? {}).includes("ASK-QUESTION")) {
+				console.log(
+					JSON.stringify({
+						id: 900,
+						method: "item/tool/requestUserInput",
+						params: {
+							itemId: "q-1",
+							questions: [{ id: "q", question: "Which branch?" }],
+						},
+					}),
+				);
+			}
+			if (JSON.stringify(m.params ?? {}).includes("SUBTHREAD")) {
+				// A sub-thread the agent spawned: its notifications name its own
+				// `threadId`, and its turn ends before the run's own turn does.
+				console.log(
+					JSON.stringify({
+						method: "item/started",
+						params: {
+							threadId: "thread-2",
+							item: { id: "sub-cmd", type: "commandExecution", command: "ls" },
+						},
+					}),
+				);
+				console.log(
+					JSON.stringify({
+						method: "item/completed",
+						params: {
+							threadId: "thread-2",
+							item: {
+								id: "sub-cmd",
+								type: "commandExecution",
+								status: "completed",
+								exitCode: 0,
+								aggregatedOutput: "a\n",
+							},
+						},
+					}),
+				);
+				console.log(
+					JSON.stringify({
+						method: "turn/completed",
+						params: {
+							threadId: "thread-2",
+							turn: { id: "turn-9", status: "completed" },
+						},
+					}),
+				);
+			}
 			console.log(
 				JSON.stringify({
 					method: "item/completed",

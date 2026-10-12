@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+	chmod,
+	mkdir,
+	mkdtemp,
+	readFile,
+	rm,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DefinitionOfDone } from "@mfw/core/taskfile";
@@ -54,7 +61,6 @@ interface Env {
 	brain: BrainPort;
 	notifications: Notification[];
 	merges: MergeJob[];
-	spawns: { parent: string; child: string }[];
 	/** What the fake leftover scan finds; tests set it before finalizing. */
 	leftovers: LeftoverProcess[];
 	/** Every list handed to the fake stop. */
@@ -96,15 +102,12 @@ async function makeEnv(
 
 	const notifications: Notification[] = [];
 	const merges: MergeJob[] = [];
-	const spawns: { parent: string; child: string }[] = [];
 	// Never scan the real /proc from a test: a fake with scripted findings.
 	const leftovers: LeftoverProcess[] = [];
 	const stopped: LeftoverProcess[][] = [];
 	const brain: BrainPort = {
 		enabled: false,
 		critic: async () => ({ status: "ok", flagged: false }),
-		replan: async () => ({ status: "ok", action: "escalate" }),
-		importReview: async () => ({ status: "ok", approved: true }),
 	};
 
 	const baseDeps: StepRunnerDeps = {
@@ -128,8 +131,6 @@ async function makeEnv(
 		projectRoot: root,
 		log: silentLogger(),
 		config: {
-			maxStalls: 3,
-			maxResumes: 2,
 			draftExpandMaxAttempts: 3,
 			// Default DoD for runs without their own. `mergeChecks` is applied separately below so tests can pass `null`.
 			mergeChecks: {
@@ -139,12 +140,6 @@ async function makeEnv(
 			...stepRunnerConfig,
 			// `null` means "the project has no default"; only the task service sees that, the StepRunner always needs one.
 			...(mergeChecks ? { mergeChecks } : {}),
-		},
-		spawnRepair: async (parent, child) => {
-			spawns.push({ parent, child });
-		},
-		spawnResume: async (parent, child) => {
-			spawns.push({ parent, child });
 		},
 		leftovers: {
 			find: async () => [...leftovers],
@@ -175,7 +170,6 @@ async function makeEnv(
 		brain,
 		notifications,
 		merges,
-		spawns,
 		leftovers,
 		stopped,
 		makeRunner,
@@ -201,6 +195,7 @@ async function commitIn(
 	file: string,
 	content: string,
 ): Promise<void> {
+	await mkdir(join(wt, file, ".."), { recursive: true });
 	await writeFile(join(wt, file), content);
 	await git(["add", "-A"], wt);
 	await git(["commit", "-q", "-m", `work: ${file}`], wt);
@@ -218,9 +213,13 @@ async function seedRun(
 		events?: string;
 		exit?: string;
 		report?: unknown;
+		routing?: Record<string, unknown>;
+		providerId?: string;
 	},
 ): Promise<RunRow> {
 	const run = await env.registry.create({
+		...(spec.routing ? { routing: spec.routing } : {}),
+		...(spec.providerId ? { providerId: spec.providerId } : {}),
 		kind: spec.kind,
 		...(spec.runId ? { id: spec.runId } : {}),
 		...(spec.taskId ? { taskId: spec.taskId } : {}),
@@ -263,6 +262,46 @@ const doneEvent = (resultText?: string) =>
 		reason: "complete",
 		...(resultText ? { resultText } : {}),
 	});
+
+/** The journaled settle facts: free-form JSON the tests read by path. */
+type SettleFacts = {
+	verify?: { passed: boolean; failing: { check: string }[] };
+	report?: { question?: string };
+	archivedRef?: string;
+	killReason?: string;
+	scope?: { outside: number; outsideFiles: string[] };
+	review?: {
+		status?: string;
+		verdict?: string | null;
+		cause?: string;
+		findings?: { file: string; severity: string }[];
+	};
+	outcome?: string;
+	proposal?: { tasks?: unknown[]; truncatedTasks?: number };
+};
+
+/** `run.settled` events for a run, newest last. */
+async function settledEvents(env: Env, runId: string) {
+	return (await eventsSince(env.handle.db, 0, 5000)).filter(
+		(e) => e.type === "run.settled" && e.runId === runId,
+	) as unknown as {
+		payload: { class: string; groupId: string | null; facts: SettleFacts };
+	}[];
+}
+
+async function awaitingOf(env: Env) {
+	const [row] = await env.handle.db
+		.select()
+		.from(engineKv)
+		.where(eq(engineKv.key, "brain_awaiting"));
+	return (
+		(
+			row?.value as
+				| { awaiting?: Record<string, { runId: string; class: string }> }
+				| undefined
+		)?.awaiting ?? {}
+	);
+}
 
 async function journal(env: Env, runId: string): Promise<string[]> {
 	return (await env.registry.steps(runId)).map((s) => s.step);
@@ -386,7 +425,7 @@ describe("StepRunner v2: finalization end to end", () => {
 		await env.cleanup();
 	});
 
-	test("(b) watchdog kill stalls the task, blocks it, notifies and gcs a clean worktree (T4)", async () => {
+	test("(b) a watchdog kill settles watchdog_killed: task back to ready awaiting the brain, no block, no ping, clean worktree gc'd (T4)", async () => {
 		const env = await makeEnv();
 		const wt = await addWorktree(env.root, "t-b");
 		const runId = ulid();
@@ -407,18 +446,28 @@ describe("StepRunner v2: finalization end to end", () => {
 			"classify",
 			"reap_leftovers",
 			"ingest_report",
-			"bump_stall",
-			"release_task",
-			"notify",
+			"settle",
 			"gc_worktree",
 		]);
 		const task = await env.tasks.get(taskId);
-		expect(task?.status).toBe("blocked");
+		expect(task?.status).toBe("ready");
+		expect(task?.claimedByRunId).toBeNull();
 		expect(task?.stallCount).toBe(1);
-		expect(env.notifications.map((n) => n.kind)).toEqual(["blocked"]);
+		expect(env.notifications).toEqual([]);
 		const row = await env.registry.get(run.id);
 		expect(row?.state).toBe("killed");
 		expect(row?.killReason).toBe("watchdog-idle");
+		const settled = await settledEvents(env, run.id);
+		expect(settled).toHaveLength(1);
+		expect(settled[0]?.payload).toMatchObject({
+			class: "watchdog_killed",
+			groupId: run.id,
+			facts: { outcome: "killed_watchdog", killReason: "watchdog-idle" },
+		});
+		expect((await awaitingOf(env))[taskId]).toMatchObject({
+			runId: run.id,
+			class: "watchdog_killed",
+		});
 		// The report is already captured by ingest_report, so it does not make the worktree dirty.
 		expect(existsSync(wt.path)).toBe(false);
 		await env.cleanup();
@@ -538,14 +587,56 @@ describe("StepRunner v2: finalization end to end", () => {
 		await env.cleanup();
 	});
 
-	test("(e) failed verification bumps the stall, asks the brain and escalates to a human (T24)", async () => {
+	test("a rate-limited run holds only its own route's provider account, machine-wide", async () => {
+		const env = await makeEnv();
+		const holds: { key: string; until: number; project?: string }[] = [];
+		const runner = env.makeRunner({
+			providerHolds: {
+				hold: async (key, hold) => {
+					holds.push({ key, until: hold.until, project: hold.project });
+				},
+			},
+			projectName: "demo",
+		});
+		const wt = await addWorktree(env.root, "limited-endpoint");
+		const runId = ulid();
+		const taskId = await claimedTask(env, runId, { title: "limited" });
+		const resetsAtSec = Math.floor((Date.now() + 3_600_000) / 1000);
+		const run = await seedRun(env, {
+			kind: "task",
+			runId,
+			taskId,
+			wt,
+			providerId: "codex-cli",
+			routing: {
+				provider: "codex-cli",
+				model: "m",
+				holdKey: "codex-cli@local",
+			},
+			events: ev({
+				type: "rate_limit",
+				status: "limited",
+				limited: true,
+				resetsAt: resetsAtSec,
+			}),
+			exit: "exit:1",
+		});
+		await runner.finalize(run.id);
+		expect(holds).toEqual([
+			{ key: "codex-cli@local", until: resetsAtSec * 1000, project: "demo" },
+		]);
+		// Not the project-wide gate: other providers keep dispatching.
+		const rows = await env.handle.db
+			.select()
+			.from(engineKv)
+			.where(eq(engineKv.key, "dispatch_hold"));
+		expect(rows).toEqual([]);
+		await env.cleanup();
+	});
+
+	test("(e) failed verification settles verify_failed with the failing checks: no replan call, no block, no ping (T17)", async () => {
 		const env = await makeEnv();
 		env.brain.enabled = true;
-		const replanCalls: string[] = [];
-		env.brain.replan = async (ctx) => {
-			replanCalls.push(ctx.runId);
-			return { status: "ok", action: "escalate", reason: "needs a human" };
-		};
 		const wt = await addWorktree(env.root, "t-e");
 		await commitIn(wt.path, "e.txt", "half done\n");
 		const runId = ulid();
@@ -569,33 +660,30 @@ describe("StepRunner v2: finalization end to end", () => {
 			"reap_leftovers",
 			"ingest_report",
 			"verify",
-			"bump_stall",
-			"replan_decide",
-			"release_task",
-			"notify",
+			"settle",
 		]);
-		expect(replanCalls).toEqual([run.id]);
 		const task = await env.tasks.get(taskId);
-		expect(task?.status).toBe("blocked");
+		expect(task?.status).toBe("ready");
 		expect(task?.stallCount).toBe(1);
-		expect(env.notifications.map((n) => n.kind)).toEqual(["blocked"]);
+		// The work is kept for a `continue:` spawn.
+		expect(task?.preservedWorktree).toBe(wt.path);
+		expect(existsSync(wt.path)).toBe(true);
+		expect(env.notifications).toEqual([]);
 		const row = await env.registry.get(run.id);
 		expect(row?.state).toBe("failed");
-		expect(row?.note).toBe("escalated to human: brain said escalate");
+		expect(row?.note).toBe("verify failed");
 		expect(env.merges).toEqual([]);
+		const [settled] = await settledEvents(env, run.id);
+		expect(settled?.payload.class).toBe("verify_failed");
+		expect(settled?.payload.facts.verify?.passed).toBe(false);
+		expect(settled?.payload.facts.verify?.failing[0]?.check).toContain("false");
 		await env.cleanup();
 	});
 
-	test("(e-mfw59) escalating to blocked (T24) raises a pre-loaded session", async () => {
+	test("(e-settle) a crash between the settle's effects and its journal row replays to exactly one event, one awaiting entry and one stall", async () => {
 		const env = await makeEnv();
-		env.brain.enabled = true;
-		env.brain.replan = async () => ({
-			status: "ok",
-			action: "escalate",
-			reason: "needs a human",
-		});
-		const wt = await addWorktree(env.root, "t-e59");
-		await commitIn(wt.path, "e59.txt", "half done\n");
+		const wt = await addWorktree(env.root, "t-e-settle");
+		await commitIn(wt.path, "e.txt", "half done\n");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "broken work",
@@ -606,68 +694,27 @@ describe("StepRunner v2: finalization end to end", () => {
 			runId,
 			taskId,
 			wt,
-			events: doneEvent("I think it works"),
+			events: doneEvent("done"),
 			exit: "exit:0",
 		});
+		const finish = env.registry.finishStep.bind(env.registry);
+		let lose = true;
+		env.registry.finishStep = async (id, step, result) => {
+			if (step === "settle" && lose) {
+				lose = false;
+				throw new Error("journal unavailable");
+			}
+			await finish(id, step, result);
+		};
 
-		const raised: unknown[] = [];
-		const runner = env.makeRunner({
-			sessions: {
-				raise: async (input) => {
-					raised.push(input);
-					return { id: "sess-1" };
-				},
-			},
-		});
-		await runner.finalize(run.id);
+		await env.runner.finalize(run.id);
+		expect(await settledEvents(env, run.id)).toHaveLength(1);
+		await env.makeRunner().finalize(run.id);
 
-		expect(raised).toHaveLength(1);
-		expect(raised[0]).toMatchObject({
-			source: "blocked",
-			sourceKey: taskId,
-			taskId,
-			runId: run.id,
-			summary: "escalated to human: brain said escalate",
-		});
-		const whatWasTried = (raised[0] as { whatWasTried: string[] }).whatWasTried;
-		expect(whatWasTried.join(" ")).toContain("attempt 1 of");
-		expect((raised[0] as { hypothesis: string }).hypothesis).toContain(
-			'"escalate"',
-		);
-		await env.cleanup();
-	});
-
-	test("(b-mfw59) a watchdog-killed run (T4, no verify step) still raises a session", async () => {
-		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-b59");
-		const runId = ulid();
-		const taskId = await claimedTask(env, runId, { title: "idle agent" });
-		const run = await seedRun(env, {
-			kind: "task",
-			runId,
-			taskId,
-			wt,
-			events: ev({ type: "message", role: "assistant", text: "thinking" }),
-			exit: "killed:watchdog-idle",
-		});
-
-		const raised: unknown[] = [];
-		const runner = env.makeRunner({
-			sessions: {
-				raise: async (input) => {
-					raised.push(input);
-					return { id: "sess-2" };
-				},
-			},
-		});
-		await runner.finalize(run.id);
-
-		expect(raised).toHaveLength(1);
-		expect(raised[0]).toMatchObject({
-			source: "blocked",
-			taskId,
-			runId: run.id,
-		});
+		expect(await settledEvents(env, run.id)).toHaveLength(1);
+		expect(Object.keys(await awaitingOf(env))).toEqual([taskId]);
+		expect((await env.tasks.get(taskId))?.stallCount).toBe(1);
+		expect((await env.registry.get(run.id))?.state).toBe("failed");
 		await env.cleanup();
 	});
 
@@ -725,7 +772,23 @@ describe("StepRunner v2: finalization end to end", () => {
 		await env.cleanup();
 	});
 
-	test("(f) an import run that proposed nothing fails without a merge (I3)", async () => {
+	/** The proposal a plan or import run's settle carries. */
+	async function proposalOf(env: Env, runId: string) {
+		const [settled] = await settledEvents(env, runId);
+		return {
+			cls: settled?.payload.class,
+			facts: settled?.payload.facts as unknown as {
+				proposal?: {
+					parsed: boolean;
+					tasks?: { title: string; status?: string; owns?: string[] }[];
+					specs?: { title: string; body: string; tasks: (string | number)[] }[];
+					questions?: string[];
+				};
+			},
+		};
+	}
+
+	test("(f) an import run that proposed nothing settles plan_output with parsed: false, creates nothing, merges nothing", async () => {
 		const env = await makeEnv();
 		const wt = await addWorktree(env.root, "t-f");
 		const run = await seedRun(env, {
@@ -741,17 +804,21 @@ describe("StepRunner v2: finalization end to end", () => {
 			"classify",
 			"reap_leftovers",
 			"parse_plan",
-			"ingest_report",
+			"settle",
 			"gc_worktree",
 		]);
 		const row = await env.registry.get(run.id);
 		expect(row?.state).toBe("failed");
 		expect(row?.note).toBe("importer proposed nothing");
 		expect(env.merges).toEqual([]);
+		const p = await proposalOf(env, run.id);
+		expect(p.cls).toBe("plan_output");
+		expect(p.facts.proposal).toEqual({ parsed: false });
+		expect(await env.tasks.list()).toEqual([]);
 		await env.cleanup();
 	});
 
-	test("(f2) an import proposal lands on the board, not in a merge (I7)", async () => {
+	test("(f2) an import proposal rides the settle for the brain: no task is created, no merge, nobody paged (I7)", async () => {
 		const env = await makeEnv();
 		const wt = await addWorktree(env.root, "t-f2");
 		const proposal = {
@@ -771,230 +838,46 @@ describe("StepRunner v2: finalization end to end", () => {
 
 		await env.runner.finalize(run.id);
 
-		// Opts out of the brain, so I7 is reached directly.
 		expect(await journal(env, run.id)).toEqual([
 			"classify",
 			"reap_leftovers",
 			"parse_plan",
-			"create_tasks",
+			"settle",
 			"gc_worktree",
 		]);
 		expect(env.merges).toEqual([]);
-		const created = (await env.tasks.list()).filter(
-			(t) => t.source === "importer",
-		);
-		expect(created.map((t) => t.title)).toEqual([
+		expect(env.notifications).toEqual([]);
+		expect(await env.tasks.list()).toEqual([]);
+		const p = await proposalOf(env, run.id);
+		expect(p.cls).toBe("plan_output");
+		expect(p.facts.proposal?.parsed).toBe(true);
+		expect(p.facts.proposal?.tasks?.map((t) => t.title)).toEqual([
 			"Delete the dead adapter",
 			"Document the deploy",
 		]);
+		expect((await env.registry.get(run.id))?.state).toBe("completed");
 		await env.cleanup();
 	});
 
-	test("(f3) an import files each spec as a container task's spec.md (I7)", async () => {
-		// create_specs turns the proposal into an epic whose `spec.md` is shared by the child tasks.
+	test("(f3) specs, statuses, owns and questions are normalized into the proposal; nothing is written or asked", async () => {
 		const env = await makeEnv();
 		const wt = await addWorktree(env.root, "t-f3");
 		const proposal = {
 			tasks: [
-				{ title: "Delete the dead adapter" },
-				{ title: "Document the deploy" },
+				{ title: "Ship the parser", status: "done" },
+				{ title: "Wire the UI", status: "in_progress", owns: ["src/ui/**"] },
+				{ title: "Nonsense status", status: "quantum" },
+				{ title: "Nothing stated" },
 			],
 			specs: [
 				{
 					title: "Adapter architecture",
 					body: "Adapters are resolved through the catalogue.",
-					// Positional: ids do not exist until create_tasks runs.
 					tasks: [0, 1],
 				},
 			],
-		};
-		const run = await seedRun(env, {
-			kind: "import",
-			wt,
-			events: doneEvent(JSON.stringify(proposal)),
-			exit: "exit:0",
-		});
-
-		await env.runner.finalize(run.id);
-
-		expect(await journal(env, run.id)).toEqual([
-			"classify",
-			"reap_leftovers",
-			"parse_plan",
-			"create_tasks",
-			"create_specs",
-			"gc_worktree",
-		]);
-		const all = await env.tasks.list();
-		const containers = all.filter((t) => t.type === "epic");
-		expect(containers.map((t) => t.title)).toEqual(["Adapter architecture"]);
-		const [container] = containers;
-		if (!container) throw new Error("no container task");
-		// Held in the backlog by manual readiness, so it is never dispatched.
-		expect(container.status).toBe("backlog");
-		expect(container.readyMode).toBe("manual");
-		expect((await env.tasks.getSpec(container.id))?.body).toBe(
-			"Adapters are resolved through the catalogue.",
-		);
-		// The children's `parent` is the ONLY place the link lives.
-		const children = all.filter((t) => t.parentId === container.id);
-		expect(children.map((t) => t.title).sort()).toEqual([
-			"Delete the dead adapter",
-			"Document the deploy",
-		]);
-		await env.cleanup();
-	});
-
-	test("(f3b) a repeated import reuses the existing container and never overwrites its spec", async () => {
-		const env = await makeEnv();
-		const existing = await env.tasks.create({
-			title: "Adapter architecture",
-			type: "epic",
-			status: "backlog",
-			readyMode: "manual",
-		});
-		await env.tasks.setSpec(existing.id, "The durable design already exists.");
-		const wt = await addWorktree(env.root, "t-f3b");
-		const run = await seedRun(env, {
-			kind: "import",
-			wt,
-			events: doneEvent(
-				JSON.stringify({
-					tasks: [{ title: "Document the adapter" }],
-					specs: [
-						{
-							title: "Adapter architecture",
-							body: "A duplicate summary that must not overwrite the original.",
-							tasks: [0],
-						},
-					],
-				}),
-			),
-			exit: "exit:0",
-		});
-
-		await env.runner.finalize(run.id);
-
-		const all = await env.tasks.list();
-		expect(all.filter((t) => t.type === "epic")).toHaveLength(1);
-		const task = all.find((t) => t.title === "Document the adapter");
-		if (!task) throw new Error("imported task was not created");
-		expect(task.parentId).toBe(existing.id);
-		expect((await env.tasks.getSpec(existing.id))?.body).toBe(
-			"The durable design already exists.",
-		);
-		await env.cleanup();
-	});
-
-	test("(f4) imported task statuses come from the report, not from a constant", async () => {
-		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-f4");
-		const proposal = {
-			tasks: [
-				{ title: "Ship the parser", status: "done" },
-				{ title: "Wire the UI", status: "in_progress" },
-				{ title: "Rewrite the docs", status: "blocked" },
-				{ title: "Nothing stated" },
-				{ title: "Nonsense status", status: "quantum" },
-			],
-		};
-		const run = await seedRun(env, {
-			kind: "import",
-			wt,
-			events: doneEvent(JSON.stringify(proposal)),
-			exit: "exit:0",
-		});
-
-		await env.runner.finalize(run.id);
-
-		const byTitle = new Map(
-			(await env.tasks.list()).map((t) => [t.title, t.status]),
-		);
-		expect(byTitle.get("Ship the parser")).toBe("done");
-		// `in_progress` is not importable: nothing holds its claim, so the
-		// scheduler would never dispatch it and the groomer would never free it.
-		expect(byTitle.get("Wire the UI")).toBe("ready");
-		expect(byTitle.get("Rewrite the docs")).toBe("blocked");
-		expect(byTitle.get("Nothing stated")).toBe("backlog");
-		expect(byTitle.get("Nonsense status")).toBe("backlog");
-		await env.cleanup();
-	});
-
-	test("(f5) a PLAN may not state a status: nothing it proposes exists yet", async () => {
-		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-f5");
-		const proposal = { tasks: [{ title: "Already done?", status: "done" }] };
-		const run = await seedRun(env, {
-			kind: "plan",
-			wt,
-			events: doneEvent(JSON.stringify(proposal)),
-			exit: "exit:0",
-		});
-
-		await env.runner.finalize(run.id);
-
-		expect((await env.tasks.list())[0]?.status).toBe("backlog");
-		await env.cleanup();
-	});
-
-	test("(f6) a plan's questions are persisted and drive exactly one clarify ping", async () => {
-		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-f6");
-		const proposal = {
-			tasks: [{ title: "Add billing" }],
 			questions: ["Stripe or Adyen?", "  ", "Do we invoice in EUR?"],
 		};
-		const run = await env.registry.create({
-			kind: "plan",
-			label: "plan run",
-			model: "sonnet",
-			cwd: wt.path,
-			worktreePath: wt.path,
-			branch: wt.branch,
-			baseSha: wt.baseSha,
-			integrationBranch: "main",
-			goal: "Add billing to the product",
-		});
-		await writeFile(
-			join(env.registry.runDir(run.id), "events.jsonl"),
-			doneEvent(JSON.stringify(proposal)),
-		);
-		await writeFile(join(env.registry.runDir(run.id), "exit"), "exit:0");
-		await env.registry.transition(run.id, "running");
-		await env.registry.transition(run.id, "ended");
-
-		await env.runner.finalize(run.id);
-
-		expect(await journal(env, run.id)).toEqual([
-			"classify",
-			"reap_leftovers",
-			"parse_plan",
-			"record_questions",
-			"notify",
-			"gc_worktree",
-		]);
-		expect(await env.tasks.list()).toEqual([]);
-		const open = await env.clarify.list({ open: true });
-		expect(open).toHaveLength(1);
-		expect(open[0]?.kind).toBe("planner");
-		expect(open[0]?.goal).toBe("Add billing to the product");
-		// The blank entry is dropped rather than becoming a question nobody can
-		// answer and that therefore never resolves.
-		expect(open[0]?.items.map((i) => i.question)).toEqual([
-			"Stripe or Adyen?",
-			"Do we invoice in EUR?",
-		]);
-		expect(env.notifications.map((n) => n.kind)).toEqual(["clarify"]);
-		await env.cleanup();
-	});
-
-	test("(f7) re-running create_specs after a lost journal row reuses the container", async () => {
-		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-f7");
-		const proposal = {
-			tasks: [{ title: "One task" }],
-			specs: [{ title: "One spec", body: "text", tasks: [0] }],
-		};
 		const run = await seedRun(env, {
 			kind: "import",
 			wt,
@@ -1003,28 +886,30 @@ describe("StepRunner v2: finalization end to end", () => {
 		});
 
 		await env.runner.finalize(run.id);
-		const first = (await env.tasks.list()).filter((t) => t.type === "epic");
-		expect(first).toHaveLength(1);
 
-		// Crash between the create_specs effect and its journal row.
-		await env.handle.db
-			.delete(runSteps)
-			.where(
-				and(eq(runSteps.runId, run.id), eq(runSteps.step, "create_specs")),
-			);
-		await env.handle.db
-			.update(runs)
-			.set({ state: "finalizing", finishedAt: null })
-			.where(eq(runs.id, run.id));
-
-		await env.runner.finalize(run.id);
-
-		const after = (await env.tasks.list()).filter((t) => t.type === "epic");
-		expect(after.map((t) => t.id)).toEqual(first.map((t) => t.id));
+		const p = (await proposalOf(env, run.id)).facts.proposal;
+		const byTitle = new Map(p?.tasks?.map((t) => [t.title, t]));
+		expect(byTitle.get("Ship the parser")?.status).toBe("done");
+		// `in_progress` is not importable: it lands as ready.
+		expect(byTitle.get("Wire the UI")?.status).toBe("ready");
+		expect(byTitle.get("Wire the UI")?.owns).toEqual(["src/ui/**"]);
+		expect(byTitle.get("Nonsense status")?.status).toBeUndefined();
+		expect(p?.specs).toEqual([
+			{
+				title: "Adapter architecture",
+				body: "Adapters are resolved through the catalogue.",
+				tasks: [0, 1],
+			},
+		]);
+		// The blank entry is dropped.
+		expect(p?.questions).toEqual(["Stripe or Adyen?", "Do we invoice in EUR?"]);
+		expect(await env.tasks.list()).toEqual([]);
+		expect(await env.clarify.list({ open: true })).toEqual([]);
+		expect(env.notifications).toEqual([]);
 		await env.cleanup();
 	});
 
-	test("(g) a plan run creates its tasks once, re-finalization never duplicates them (P3)", async () => {
+	test("(g) a plan run settles plan_output once; re-finalization after a lost journal row neither duplicates the event nor creates tasks (P3)", async () => {
 		const env = await makeEnv();
 		const wt = await addWorktree(env.root, "t-g");
 		const plan = {
@@ -1049,31 +934,27 @@ describe("StepRunner v2: finalization end to end", () => {
 
 		await env.runner.finalize(run.id);
 
-		// No `notify`: this plan asked no questions, and the clarify ping is
-		// gated on there being some.
 		expect(await journal(env, run.id)).toEqual([
 			"classify",
 			"reap_leftovers",
 			"parse_plan",
-			"create_tasks",
+			"settle",
 			"gc_worktree",
 		]);
-		const created = await env.tasks.list();
-		expect(created.map((t) => t.title)).toEqual(["Alpha", "Beta"]);
-		expect(created.every((t) => t.source === "planner")).toBe(true);
-		expect(created.every((t) => t.status === "backlog")).toBe(true);
-		const alpha = created[0];
-		expect(created[1]?.dependsOn).toEqual([alpha?.id ?? ""]);
+		expect(await env.tasks.list()).toEqual([]);
+		const p = await proposalOf(env, run.id);
+		expect(p.cls).toBe("plan_output");
+		expect(p.facts.proposal?.tasks?.map((t) => t.title)).toEqual([
+			"Alpha",
+			"Beta",
+		]);
 		expect((await env.registry.get(run.id))?.state).toBe("completed");
 		expect(existsSync(wt.path)).toBe(false); // plan worktrees are always gc'd
 
-		// Crash between the create_tasks effect and its journal row: drop the row and re-drive.
-		// The title+source guard must reuse, not duplicate.
+		// Crash between the settle's effect and its journal row.
 		await env.handle.db
 			.delete(runSteps)
-			.where(
-				and(eq(runSteps.runId, run.id), eq(runSteps.step, "create_tasks")),
-			);
+			.where(and(eq(runSteps.runId, run.id), eq(runSteps.step, "settle")));
 		await env.handle.db
 			.update(runs)
 			.set({ state: "finalizing", finishedAt: null })
@@ -1081,14 +962,34 @@ describe("StepRunner v2: finalization end to end", () => {
 
 		await env.runner.finalize(run.id);
 
-		const after = await env.tasks.list();
-		expect(after.map((t) => t.id)).toEqual(created.map((t) => t.id));
+		expect(await settledEvents(env, run.id)).toHaveLength(1);
+		expect(await env.tasks.list()).toEqual([]);
 		expect((await env.registry.get(run.id))?.state).toBe("completed");
 		await env.cleanup();
 	});
 
-	describe("MFW-49: a plan run expanding a draft task", () => {
-		test("success applies the first entry to the SAME task, in place, and clears draft", async () => {
+	test("a plan with many tasks is capped in the settle facts, and says so", async () => {
+		const env = await makeEnv();
+		const wt = await addWorktree(env.root, "t-cap");
+		const plan = {
+			tasks: Array.from({ length: 45 }, (_, i) => ({ title: `Task ${i}` })),
+		};
+		const run = await seedRun(env, {
+			kind: "plan",
+			wt,
+			events: doneEvent(JSON.stringify(plan)),
+			exit: "exit:0",
+		});
+		await env.runner.finalize(run.id);
+		const [settled] = await settledEvents(env, run.id);
+		const proposal = settled?.payload.facts.proposal;
+		expect(proposal?.tasks).toHaveLength(40);
+		expect(proposal?.truncatedTasks).toBe(5);
+		await env.cleanup();
+	});
+
+	describe("a plan run expanding a draft task", () => {
+		test("success leaves the draft a draft, releases its claim, and parks it awaiting the brain with the proposal", async () => {
 			const env = await makeEnv();
 			const wt = await addWorktree(env.root, "t-draft-ok");
 			const draft = await env.tasks.captureQuick("build the thing");
@@ -1097,10 +998,6 @@ describe("StepRunner v2: finalization end to end", () => {
 					{
 						title: "Build the thing properly",
 						body: "A fleshed-out description.",
-						dod: {
-							verifier: "deterministic",
-							checks: [{ run: "true", expect_exit: 0 }],
-						},
 						criteria: ["it works"],
 						owns: ["src/**"],
 						model_tier: "strong",
@@ -1124,93 +1021,30 @@ describe("StepRunner v2: finalization end to end", () => {
 				"classify",
 				"reap_leftovers",
 				"parse_plan",
-				"create_tasks",
+				"settle",
 				"gc_worktree",
 			]);
-			// Exactly one task: expansion edits the draft rather than creating a second card.
-			const all = await env.tasks.list();
-			expect(all.map((t) => t.id)).toEqual([draft.id]);
+			// The draft is untouched: applying the expansion is the brain's
+			// update_task, with a rationale.
 			const after = await env.tasks.get(draft.id);
-			expect(after?.status).toBe("ready");
-			expect(after?.owns).toEqual(["src/**"]);
-			expect(after?.modelTier).toBe("strong");
-			expect(after?.title).toBe("Build the thing properly");
-			expect(after?.body).toBe("A fleshed-out description.");
-			expect(after?.dod).toEqual({
-				verifier: "deterministic",
-				checks: [{ run: "true", expect_exit: 0 }],
-			});
-			expect(after?.criteria).toEqual([{ text: "it works", checked: false }]);
-			// The raw capture survives the expansion for diagnosis/re-expansion.
+			expect(after?.status).toBe("draft");
+			expect(after?.claimedByRunId).toBeNull();
+			expect(after?.title).not.toBe("Build the thing properly");
 			expect(after?.draftPrompt).toBe("build the thing");
-			await env.cleanup();
-		});
-
-		test("questions keep the same draft intact and create no provisional DAG", async () => {
-			const env = await makeEnv();
-			const wt = await addWorktree(env.root, "t-draft-clarify");
-			const draft = await env.tasks.captureQuick("add billing");
-			const run = await seedRun(env, {
-				kind: "plan",
-				taskId: draft.id,
-				wt,
-				events: doneEvent(
-					JSON.stringify({
-						tasks: [{ title: "Provisional billing task" }],
-						questions: ["Stripe or Adyen?"],
-					}),
-				),
-				exit: "exit:0",
+			expect((await env.tasks.list()).map((t) => t.id)).toEqual([draft.id]);
+			expect((await awaitingOf(env))[draft.id]).toMatchObject({
+				runId: run.id,
+				class: "plan_output",
 			});
-			expect(
-				await env.tasks.tryClaimDraftExpansion(draft.id, run.id, 60_000),
-			).toBe(true);
-
-			await env.runner.finalize(run.id);
-
-			expect(await journal(env, run.id)).toEqual([
-				"classify",
-				"reap_leftovers",
-				"parse_plan",
-				"record_questions",
-				"notify",
-				"release_task",
-				"gc_worktree",
-			]);
-			const all = await env.tasks.list();
-			expect(all).toHaveLength(1);
-			expect(all[0]?.id).toBe(draft.id);
-			expect(all[0]?.status).toBe("draft");
-			expect(all[0]?.title).toBe(draft.title);
-			expect(all[0]?.claimedByRunId).toBeNull();
-			await env.cleanup();
-		});
-
-		test("an entry with no task checks remains empty instead of copying project policy", async () => {
-			const env = await makeEnv();
-			const wt = await addWorktree(env.root, "t-draft-nodod");
-			const draft = await env.tasks.captureQuick("build the other thing");
-			const plan = { tasks: [{ title: "Build the other thing" }] };
-			const run = await seedRun(env, {
-				kind: "plan",
-				taskId: draft.id,
-				wt,
-				events: doneEvent(JSON.stringify(plan)),
-				exit: "exit:0",
+			const p = await proposalOf(env, run.id);
+			expect(p.facts.proposal?.tasks?.[0]).toMatchObject({
+				title: "Build the thing properly",
+				owns: ["src/**"],
 			});
-			expect(
-				await env.tasks.tryClaimDraftExpansion(draft.id, run.id, 60_000),
-			).toBe(true);
-
-			await env.runner.finalize(run.id);
-
-			const after = await env.tasks.get(draft.id);
-			expect(after?.status).toBe("ready");
-			expect(after?.verification).toBeNull();
 			await env.cleanup();
 		});
 
-		test("an unparseable proposal bumps the attempt counter but leaves the draft dispatchable-pending, below the cap", async () => {
+		test("an unparseable proposal bumps the attempt counter but leaves the draft pending, below the cap", async () => {
 			const env = await makeEnv({ draftExpandMaxAttempts: 3 });
 			const wt = await addWorktree(env.root, "t-draft-fail");
 			const draft = await env.tasks.captureQuick("do the thing");
@@ -1232,6 +1066,7 @@ describe("StepRunner v2: finalization end to end", () => {
 				"reap_leftovers",
 				"parse_plan",
 				"draft_expand_failed",
+				"settle",
 				"gc_worktree",
 			]);
 			const after = await env.tasks.get(draft.id);
@@ -1243,7 +1078,7 @@ describe("StepRunner v2: finalization end to end", () => {
 			await env.cleanup();
 		});
 
-		test("bounded retries exhausted: draft stays failed and a human is told once", async () => {
+		test("bounded retries exhausted: the draft stays failed in the record and nobody is paged by finalize", async () => {
 			const env = await makeEnv({ draftExpandMaxAttempts: 1 });
 			const wt = await addWorktree(env.root, "t-draft-exhausted");
 			const draft = await env.tasks.captureQuick("do the thing");
@@ -1263,185 +1098,199 @@ describe("StepRunner v2: finalization end to end", () => {
 			const after = await env.tasks.get(draft.id);
 			expect(after?.status).toBe("draft");
 			expect(after?.draftPhase).toBe("failed");
-			expect(after?.verification).toBeNull();
-			expect(env.notifications).toEqual([
-				{ kind: "draft_expand_exhausted", detail: { taskId: draft.id } },
-			]);
+			expect(env.notifications).toEqual([]);
 			await env.cleanup();
 		});
 
-		test("an explicit backlog capture stays in backlog after expansion", async () => {
+		test("a stopped expansion settles stopped and records the failed attempt", async () => {
 			const env = await makeEnv();
-			const wt = await addWorktree(env.root, "t-draft-held");
-			const draft = await env.tasks.captureQuick(
-				"do this later",
-				"held-capture",
-				"backlog",
-				true,
-			);
-			const run = await seedRun(env, {
-				kind: "plan",
-				taskId: draft.id,
-				wt,
-				events: doneEvent(
-					JSON.stringify({
-						tasks: [{ title: "Do this later", criteria: ["It is done"] }],
-					}),
-				),
-				exit: "exit:0",
-			});
-			expect(
-				await env.tasks.tryClaimDraftExpansion(draft.id, run.id, 60_000),
-			).toBe(true);
-
-			await env.runner.finalize(run.id);
-
-			const after = await env.tasks.get(draft.id);
-			expect(after?.status).toBe("backlog");
-			expect(after?.afterExpansion).toBe("backlog");
-			expect(after?.readyMode).toBe("manual");
-			expect(after?.requireReview).toBe(true);
-			expect(await env.tasks.promoteReady()).toEqual([]);
-			await env.cleanup();
-		});
-
-		test("a draft archived while its expansion run is still finalizing (successful plan) is not resurrected", async () => {
-			// archiveDraft needs the claim gone, which happens when `groom` reclaims an orphaned claim.
-			// Simulate: release the claim, archive the task, then finalize the run.
-			const env = await makeEnv();
-			const wt = await addWorktree(env.root, "t-draft-archived-ok");
-			const draft = await env.tasks.captureQuick("build the thing");
-			const plan = { tasks: [{ title: "Build the thing properly" }] };
-			const run = await seedRun(env, {
-				kind: "plan",
-				taskId: draft.id,
-				wt,
-				events: doneEvent(JSON.stringify(plan)),
-				exit: "exit:0",
-			});
-			expect(
-				await env.tasks.tryClaimDraftExpansion(draft.id, run.id, 60_000),
-			).toBe(true);
-			await env.tasks.release(
-				draft.id,
-				run.id,
-				"draft",
-				"boot",
-				"draft expansion run is no longer active",
-			);
-			expect((await env.tasks.move(draft.id, "archived", "human")).status).toBe(
-				"archived",
-			);
-
-			await env.runner.finalize(run.id);
-
-			expect(await journal(env, run.id)).toEqual([
-				"classify",
-				"reap_leftovers",
-				"parse_plan",
-				"create_tasks",
-				"gc_worktree",
-			]);
-			// Nothing created and the archived task not moved: resurrecting it would undo the human's decision.
-			const all = await env.tasks.list();
-			expect(all.map((t) => t.id)).toEqual([draft.id]);
-			expect(all[0]?.status).toBe("archived");
-			await env.cleanup();
-		});
-
-		test("a draft archived while its expansion run is still finalizing (failed plan) is not resurrected", async () => {
-			const env = await makeEnv();
-			const wt = await addWorktree(env.root, "t-draft-archived-fail");
+			const wt = await addWorktree(env.root, "t-draft-stopped");
 			const draft = await env.tasks.captureQuick("do the thing");
 			const run = await seedRun(env, {
 				kind: "plan",
 				taskId: draft.id,
 				wt,
-				events: doneEvent("not json at all"),
-				exit: "exit:0",
+				events: ev({ type: "message", role: "assistant", text: "thinking" }),
+				exit: "killed:manual",
 			});
 			expect(
 				await env.tasks.tryClaimDraftExpansion(draft.id, run.id, 60_000),
 			).toBe(true);
-			await env.tasks.release(
-				draft.id,
-				run.id,
-				"draft",
-				"boot",
-				"draft expansion run is no longer active",
-			);
-			expect((await env.tasks.move(draft.id, "archived", "human")).status).toBe(
-				"archived",
-			);
 
 			await env.runner.finalize(run.id);
 
-			expect(await journal(env, run.id)).toEqual([
-				"classify",
-				"reap_leftovers",
-				"parse_plan",
-				"draft_expand_failed",
-				"gc_worktree",
-			]);
-			const after = await env.tasks.get(draft.id);
-			expect(after?.status).toBe("archived");
-			expect(after?.draftAttempts).toBe(0);
-			expect(env.notifications).toEqual([]);
+			expect((await proposalOf(env, run.id)).cls).toBe("stopped");
+			expect((await env.tasks.get(draft.id))?.draftAttempts).toBe(1);
+			expect((await env.registry.get(run.id))?.state).toBe("killed");
 			await env.cleanup();
 		});
 
-		test("a draft archived before record_questions runs gets no new ghost clarification", async () => {
-			// archiveDraft closes existing clarifications, but an unfinalized run (claim already reclaimed)
-			// could still raise a first one, creating an Inbox item nobody can answer.
+		test("a draft archived while its expansion is finalizing is not resurrected", async () => {
 			const env = await makeEnv();
-			const wt = await addWorktree(env.root, "t-draft-archived-questions");
-			const draft = await env.tasks.captureQuick(
-				"add billing",
-				undefined,
-				"ready",
-				true, // requireReview: without it, record_questions always skips.
-			);
+			const wt = await addWorktree(env.root, "t-draft-archived");
+			const draft = await env.tasks.captureQuick("never mind");
 			const run = await seedRun(env, {
 				kind: "plan",
 				taskId: draft.id,
 				wt,
-				events: doneEvent(
-					JSON.stringify({
-						tasks: [{ title: "Provisional billing task" }],
-						questions: ["Stripe or Adyen?"],
-					}),
-				),
+				events: doneEvent(JSON.stringify({ tasks: [{ title: "Ghost" }] })),
 				exit: "exit:0",
 			});
 			expect(
 				await env.tasks.tryClaimDraftExpansion(draft.id, run.id, 60_000),
 			).toBe(true);
-			await env.tasks.release(
-				draft.id,
-				run.id,
-				"draft",
-				"boot",
-				"draft expansion run is no longer active",
-			);
-			expect((await env.tasks.move(draft.id, "archived", "human")).status).toBe(
-				"archived",
-			);
+			await env.tasks.release(draft.id, run.id, "draft", "human", "released");
+			await env.tasks.move(draft.id, "archived", "human", "not wanted");
 
 			await env.runner.finalize(run.id);
 
-			expect(await journal(env, run.id)).toEqual([
-				"classify",
-				"reap_leftovers",
-				"parse_plan",
-				"record_questions",
-				"notify",
-				"release_task",
-				"gc_worktree",
-			]);
-			expect(await env.clarify.list({ open: true })).toEqual([]);
 			expect((await env.tasks.get(draft.id))?.status).toBe("archived");
+			expect(
+				(await env.tasks.list()).filter((t) => t.title === "Ghost"),
+			).toEqual([]);
+			expect((await awaitingOf(env))[draft.id]).toMatchObject({
+				class: "plan_output",
+			});
 			await env.cleanup();
 		});
+	});
+});
+
+describe("scope watchdog: T4s kill and the finish-time scope gate", () => {
+	test("a scope kill saves the work to wip/ before the worktree goes, settles scope_violation with the ref, and never repairs", async () => {
+		const env = await makeEnv();
+		const wt = await addWorktree(env.root, "t-scope");
+		await commitIn(wt.path, "committed.txt", "committed\n");
+		await writeFile(join(wt.path, "other.ts"), "uncommitted drift\n");
+		const runId = ulid();
+		const taskId = await claimedTask(env, runId, { title: "drifting agent" });
+		const run = await seedRun(env, {
+			kind: "task",
+			runId,
+			taskId,
+			wt,
+			events: ev({ type: "message", role: "assistant", text: "editing" }),
+			exit: "killed:watchdog-scope",
+		});
+		// What the supervisor persisted when it killed.
+		await env.registry.setScopeSample(run.id, {
+			files: 2,
+			outside: 1,
+			foreign: 1,
+			level: "violation",
+			maxFiles: 150,
+			sampledAt: Date.now(),
+			outsideFiles: ["other.ts"],
+			foreignFiles: [{ path: "other.ts", taskId: "MFW-999" }],
+		});
+
+		await env.runner.finalize(run.id);
+
+		expect(await journal(env, run.id)).toEqual([
+			"classify",
+			"reap_leftovers",
+			"ingest_report",
+			"archive_wip",
+			"settle",
+			"gc_worktree",
+		]);
+		const row = await env.registry.get(run.id);
+		expect(row?.state).toBe("killed");
+		expect(row?.killReason).toBe("watchdog-scope");
+		const task = await env.tasks.get(taskId);
+		expect(task?.status).toBe("ready");
+		expect(task?.stallCount).toBe(1);
+		expect(env.notifications).toEqual([]);
+		// The worktree is gone, the work is not: the wip branch holds the
+		// committed file AND the uncommitted one.
+		expect(existsSync(wt.path)).toBe(false);
+		const ref = `wip/${taskId}-${run.id}`;
+		const tree = await git(["ls-tree", "-r", "--name-only", ref], env.root);
+		expect(tree.exitCode).toBe(0);
+		expect(tree.stdout.split("\n")).toEqual(
+			expect.arrayContaining(["committed.txt", "other.ts"]),
+		);
+		const [settled] = await settledEvents(env, run.id);
+		expect(settled?.payload.class).toBe("scope_violation");
+		expect(settled?.payload.facts.archivedRef).toBe(ref);
+		expect(settled?.payload.facts.killReason).toBe("watchdog-scope");
+		await env.cleanup();
+	});
+
+	test("verified work that changed files outside its owns settles scope_outside (T14s), is not merged and is not sent to a person", async () => {
+		const env = await makeEnv();
+		const wt = await addWorktree(env.root, "t-outside");
+		await commitIn(wt.path, "src/owned.ts", "owned\n");
+		await commitIn(wt.path, "docs/stray.md", "stray\n");
+		const runId = ulid();
+		const t = await env.tasks.create({
+			title: "scoped work",
+			status: "ready",
+			dod: PASSING_DOD,
+			owns: ["src/**"],
+		});
+		expect(await env.tasks.tryClaim(t.id, runId, 60_000)).toBe(true);
+		const run = await seedRun(env, {
+			kind: "task",
+			runId,
+			taskId: t.id,
+			wt,
+			events: doneEvent("done"),
+			exit: "exit:0",
+			report: { summary: "did it" },
+		});
+		const runner = env.makeRunner({
+			scopePolicy: () => ({ onFinish: "review" }),
+		});
+
+		await runner.finalize(run.id);
+
+		const steps = await env.registry.steps(run.id);
+		expect(steps.map((s) => s.step)).toContain("scope_check");
+		expect(steps.find((s) => s.step === "scope_check")?.result).toMatchObject({
+			outside: 1,
+			outsideFiles: ["docs/stray.md"],
+		});
+		expect(env.merges).toEqual([]);
+		expect((await env.tasks.get(t.id))?.status).toBe("ready");
+		expect((await env.registry.get(run.id))?.state).toBe("needs_review");
+		const [settled] = await settledEvents(env, run.id);
+		expect(settled?.payload.class).toBe("scope_outside");
+		expect(settled?.payload.facts.scope).toMatchObject({
+			outside: 1,
+			outsideFiles: ["docs/stray.md"],
+		});
+		expect(env.notifications).toEqual([]);
+		await env.cleanup();
+	});
+
+	test("with onFinish off the same run merges", async () => {
+		const env = await makeEnv();
+		const wt = await addWorktree(env.root, "t-outside-off");
+		await commitIn(wt.path, "docs/stray.md", "stray\n");
+		const runId = ulid();
+		const t = await env.tasks.create({
+			title: "scoped work",
+			status: "ready",
+			dod: PASSING_DOD,
+			owns: ["src/**"],
+		});
+		expect(await env.tasks.tryClaim(t.id, runId, 60_000)).toBe(true);
+		const run = await seedRun(env, {
+			kind: "task",
+			runId,
+			taskId: t.id,
+			wt,
+			events: doneEvent("done"),
+			exit: "exit:0",
+			report: { summary: "did it" },
+		});
+		await env
+			.makeRunner({ scopePolicy: () => ({ onFinish: "off" }) })
+			.finalize(run.id);
+		expect(await journal(env, run.id)).not.toContain("scope_check");
+		expect(env.merges).toHaveLength(1);
+		await env.cleanup();
 	});
 });
 
@@ -1623,14 +1472,12 @@ describe("report ingestion is the non-forced cleanup boundary", () => {
 			"classify",
 			"reap_leftovers",
 			"ingest_report",
-			"decide_resume",
-			"release_task",
+			"settle",
 			"gc_worktree",
 		]);
 		expect(
 			(await env.registry.steps(run.id)).find(
 				(step) => step.step === "ingest_report",
-				"decide_resume",
 			)?.result,
 		).toEqual({
 			report,
@@ -1741,11 +1588,9 @@ describe("MFW-48: a project default DoD stands in for a task with none", () => {
 			"reap_leftovers",
 			"ingest_report",
 			"verify",
-			"bump_stall",
-			"spawn_repair",
+			"settle",
 		]);
 		expect(env.merges).toEqual([]);
-		expect(env.spawns).toEqual([{ parent: run.id, child: expect.any(String) }]);
 		await env.cleanup();
 	});
 });
@@ -1859,7 +1704,7 @@ describe("follow-ups reported by a task run", () => {
 });
 
 describe("processes a task run left running", () => {
-	test("are stopped, journaled, and a completed run is resumed instead of verified", async () => {
+	test("are stopped, journaled, and a completed run settles background_work instead of being verified", async () => {
 		const env = await makeEnv();
 		const wt = await addWorktree(env.root, "t-leftover");
 		await commitIn(wt.path, "a.txt", "work\n");
@@ -1893,8 +1738,7 @@ describe("processes a task run left running", () => {
 			"classify",
 			"reap_leftovers",
 			"ingest_report",
-			"decide_resume",
-			"spawn_resume",
+			"settle",
 		]);
 		expect(env.stopped).toEqual([[leftover]]);
 		const reap = (await env.registry.steps(run.id)).find(
@@ -1913,10 +1757,13 @@ describe("processes a task run left running", () => {
 		expect((audit?.payload as { detail?: string }).detail).toBe(
 			"stopped 1 of 1 leftover processes",
 		);
-		expect(env.spawns).toEqual([{ parent: run.id, child: expect.any(String) }]);
 		expect(env.merges).toEqual([]);
-		expect((await env.tasks.get(taskId))?.resumeCount).toBe(1);
-		expect((await env.registry.get(run.id))?.state).toBe("completed");
+		// The work stays in the worktree for the brain's `continue:` spawn.
+		expect(existsSync(wt.path)).toBe(true);
+		expect((await env.tasks.get(taskId))?.status).toBe("ready");
+		const [settled] = await settledEvents(env, run.id);
+		expect(settled?.payload.class).toBe("background_work");
+		expect((await env.registry.get(run.id))?.state).toBe("failed");
 		await env.cleanup();
 	});
 
@@ -1943,13 +1790,13 @@ describe("processes a task run left running", () => {
 
 		expect(env.stopped).toEqual([]);
 		expect(await journal(env, run.id)).toContain("verify");
-		expect(env.spawns).toEqual([]);
+		expect(await journal(env, run.id)).not.toContain("settle");
 		await env.cleanup();
 	});
 });
 
 describe("plan entries: owns and model_tier", () => {
-	test("valid owns patterns and a known tier reach the created task", async () => {
+	test("valid owns patterns and a known tier reach the proposal the brain applies", async () => {
 		const env = await makeEnv();
 		const wt = await addWorktree(env.root, "t-plan-owns");
 		const plan = {
@@ -1971,17 +1818,23 @@ describe("plan entries: owns and model_tier", () => {
 
 		await env.runner.finalize(run.id);
 
-		const [scoped, unscoped] = await env.tasks.list();
+		const [settled] = await settledEvents(env, run.id);
+		const tasks = (
+			settled?.payload.facts.proposal as unknown as {
+				tasks: { title: string; owns: string[]; modelTier?: string }[];
+			}
+		).tasks;
+		const [scoped, unscoped] = tasks;
 		expect(scoped?.owns).toEqual(["src/parser", "docs/**"]);
 		expect(scoped?.modelTier).toBe("strong");
 		expect(unscoped?.owns).toEqual([]);
-		expect(unscoped?.modelTier).toBeNull();
+		expect(unscoped?.modelTier).toBeUndefined();
 		await env.cleanup();
 	});
 });
 
-describe("durable cleanup and resume decisions", () => {
-	async function backgroundRun(initialCount = 0, exit = "exit:0") {
+describe("durable cleanup", () => {
+	async function backgroundRun(exit = "exit:0") {
 		const env = await makeEnv();
 		const wt = await addWorktree(env.root, "durable-cleanup");
 		await commitIn(wt.path, "a.txt", "work\n");
@@ -1990,7 +1843,6 @@ describe("durable cleanup and resume decisions", () => {
 			title: "background work",
 			dod: PASSING_DOD,
 		});
-		await env.tasks.setResumeOrdinal(taskId, initialCount);
 		const process: LeftoverProcess = {
 			pid: 4242,
 			command: "build --watch",
@@ -2013,72 +1865,15 @@ describe("durable cleanup and resume decisions", () => {
 	test.each([
 		"exit:0",
 		"",
-	])("last resume allowance keeps the parent off the child's worktree (%s)", async (exit) => {
-		const { env, run, taskId, wt } = await backgroundRun(1, exit);
-		const runner = env.makeRunner({
-			spawnResume: async (parent, child) => {
-				env.spawns.push({ parent, child });
-				await env.tasks.moveLease(taskId, child);
-			},
-		});
-		await runner.finalize(run.id);
-		expect(env.spawns).toHaveLength(1);
-		expect((await env.tasks.get(taskId))?.claimedByRunId).toBe(
-			env.spawns[0]?.child,
+	])("a run that left work running settles background_work and keeps its worktree (%s)", async (exit) => {
+		const { env, run, taskId, wt } = await backgroundRun(exit);
+		await env.runner.finalize(run.id);
+		expect((await settledEvents(env, run.id))[0]?.payload.class).toBe(
+			exit ? "background_work" : "interrupted",
 		);
-		expect((await env.tasks.get(taskId))?.resumeCount).toBe(2);
+		expect((await env.tasks.get(taskId))?.claimedByRunId).toBeNull();
 		expect(await journal(env, run.id)).not.toContain("verify");
-		expect(await journal(env, run.id)).not.toContain("release_task");
-		expect(await journal(env, run.id)).not.toContain("gc_worktree");
 		expect(existsSync(wt.path)).toBe(true);
-		await env.cleanup();
-	});
-
-	test("exhausted resume allowance stays on verification through clear_stall", async () => {
-		const { env, run, taskId } = await backgroundRun(2);
-		await env.runner.finalize(run.id);
-		expect(env.spawns).toEqual([]);
-		expect(env.merges).toHaveLength(1);
-		expect((await env.tasks.get(taskId))?.resumeCount).toBe(2);
-		expect(
-			(await env.registry.steps(run.id)).find((s) => s.step === "decide_resume")
-				?.result,
-		).toEqual({ selected: false, ordinal: 3 });
-		await env.cleanup();
-	});
-
-	test("spawn failure reuses its reserved child and ordinal after restart", async () => {
-		const { env, run, taskId } = await backgroundRun(1);
-		const children: string[] = [];
-		const runner = env.makeRunner({
-			spawnResume: async (_parent, child) => {
-				children.push(child);
-				if (children.length === 1) throw new Error("crash before spawn");
-				await env.tasks.moveLease(taskId, child);
-			},
-		});
-		await runner.finalize(run.id);
-		expect((await env.tasks.get(taskId))?.resumeCount).toBe(2);
-		await runner.finalize(run.id);
-		expect(children).toHaveLength(2);
-		expect(children[0]).toBe(children[1]);
-		expect((await env.tasks.get(taskId))?.resumeCount).toBe(2);
-		expect(await journal(env, run.id)).not.toContain("verify");
-		await env.cleanup();
-	});
-
-	test("a legacy completed spawn remains authoritative without a decision row", async () => {
-		const { env, run, taskId } = await backgroundRun(1);
-		await env.runner.finalize(run.id);
-		const child = env.spawns[0]?.child;
-		if (!child) throw new Error("missing child");
-		await env.tasks.moveLease(taskId, child);
-		await forgetStep(env, run.id, "decide_resume");
-		await env.makeRunner().finalize(run.id);
-		expect((await env.tasks.get(taskId))?.claimedByRunId).toBe(child);
-		expect(await journal(env, run.id)).not.toContain("verify");
-		expect(await journal(env, run.id)).not.toContain("release_task");
-		expect(env.spawns).toHaveLength(1);
 		await env.cleanup();
 	});
 
@@ -2099,7 +1894,9 @@ describe("durable cleanup and resume decisions", () => {
 			(await env.registry.journalGuard(run.id, "reap_leftovers")) as unknown,
 		).toEqual({ processes: [process] });
 		await env.makeRunner().finalize(run.id);
-		expect(env.spawns).toHaveLength(1);
+		expect((await settledEvents(env, run.id))[0]?.payload.class).toBe(
+			"background_work",
+		);
 		expect(env.merges).toEqual([]);
 		const reaped = (await env.registry.journalGuard(
 			run.id,
@@ -2110,7 +1907,7 @@ describe("durable cleanup and resume decisions", () => {
 	});
 
 	test("unconfirmed cleanup parks visibly while retaining claim and resources", async () => {
-		const { env, run, taskId, process, wt } = await backgroundRun(2);
+		const { env, run, taskId, process, wt } = await backgroundRun();
 		const runner = env.makeRunner({
 			leftovers: {
 				find: async () => [process],
@@ -2167,7 +1964,9 @@ describe("durable cleanup and resume decisions", () => {
 			"reap_leftovers",
 		)) as { processes: LeftoverProcess[] };
 		expect(guard.processes).toEqual([process, child]);
-		expect(env.spawns).toHaveLength(1);
+		expect((await settledEvents(env, run.id))[0]?.payload.class).toBe(
+			"background_work",
+		);
 		await env.cleanup();
 	});
 
@@ -2209,6 +2008,369 @@ describe("durable cleanup and resume decisions", () => {
 		expect((await env.tasks.get(task.id))?.claimedByRunId).toBeNull();
 		expect((await env.registry.get(run.id))?.state).toBe("failed");
 		expect(env.merges).toEqual([]);
+		await env.cleanup();
+	});
+});
+
+describe("usage accounting", () => {
+	test("classify keeps cached-input and reasoning-output tokens from the last usage event", async () => {
+		const env = await makeEnv();
+		const wt = await addWorktree(env.root, "usage");
+		const runId = ulid();
+		const taskId = await claimedTask(env, runId, { title: "count me" });
+		const run = await seedRun(env, {
+			kind: "task",
+			runId,
+			taskId,
+			wt,
+			events:
+				ev({ type: "usage", inputTokens: 1, outputTokens: 1 }) +
+				ev({
+					type: "usage",
+					inputTokens: 1200,
+					outputTokens: 300,
+					cachedInputTokens: 900,
+					reasoningOutputTokens: 120,
+					costUsd: 0.42,
+					turns: 3,
+					cumulative: true,
+				}),
+			exit: "killed:manual",
+		});
+
+		await env.runner.finalize(run.id);
+
+		expect((await env.registry.get(run.id))?.usage).toEqual({
+			inputTokens: 1200,
+			outputTokens: 300,
+			cachedInputTokens: 900,
+			reasoningOutputTokens: 120,
+			costUsd: 0.42,
+			turns: 3,
+		});
+		await env.cleanup();
+	});
+});
+
+describe("a human stop-and-move survives finalization", () => {
+	for (const to of ["backlog", "done"] as const) {
+		test(`cancel-and-move to ${to}, then finalize T3: the task stays ${to}`, async () => {
+			const env = await makeEnv();
+			const wt = await addWorktree(env.root, `cancel-${to}`);
+			const runId = ulid();
+			const taskId = await claimedTask(env, runId, { title: "stop me" });
+			const run = await seedRun(env, {
+				kind: "task",
+				runId,
+				taskId,
+				wt,
+				events: ev({ type: "message", role: "assistant", text: "working" }),
+				exit: "killed:manual",
+			});
+			// What `tasks.move({cancelRun: true})` does after `engine.stop`.
+			await env.tasks.release(taskId, runId, to, "human", "operator stop");
+
+			await env.runner.finalize(run.id);
+
+			expect(await journal(env, run.id)).toContain("release_task");
+			const task = await env.tasks.get(taskId);
+			expect(task?.status).toBe(to);
+			expect(task?.claimedByRunId).toBeNull();
+			expect((await env.registry.get(run.id))?.outcome).toBe("killed_manual");
+			await env.cleanup();
+		});
+	}
+});
+
+describe("activity at finalize: questions and background work", () => {
+	test("a question report settles question without a stall, raises a task clarification and keeps the worktree; nobody is pinged", async () => {
+		const env = await makeEnv();
+		const wt = await addWorktree(env.root, "asks");
+		await commitIn(wt.path, "half.txt", "half done\n");
+		const runId = ulid();
+		const taskId = await claimedTask(env, runId, {
+			title: "needs a decision",
+			dod: PASSING_DOD,
+		});
+		await writeFile(
+			join(wt.path, "MFW_REPORT.json"),
+			JSON.stringify({
+				status: "question",
+				question: "Keep the v1 endpoint for old clients?",
+				options: ["keep it", "remove it"],
+			}),
+		);
+		const run = await seedRun(env, {
+			kind: "task",
+			runId,
+			taskId,
+			wt,
+			events: doneEvent("I need a decision."),
+			exit: "exit:0",
+		});
+
+		await env.runner.finalize(run.id);
+
+		expect(await journal(env, run.id)).toEqual([
+			"classify",
+			"reap_leftovers",
+			"ingest_report",
+			"record_question",
+			"settle",
+		]);
+		const task = await env.tasks.get(taskId);
+		expect(task?.status).toBe("ready");
+		expect(task?.stallCount).toBe(0);
+		expect(task?.preservedWorktree).toBe(wt.path);
+		expect(existsSync(wt.path)).toBe(true);
+		const [question] = await env.clarify.list({ open: true });
+		expect(question).toMatchObject({ runId: run.id, kind: "task" });
+		expect(question?.items[0]?.question).toContain(
+			"Keep the v1 endpoint for old clients?",
+		);
+		expect(question?.items[0]?.question).toContain("keep it | remove it");
+		expect(env.notifications).toEqual([]);
+		const [settled] = await settledEvents(env, run.id);
+		expect(settled?.payload.class).toBe("question");
+		expect(settled?.payload.facts.report?.question).toContain("v1 endpoint");
+		const after = await env.registry.get(run.id);
+		expect(after?.state).toBe("completed");
+		expect(after?.activity).toBe("needs_answer");
+		expect(after?.activityDetail).toMatchObject({
+			question: "Keep the v1 endpoint for old clients?",
+			questionSource: "report",
+		});
+		await env.cleanup();
+	});
+
+	test("a question report without question text is ignored (verification decides)", async () => {
+		const env = await makeEnv();
+		const wt = await addWorktree(env.root, "asks-nothing");
+		await commitIn(wt.path, "done.txt", "done\n");
+		const runId = ulid();
+		const taskId = await claimedTask(env, runId, {
+			title: "empty question",
+			dod: PASSING_DOD,
+		});
+		await writeFile(
+			join(wt.path, "MFW_REPORT.json"),
+			JSON.stringify({ status: "question" }),
+		);
+		const run = await seedRun(env, {
+			kind: "task",
+			runId,
+			taskId,
+			wt,
+			events: doneEvent(),
+			exit: "exit:0",
+		});
+		await env.runner.finalize(run.id);
+		expect(await journal(env, run.id)).toContain("verify");
+		expect(await env.clarify.list({ open: true })).toEqual([]);
+		await env.cleanup();
+	});
+
+	test('the scope prompt\'s `"status": "blocked"` report is honoured like `escalation`', async () => {
+		const env = await makeEnv();
+		const wt = await addWorktree(env.root, "status-blocked");
+		const runId = ulid();
+		const taskId = await claimedTask(env, runId, {
+			title: "out of scope",
+			dod: PASSING_DOD,
+		});
+		await writeFile(
+			join(wt.path, "MFW_REPORT.json"),
+			JSON.stringify({ status: "blocked", issues: ["needs src/other"] }),
+		);
+		const run = await seedRun(env, {
+			kind: "task",
+			runId,
+			taskId,
+			wt,
+			events: doneEvent(),
+			exit: "exit:0",
+		});
+		await env.runner.finalize(run.id);
+		expect(await journal(env, run.id)).not.toContain("verify");
+		expect((await settledEvents(env, run.id))[0]?.payload.class).toBe(
+			"report_blocked",
+		);
+		expect((await env.tasks.get(taskId))?.status).toBe("ready");
+		expect(env.notifications).toEqual([]);
+		await env.cleanup();
+	});
+
+	test("a turn that ended on a background job settles background_work instead of failing verify, and the run is labelled stalled", async () => {
+		const env = await makeEnv();
+		const wt = await addWorktree(env.root, "bg-job");
+		const runId = ulid();
+		const taskId = await claimedTask(env, runId, {
+			title: "runs tests in the background",
+			dod: FAILING_DOD,
+		});
+		const events =
+			ev({
+				type: "tool_call",
+				id: "b1",
+				name: "Bash",
+				input: { command: "bun test", run_in_background: true },
+			}) +
+			ev({
+				type: "tool_result",
+				id: "b1",
+				ok: true,
+				output: "Command running in background with ID: bash_1",
+			}) +
+			ev({ type: "message", role: "assistant", text: "Tests are running." }) +
+			ev({
+				type: "session",
+				provider: "claude-cli",
+				sessionId: "s",
+				status: "completed",
+				ordinal: 1,
+			}) +
+			doneEvent();
+		const run = await seedRun(env, {
+			kind: "task",
+			runId,
+			taskId,
+			wt,
+			events,
+			exit: "exit:0",
+		});
+
+		await env.runner.finalize(run.id);
+
+		const steps = await journal(env, run.id);
+		expect(steps).toEqual([
+			"classify",
+			"reap_leftovers",
+			"ingest_report",
+			"settle",
+		]);
+		expect((await env.tasks.get(taskId))?.stallCount).toBe(0);
+		const [settled] = await settledEvents(env, run.id);
+		expect(settled?.payload.class).toBe("background_work");
+		const classify = (await env.registry.steps(run.id)).find(
+			(s) => s.step === "classify",
+		);
+		expect(classify?.result).toMatchObject({
+			background: [
+				expect.objectContaining({ tool: "Bash", summary: "bun test" }),
+			],
+		});
+		const after = await env.registry.get(run.id);
+		expect(after?.activity).toBe("stalled");
+		expect(after?.activityDetail).toMatchObject({ stallCause: "background" });
+		await env.cleanup();
+	});
+});
+
+describe("StepRunner: review verdicts", () => {
+	async function reviewedRun(critic: BrainPort["critic"]) {
+		const env = await makeEnv();
+		const runner = env.makeRunner({
+			brain: { ...env.brain, enabled: true, criticEnabled: true, critic },
+		});
+		const wt = await addWorktree(env.root, `rv-${ulid().slice(-6)}`);
+		await commitIn(wt.path, "a.txt", "work\n");
+		const runId = ulid();
+		const t = await env.tasks.create({
+			title: "reviewed work",
+			status: "ready",
+			dod: PASSING_DOD,
+			criteria: [{ text: "parses the input" }, { text: "handles errors" }],
+		});
+		expect(await env.tasks.tryClaim(t.id, runId, 60_000)).toBe(true);
+		const run = await seedRun(env, {
+			kind: "task",
+			runId,
+			taskId: t.id,
+			wt,
+			events: doneEvent("done"),
+			exit: "exit:0",
+			report: { summary: "did it" },
+		});
+		await runner.finalize(run.id);
+		return { env, run, taskId: t.id };
+	}
+
+	test("a fix verdict settles review_fix with the findings, consumes a review round and no stall; nothing is spawned", async () => {
+		const { env, run, taskId } = await reviewedRun(async () => ({
+			status: "ok",
+			flagged: true,
+			verdict: "fix",
+			round: 1,
+			findings: [{ file: "a.txt", severity: "blocker", change: "do more" }],
+		}));
+		expect(await journal(env, run.id)).toEqual([
+			"classify",
+			"reap_leftovers",
+			"ingest_report",
+			"verify",
+			"critic",
+			"settle",
+		]);
+		const task = await env.tasks.get(taskId);
+		expect(task?.reviewRound).toBe(1);
+		expect(task?.stallCount).toBe(0);
+		expect(task?.status).toBe("ready");
+		expect(env.merges).toEqual([]);
+		const [settled] = await settledEvents(env, run.id);
+		expect(settled?.payload.class).toBe("review_fix");
+		expect(settled?.payload.facts.review).toMatchObject({
+			verdict: "fix",
+			findings: [{ file: "a.txt", severity: "blocker" }],
+		});
+		expect((await env.registry.get(run.id))?.state).toBe("needs_review");
+		await env.cleanup();
+	});
+
+	test("a failed review with a cause settles infra_failure carrying the cause; nothing merges and nobody is paged", async () => {
+		const { env, run, taskId } = await reviewedRun(async () => ({
+			status: "failed",
+			cause: "reviewer_not_independent",
+			reason: "same model",
+		}));
+		const task = await env.tasks.get(taskId);
+		expect(task?.status).toBe("ready");
+		expect(env.merges).toEqual([]);
+		const [settled] = await settledEvents(env, run.id);
+		expect(settled?.payload.class).toBe("infra_failure");
+		expect(settled?.payload.facts.review).toMatchObject({
+			status: "failed",
+			cause: "reviewer_not_independent",
+		});
+		expect(env.notifications).toEqual([]);
+		await env.cleanup();
+	});
+
+	test("criteria the reviewer found met on real evidence are ticked; claimed ones are not", async () => {
+		const { env, taskId } = await reviewedRun(async () => ({
+			status: "ok",
+			flagged: false,
+			verdict: "merge",
+			round: 1,
+			criteria: [
+				{
+					criterion: "parses the input",
+					verdict: "met",
+					evidenceClass: "reproduced",
+					evidence: "ran it",
+				},
+				{
+					criterion: "handles errors",
+					verdict: "met",
+					evidenceClass: "claimed",
+					evidence: "the agent says so",
+				},
+			],
+		}));
+		const task = await env.tasks.get(taskId);
+		expect(task?.criteria.map((c) => [c.text, c.checked])).toEqual([
+			["parses the input", true],
+			["handles errors", false],
+		]);
 		await env.cleanup();
 	});
 });

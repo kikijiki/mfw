@@ -316,6 +316,50 @@ describe("reads", () => {
 	});
 });
 
+describe("readImage", () => {
+	const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x00, 0xff]);
+
+	test("serves intact bytes with the type from the extension", async () => {
+		const env = await freshEnv();
+		await writeFile(join(env.root, "logo.png"), PNG);
+		await writeFile(join(env.root, "a.svg"), "<svg/>");
+		const png = await env.ws.readImage({ path: "logo.png" });
+		expect(png.mime).toBe("image/png");
+		expect(Buffer.compare(png.data, PNG)).toBe(0);
+		expect(png.size).toBe(PNG.length);
+		expect((await env.ws.readImage({ path: "a.svg" })).mime).toBe(
+			"image/svg+xml",
+		);
+	});
+
+	test("refuses non-images, escapes, directories and oversize files", async () => {
+		const env = await freshEnv();
+		await writeFile(
+			join(env.root, "big.png"),
+			Buffer.alloc(5 * 1024 * 1024 + 1),
+		);
+		await symlink(
+			join(env.parent, "outside-secret.txt"),
+			join(env.root, "leak.png"),
+		);
+		expect(
+			await env.ws.readImage({ path: "README.md" }).catch((e: Error) => e),
+		).toBeInstanceOf(NotFoundError);
+		expect(
+			await env.ws.readImage({ path: "../x.png" }).catch((e: Error) => e),
+		).toBeInstanceOf(NotFoundError);
+		expect(
+			await env.ws.readImage({ path: "leak.png" }).catch((e: Error) => e),
+		).toBeInstanceOf(PathEscapeError);
+		expect(
+			await env.ws.readImage({ path: "big.png" }).catch((e: Error) => e),
+		).toBeInstanceOf(NotFoundError);
+		expect(
+			await env.ws.readImage({ path: "src" }).catch((e: Error) => e),
+		).toBeInstanceOf(NotFoundError);
+	});
+});
+
 describe("gitStatus", () => {
 	test("reports the branch and the porcelain codes", async () => {
 		const env = await freshEnv();

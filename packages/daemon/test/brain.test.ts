@@ -1,14 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+	chmod,
+	mkdir,
+	mkdtemp,
+	readdir,
+	readFile,
+	rm,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
-import { EventBus } from "@mfw/db/eventlog";
-import { decisions, runs } from "@mfw/db/schema";
+import { EventBus, listEvents, type StoredEvent } from "@mfw/db/eventlog";
+import { decisions, reviewVerdicts, runs } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
 import {
 	BrainService,
-	buildDispatchPlanPrompt,
+	type BrainServiceDeps,
 	ClaudeCliInference,
 	CodexCliInference,
 	type DecisionPoint,
@@ -16,13 +24,17 @@ import {
 	type DiffSource,
 	type InferenceClient,
 	type InferenceOpts,
+	type InferenceReply,
 	inferenceForProvider,
 } from "../src/brain.ts";
 import type { BrainCallCtx } from "../src/finalize/step-runner.ts";
 import { silentLogger } from "../src/log.ts";
 import type { DiagnoseCtx } from "../src/maintenance.ts";
+import {
+	DEFAULT_REVIEW_POLICY,
+	type ReviewPolicy,
+} from "../src/review-verdict.ts";
 import { RunRegistry } from "../src/run-registry.ts";
-import type { DispatchPlanInput } from "../src/scheduler.ts";
 import type { TaskService } from "../src/task-service.ts";
 
 /**
@@ -35,17 +47,20 @@ import type { TaskService } from "../src/task-service.ts";
 class FakeInference implements InferenceClient {
 	readonly prompts: string[] = [];
 	readonly opts: InferenceOpts[] = [];
-	/** Consumed in order; an Error is thrown, a string is returned. */
-	responses: (string | Error)[] = [];
+	/** Consumed in order; an Error is thrown, a string or reply is returned. */
+	responses: (string | InferenceReply | Error)[] = [];
 	/** "hang" never resolves, only the service's abort race ends the call. */
 	mode: "queue" | "hang" = "queue";
 	onCall: (() => void) | null = null;
 
-	constructor(...responses: (string | Error)[]) {
+	constructor(...responses: (string | InferenceReply | Error)[]) {
 		this.responses = responses;
 	}
 
-	async complete(prompt: string, opts: InferenceOpts): Promise<string> {
+	async complete(
+		prompt: string,
+		opts: InferenceOpts,
+	): Promise<string | InferenceReply> {
 		this.prompts.push(prompt);
 		this.opts.push(opts);
 		this.onCall?.();
@@ -98,6 +113,8 @@ async function makeEnv(
 		reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh" | "max";
 		reviewModel?: string;
 		tasks?: TaskService;
+		review?: Partial<ReviewPolicy>;
+		agentReview?: BrainServiceDeps["agentReview"];
 	} = {},
 ): Promise<Env> {
 	const dir = await mkdtemp(join(tmpdir(), "mfw-brain-"));
@@ -132,6 +149,14 @@ async function makeEnv(
 		diffs: over.diffs ?? emptyDiffs,
 		...(over.reviewModel ? { reviewModel: over.reviewModel } : {}),
 		...(over.tasks ? { tasks: over.tasks } : {}),
+		// Most tests here are about one decision point, not independence (which
+		// has its own describe): worker and reviewer are both "sonnet".
+		review: {
+			...DEFAULT_REVIEW_POLICY,
+			requireIndependent: false,
+			...over.review,
+		},
+		...(over.agentReview ? { agentReview: over.agentReview } : {}),
 	});
 
 	const ctx: BrainCallCtx = {
@@ -196,35 +221,6 @@ const CRITIC_OK = JSON.stringify({
 });
 const CRITIC_FLAGGED =
 	'```json\n{"accepted":false,"criteria":[{"criterion":"Deliver the task goal described above (legacy implicit criterion).","verdict":"unmet","evidenceClass":"source-confirmed","evidence":"Tests were removed instead of implementing the goal."}],"fakeDone":true,"scopeCreep":false,"concerns":["tests were gutted"]}\n```';
-const REPLAN_OK = '{"action": "escalate", "reason": "needs a human"}';
-const REVIEW_OK = '{"approved": true, "reason": "clean task edits"}';
-
-function dispatchInput(): DispatchPlanInput {
-	const summary = (id: string, title: string) => ({
-		id,
-		title,
-		body: `${title} implementation details`,
-		type: "implementation" as const,
-		priority: "medium" as const,
-		size: "m" as const,
-		labels: [],
-		dependsOn: [],
-		requiresResources: [],
-		executionTarget: "local",
-		parentId: null,
-		contentRev: 1,
-		owns: [],
-	});
-	return {
-		maxToStart: 3,
-		candidates: [
-			summary("MFW-1", "UI work"),
-			summary("MFW-2", "Database work"),
-			summary("MFW-3", "Related UI work"),
-		],
-		running: [],
-	};
-}
 
 describe("brain CLI inference transports", () => {
 	test("Codex uses ephemeral read-only exec with the selected model and effort", async () => {
@@ -259,6 +255,67 @@ printf '{"approved":true,"reason":"safe"}'
 			'model_reasoning_effort="high"',
 			"return json",
 		]);
+		await rm(dir, { recursive: true, force: true });
+	});
+
+	test("Claude runs tool-less, without a permission bypass, in a fresh temp dir it removes", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "mfw-claude-infer-"));
+		const bin = join(dir, "fake-claude");
+		await writeFile(
+			bin,
+			`#!/bin/sh
+: > "$0.args"
+for arg in "$@"; do printf '%s\\n' "$arg" >> "$0.args"; done
+pwd > "$0.cwd"
+ls -A > "$0.ls"
+printf '{"type":"result","result":"{\\\\"ok\\\\":true}","total_cost_usd":0.03,"num_turns":1,"usage":{"input_tokens":40,"output_tokens":7,"cache_read_input_tokens":12,"cache_creation_input_tokens":5}}'
+`,
+		);
+		await chmod(bin, 0o755);
+		const tmpRoot = join(dir, "tmp");
+		await mkdir(tmpRoot);
+		// Even when the composition root hands it the project root, Claude ignores it.
+		const viaProvider = inferenceForProvider(
+			{ id: "claude-cli", type: "claude-cli" },
+			{ cwd: dir },
+		);
+		expect(viaProvider).toBeInstanceOf(ClaudeCliInference);
+		const inference = new ClaudeCliInference({ bin, tmpRoot });
+		const output = await inference.complete("return json", {
+			model: "sonnet",
+			timeoutMs: 5_000,
+		});
+		expect(output).toEqual({
+			text: '{"ok":true}',
+			usage: {
+				inputTokens: 40,
+				outputTokens: 7,
+				cachedInputTokens: 12,
+				cacheCreationInputTokens: 5,
+				costUsd: 0.03,
+				turns: 1,
+			},
+		});
+		const args = (await readFile(`${bin}.args`, "utf8")).split("\n");
+		args.pop(); // trailing newline
+		expect(args).toEqual([
+			"-p",
+			"return json",
+			"--model",
+			"sonnet",
+			"--output-format",
+			"json",
+			"--tools",
+			"",
+			"--strict-mcp-config",
+			"--no-session-persistence",
+		]);
+		expect(args).not.toContain("--dangerously-skip-permissions");
+		const cwd = (await readFile(`${bin}.cwd`, "utf8")).trim();
+		expect(cwd.startsWith(`${tmpRoot}/mfw-brain-`)).toBe(true);
+		expect(cwd).not.toBe(dir);
+		expect(await readFile(`${bin}.ls`, "utf8")).toBe(""); // fresh: empty
+		expect(await readdir(tmpRoot)).toEqual([]); // removed afterwards
 		await rm(dir, { recursive: true, force: true });
 	});
 
@@ -353,90 +410,36 @@ describe("BrainService: happy path per decision point", () => {
 		await env.cleanup();
 	});
 
-	test("replan: the action lands on the result and the decision row", async () => {
-		const env = await makeEnv({ inference: new FakeInference(REPLAN_OK) });
-		const res = await env.brain.replan(env.ctx);
-		expect(res).toMatchObject({ status: "ok", action: "escalate" });
-
+	test("each decision insert and settle emits exactly one decision.recorded event", async () => {
+		const env = await makeEnv({ inference: new FakeInference(CRITIC_FLAGGED) });
+		const seen: StoredEvent[] = [];
+		env.bus.subscribe((e) => {
+			if (e.type === "decision.recorded") seen.push(e);
+		});
+		await env.brain.critic(env.ctx);
 		const [d] = await decisionRows(env);
-		expect(d?.role).toBe("replan");
-		expect(d?.status).toBe("ok");
-		expect(d?.action).toBe("escalate");
-		expect(d?.output).toMatchObject({ action: "escalate" });
-
-		const prompt = await readFile(
-			join(env.registry.runDir(d?.brainRunId as string), "prompt.md"),
-			"utf8",
-		);
-		expect(prompt).toContain("Failed checks:");
-		expect(prompt).toContain("bun test");
-		await env.cleanup();
-	});
-
-	test("import_review: an explicit approval is recorded as such", async () => {
-		const env = await makeEnv({ inference: new FakeInference(REVIEW_OK) });
-		const res = await env.brain.importReview(env.ctx);
-		expect(res).toMatchObject({ status: "ok", approved: true });
-
-		const [d] = await decisionRows(env);
-		expect(d?.role).toBe("import_review");
-		expect(d?.status).toBe("ok");
-		expect(d?.action).toBe("approve");
-		expect(d?.output).toMatchObject({ approved: true });
-		await env.cleanup();
-	});
-});
-
-describe("BrainService: dynamic dispatch planning", () => {
-	test("records a bounded safe subset as a durable brain decision", async () => {
-		const env = await makeEnv({
-			inference: new FakeInference(
-				JSON.stringify({
-					selectedTaskIds: ["MFW-1", "MFW-2"],
-					reason: "UI and database work are independent",
-				}),
-			),
-		});
-		const input = dispatchInput();
-		const result = await env.brain.planDispatch(input);
-		expect(result).toEqual({
+		expect(seen.map((e) => (e.payload as { phase: string }).phase)).toEqual([
+			"inserted",
+			"settled",
+		]);
+		for (const e of seen) {
+			expect(e.payload).toMatchObject({
+				id: d?.id,
+				role: "critic",
+				taskId: "MFW-1",
+				subjectRunId: env.ctx.runId,
+			});
+			expect(e).toMatchObject({ taskId: "MFW-1", runId: env.ctx.runId });
+		}
+		expect(seen[1]?.payload).toMatchObject({
 			status: "ok",
-			selectedTaskIds: ["MFW-1", "MFW-2"],
-			reason: "UI and database work are independent",
+			action: "flagged",
 		});
-		const [decision] = await decisionRows(env);
-		expect(decision).toMatchObject({
-			role: "dispatch_plan",
-			taskId: "MFW-1",
-			status: "ok",
-			action: "dispatch",
+		// persisted in the audit stream too, task-indexed
+		const page = await listEvents(env.handle.db, {
+			types: ["decision.recorded"],
 		});
-		expect(decision?.output).toMatchObject({
-			selectedTaskIds: ["MFW-1", "MFW-2"],
-		});
-		expect(buildDispatchPlanPrompt(input)).toContain(
-			"hard ceiling, not a target",
-		);
-		await env.cleanup();
-	});
-
-	test("rejects an out-of-frontier answer and retries within the brain boundary", async () => {
-		const inference = new FakeInference(
-			JSON.stringify({
-				selectedTaskIds: ["MFW-999"],
-				reason: "invented task",
-			}),
-			JSON.stringify({
-				selectedTaskIds: ["MFW-2"],
-				reason: "corrected to a real candidate",
-			}),
-		);
-		const env = await makeEnv({ inference });
-		expect(await env.brain.planDispatch(dispatchInput())).toMatchObject({
-			status: "ok",
-			selectedTaskIds: ["MFW-2"],
-		});
-		expect(inference.calls).toBe(2);
+		expect(page.events).toHaveLength(2);
 		await env.cleanup();
 	});
 });
@@ -465,11 +468,46 @@ describe("BrainService: parsing, retry and failure", () => {
 		await env.cleanup();
 	});
 
-	test("a retry that parses yields ok (and both attempts are in raw.log)", async () => {
-		const inference = new FakeInference("garbage", REPLAN_OK);
+	test("usage from every attempt is summed into the decision output and the brain run", async () => {
+		const inference = new FakeInference(
+			{ text: "garbage", usage: { inputTokens: 100, costUsd: 0.01 } },
+			{
+				text: CRITIC_OK,
+				usage: { inputTokens: 150, outputTokens: 20, costUsd: 0.02 },
+			},
+		);
 		const env = await makeEnv({ inference });
-		const res = await env.brain.replan(env.ctx);
-		expect(res).toMatchObject({ status: "ok", action: "escalate" });
+		expect(await env.brain.critic(env.ctx)).toMatchObject({
+			status: "ok",
+		});
+		const [d] = await decisionRows(env);
+		const usage = { inputTokens: 250, outputTokens: 20, costUsd: 0.03 };
+		expect(d?.output).toMatchObject({ attempts: 2 });
+		expect(d?.usage).toEqual(usage);
+		const [run] = await brainRuns(env);
+		expect(run?.usage).toEqual(usage);
+		await env.cleanup();
+	});
+
+	test("a failed decision still records the usage it spent", async () => {
+		const inference = new FakeInference(
+			{ text: "garbage", usage: { inputTokens: 10 } },
+			{ text: "{still: broken", usage: { inputTokens: 11 } },
+		);
+		const env = await makeEnv({ inference });
+		expect(await env.brain.critic(env.ctx)).toMatchObject({
+			status: "failed",
+		});
+		const [d] = await decisionRows(env);
+		expect(d?.usage).toEqual({ inputTokens: 21 });
+		await env.cleanup();
+	});
+
+	test("a retry that parses yields ok (and both attempts are in raw.log)", async () => {
+		const inference = new FakeInference("garbage", CRITIC_OK);
+		const env = await makeEnv({ inference });
+		const res = await env.brain.critic(env.ctx);
+		expect(res).toMatchObject({ status: "ok" });
 		expect(inference.calls).toBe(2);
 
 		const [d] = await decisionRows(env);
@@ -508,10 +546,10 @@ describe("BrainService: parsing, retry and failure", () => {
 		const timeoutMs = 1_000;
 		const env = await makeEnv({ inference, timeoutMs });
 		const started = Date.now();
-		const res = await env.brain.replan(env.ctx);
+		const res = await env.brain.critic(env.ctx);
 		expect(Date.now() - started).toBeLessThan(5_000);
 		expect(res.status).toBe("failed");
-		expect(res.action).toBeUndefined();
+		expect(res.flagged).toBeUndefined();
 
 		const [d] = await decisionRows(env);
 		expect(d?.status).toBe("timeout");
@@ -558,17 +596,16 @@ describe("BrainService: parsing, retry and failure", () => {
 
 // --- A broken brain must never approve anything ---
 
-describe("BrainService: fail-closed import review (defect D6)", () => {
-	test("inference failure returns failed and NEVER approved:true", async () => {
+describe("BrainService: fail-closed review (defect D6)", () => {
+	test("inference failure returns failed and carries no verdict, no acceptance", async () => {
 		const env = await makeEnv({
 			inference: new FakeInference(new Error("brain is on fire")),
 		});
-		const res = await env.brain.importReview(env.ctx);
+		const res = await env.brain.critic(env.ctx);
 		expect(res.status).toBe("failed");
-		// Assert both the value and its absence.
-		expect(res.approved).not.toBe(true);
-		expect(res.approved).toBeUndefined();
-		expect(Object.hasOwn(res, "approved")).toBe(false);
+		expect(res.accepted).toBeUndefined();
+		expect(res.verdict).toBeUndefined();
+		expect(res.flagged).toBeUndefined();
 
 		const [d] = await decisionRows(env);
 		expect(d?.status).toBe("failed");
@@ -577,43 +614,30 @@ describe("BrainService: fail-closed import review (defect D6)", () => {
 		await env.cleanup();
 	});
 
-	test("every non-ok path (timeout, abort, bad JSON, disabled) withholds approval", async () => {
-		// timeout
+	test("every non-ok path (timeout, bad JSON, disabled) withholds acceptance", async () => {
 		const hang = new FakeInference();
 		hang.mode = "hang";
 		const timedOut = await makeEnv({ inference: hang, timeoutMs: 60 });
-		const a = await timedOut.brain.importReview(timedOut.ctx);
+		const a = await timedOut.brain.critic(timedOut.ctx);
 		expect(a.status).toBe("failed");
-		expect(a.approved).toBeUndefined();
+		expect(a.accepted).toBeUndefined();
 		await timedOut.cleanup();
 
-		// unparseable, twice
 		const garbage = await makeEnv({
 			inference: new FakeInference("yes, approved!", "definitely approve"),
 		});
-		const b = await garbage.brain.importReview(garbage.ctx);
+		const b = await garbage.brain.critic(garbage.ctx);
 		expect(b.status).toBe("failed");
-		expect(b.approved).toBeUndefined();
+		expect(b.accepted).toBeUndefined();
 		await garbage.cleanup();
 
-		// valid JSON, but the model said no
-		const rejected = await makeEnv({
-			inference: new FakeInference(
-				'{"approved": false, "reason": "deletes 40 tasks"}',
-			),
-		});
-		const c = await rejected.brain.importReview(rejected.ctx);
-		expect(c).toMatchObject({ status: "ok", approved: false });
-		await rejected.cleanup();
-
-		// disabled
 		const off = await makeEnv({
-			inference: new FakeInference(REVIEW_OK),
+			inference: new FakeInference(CRITIC_OK),
 			enabled: false,
 		});
-		const d = await off.brain.importReview(off.ctx);
+		const d = await off.brain.critic(off.ctx);
 		expect(d.status).toBe("failed");
-		expect(d.approved).toBeUndefined();
+		expect(d.accepted).toBeUndefined();
 		await off.cleanup();
 	});
 });
@@ -745,8 +769,8 @@ describe("BrainService: orphans, supersede, caps, disabled", () => {
 	});
 
 	test("markSuperseded points a re-asked decision at its replacement", async () => {
-		const env = await makeEnv({ inference: new FakeInference(REPLAN_OK) });
-		await env.brain.replan(env.ctx);
+		const env = await makeEnv({ inference: new FakeInference(CRITIC_OK) });
+		await env.brain.critic(env.ctx);
 		const [d] = await decisionRows(env);
 		await env.brain.markSuperseded(d?.id as number, 4242);
 		const [after] = await decisionRows(env);
@@ -763,27 +787,6 @@ describe("BrainService: orphans, supersede, caps, disabled", () => {
 			files: ["big"],
 		});
 
-		const replanEnv = await makeEnv({
-			inference: new FakeInference(REPLAN_OK),
-			diffs,
-		});
-		await replanEnv.brain.replan(replanEnv.ctx);
-		const replanPrompt = replanEnv.inference.prompts[0] as string;
-		expect(replanPrompt.length).toBeLessThan(12_000); // 4 KB diff cap + framing
-		expect(replanPrompt).toContain("truncated");
-		expect(replanPrompt).toContain("big | 1 +");
-		// the stored prompt.md matches what was actually sent
-		const [rd] = await decisionRows(replanEnv);
-		const stored = await readFile(
-			join(replanEnv.registry.runDir(rd?.brainRunId as string), "prompt.md"),
-			"utf8",
-		);
-		expect(stored).toContain(replanPrompt);
-		expect((rd?.input as { diffChars?: number }).diffChars).toBeGreaterThan(
-			200 * 1024,
-		);
-		await replanEnv.cleanup();
-
 		const criticEnv = await makeEnv({
 			inference: new FakeInference(CRITIC_OK),
 			diffs,
@@ -793,27 +796,14 @@ describe("BrainService: orphans, supersede, caps, disabled", () => {
 		expect(criticPrompt.length).toBeLessThan(45_000); // 32 KB diff cap + framing
 		expect(criticPrompt.length).toBeGreaterThan(30_000);
 		await criticEnv.cleanup();
-
-		const importEnv = await makeEnv({
-			inference: new FakeInference(REVIEW_OK),
-			diffs,
-		});
-		await importEnv.brain.importReview(importEnv.ctx);
-		const importPrompt = importEnv.inference.prompts[0] as string;
-		expect(importPrompt.length).toBeLessThan(25_000); // 16 KB diff cap + framing
-		await importEnv.cleanup();
 	});
 
 	test("enabled:false short-circuits: no run, no decision, no inference", async () => {
-		const inference = new FakeInference(CRITIC_OK, REPLAN_OK, REVIEW_OK);
+		const inference = new FakeInference(CRITIC_OK);
 		const env = await makeEnv({ inference, enabled: false });
 		expect(env.brain.enabled).toBe(false);
 
 		expect(await env.brain.critic(env.ctx)).toMatchObject({ status: "failed" });
-		expect(await env.brain.replan(env.ctx)).toMatchObject({ status: "failed" });
-		expect(await env.brain.importReview(env.ctx)).toMatchObject({
-			status: "failed",
-		});
 
 		expect(inference.calls).toBe(0);
 		expect(await decisionRows(env)).toHaveLength(0);
@@ -880,7 +870,7 @@ describe("BrainService: critic evidence classes", () => {
 		const env = await makeEnv({
 			inference: new FakeInference(criticAnswer("met", "reproduced")),
 		});
-		const res = await env.brain.critic(env.ctx);
+		const res = await env.brain.critic({ ...env.ctx, verify: PASSED });
 		expect(res).toMatchObject({ status: "ok", accepted: true, flagged: false });
 		const [d] = await decisionRows(env);
 		expect(d?.action).toBe("accepted");
@@ -893,7 +883,7 @@ describe("BrainService: critic evidence classes", () => {
 			criticAnswer("met", "source-confirmed"),
 		);
 		const env = await makeEnv({ inference });
-		const res = await env.brain.critic(env.ctx);
+		const res = await env.brain.critic({ ...env.ctx, verify: PASSED });
 		expect(res).toMatchObject({ status: "ok", accepted: true });
 		expect(inference.calls).toBe(2);
 		expect(inference.prompts[1]).toContain(
@@ -904,21 +894,15 @@ describe("BrainService: critic evidence classes", () => {
 });
 
 describe("BrainService: review model", () => {
-	test("the critic uses reviewModel and records both models; replan keeps model", async () => {
-		const inference = new FakeInference(
-			criticAnswer("met", "reproduced"),
-			REPLAN_OK,
-		);
+	test("the critic uses reviewModel and records both models", async () => {
+		const inference = new FakeInference(criticAnswer("met", "reproduced"));
 		const env = await makeEnv({ inference, reviewModel: "opus" });
 		await env.brain.critic(env.ctx);
-		await env.brain.replan(env.ctx);
 
-		expect(inference.opts.map((o) => o.model)).toEqual(["opus", "sonnet"]);
+		expect(inference.opts.map((o) => o.model)).toEqual(["opus"]);
 		const rows = await decisionRows(env);
 		const critic = rows.find((d) => d.role === "critic");
-		const replan = rows.find((d) => d.role === "replan");
 		expect(critic?.model).toBe("opus");
-		expect(replan?.model).toBe("sonnet");
 		expect(critic?.output).toMatchObject({
 			implementerModel: "sonnet",
 			reviewerModel: "opus",
@@ -926,9 +910,7 @@ describe("BrainService: review model", () => {
 		});
 		const brainRunRows = await brainRuns(env);
 		const criticRun = brainRunRows.find((r) => r.id === critic?.brainRunId);
-		const replanRun = brainRunRows.find((r) => r.id === replan?.brainRunId);
 		expect(criticRun?.model).toBe("opus");
-		expect(replanRun?.model).toBe("sonnet");
 		const prompt = await readFile(
 			join(env.registry.runDir(critic?.brainRunId as string), "prompt.md"),
 			"utf8",
@@ -984,12 +966,236 @@ describe("BrainService: scope in review", () => {
 		expect(env.inference.prompts[0]).not.toContain("DECLARED SCOPE");
 		await env.cleanup();
 	});
+});
 
-	test("the dispatch plan prompt shows each candidate's owns", () => {
-		const input = dispatchInput();
-		const first = input.candidates[0];
-		if (first) first.owns = ["packages/ui/**"];
-		const prompt = buildDispatchPlanPrompt(input);
-		expect(prompt).toContain('"owns": [\n      "packages/ui/**"\n    ]');
+// --- Review verdicts (P6) ---
+
+const PASSED: BrainCallCtx["verify"] = {
+	passed: true,
+	crashed: false,
+	checks: [{ check: "run: bun test", ok: true }],
+};
+
+/** A critic answer in the verdict vocabulary; criteria met on real evidence. */
+function verdictAnswer(over: Record<string, unknown>): string {
+	return JSON.stringify({
+		verdict: "merge",
+		accepted: true,
+		criteria: [
+			{
+				criterion: LEGACY,
+				verdict: "met",
+				evidenceClass: "source-confirmed",
+				evidence: "see the diff",
+			},
+		],
+		findings: [],
+		fakeDone: false,
+		scopeCreep: false,
+		concerns: [],
+		...over,
+	});
+}
+
+async function verdictRows(env: Env) {
+	return env.handle.db.select().from(reviewVerdicts);
+}
+
+describe("BrainService: review verdict floor", () => {
+	test("a blocker finding turns the model's merge into fix", async () => {
+		const env = await makeEnv({
+			inference: new FakeInference(
+				verdictAnswer({
+					findings: [
+						{
+							file: "src/x.ts",
+							line: 3,
+							severity: "blocker",
+							change: "handle the empty input",
+						},
+					],
+				}),
+			),
+		});
+		const res = await env.brain.critic({ ...env.ctx, verify: PASSED });
+		expect(res).toMatchObject({
+			status: "ok",
+			verdict: "fix",
+			modelVerdict: "merge",
+			flagged: true,
+			accepted: false,
+		});
+		expect(res.reason).toContain("verdict raised from merge to fix");
+		const [row] = await verdictRows(env);
+		expect(row).toMatchObject({
+			subjectRunId: env.ctx.runId,
+			taskId: "MFW-1",
+			mode: "critic",
+			verdict: "fix",
+			round: 1,
+			reviewerModel: "sonnet",
+			reviewerHarness: "claude-cli",
+		});
+		expect(row?.findings).toEqual([
+			{
+				file: "src/x.ts",
+				line: 3,
+				severity: "blocker",
+				change: "handle the empty input",
+			},
+		]);
+		const [d] = await decisionRows(env);
+		expect(row?.decisionId).toBe(d?.id ?? -1);
+		expect(row?.reviewerRunId).toBe(d?.brainRunId ?? "");
+		await env.cleanup();
+	});
+
+	test("clean evidence and a merge verdict stay merge", async () => {
+		const env = await makeEnv({
+			inference: new FakeInference(verdictAnswer({})),
+		});
+		const res = await env.brain.critic({ ...env.ctx, verify: PASSED });
+		expect(res).toMatchObject({
+			status: "ok",
+			verdict: "merge",
+			flagged: false,
+		});
+		await env.cleanup();
+	});
+
+	test("the model may be stricter than the floor", async () => {
+		const env = await makeEnv({
+			inference: new FakeInference(verdictAnswer({ verdict: "reject" })),
+		});
+		const res = await env.brain.critic({ ...env.ctx, verify: PASSED });
+		expect(res).toMatchObject({ verdict: "reject", modelVerdict: "reject" });
+		await env.cleanup();
+	});
+
+	test("fake work is reject even when the model says merge", async () => {
+		const env = await makeEnv({
+			inference: new FakeInference(verdictAnswer({ fakeDone: true })),
+		});
+		const res = await env.brain.critic({ ...env.ctx, verify: PASSED });
+		expect(res).toMatchObject({ verdict: "reject", modelVerdict: "merge" });
+		await env.cleanup();
+	});
+
+	test("a failing check reaching review forces fix", async () => {
+		const env = await makeEnv({
+			inference: new FakeInference(verdictAnswer({})),
+		});
+		// env.ctx carries one failing check.
+		const res = await env.brain.critic(env.ctx);
+		expect(res).toMatchObject({ verdict: "fix", modelVerdict: "merge" });
+		await env.cleanup();
+	});
+
+	test("the round is the task's consumed fix rounds plus one", async () => {
+		const env = await makeEnv({
+			inference: new FakeInference(verdictAnswer({})),
+			tasks: fakeTasks({ reviewRound: 2 }),
+		});
+		const res = await env.brain.critic({ ...env.ctx, verify: PASSED });
+		expect(res.round).toBe(3);
+		expect((await verdictRows(env))[0]?.round).toBe(3);
+		await env.cleanup();
+	});
+});
+
+describe("BrainService: reviewer independence", () => {
+	test("a reviewer equal to the worker with no fallback fails closed before any call", async () => {
+		const env = await makeEnv({
+			inference: new FakeInference(verdictAnswer({})),
+			review: { requireIndependent: true },
+		});
+		const res = await env.brain.critic({ ...env.ctx, verify: PASSED });
+		expect(res).toMatchObject({
+			status: "failed",
+			cause: "reviewer_not_independent",
+		});
+		expect(res.reason).toContain("sonnet");
+		expect(env.inference.calls).toBe(0);
+		expect(await decisionRows(env)).toEqual([]);
+		expect(await verdictRows(env)).toEqual([]);
+		await env.cleanup();
+	});
+
+	test("the first independent fallback model reviews instead", async () => {
+		const env = await makeEnv({
+			inference: new FakeInference(verdictAnswer({})),
+			review: { requireIndependent: true, fallbackModels: ["sonnet", "opus"] },
+		});
+		const res = await env.brain.critic({ ...env.ctx, verify: PASSED });
+		expect(res).toMatchObject({
+			status: "ok",
+			independent: true,
+			reviewer: { harness: "claude-cli", model: "opus" },
+		});
+		expect(env.inference.opts[0]?.model).toBe("opus");
+		expect((await verdictRows(env))[0]).toMatchObject({
+			reviewerModel: "opus",
+			independent: true,
+		});
+		await env.cleanup();
+	});
+
+	test("the same model on a different harness is independent", async () => {
+		const env = await makeEnv({
+			inference: new FakeInference(verdictAnswer({})),
+			review: { requireIndependent: true },
+		});
+		const other = await env.registry.create({
+			kind: "task",
+			taskId: "MFW-1",
+			label: "MFW-1 codex",
+			model: "sonnet",
+			providerId: "codex-cli",
+			reasoningEffort: "medium",
+			cwd: env.dir,
+		});
+		const res = await env.brain.critic({
+			...env.ctx,
+			runId: other.id,
+			verify: PASSED,
+		});
+		expect(res).toMatchObject({ status: "ok", independent: true });
+		await env.cleanup();
+	});
+
+	test("the worker's persisted harness wins over its provider id", async () => {
+		const env = await makeEnv({
+			inference: new FakeInference(verdictAnswer({})),
+			review: { requireIndependent: true },
+		});
+		// Routed to Codex while the project provider is Claude: `harness` is
+		// what ran, so a same-model Claude reviewer is independent.
+		const routed = await env.registry.create({
+			kind: "task",
+			taskId: "MFW-1",
+			label: "MFW-1 routed",
+			model: "sonnet",
+			providerId: "claude-cli",
+			harness: "codex-cli",
+			reasoningEffort: "medium",
+			cwd: env.dir,
+		});
+		const res = await env.brain.critic({
+			...env.ctx,
+			runId: routed.id,
+			verify: PASSED,
+		});
+		expect(res).toMatchObject({ status: "ok", independent: true });
+		await env.cleanup();
+	});
+
+	test("with requireIndependent off an equal pair reviews and is recorded as such", async () => {
+		const env = await makeEnv({
+			inference: new FakeInference(verdictAnswer({})),
+		});
+		const res = await env.brain.critic({ ...env.ctx, verify: PASSED });
+		expect(res).toMatchObject({ status: "ok", independent: false });
+		expect((await verdictRows(env))[0]?.independent).toBe(false);
+		await env.cleanup();
 	});
 });

@@ -89,7 +89,7 @@ export function FileDiffView({
 										setExpanded((prev) => new Set(prev).add(blockIndex))
 									}
 								>
-									⋯ {block.rows.length} unchanged lines, click to expand
+									… {block.rows.length} unchanged lines, click to expand
 								</button>
 							);
 						}
@@ -215,7 +215,9 @@ function Side({
 					{marker}
 				</span>
 			) : null}
-			<pre className="flex-1 px-2 whitespace-pre">{text ?? ""}</pre>
+			<pre className="min-w-0 flex-1 px-2 whitespace-pre-wrap break-all">
+				{text ?? ""}
+			</pre>
 		</div>
 	);
 }

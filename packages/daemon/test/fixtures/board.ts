@@ -46,7 +46,8 @@ export async function makeTasks(
 	const svc = new TaskService({
 		handle,
 		bus,
-		mfwDir,
+		boardDir: mfwDir,
+		stateDir: mfwDir,
 		config,
 		taskKey,
 		log: silentLogger(),

@@ -1,5 +1,6 @@
 import type { StoredEvent } from "@mfw/daemon/services";
 import { z } from "zod";
+import { hubFor } from "../run-output-hub.ts";
 import { createTRPCRouter, projectProcedure } from "../trpc.ts";
 
 /**
@@ -140,7 +141,10 @@ export const liveRouter = createTRPCRouter({
 
 	/**
 	 * Transcript deltas for one run. Emits only the bytes past `offset`, then
-	 * follows the file until the run reaches a terminal state.
+	 * follows the file until the run reaches a terminal state. Every stream of
+	 * one run shares ONE reader (`run-output-hub.ts`): each serves itself from
+	 * the hub's window by byte offset and only falls back to a direct read to
+	 * catch up from behind it.
 	 */
 	runOutput: projectProcedure
 		.input(
@@ -153,45 +157,49 @@ export const liveRouter = createTRPCRouter({
 		.subscription(async function* ({ ctx, input, signal }) {
 			const { registry } = ctx.svc;
 			let offset = input.offset;
-			const TERMINAL = new Set([
-				"completed",
-				"failed",
-				"killed",
-				"interrupted",
-				"rate_limited",
-				"needs_review",
-				"finalize_error",
-			]);
-
-			// A quiet run writes nothing for minutes and Bun closes idle responses (see KEEPALIVE_MS).
-			let lastWriteAt = Date.now();
-			while (!signal?.aborted) {
-				const { chunk, size, complete } = await registry.readOutput(
-					input.runId,
-					input.file,
-					offset,
-				);
-				if (chunk.length > 0) {
-					offset = size;
-					lastWriteAt = Date.now();
-					yield { kind: "delta" as const, chunk, offset };
+			const hub = hubFor(registry, input.runId, input.file, offset);
+			hub.acquire();
+			try {
+				// A quiet run writes nothing for minutes and Bun closes idle responses (see KEEPALIVE_MS).
+				let lastWriteAt = Date.now();
+				while (!signal?.aborted) {
+					if (hub.error) throw hub.error;
+					const buffered = hub.from(offset);
+					if (buffered) {
+						for (const piece of buffered) {
+							offset = piece.end;
+							lastWriteAt = Date.now();
+							yield { kind: "delta" as const, chunk: piece.text, offset };
+						}
+						continue;
+					}
+					if (offset >= hub.end) {
+						if (hub.ended !== null) {
+							yield { kind: "end" as const, state: hub.ended, offset };
+							return;
+						}
+					} else {
+						// Behind the window (or off a piece boundary): read directly.
+						const { chunk, size } = await registry.readOutput(
+							input.runId,
+							input.file,
+							offset,
+						);
+						if (chunk.length > 0) {
+							offset = size;
+							lastWriteAt = Date.now();
+							yield { kind: "delta" as const, chunk, offset };
+							continue;
+						}
+					}
+					if (Date.now() - lastWriteAt >= KEEPALIVE_MS) {
+						lastWriteAt = Date.now();
+						yield { kind: "ping" as const, ts: lastWriteAt };
+					}
+					await hub.changed(signal, KEEPALIVE_MS);
 				}
-				// Drain a capped backlog before checking terminal state, or a large completed run stops after 1 MiB.
-				if (!complete) continue;
-				const run = await registry.get(input.runId);
-				if (!run || TERMINAL.has(run.state)) {
-					yield {
-						kind: "end" as const,
-						state: run?.state ?? "unknown",
-						offset,
-					};
-					return;
-				}
-				if (Date.now() - lastWriteAt >= KEEPALIVE_MS) {
-					lastWriteAt = Date.now();
-					yield { kind: "ping" as const, ts: lastWriteAt };
-				}
-				await Bun.sleep(500);
+			} finally {
+				hub.release();
 			}
 		}),
 });

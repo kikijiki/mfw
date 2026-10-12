@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { events } from "@mfw/db/schema";
 import {
 	attachProject,
 	boot,
@@ -13,6 +14,7 @@ import { git } from "../src/git.ts";
 import { acquireKernelLock } from "../src/kernel-lock.ts";
 import { silentLogger } from "../src/log.ts";
 import type { ProjectServices } from "../src/services.ts";
+import { brainSpawn, openTurn, STUB_BRAIN } from "./support/brain-spawn.ts";
 
 /**
  * End-to-end through the REAL composition root: a task goes ready → claimed →
@@ -54,16 +56,17 @@ emit({ type: "hello", provider: "claude-cli", capabilities: { steer: true } });
 
 // What it can SEE is the first thing worth recording.
 writeFileSync(cfg.cwd + "/saw-board.txt",
-  String(existsSync(cfg.cwd + "/.mfw/tasks")) + " " + String(existsSync(cfg.cwd + "/.mfw/AGENTS.md")));
+  String(existsSync(cfg.cwd + "/tasks")) + " " + String(existsSync(cfg.cwd + "/.mfw/AGENTS.md")));
 
 // ...and then the whole hostile repertoire, whether it can see it or not.
 try {
-  mkdirSync(cfg.cwd + "/.mfw/tasks/ready", { recursive: true });
-  mkdirSync(cfg.cwd + "/.mfw/tasks/done", { recursive: true });
-  writeFileSync(cfg.cwd + "/.mfw/tasks/ready/HIJACK-1.md", "---\\nid: MFW-1\\nrev: 99\\ntitle: mine now\\n---\\n");
-  writeFileSync(cfg.cwd + "/.mfw/specs/pwned.md", "mine\\n");
+  mkdirSync(cfg.cwd + "/tasks/ready", { recursive: true });
+  mkdirSync(cfg.cwd + "/tasks/done", { recursive: true });
+  writeFileSync(cfg.cwd + "/tasks/ready/HIJACK-1.md", "---\\nid: MFW-1\\nrev: 99\\ntitle: mine now\\n---\\n");
+  mkdirSync(cfg.cwd + "/adrs", { recursive: true });
+  writeFileSync(cfg.cwd + "/adrs/pwned.md", "mine\\n");
 } catch {}
-try { rmSync(cfg.cwd + "/.mfw/tasks", { recursive: true, force: true }); } catch {}
+try { rmSync(cfg.cwd + "/tasks", { recursive: true, force: true }); } catch {}
 
 // The real work.
 await Bun.write(cfg.cwd + "/feature.txt", "implemented\\n");
@@ -156,11 +159,9 @@ const cfg = (root: string): ProjectConfig => ({
 	integrationBranch: "main",
 	maxConcurrent: 2,
 	assistance: {
-		failureDiagnosis: "escalate",
-		conflictResolution: "escalate",
 		changeReview: "human",
 	}, // no LLM in tests; passing work still exercises human approval
-	maxRepairs: 0, // fail straight through instead of spawning repairs
+	brain: STUB_BRAIN, // a route that never wakes: the tests spawn as the brain would
 });
 
 // These engine tests intentionally exercise attachProject below Orchestrator;
@@ -231,6 +232,7 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 		await svc.tasks.move(task.id, "ready", "human");
 
 		// One scheduler tick dispatches it.
+		await brainSpawn(svc, task.id);
 		await svc.scheduler.tick();
 		const runs = await svc.registry.list({ taskId: task.id });
 		expect(runs.length).toBe(1);
@@ -249,9 +251,9 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 		// clean (the merge tail published the transition itself).
 		const status = await git(["status", "--porcelain"], root);
 		expect(status.stdout.trim()).toBe("");
-		expect(
-			(await git(["ls-files", "--", ".mfw/tasks"], root)).stdout,
-		).toContain(`${task.id}-add-the-feature/task.md`);
+		expect((await git(["ls-files", "--", "tasks"], root)).stdout).toContain(
+			`${task.id}-add-the-feature/task.md`,
+		);
 		// and the run's own branch never carried a board change
 		expect(
 			(await git(["log", "--format=%s", "-3", "main"], root)).stdout,
@@ -262,7 +264,7 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 		expect(
 			(
 				await git(
-					["show", `main:.mfw/tasks/${task.id}-add-the-feature/task.md`],
+					["show", `main:tasks/${task.id}-add-the-feature/task.md`],
 					remote,
 				)
 			).stdout,
@@ -283,7 +285,7 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 
 	test("a hostile agent cannot touch the board, and its real work still lands", async () => {
 		// Two defences in one path: the run worktree is sparse-checked-out so
-		// `.mfw/tasks` is not there to damage, and the merge queue restores the
+		// `tasks` is not there to damage, and the merge queue restores the
 		// board from the merge base for anything that gets past that.
 		const root = await makeRepo();
 		const driver = join(
@@ -306,15 +308,28 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 		await svc.tasks.move(task.id, "ready", "human");
 		await svc.board.flush();
 		const boardBefore = (
-			await git(["ls-tree", "-r", "--name-only", "main", "--", ".mfw"], root)
+			await git(
+				[
+					"ls-tree",
+					"-r",
+					"--name-only",
+					"main",
+					"--",
+					"tasks",
+					"adrs",
+					"board.yaml",
+				],
+				root,
+			)
 		).stdout;
 		const victimBefore = (
 			await git(
-				["show", `main:.mfw/tasks/${victim.id}-not-yours-to-edit/task.md`],
+				["show", `main:tasks/${victim.id}-not-yours-to-edit/task.md`],
 				root,
 			)
 		).stdout;
 
+		await brainSpawn(svc, task.id);
 		await svc.scheduler.tick();
 		const runId = (await svc.registry.list({ taskId: task.id }))[0]
 			?.id as string;
@@ -332,16 +347,28 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 		// The board holds what mfw put there and nothing the agent invented (not
 		// identical to `boardBefore`: mfw's own ready → done transition is in it).
 		const boardAfter = (
-			await git(["ls-tree", "-r", "--name-only", "main", "--", ".mfw"], root)
+			await git(
+				[
+					"ls-tree",
+					"-r",
+					"--name-only",
+					"main",
+					"--",
+					"tasks",
+					"adrs",
+					"board.yaml",
+				],
+				root,
+			)
 		).stdout;
 		expect(boardAfter).not.toContain("HIJACK-1.md");
 		expect(boardAfter).not.toContain("pwned.md");
-		expect(boardAfter).toContain(`.mfw/tasks/${task.id}`);
+		expect(boardAfter).toContain(`tasks/${task.id}`);
 		expect(boardBefore.split("\n").length).toBe(boardAfter.split("\n").length);
 		expect(
 			(
 				await git(
-					["show", `main:.mfw/tasks/${victim.id}-not-yours-to-edit/task.md`],
+					["show", `main:tasks/${victim.id}-not-yours-to-edit/task.md`],
 					root,
 				)
 			).stdout,
@@ -372,6 +399,7 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 			},
 		});
 		await svc.tasks.move(task.id, "ready", "human");
+		await brainSpawn(svc, task.id);
 		await svc.scheduler.tick();
 		const runId = (await svc.registry.list({ taskId: task.id }))[0]
 			?.id as string;
@@ -383,7 +411,8 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 		});
 
 		const finalTask = await svc.tasks.get(task.id);
-		expect(finalTask?.status).toBe("blocked"); // escalated, not merged
+		// Settled for the brain, not escalated to a person and not merged.
+		expect(finalTask?.status).toBe("ready");
 		expect(finalTask?.stallCount).toBe(1);
 		// Nothing reached main.
 		expect(
@@ -391,15 +420,17 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 		).not.toBe(0);
 		expect(await svc.mergeQueue.depth()).toBe(0);
 
-		// A pre-loaded session waits instead of a bare notification, with the
-		// DoD output (never-created.txt) and exhaustion reason in the brief.
-		const session = (await svc.sessions.list({ open: true })).find(
-			(s) => s.taskId === task.id,
+		const settled = (await svc.handle.db.select().from(events)).find(
+			(e) => e.type === "run.settled" && e.runId === runId,
 		);
-		expect(session?.source).toBe("blocked");
-		expect(session?.runId).toBe(runId);
-		expect(session?.context).toContain("repairs exhausted");
-		expect(session?.context).toContain("never-created.txt");
+		expect(settled?.payload).toMatchObject({ class: "verify_failed" });
+		expect(JSON.stringify(settled?.payload)).toContain("never-created.txt");
+		// No session brief, no inbox escalation: the brain decides.
+		expect(
+			(await svc.sessions.list({ open: true })).filter(
+				(x) => x.taskId === task.id,
+			),
+		).toEqual([]);
 
 		svc.handle.close();
 		await rm(root, { recursive: true, force: true });
@@ -426,7 +457,7 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 		const t = await svc.tasks.create({ title: "on disk" });
 		expect(
 			await Bun.file(
-				join(root, ".mfw/tasks", `${t.id}-on-disk`, "task.md"),
+				join(root, "tasks", `${t.id}-on-disk`, "task.md"),
 			).exists(),
 		).toBe(true);
 
@@ -474,8 +505,12 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 			(await git(["check-ignore", "-q", "--", ".mfw/locks"], root)).exitCode,
 		).toBe(0);
 		// ...while the board is genuinely tracked.
-		const tracked = (await git(["ls-files", "--", ".mfw"], root)).stdout;
-		expect(tracked).toContain(".mfw/tasks/");
+		const tracked = (await git(["ls-files"], root)).stdout;
+		expect(tracked).toContain("tasks/");
+		expect(tracked).toContain("board.yaml");
+		// ...and none of it under `.mfw/`, which holds daemon state only.
+		expect(tracked).not.toContain(".mfw/tasks");
+		expect(tracked).not.toContain(".mfw/board.yaml");
 
 		// The human's own lines survive, and there is exactly one mfw block.
 		const exclude = await Bun.file(join(root, ".git/info/exclude")).text();
@@ -565,7 +600,7 @@ process.exit(0);
 `;
 
 describe("v2 end-to-end: import a repository", () => {
-	test("the unambiguous proposal lands as tasks and specs, and the worktree is destroyed", async () => {
+	test("the proposal settles plan_output with normalized statuses and specs, nothing is written, the worktree is destroyed, and the brain applies it with create_tasks", async () => {
 		const root = await makeRepo();
 		const driver = join(
 			await mkdtemp(join(tmpdir(), "mfw-drv-")),
@@ -586,100 +621,86 @@ describe("v2 end-to-end: import a repository", () => {
 			return r?.state === "completed";
 		});
 
-		// --- statuses come from the report, and from nowhere else
-		const byTitle = new Map(
-			(await svc.tasks.list()).map((t) => [t.title, t] as const),
+		// --- nothing was applied: the proposal is the run's output
+		expect(await svc.tasks.list()).toEqual([]);
+		const settled = (await svc.handle.db.select().from(events)).find(
+			(e) => e.type === "run.settled" && e.runId === runId,
 		);
-		// The tasks, plus one container task per spec.
-		expect(byTitle.size).toBe(
-			IMPORT_PROPOSAL.tasks.length + IMPORT_PROPOSAL.specs.length,
-		);
-		expect(byTitle.get("the auth module")?.status).toBe("done");
-		expect(byTitle.get("password reset")?.status).toBe("ready");
-		expect(byTitle.get("audit log")?.status).toBe("backlog");
-		expect(byTitle.get("waiting on legal")?.status).toBe("blocked");
-		expect(byTitle.get("rate limiting")?.status).toBe("review");
-		expect(byTitle.get("abandoned idea")?.status).toBe("archived");
-		// Neither a missing status nor one mfw does not know is a guess: backlog.
-		expect(byTitle.get("no status stated")?.status).toBe("backlog");
-		expect(byTitle.get("invented status")?.status).toBe("backlog");
+		expect(settled?.payload).toMatchObject({ class: "plan_output" });
+		const proposal = (
+			settled?.payload as {
+				facts: {
+					proposal: {
+						parsed: boolean;
+						tasks: { title: string; status?: string }[];
+						specs: { title: string; tasks: number[] }[];
+					};
+				};
+			}
+		).facts.proposal;
+		expect(proposal.parsed).toBe(true);
+		const status = new Map(proposal.tasks.map((t) => [t.title, t.status]));
+		// Statuses come from the report, normalized, and from nowhere else.
+		expect(status.get("the auth module")).toBe("done");
+		expect(status.get("password reset")).toBe("ready");
+		expect(status.get("waiting on legal")).toBe("blocked");
+		expect(status.get("abandoned idea")).toBe("archived");
 		// in_progress is not importable: with no claiming run nothing would pick it up.
-		expect(byTitle.get("session store")?.status).toBe("ready");
-		expect(byTitle.get("needs a look")?.status).toBe("ready");
-		expect(await svc.tasks.list("in_progress")).toEqual([]);
-
-		// --- positional refs resolved to the ids mfw minted
-		expect(byTitle.get("password reset")?.dependsOn).toEqual([
-			byTitle.get("session store")?.id as string,
-		]);
-		expect(byTitle.get("the auth module")?.source).toBe("importer");
-
-		// --- specs are written after the tasks: each is a container task with its covered tasks as children.
-		const containers = (await svc.tasks.list()).filter(
-			(t) => t.type === "epic",
-		);
-		expect(containers.map((t) => t.title).sort()).toEqual([
+		expect(status.get("session store")).toBe("ready");
+		expect(status.get("needs a look")).toBe("ready");
+		// Neither a missing status nor one mfw does not know is a guess.
+		expect(status.get("no status stated")).toBeUndefined();
+		expect(status.get("invented status")).toBeUndefined();
+		expect(proposal.specs.map((x) => x.title)).toEqual([
 			"Authentication architecture",
 			"Unattached design note",
 		]);
-		const auth = containers.find(
-			(t) => t.title === "Authentication architecture",
-		);
-		expect(
-			(await svc.tasks.list())
-				.filter((t) => t.parentId === auth?.id)
-				.map((t) => t.id)
-				.sort(),
-		).toEqual(
-			[
-				byTitle.get("the auth module")?.id as string,
-				byTitle.get("session store")?.id as string,
-				byTitle.get("password reset")?.id as string,
-			].sort(),
-		);
-		expect((await svc.tasks.getSpec(auth?.id as string))?.exists).toBe(true);
 
 		// --- an import writes no code, so its worktree is thrown away
 		expect(existsSync(worktreePath)).toBe(false);
 		expect(
 			(await git(["worktree", "list"], root)).stdout.trim().split("\n"),
 		).toHaveLength(1);
-
-		// --- and the whole board is on the integration branch, primary clean
-		await svc.board.flush();
-		const tracked = (await git(["ls-files", "--", ".mfw"], root)).stdout;
-		expect(tracked).toContain(
-			`.mfw/tasks/${byTitle.get("the auth module")?.id}`,
-		);
-		expect(tracked).toContain(
-			`.mfw/tasks/${byTitle.get("abandoned idea")?.id}`,
-		);
-		expect(tracked).toContain(
-			`.mfw/tasks/${auth?.id}-authentication-architecture/spec.md`,
-		);
 		expect((await git(["status", "--porcelain"], root)).stdout.trim()).toBe("");
-		// The spec is committed beside its container's task.md.
-		const specFile = (
-			await git(
-				[
-					"show",
-					`main:.mfw/tasks/${auth?.id}-authentication-architecture/spec.md`,
-				],
-				root,
-			)
-		).stdout;
-		expect(specFile).toContain("Sessions are server-side.");
 
-		// --- and it stays landed: the regression sweep reopens `done` tasks whose
-		// DoD fails, and imported DoDs are unverified, so it must not undo the import.
-		const board = (await svc.tasks.list())
-			.map((t) => `${t.title}=${t.status}`)
-			.sort();
-		await svc.maintenance.tick();
-		expect(
-			(await svc.tasks.list()).map((t) => `${t.title}=${t.status}`).sort(),
-		).toEqual(board);
-		expect(await svc.maintenance.isMainRed()).toBe(false);
+		// --- the brain applies what it chooses, with the board tools
+		const turnRunId = await openTurn(svc);
+		const applied = await svc.brainRuntime.actions.act({
+			turnRunId,
+			tool: "create_tasks",
+			args: {
+				rationale: "the importer's census, minus the abandoned idea",
+				tasks: [
+					{
+						ref: "session",
+						title: "session store",
+						body: "half written",
+						type: "implementation",
+						size: "s",
+						status: "ready",
+					},
+					{
+						ref: "reset",
+						title: "password reset",
+						type: "implementation",
+						size: "s",
+						status: "ready",
+						depends_on: ["session"],
+					},
+				],
+			},
+		});
+		expect(applied.status).toBe("applied");
+		const byTitle = new Map(
+			(await svc.tasks.list()).map((t) => [t.title, t] as const),
+		);
+		expect(byTitle.size).toBe(2);
+		expect(byTitle.get("password reset")?.dependsOn).toEqual([
+			byTitle.get("session store")?.id as string,
+		]);
+		// The import settled for the task-less run: the board is the brain's.
+		await svc.board.flush();
+		expect((await git(["status", "--porcelain"], root)).stdout.trim()).toBe("");
 
 		svc.handle.close();
 		await rm(root, { recursive: true, force: true });
@@ -817,10 +838,13 @@ describe("the git exclude file is maintained, not just appended to", () => {
 
 		const exclude = await Bun.file(join(root, ".git/info/exclude")).text();
 		const lines = exclude.split("\n");
-		// a stale managed block must not keep hiding the board
+		// a stale managed block must not keep hiding the board, and nothing
+		// re-admits board paths under `.mfw/` any more: the board is not there
 		expect(lines).not.toContain(".mfw/tasks/");
-		expect(lines).toContain("!/.mfw/tasks/");
-		expect(lines).toContain("!/.mfw/adrs/");
+		expect(lines).not.toContain("!/.mfw/tasks/");
+		expect(lines).not.toContain("!/.mfw/adrs/");
+		expect(lines).toContain("/.mfw/*");
+		expect(lines).toContain("!/.mfw/triggers/");
 		expect(lines.filter((l) => l.startsWith("# --- mfw"))).toHaveLength(1);
 		// the human's own entries were not disturbed
 		expect(lines).toContain("node_modules/");
@@ -830,9 +854,9 @@ describe("the git exclude file is maintained, not just appended to", () => {
 		const svc = orch.get("demo");
 		const t = await svc.tasks.create({ title: "provably tracked" });
 		expect(await svc.board.flush()).toContain(t.id);
-		expect(
-			(await git(["ls-files", "--", ".mfw/tasks"], root)).stdout,
-		).toContain(`${t.id}-provably-tracked/task.md`);
+		expect((await git(["ls-files", "--", "tasks"], root)).stdout).toContain(
+			`${t.id}-provably-tracked/task.md`,
+		);
 
 		await orch.shutdown();
 		await rm(root, { recursive: true, force: true });

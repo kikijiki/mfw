@@ -5,6 +5,15 @@ import type {
 	LivenessEvidence,
 } from "./types.ts";
 
+/**
+ * Session id prefix of a run that executes on another machine (a registry
+ * SSH host). Nothing on this machine can prove such a run alive or absent,
+ * so its lease is never reclaimed from local evidence: it becomes
+ * `uncertain` (capacity stays held) until the project's recovery observes
+ * the target and adopts or releases it.
+ */
+export const REMOTE_RUN_SESSION_PREFIX = "remote:";
+
 export interface SessionLiveness {
 	isAlive(sessionId: string, runId: string): Promise<boolean | null>;
 }
@@ -32,6 +41,14 @@ export class SystemLeaseLiveness implements LeaseLivenessInspector {
 				checkedAt,
 				kernelBootId: this.deps.kernelBootId,
 				detail: "lease has no activated run identity",
+			};
+		}
+		if (run.sessionId?.startsWith(REMOTE_RUN_SESSION_PREFIX)) {
+			return {
+				status: "unavailable",
+				checkedAt,
+				kernelBootId: this.deps.kernelBootId,
+				detail: "remote run: its project's recovery observes the target",
 			};
 		}
 		if (

@@ -1,5 +1,6 @@
 export const VERSION = "0.1.0";
 
+export * from "./activity.ts";
 export * from "./dag.ts";
 export * from "./events.ts";
 export * from "./fsatomic.ts";

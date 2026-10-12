@@ -27,6 +27,9 @@ import { useToast } from "../../lib/toast";
 import type { RouterInputs, RouterOutputs } from "../../lib/trpc";
 import { useTRPC } from "../../lib/trpc";
 import { href } from "../../routes";
+import { DocSourcesManager } from "../docs/DocSourcesManager";
+import { BoardSettings } from "../projects/BoardSettings";
+import { BrainSettings } from "../projects/BrainSettings";
 import {
 	listText,
 	type RUNPOD_CLOUDS,
@@ -101,16 +104,21 @@ interface Draft {
 	selfRepairMainRed: boolean;
 	pushOnMerge: boolean;
 	providerId: string;
+	/** codex-cli only: a routing endpoint id; blank = OpenAI. */
+	providerEndpoint: string;
 	model: string;
+	/** `routing` as JSON text (endpoints, fallbacks, escalateOnRepair); blank = none. */
+	routingJson: string;
+	/** `routing.placement`: `local`, `ssh` (any host) or `ssh:<hostId>`. */
+	placement: string;
+	/** Comma-separated host labels an `ssh` placement requires. */
+	placementLabels: string;
 	modelTierLight: string;
 	modelTierStandard: string;
 	modelTierStrong: string;
 	reviewModel: string;
 	reasoningEffort: "none" | "low" | "medium" | "high" | "xhigh" | "max";
 	approvalMode: "autonomous" | "interactive";
-	maxRepairs: string;
-	maxStalls: string;
-	maxResumes: string;
 	leaseMs: string;
 	checkPrefix: string;
 	mergeChecks: VerificationPlan | null;
@@ -121,6 +129,13 @@ interface Draft {
 	runpodEnabled: boolean;
 	runpodPolicy: ProjectRunPodPolicyDraft;
 	runpodTarget: RunPodPlacementDraft;
+	/** Watchdog, in minutes for the two time limits (the wire is ms). */
+	idleMinutes: string;
+	wallMinutes: string;
+	maxTurns: string;
+	scopeMode: "off" | "warn" | "kill";
+	scopeMaxFiles: string;
+	scopeOnFinish: boolean;
 }
 
 export interface ProjectRunPodDraftSettings {
@@ -197,16 +212,15 @@ function toDraft(values: SettingsView["values"]): Draft {
 		selfRepairMainRed: values.selfRepairMainRed,
 		pushOnMerge: values.pushOnMerge,
 		providerId: values.provider.id,
+		providerEndpoint: values.provider.endpoint ?? "",
 		model: values.model,
+		...routingDraft(values.routing),
 		modelTierLight: values.modelTiers?.light ?? "",
 		modelTierStandard: values.modelTiers?.standard ?? "",
 		modelTierStrong: values.modelTiers?.strong ?? "",
 		reviewModel: values.reviewModel ?? "",
 		reasoningEffort: values.reasoningEffort,
 		approvalMode: values.approvalMode,
-		maxRepairs: String(values.maxRepairs),
-		maxStalls: String(values.maxStalls),
-		maxResumes: String(values.maxResumes),
 		leaseMs: String(values.leaseMs),
 		checkPrefix: values.checkPrefix ?? "",
 		mergeChecks: values.mergeChecks ?? null,
@@ -220,7 +234,47 @@ function toDraft(values: SettingsView["values"]): Draft {
 		runpodEnabled: values.runpod?.enabled === true,
 		runpodPolicy: projectPolicyDraft(values.runpod),
 		runpodTarget: placementDraft(values.runpodTarget),
+		idleMinutes: String(values.watchdog.idleMs / 60_000),
+		wallMinutes: String(values.watchdog.wallMs / 60_000),
+		maxTurns: String(values.watchdog.maxTurns),
+		scopeMode: values.watchdog.scope.mode,
+		scopeMaxFiles: String(values.watchdog.scope.maxFiles),
+		scopeOnFinish: values.watchdog.scope.onFinish === "review",
 	};
+}
+
+/** Only the watchdog fields that changed, so untouched ones keep following the defaults. */
+export function watchdogPatch(
+	draft: Pick<
+		Draft,
+		| "idleMinutes"
+		| "wallMinutes"
+		| "maxTurns"
+		| "scopeMode"
+		| "scopeMaxFiles"
+		| "scopeOnFinish"
+	>,
+	base: typeof draft,
+): SettingsPatch["watchdog"] | undefined {
+	const out: NonNullable<SettingsPatch["watchdog"]> = {};
+	const scope: NonNullable<NonNullable<SettingsPatch["watchdog"]>["scope"]> =
+		{};
+	if (draft.idleMinutes !== base.idleMinutes) {
+		out.idleMs = Math.round(Number(draft.idleMinutes) * 60_000);
+	}
+	if (draft.wallMinutes !== base.wallMinutes) {
+		out.wallMs = Math.round(Number(draft.wallMinutes) * 60_000);
+	}
+	if (draft.maxTurns !== base.maxTurns) out.maxTurns = Number(draft.maxTurns);
+	if (draft.scopeMode !== base.scopeMode) scope.mode = draft.scopeMode;
+	if (draft.scopeMaxFiles !== base.scopeMaxFiles) {
+		scope.maxFiles = Number(draft.scopeMaxFiles);
+	}
+	if (draft.scopeOnFinish !== base.scopeOnFinish) {
+		scope.onFinish = draft.scopeOnFinish ? "review" : "off";
+	}
+	if (Object.keys(scope).length > 0) out.scope = scope;
+	return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /** Only tiers with text go on the wire; all three blank means "unset". */
@@ -234,6 +288,56 @@ function modelTiersOf(draft: Draft): SettingsPatch["modelTiers"] {
 		...(standard ? { standard } : {}),
 		...(strong ? { strong } : {}),
 	};
+}
+
+type RoutingValue = NonNullable<SettingsPatch["routing"]>;
+
+/** Placement gets typed controls; the rest of `routing` stays JSON text. */
+export function routingDraft(
+	routing: RoutingValue | null | undefined,
+): Pick<Draft, "routingJson" | "placement" | "placementLabels"> {
+	const { placement, ...rest } = routing ?? {};
+	return {
+		routingJson:
+			Object.keys(rest).length > 0 ? JSON.stringify(rest, null, 2) : "",
+		placement:
+			placement?.target === "ssh"
+				? placement.host
+					? `ssh:${placement.host}`
+					: "ssh"
+				: "local",
+		placementLabels: placement?.labels?.join(", ") ?? "",
+	};
+}
+
+/** The routing JSON plus the typed placement as a patch value; throws with a sentence when the JSON is not an object. */
+export function routingOf(draft: Draft): SettingsPatch["routing"] {
+	const text = draft.routingJson.trim();
+	let parsed: unknown = {};
+	if (text !== "") {
+		try {
+			parsed = JSON.parse(text);
+		} catch {
+			throw new Error("routing must be valid JSON");
+		}
+	}
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+		throw new Error("routing must be a JSON object");
+	const routing = { ...(parsed as RoutingValue) };
+	delete routing.placement;
+	if (draft.placement.startsWith("ssh")) {
+		const host = draft.placement.slice("ssh:".length);
+		const labels = draft.placementLabels
+			.split(",")
+			.map((label) => label.trim())
+			.filter(Boolean);
+		routing.placement = {
+			target: "ssh",
+			...(host ? { host } : {}),
+			...(labels.length ? { labels } : {}),
+		};
+	}
+	return Object.keys(routing).length > 0 ? routing : null;
 }
 
 /** `undefined` for a blank field: the server treats an absent key as "unset", not as an empty string. */
@@ -255,9 +359,6 @@ const NUMBER_LIMITS: Record<
 	{ label: string; min: number; max?: number }
 > = {
 	maxConcurrent: { label: "Maximum parallel agents", min: 1, max: 64 },
-	maxRepairs: { label: "Maximum repair attempts", min: 0, max: 20 },
-	maxStalls: { label: "Maximum stalled turns", min: 1, max: 20 },
-	maxResumes: { label: "Maximum resume attempts", min: 0, max: 20 },
 	leaseMs: { label: "Run lease duration", min: 1000 },
 };
 
@@ -447,8 +548,33 @@ function validate(draft: Draft): string | null {
 			return `${limit.label} must be at most ${limit.max}`;
 		}
 	}
-	if (draft.providerId.trim() === "") return "pick an agent CLI";
+	for (const [raw, label] of [
+		[draft.idleMinutes, "The idle limit"],
+		[draft.wallMinutes, "The run time limit"],
+	] as const) {
+		const n = Number(raw);
+		if (raw.trim() === "" || !Number.isFinite(n) || n < 0) {
+			return `${label} must be a number of minutes (0 = off)`;
+		}
+	}
+	if (!/^\d+$/.test(draft.maxTurns.trim())) {
+		return "The turn limit must be a whole number (0 = off)";
+	}
+	if (
+		!/^\d+$/.test(draft.scopeMaxFiles.trim()) ||
+		Number(draft.scopeMaxFiles) < 1
+	) {
+		return "The file limit must be a whole number of at least 1";
+	}
+	if (draft.providerId.trim() === "") return "pick a default agent";
 	if (draft.model.trim() === "") return "model cannot be empty";
+	try {
+		routingOf(draft);
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
+	if (draft.providerEndpoint.trim() && draft.providerId !== "codex-cli")
+		return "only codex-cli can use an OpenAI-compatible endpoint";
 	const dodProblem = verificationError(draft.mergeChecks);
 	if (dodProblem) return dodProblem;
 	if (draft.notifyEnabled) {
@@ -499,10 +625,20 @@ function diffPatch(draft: Draft, base: Draft): SettingsPatch {
 	}
 	// `env` is absent: this form has no editor for it, and omitting `provider`
 	// while unchanged preserves any env set by hand in config.json.
-	if (draft.providerId !== base.providerId) {
-		patch.provider = { id: draft.providerId };
+	if (
+		draft.providerId !== base.providerId ||
+		draft.providerEndpoint !== base.providerEndpoint
+	) {
+		patch.provider = {
+			id: draft.providerId,
+			endpoint: draft.providerEndpoint.trim() || null,
+		};
 	}
 	if (draft.model !== base.model) patch.model = draft.model.trim();
+	const routing = routingOf(draft);
+	if (JSON.stringify(routing) !== JSON.stringify(routingOf(base))) {
+		patch.routing = routing;
+	}
 	const modelTiers = modelTiersOf(draft);
 	if (JSON.stringify(modelTiers) !== JSON.stringify(modelTiersOf(base))) {
 		patch.modelTiers = modelTiers;
@@ -516,15 +652,6 @@ function diffPatch(draft: Draft, base: Draft): SettingsPatch {
 	if (draft.approvalMode !== base.approvalMode) {
 		patch.approvalMode = draft.approvalMode;
 	}
-	if (draft.maxRepairs !== base.maxRepairs) {
-		patch.maxRepairs = Number(draft.maxRepairs);
-	}
-	if (draft.maxStalls !== base.maxStalls) {
-		patch.maxStalls = Number(draft.maxStalls);
-	}
-	if (draft.maxResumes !== base.maxResumes) {
-		patch.maxResumes = Number(draft.maxResumes);
-	}
 	if (draft.leaseMs !== base.leaseMs) patch.leaseMs = Number(draft.leaseMs);
 	if (draft.checkPrefix !== base.checkPrefix) {
 		patch.checkPrefix = draft.checkPrefix.trim() || null;
@@ -537,6 +664,8 @@ function diffPatch(draft: Draft, base: Draft): SettingsPatch {
 		patch.notify = notify;
 	}
 	Object.assign(patch, projectRunPodPatch(draft, base));
+	const watchdog = watchdogPatch(draft, base);
+	if (watchdog) patch.watchdog = watchdog;
 	return patch;
 }
 
@@ -699,12 +828,20 @@ export function ProjectConfig({ project }: { project: string }) {
 					Repository <Mono value={view.root} />
 				</span>
 				<span>
+					Board{" "}
+					<Mono
+						value={
+							view.boardRoot ? `${view.boardRoot}/.mfw` : "in the repository"
+						}
+					/>
+				</span>
+				<span>
 					Merge branch <Mono value={view.integrationBranch} />
 				</span>
 			</div>
 
-			<Panel title="Dispatch">
-				<div className="flex flex-col gap-3">
+			<Panel id="dispatch" title="Dispatch">
+				<div className="grid items-start gap-x-4 gap-y-3 md:grid-cols-2">
 					<Setting
 						label="Maximum parallel agents"
 						restart={restart("maxConcurrent")}
@@ -719,64 +856,6 @@ export function ProjectConfig({ project }: { project: string }) {
 							value={draft.maxConcurrent}
 							onChange={(e) => set("maxConcurrent", e.target.value)}
 						/>
-					</Setting>
-					<Setting
-						label="Ambiguous failures"
-						restart={restart("assistance")}
-						hint="Choose whether AI should investigate failures that checks cannot explain."
-					>
-						<Select
-							value={draft.assistance.failureDiagnosis}
-							onValueChange={(value) =>
-								set("assistance", {
-									...draft.assistance,
-									failureDiagnosis: value as "assisted" | "escalate",
-								})
-							}
-						>
-							<SelectTrigger
-								className="min-w-52"
-								aria-label="Ambiguous failure policy"
-							>
-								<SelectValue />
-							</SelectTrigger>
-							<SelectContent position="popper">
-								<SelectItem value="assisted">
-									Model-assisted diagnosis
-								</SelectItem>
-								<SelectItem value="escalate">
-									Escalate without guessing
-								</SelectItem>
-							</SelectContent>
-						</Select>
-					</Setting>
-					<Setting
-						label="Merge conflicts"
-						restart={restart("assistance")}
-						hint="Standard retries run first. After that, either ask AI for help or stop for review."
-					>
-						<Select
-							value={draft.assistance.conflictResolution}
-							onValueChange={(value) =>
-								set("assistance", {
-									...draft.assistance,
-									conflictResolution: value as "assisted" | "escalate",
-								})
-							}
-						>
-							<SelectTrigger
-								className="min-w-52"
-								aria-label="Merge conflict policy"
-							>
-								<SelectValue />
-							</SelectTrigger>
-							<SelectContent position="popper">
-								<SelectItem value="assisted">
-									Attempt assisted resolution
-								</SelectItem>
-								<SelectItem value="escalate">Escalate after retries</SelectItem>
-							</SelectContent>
-						</Select>
 					</Setting>
 					<Setting
 						label="Change review"
@@ -822,25 +901,45 @@ export function ProjectConfig({ project }: { project: string }) {
 				</div>
 			</Panel>
 
-			<Panel title="Agent">
-				<div className="flex flex-col gap-3">
-					<Setting
-						label="agent CLI"
-						restart={restart("provider")}
-						hint="Provider used for new runs. Existing runs keep their current provider."
-					>
-						<ProviderPicker
-							value={draft.providerId}
-							onChange={(id, defaultModel) =>
-								setDraft({
-									...draft,
-									providerId: id,
-									model: defaultModel,
-									reasoningEffort: "medium",
-								})
-							}
-						/>
-					</Setting>
+			<Panel id="agent" title="Default agent">
+				<div className="grid items-start gap-x-4 gap-y-3 md:grid-cols-2">
+					<div className="md:col-span-2">
+						<Setting
+							label="default agent"
+							restart={restart("provider")}
+							hint="Used when the brain does not choose a harness for a run. The brain's routes override it. Applies to runs routed from now on (no restart); a run already prepared or running keeps the route recorded on it."
+						>
+							<ProviderPicker
+								value={draft.providerId}
+								onChange={(id, defaultModel) =>
+									setDraft({
+										...draft,
+										providerId: id,
+										providerEndpoint:
+											id === "codex-cli" ? draft.providerEndpoint : "",
+										model: defaultModel,
+										reasoningEffort: "medium",
+									})
+								}
+							/>
+						</Setting>
+					</div>
+					{draft.providerId === "codex-cli" ? (
+						<Setting
+							label="codex endpoint"
+							restart={restart("provider")}
+							hint="Blank runs Codex against OpenAI. An endpoint id from Routing below points Codex at that OpenAI-compatible server (local llama.cpp, Ollama, vLLM, OpenRouter); it must serve the Responses API."
+						>
+							<Input
+								className="max-w-56"
+								aria-label="Codex endpoint"
+								autoComplete="off"
+								placeholder="OpenAI (default)"
+								value={draft.providerEndpoint}
+								onChange={(e) => set("providerEndpoint", e.target.value)}
+							/>
+						</Setting>
+					) : null}
 					<Setting label="model" restart={restart("model")}>
 						<ModelPicker
 							providerId={draft.providerId}
@@ -848,7 +947,7 @@ export function ProjectConfig({ project }: { project: string }) {
 							onChange={(model) => set("model", model)}
 						/>
 					</Setting>
-					<div className="grid gap-3 sm:grid-cols-3">
+					<div className="grid gap-3 sm:grid-cols-3 md:col-span-2">
 						<Setting
 							label="light tier model"
 							restart={restart("modelTiers")}
@@ -906,6 +1005,35 @@ export function ProjectConfig({ project }: { project: string }) {
 							onChange={(e) => set("reviewModel", e.target.value)}
 						/>
 					</Setting>
+					<div className="md:col-span-2">
+						<Setting
+							label="routing"
+							restart={restart("routing")}
+							hint='JSON. "endpoints": OpenAI-compatible servers by id ({"baseUrl", "model"?, "vendor"?, "envKey"? + "grant"?}: a key reaches agents only through a workload grant). "fallbacks": per tier or "default", ordered [{"provider", "model"?}] used when the route is rate-limit held. "escalateOnRepair": repair 2+ moves one tier up.'
+						>
+							<textarea
+								className="min-h-32 w-full max-w-xl rounded-md border bg-transparent p-2 font-mono"
+								style={{ fontSize: "var(--mfw-text-xs)" }}
+								aria-label="Routing JSON"
+								spellCheck={false}
+								placeholder='{ "endpoints": { "local": { "baseUrl": "http://127.0.0.1:8080/v1", "model": "qwen3-coder", "vendor": "local" } }, "fallbacks": { "default": [{ "provider": "codex-cli" }] } }'
+								value={draft.routingJson}
+								onChange={(e) => set("routingJson", e.target.value)}
+							/>
+						</Setting>
+					</div>
+					<div className="md:col-span-2">
+						<PlacementSetting
+							restart={restart("routing")}
+							placement={draft.placement}
+							labels={draft.placementLabels}
+							onPlacement={(value) => set("placement", value)}
+							onLabels={(value) => set("placementLabels", value)}
+						/>
+					</div>
+					<div className="md:col-span-2">
+						<ProviderHoldsList />
+					</div>
 					{draft.providerId === "codex-cli" ? (
 						<Setting
 							label="reasoning effort"
@@ -957,12 +1085,14 @@ export function ProjectConfig({ project }: { project: string }) {
 							</SelectContent>
 						</Select>
 					</Setting>
-					<ProvidersLink />
+					<div className="md:col-span-2">
+						<ProvidersLink />
+					</div>
 				</div>
 			</Panel>
 
-			<Panel title="Runs">
-				<div className="grid gap-3 sm:grid-cols-2">
+			<Panel id="runs" title="Runs">
+				<div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
 					<Setting
 						label="claim timeout"
 						restart={restart("leaseMs")}
@@ -978,48 +1108,6 @@ export function ProjectConfig({ project }: { project: string }) {
 						/>
 					</Setting>
 					<Setting
-						label="max repairs"
-						restart={restart("maxRepairs")}
-						hint="Repair attempts after a failed check before the task is parked (0-20)."
-					>
-						<Input
-							type="number"
-							min={0}
-							max={20}
-							aria-label="Max repairs"
-							value={draft.maxRepairs}
-							onChange={(e) => set("maxRepairs", e.target.value)}
-						/>
-					</Setting>
-					<Setting
-						label="max stalls"
-						restart={restart("maxStalls")}
-						hint="Consecutive stalled passes tolerated before a run is abandoned (1-20)."
-					>
-						<Input
-							type="number"
-							min={1}
-							max={20}
-							aria-label="Max stalls"
-							value={draft.maxStalls}
-							onChange={(e) => set("maxStalls", e.target.value)}
-						/>
-					</Setting>
-					<Setting
-						label="max resumes"
-						restart={restart("maxResumes")}
-						hint="Times an interrupted run may be resumed (0-20)."
-					>
-						<Input
-							type="number"
-							min={0}
-							max={20}
-							aria-label="Max resumes"
-							value={draft.maxResumes}
-							onChange={(e) => set("maxResumes", e.target.value)}
-						/>
-					</Setting>
-					<Setting
 						label="check prefix"
 						restart={restart("checkPrefix")}
 						hint="Prepended to every project and task verification command. Empty means none."
@@ -1032,20 +1120,109 @@ export function ProjectConfig({ project }: { project: string }) {
 						/>
 					</Setting>
 				</div>
-				<Setting
-					label="required checks"
-					restart={restart("mergeChecks")}
-					hint="Checks every change must pass before merging. Task-specific checks can add more."
-				>
-					<VerificationBuilder
-						value={draft.mergeChecks}
-						taskType="task"
-						onChange={(next) => set("mergeChecks", next)}
-					/>
-				</Setting>
+				<div className="mt-3">
+					<Setting
+						label="required checks"
+						restart={restart("mergeChecks")}
+						hint="Checks every change must pass before merging. Task-specific checks can add more."
+					>
+						<VerificationBuilder
+							value={draft.mergeChecks}
+							taskType="task"
+							onChange={(next) => set("mergeChecks", next)}
+						/>
+					</Setting>
+				</div>
 			</Panel>
 
-			<Panel title="Remote execution">
+			<Panel id="watchdog" title="Watchdog">
+				<div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-3">
+					<Setting
+						label="idle limit (minutes)"
+						restart={restart("watchdog")}
+						hint="Stop a run that produced no output for this long. 0 = never. Waiting on an approval does not count."
+					>
+						<Input
+							type="number"
+							min={0}
+							aria-label="Idle limit in minutes"
+							value={draft.idleMinutes}
+							onChange={(e) => set("idleMinutes", e.target.value)}
+						/>
+					</Setting>
+					<Setting
+						label="run time limit (minutes)"
+						restart={restart("watchdog")}
+						hint="Stop a run after this much wall-clock time. 0 = never."
+					>
+						<Input
+							type="number"
+							min={0}
+							aria-label="Run time limit in minutes"
+							value={draft.wallMinutes}
+							onChange={(e) => set("wallMinutes", e.target.value)}
+						/>
+					</Setting>
+					<Setting
+						label="turn limit"
+						restart={restart("watchdog")}
+						hint="Stop a run after this many assistant turns. 0 = never."
+					>
+						<Input
+							type="number"
+							min={0}
+							aria-label="Turn limit"
+							value={draft.maxTurns}
+							onChange={(e) => set("maxTurns", e.target.value)}
+						/>
+					</Setting>
+					<Setting
+						label="scope watchdog"
+						restart={restart("watchdog")}
+						hint="While a run works, compare the files it changed with its task's owns. Stop: a run that touches files another running task owns, or more files than the limit, is stopped; its work is saved to a wip/ branch and the task is blocked."
+					>
+						<Select
+							value={draft.scopeMode}
+							onValueChange={(value) =>
+								set("scopeMode", value as Draft["scopeMode"])
+							}
+						>
+							<SelectTrigger aria-label="Scope watchdog" className="min-w-52">
+								<SelectValue />
+							</SelectTrigger>
+							<SelectContent position="popper">
+								<SelectItem value="kill">Stop the run</SelectItem>
+								<SelectItem value="warn">Only show it</SelectItem>
+								<SelectItem value="off">Off</SelectItem>
+							</SelectContent>
+						</Select>
+					</Setting>
+					<Setting
+						label="file limit"
+						restart={restart("watchdog")}
+						hint="More changed files than this counts as a scope violation."
+					>
+						<Input
+							type="number"
+							min={1}
+							aria-label="Changed file limit"
+							value={draft.scopeMaxFiles}
+							onChange={(e) => set("scopeMaxFiles", e.target.value)}
+						/>
+					</Setting>
+				</div>
+				<div className="mt-3">
+					<Toggle
+						label="Review work that changed files outside its task's owns"
+						restart={restart("watchdog")}
+						hint="Checked when a run finishes, before the assisted review: verified work that strays outside the task's owns goes to a person instead of merging."
+						checked={draft.scopeOnFinish}
+						onChange={(value) => set("scopeOnFinish", value)}
+					/>
+				</div>
+			</Panel>
+
+			<Panel id="remote" title="Remote execution">
 				<div className="flex flex-col gap-3">
 					<Toggle
 						label="Allow RunPod tasks in this project"
@@ -1428,7 +1605,7 @@ export function ProjectConfig({ project }: { project: string }) {
 				</div>
 			</Panel>
 
-			<Panel title="Notifications">
+			<Panel id="notifications" title="Notifications">
 				<div className="flex flex-col gap-3">
 					<Toggle
 						label="Notify on run outcomes"
@@ -1486,6 +1663,18 @@ export function ProjectConfig({ project }: { project: string }) {
 				</div>
 			</Panel>
 
+			<div id="brain" className="scroll-mt-3">
+				<BrainSettings project={project} />
+			</div>
+
+			<div id="board" className="scroll-mt-3">
+				<BoardSettings project={project} />
+			</div>
+
+			<Panel id="docs" title="Docs">
+				<DocSourcesManager project={project} />
+			</Panel>
+
 			{dirty ? (
 				<div
 					className="sticky bottom-0 z-10 flex flex-wrap items-center gap-x-2 gap-y-1 border px-3 py-2"
@@ -1495,11 +1684,7 @@ export function ProjectConfig({ project }: { project: string }) {
 						background: "var(--mfw-bg-subtle)",
 					}}
 				>
-					<span
-						className="mfw-pulse"
-						style={{ color: "var(--mfw-warn)" }}
-						aria-live="polite"
-					>
+					<span style={{ color: "var(--mfw-warn)" }} aria-live="polite">
 						Unsaved changes
 					</span>
 					{problem ? (
@@ -1545,5 +1730,118 @@ export function ProjectConfig({ project }: { project: string }) {
 				</div>
 			) : null}
 		</>
+	);
+}
+
+/**
+ * Machine-wide per-provider rate-limit holds. Each holds only the tasks
+ * routed to that provider account, in every project; clearing one lets them
+ * dispatch on the next tick.
+ */
+function ProviderHoldsList() {
+	const trpc = useTRPC();
+	const queryClient = useQueryClient();
+	const holds = useQuery({
+		...trpc.settings.providerHolds.list.queryOptions(),
+		refetchInterval: 30_000,
+	});
+	const clear = useMutation(
+		trpc.settings.providerHolds.clear.mutationOptions({
+			meta: { label: "Clear provider hold" },
+			onSettled: () => {
+				void queryClient.invalidateQueries(
+					trpc.settings.providerHolds.list.queryFilter(),
+				);
+			},
+		}),
+	);
+	const rows = holds.data ?? [];
+	return (
+		<Setting
+			label="provider holds"
+			restart={false}
+			hint="Rate-limit holds on this machine. A hold waits only tasks routed to that provider; others (and fallbacks) keep running."
+		>
+			{rows.length === 0 ? (
+				<span style={{ color: "var(--mfw-fg-faint)" }}>none</span>
+			) : (
+				<ul className="flex flex-col gap-1">
+					{rows.map((h) => (
+						<li key={h.key} className="flex items-center gap-2">
+							<Mono value={h.key} />
+							<span style={{ color: "var(--mfw-fg-faint)" }}>
+								for {formatDuration(Math.max(0, h.until - Date.now()))} ·{" "}
+								{h.reason}
+							</span>
+							<Button
+								size="sm"
+								variant="ghost"
+								disabled={clear.isPending}
+								onClick={() => clear.mutate({ key: h.key })}
+							>
+								Clear
+							</Button>
+						</li>
+					))}
+				</ul>
+			)}
+		</Setting>
+	);
+}
+
+/**
+ * Where this project's task runs execute when a task does not say
+ * (`routing.placement`): this machine, any SSH host, or one host. A task's
+ * own `execution_target` always wins.
+ */
+function PlacementSetting({
+	restart,
+	placement,
+	labels,
+	onPlacement,
+	onLabels,
+}: {
+	restart: boolean;
+	placement: string;
+	labels: string;
+	onPlacement: (value: string) => void;
+	onLabels: (value: string) => void;
+}) {
+	const trpc = useTRPC();
+	const hosts = useQuery(trpc.hosts.list.queryOptions());
+	const ids = (hosts.data ?? []).map((host) => host.config.id);
+	const pinned = placement.startsWith("ssh:") ? placement.slice(4) : null;
+	return (
+		<Setting
+			label="runs on"
+			restart={restart}
+			hint="Where task runs execute unless the task sets execution_target (ssh, ssh:<host>, runpod). SSH hosts are managed on the Resources page; a host must pass its probe and have the run's agent CLI logged in."
+		>
+			<span className="flex flex-wrap items-center gap-1">
+				<Select value={placement} onValueChange={onPlacement}>
+					<SelectTrigger className="min-w-52" aria-label="Runs on">
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent position="popper">
+						<SelectItem value="local">this machine</SelectItem>
+						<SelectItem value="ssh">any SSH host</SelectItem>
+						{[...new Set([...ids, ...(pinned ? [pinned] : [])])].map((id) => (
+							<SelectItem key={id} value={`ssh:${id}`}>
+								SSH host {id}
+							</SelectItem>
+						))}
+					</SelectContent>
+				</Select>
+				{placement === "ssh" ? (
+					<Input
+						className="max-w-56"
+						aria-label="Required host labels"
+						placeholder="labels, e.g. gpu"
+						value={labels}
+						onChange={(e) => onLabels(e.target.value)}
+					/>
+				) : null}
+			</span>
+		</Setting>
 	);
 }

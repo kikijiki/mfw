@@ -28,8 +28,18 @@ export interface ParsedArgs {
 	section?: string;
 	/** `--if-present` (remove): a missing value is not an error. */
 	ifPresent?: boolean;
-	/** `--check` (ready). */
-	check: boolean;
+	/** `--strict` (check): advisory issues fail too. */
+	strict: boolean;
+	/** `--list` (check): list the rules instead of running them. */
+	list: boolean;
+	/** `--board-only` (check): skip rules that read outside the board. */
+	boardOnly: boolean;
+	/** `--root name=path` (check): where a `roots` entry is on this machine. */
+	roots?: Record<string, string>;
+	/** `--rule a,b` (check): run only these rules (repeatable). */
+	rule?: string[];
+	/** `--override a,b` (writes): let this write introduce violations of these error rules. */
+	override?: string[];
 	/** `--all` (graph): include finished documents. */
 	all?: boolean;
 	/** `--unblocks` (ready): show how much each ready document frees. */

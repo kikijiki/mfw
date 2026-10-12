@@ -1,8 +1,8 @@
 /**
- * The `.mfw/board.yaml` a brand-new project gets if it doesn't have one yet
- * (an existing project's own file always wins — this is never copied over
- * one that's already there). Kept in sync by hand with this repo's own
- * `.mfw/board.yaml`, which is the canonical mfw task/ADR schema.
+ * The `board.yaml` (at the root of the board folder) a brand-new project gets
+ * if it doesn't have one yet (an existing project's own file always wins —
+ * this is never copied over one that's already there). Kept in sync by hand
+ * with this repo's own `board.yaml`, the canonical mfw task/ADR schema.
  *
  * `key` is interpolated with the project's actually-resolved task key
  * (`resolveTaskKey`, independent of board.yaml and never in sync with it
@@ -64,15 +64,26 @@ types:
       model_tier:
         values: [light, standard, strong]
         optional: true
+      # Routing pins (see backstage architecture.md, "Routing"): a harness (claude-cli,
+      # codex-cli) or a project endpoint id, and an exact model id. Unset =
+      # the project decides (tier map, then catalogue).
+      provider: { optional: true, pattern: '[A-Za-z0-9_-]+' }
+      model: { optional: true }
       discovered_from: { ref: task, optional: true }
       discovery_key: { optional: true }
+      # Provenance: who wrote the task (a person's tasks carry none), the
+      # brain action that last edited it, and the task that replaced it.
+      created_by: { optional: true }
+      edited_by: { optional: true }
+      superseded_by: { optional: true }
       reopen_when: { type: json, list: true, optional: true }
       # The Definition of Done: {verifier, checks[]}. A real frontmatter field,
-      # not a fenced body block — the daemon's finalize pipeline EXECUTES this,
-      # so it must stay structured, unlike the (purely documentary, never
-      # trusted as evidence) "## Acceptance Criteria" prose, which is just body
-      # markdown now.
+      # not a fenced body block — the daemon's finalize pipeline EXECUTES this.
       verification: { type: json, optional: true }
+      # Acceptance criteria: observable outcomes the critic assesses, as
+      # {id, text, done} items. A checklist so this type's rules can gate on
+      # them (e.g. forbid: { done: false } when: { status: done }).
+      acceptance: { type: checklist, optional: true }
 
   adr:
     layout: flat
@@ -90,14 +101,36 @@ types:
 `;
 }
 
+/**
+ * Write the default board.yaml when there is none; otherwise upgrade the
+ * existing one in place (today: add the task type's `acceptance` checklist,
+ * see `tasks/acceptance.ts`). Throws `BoardUpgradeError`, writing nothing,
+ * when the existing file conflicts. Returns whether it upgraded a file.
+ */
 export async function ensureBoardConfig(
-	mfwDir: string,
+	boardFolder: string,
 	taskKey = "MFW",
-): Promise<void> {
+	/** Renders the board.yaml to write when there is none (a board template);
+	 * an existing board.yaml is never replaced by it. */
+	render: (taskKey: string) => string = defaultBoardYaml,
+): Promise<{ upgraded: boolean }> {
 	const { existsSync } = await import("node:fs");
 	const { join } = await import("node:path");
-	const path = join(mfwDir, "board.yaml");
-	if (existsSync(path)) return;
+	const path = join(boardFolder, "board.yaml");
+	if (existsSync(path)) {
+		const { upgradeBoardYaml } = await import("./tasks/acceptance.ts");
+		const { upgradeRoutingFields } = await import("./tasks/routing-fields.ts");
+		const acceptance = await upgradeBoardYaml(path);
+		// After acceptance: a conflicting acceptance field refuses the attach
+		// before anything else is written.
+		const routing = await upgradeRoutingFields(path);
+		const { upgradeProvenanceFields } = await import(
+			"./tasks/provenance-fields.ts"
+		);
+		const provenance = await upgradeProvenanceFields(path);
+		return { upgraded: acceptance || routing || provenance };
+	}
 	const { writeFileAtomic } = await import("@mfw/board-core");
-	await writeFileAtomic(path, defaultBoardYaml(taskKey));
+	await writeFileAtomic(path, render(taskKey));
+	return { upgraded: false };
 }

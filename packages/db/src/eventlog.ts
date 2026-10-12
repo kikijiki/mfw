@@ -2,6 +2,7 @@ import { EventSchema, type MfwEvent } from "@mfw/core/events";
 import { and, asc, desc, eq, gt, inArray, lt, sql } from "drizzle-orm";
 import type { ProjectDb, ProjectDbTx } from "./client.ts";
 import { events } from "./schema.ts";
+import { applySpanOps, spanOpsFor } from "./spans.ts";
 
 /** Audit stream: typed appends inside the state-change transaction, post-commit fan-out, retention pruning. */
 
@@ -29,6 +30,8 @@ export async function appendEvent(
 		})
 		.returning({ seq: events.seq });
 	if (!row) throw new Error("event insert returned no row");
+	// The span this event opens or closes commits (or rolls back) with it.
+	await applySpanOps(tx, spanOpsFor(parsed), { ts: now, seq: row.seq });
 	return { ...parsed, seq: row.seq, ts: now };
 }
 
@@ -89,6 +92,7 @@ export interface EventQuery {
 	limit?: number;
 	types?: string[];
 	taskId?: string;
+	runId?: string;
 }
 
 export interface EventPage {
@@ -117,6 +121,7 @@ export async function listEvents(
 		query.beforeSeq !== undefined ? lt(events.seq, query.beforeSeq) : undefined,
 		query.types?.length ? inArray(events.type, query.types) : undefined,
 		query.taskId ? eq(events.taskId, query.taskId) : undefined,
+		query.runId ? eq(events.runId, query.runId) : undefined,
 	].filter((c) => c !== undefined);
 
 	const rows = await db

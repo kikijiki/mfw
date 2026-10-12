@@ -168,15 +168,19 @@ describe("plan", () => {
 });
 
 describe("conflicts", () => {
-	test("reports unordered overlaps among live documents and exits 1", async () => {
+	test("lists unordered overlaps among live documents; check fails on them", async () => {
 		const d = await board([
 			{ title: "a", owns: ["src/x/**"] },
 			{ title: "b", owns: ["src/x/y.ts"] },
 			{ title: "c", owns: ["src/x/y.ts"], deps: ["TK-1"] }, // ordered after a: fine
 		]);
 		const r = await mfwb(d, ["conflicts"]);
-		expect(r.code).toBe(1);
+		expect(r.code).toBe(0);
 		expect(r.stdout).toContain("TK-1 <-> TK-2: src/x/** ~ src/x/y.ts");
+		const c = await mfwb(d, ["check", "--rule", "conflicts"]);
+		expect(c.code).toBe(1);
+		expect(c.stdout).toContain("error conflicts task TK-1");
+		expect(c.stdout).toContain("TK-2");
 		expect(r.stdout).not.toContain("TK-1 <-> TK-3");
 		const j = JSON.parse((await mfwb(d, ["conflicts", "--json"])).stdout);
 		expect(j.ok).toBe(false);
@@ -225,20 +229,22 @@ describe("exemptions file", () => {
 	});
 });
 
-describe("validate and file scopes", () => {
+describe("check and file scopes", () => {
 	test("rejects an unusable glob and a bad exemptions file", async () => {
 		const d = await board(
 			[{ title: "a", owns: ["/abs/path"] }],
 			"pairs:\n  - cards: [TK-1, TK-9]\n    paths: [a]\n",
 		);
-		const r = await mfwb(d, ["validate"]);
-		expect(r.code).toBe(10);
+		const r = await mfwb(d, ["check"]);
+		expect(r.code).toBe(1);
+		expect(r.stdout).toContain("owns-glob");
 		expect(r.stdout).toContain("owns '/abs/path'");
+		expect(r.stdout).toContain("exemptions");
 		expect(r.stdout).toContain("unknown id 'TK-9'");
 	});
 
-	test("a clean scoped board validates", async () => {
+	test("a clean scoped board passes the check", async () => {
 		const d = await board([{ title: "a", owns: ["src/**"] }], "pairs: []\n");
-		expect((await mfwb(d, ["validate"])).code).toBe(0);
+		expect((await mfwb(d, ["check"])).code).toBe(0);
 	});
 });

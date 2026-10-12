@@ -20,8 +20,10 @@ export function useGo(): (to: string, opts?: { replace?: boolean }) => void {
 }
 
 /**
- * Open a task as a child of the board route so the board stays mounted (scroll,
- * filters). The address bar shows `/p/$project/tasks/$taskId` via `routeMasks` in `router.tsx`.
+ * Open a task from the board. Where the inspector docks beside the board
+ * (>= 1280px, `DOCK_BREAKPOINTS.right`) it is `?node=task:ID` on the board,
+ * keeping the board's filters and scroll; narrower it is the flat
+ * `/p/$project/tasks/$taskId` page, full width.
  */
 export function useOpenTaskFromBoard(
 	project: string,
@@ -29,11 +31,24 @@ export function useOpenTaskFromBoard(
 	const router = useRouter();
 	return useCallback(
 		(taskId: string) => {
+			const docked =
+				typeof window !== "undefined" &&
+				window.matchMedia("(min-width: 1280px)").matches;
+			if (docked) {
+				void router.navigate({
+					to: "/p/$project/board",
+					params: { project },
+					search: ((prev: Record<string, unknown>) => ({
+						...prev,
+						node: `task:${taskId}`,
+						tab: undefined,
+					})) as never,
+				});
+				return;
+			}
 			void router.navigate({
-				to: "/p/$project/board/tasks/$taskId",
+				to: "/p/$project/tasks/$taskId",
 				params: { project, taskId },
-				// Keep the board's filters: the still-mounted `BoardPage` reads them.
-				search: true,
 			});
 		},
 		[router, project],

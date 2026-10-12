@@ -10,6 +10,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getBoardTemplate } from "../src/board-templates.ts";
 import { boot } from "../src/boot.ts";
 import { configPath, loadConfig, saveConfig } from "../src/config.ts";
 import { git } from "../src/git.ts";
@@ -105,6 +106,119 @@ describe("adding a project", () => {
 		expect((await loadConfig()).projects).toEqual([]);
 		// Refusing must not leave `.mfw` behind.
 		expect(existsSync(join(plain, ".mfw"))).toBe(false);
+	});
+
+	test("a board folder outside the repository holds the board; the repo keeps runs and the database", async () => {
+		const env = await freshEnv();
+		const root = await repoIn(env, "split-code");
+		const board = await mkdtemp(join(tmpdir(), "mfw-board-"));
+		env.repos.push(board);
+
+		const svc = await env.orchestrator.attach({
+			name: "split",
+			root,
+			boardRoot: board,
+		});
+
+		expect(svc.name).toBe("split");
+		// Board files sit at the root of the board folder; `.mfw/` is daemon
+		// state and only exists beside the code.
+		expect(existsSync(join(board, "board.yaml"))).toBe(true);
+		expect(existsSync(join(board, ".mfw"))).toBe(false);
+		expect(existsSync(join(root, ".mfw", "mfw.db"))).toBe(true);
+		expect(existsSync(join(root, "board.yaml"))).toBe(false);
+		expect(existsSync(join(root, ".mfw", "board.yaml"))).toBe(false);
+		const stored = await loadConfig();
+		expect(stored.projects[0]?.boardRoot).toBe(board);
+	});
+
+	test("a template writes its board.yaml into a board folder that has none, and is not persisted", async () => {
+		const env = await freshEnv();
+		const root = await repoIn(env, "tpl-code");
+		const board = await mkdtemp(join(tmpdir(), "mfw-board-"));
+		env.repos.push(board);
+
+		await env.orchestrator.attach({
+			name: "tpl",
+			root,
+			boardRoot: board,
+			template: "kanban",
+		});
+
+		const yaml = await readFile(join(board, "board.yaml"), "utf8");
+		expect(yaml).toContain("values: [todo, doing, review, done]");
+		expect(yaml).toContain("x-mfw-daemon:");
+		const stored = (await loadConfig()).projects[0] as Record<string, unknown>;
+		expect(stored.boardRoot).toBe(board);
+		expect(stored).not.toHaveProperty("template");
+		expect(await readFile(configPath(), "utf8")).not.toContain("kanban");
+	});
+
+	test("an existing board is adopted as-is: the template never replaces it", async () => {
+		const env = await freshEnv();
+		const root = await repoIn(env, "adopt-code");
+		const board = await mkdtemp(join(tmpdir(), "mfw-board-"));
+		env.repos.push(board);
+		const existing = getBoardTemplate("kanban")?.yaml("ADOPT") ?? "";
+		await writeFile(join(board, "board.yaml"), existing);
+
+		await env.orchestrator.attach({
+			name: "adopt",
+			root,
+			boardRoot: board,
+			template: "jira-like",
+		});
+
+		const yaml = await readFile(join(board, "board.yaml"), "utf8");
+		expect(yaml).toContain("key: ADOPT");
+		expect(yaml).toContain("doing");
+		expect(yaml).not.toContain("in_review");
+	});
+
+	test("an unknown template is refused and nothing is written", async () => {
+		const env = await freshEnv();
+		const root = await repoIn(env, "tpl-bad");
+
+		expect(
+			env.orchestrator.attach({ name: "bad", root, template: "nope" }),
+		).rejects.toThrow("unknown board template");
+
+		expect(env.orchestrator.list()).toEqual([]);
+		expect((await loadConfig()).projects).toEqual([]);
+		expect(existsSync(join(root, "board.yaml"))).toBe(false);
+	});
+
+	test("a tasks directory that is not a board refuses even with a template", async () => {
+		const env = await freshEnv();
+		const root = await repoIn(env, "tpl-foreign");
+		await mkdir(join(root, "tasks"));
+		await writeFile(join(root, "tasks", "todo.txt"), "buy milk\n");
+
+		expect(
+			env.orchestrator.attach({ name: "x", root, template: "kanban" }),
+		).rejects.toThrow();
+
+		expect(env.orchestrator.list()).toEqual([]);
+		expect(existsSync(join(root, "board.yaml"))).toBe(false);
+	});
+
+	test("a board folder that does not exist is refused, and nothing is created", async () => {
+		const env = await freshEnv();
+		const root = await repoIn(env, "split-missing");
+		const missing = join(tmpdir(), `mfw-no-such-board-${Date.now()}`);
+
+		expect(
+			env.orchestrator.attach({
+				name: "split",
+				root,
+				boardRoot: missing,
+			}),
+		).rejects.toThrow("board folder");
+
+		expect(env.orchestrator.list()).toEqual([]);
+		expect(existsSync(missing)).toBe(false);
+		expect((await loadConfig()).projects).toEqual([]);
+		expect(existsSync(join(root, ".mfw"))).toBe(false);
 	});
 
 	test("a path inside a repository but not its root is refused", async () => {
@@ -320,7 +434,7 @@ describe("removing a project", () => {
 			headBefore,
 		);
 		expect(existsSync(join(root, ".mfw"))).toBe(true);
-		const board = join(root, ".mfw", "tasks");
+		const board = join(root, "tasks");
 		expect(
 			existsSync(join(board, `${task.id}-still-here-afterwards`, "task.md")),
 		).toBe(true);
@@ -353,9 +467,7 @@ describe("removing a project", () => {
 
 		expect(existsSync(join(root, ".mfw", "mfw.db"))).toBe(true);
 		expect(
-			existsSync(
-				join(root, ".mfw", "tasks", `${task.id}-must-remain`, "task.md"),
-			),
+			existsSync(join(root, "tasks", `${task.id}-must-remain`, "task.md")),
 		).toBe(true);
 		expect((await git(["status", "--porcelain"], root)).stdout).toBe(
 			statusBefore,

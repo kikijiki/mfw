@@ -168,7 +168,7 @@ describe("reopen_when: task_done", () => {
 		const dep = await svc.create({ title: "upstream" });
 		const id = await parked(svc, [{ task_done: dep.id }]);
 		await svc.store.patchState(id, {
-			claimedByRunId: "run-1",
+			claimedByGroupId: "run-1",
 			claimedAt: Date.now(),
 			leaseExpiresAt: Date.now() + 60_000,
 		});

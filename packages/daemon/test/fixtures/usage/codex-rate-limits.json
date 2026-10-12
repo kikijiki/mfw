@@ -1,0 +1,48 @@
+{
+	"ordinaryUsageAllowed": true,
+	"rateLimits": {
+		"limitId": "codex",
+		"limitName": null,
+		"primary": {
+			"usedPercent": 41,
+			"windowDurationMins": 300,
+			"resetsAt": 1793445217
+		},
+		"secondary": {
+			"usedPercent": 7,
+			"windowDurationMins": 10080,
+			"resetsAt": 1793900000
+		},
+		"credits": { "hasCredits": true, "unlimited": false, "balance": "1.0" },
+		"planType": "plus",
+		"rateLimitReachedType": null
+	},
+	"rateLimitsByLimitId": {
+		"codex": {
+			"limitId": "codex",
+			"limitName": null,
+			"primary": {
+				"usedPercent": 41,
+				"windowDurationMins": 300,
+				"resetsAt": 1793445217
+			},
+			"secondary": {
+				"usedPercent": 7,
+				"windowDurationMins": 10080,
+				"resetsAt": 1793900000
+			},
+			"planType": "plus"
+		},
+		"codex_spark": {
+			"limitId": "codex_spark",
+			"limitName": "Spark",
+			"primary": {
+				"usedPercent": 3,
+				"windowDurationMins": 300,
+				"resetsAt": 1793445217
+			},
+			"secondary": null
+		}
+	},
+	"accountId": "00000000-0000-0000-0000-000000000000"
+}

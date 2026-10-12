@@ -1,6 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { silentLogger } from "../src/log.ts";
-import { ConfigNotifier, makeNotifier, NoopNotifier } from "../src/notify.ts";
+import {
+	ConfigNotifier,
+	makeNotifier,
+	NOTIFICATION_TYPES,
+	NoopNotifier,
+	type NotificationType,
+} from "../src/notify.ts";
 
 function notification() {
 	return {
@@ -139,5 +148,35 @@ describe("notifier configuration", () => {
 		expect(makeNotifier({ command: "true" }, silentLogger())).toBeInstanceOf(
 			ConfigNotifier,
 		);
+	});
+});
+
+describe("notification kinds", () => {
+	test("notify() takes the closed kind union: an unknown kind does not typecheck", async () => {
+		const n = new NoopNotifier();
+		// Type test, enforced by `tsc` in `bun run lint`: if `notify` went back
+		// to accepting any string, this directive would be unused and fail.
+		// @ts-expect-error "not_a_kind" is not a NotificationType
+		await n.notify("not_a_kind", {});
+		const kinds: NotificationType[] = [
+			"needs_answer",
+			"approval_pending",
+			"stalled",
+			"scope_violation",
+			"review_verdict",
+		];
+		for (const kind of kinds) expect(NOTIFICATION_TYPES).toContain(kind);
+	});
+
+	test("the command sink passes the kind through as MFW_NOTIFY_TYPE", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "mfw-notify-"));
+		const out = join(dir, "type");
+		const n = new ConfigNotifier(
+			{ command: `printf %s "$MFW_NOTIFY_TYPE" > ${out}` },
+			silentLogger(),
+		);
+		await n.notify("needs_answer", { project: "demo", runId: "r1" });
+		expect(await readFile(out, "utf8")).toBe("needs_answer");
+		await rm(dir, { recursive: true, force: true });
 	});
 });

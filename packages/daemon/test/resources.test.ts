@@ -47,9 +47,7 @@ async function freshEnv(): Promise<Env> {
 		tasks,
 		registry,
 		// The dispatch loop is never started here; only the slot API is used.
-		engine: {
-			startTask: () => Promise.reject(new Error("not dispatched in this test")),
-		},
+		engine: {},
 		log: silentLogger(),
 		config: { maxConcurrent: 4 },
 	});

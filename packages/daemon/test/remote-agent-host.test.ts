@@ -9,8 +9,25 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { SecretEnvironment } from "../src/execution-environment.ts";
+import { resolveExecutionTarget } from "../src/execution-target.ts";
+import {
+	type HostConfig,
+	HostConfigSchema,
+	HostRegistry,
+	hostCandidate,
+	hostEndpoint,
+	hostSlotResourceId,
+	registryPinnedPolicy,
+} from "../src/host-registry.ts";
+import { assessHostProbe, probeHost } from "../src/host-registry-probe.ts";
+import {
+	HostResourceCoordinator,
+	openHostResourceStore,
+} from "../src/host-resources/index.ts";
+import { HostService } from "../src/host-service.ts";
+import { targetHostRequirements } from "../src/project-dispatch-admission.ts";
 import {
 	generateEphemeralRunPodSshKey,
 	loadEphemeralRunPodSshKey,
@@ -19,6 +36,7 @@ import {
 	type SshProcessRunner,
 	scanRunPodDirectSshHostKey,
 } from "../src/remote-agent-host.ts";
+import { SshTransport } from "../src/ssh-transport.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -303,5 +321,283 @@ describe("RunPod basic SSH transport", () => {
 			expect(error.failure).toBe(failure);
 			expect(error.message).not.toContain("provider output");
 		}
+	});
+});
+
+const PINNED_KEY = `ssh-ed25519 ${Buffer.alloc(32, 21).toString("base64")}`;
+
+function registryHost(overrides: Partial<HostConfig> = {}): HostConfig {
+	return HostConfigSchema.parse({
+		id: "box-a",
+		address: "box-a.example.invalid",
+		port: 2222,
+		user: "agent",
+		hostKey: PINNED_KEY,
+		trust: "owned",
+		...overrides,
+	});
+}
+
+function probeOutput(fields: Record<string, string>): string {
+	const base: Record<string, string> = {
+		uid: "1001",
+		user: "agent",
+		home: "/home/agent",
+		path: "/home/agent/.bun/bin:/usr/bin:/bin",
+		sudo: "refused",
+		"bwrap.path": "/usr/bin/bwrap",
+		bwrap: "yes",
+		setsid: "/usr/bin/setsid",
+		bun: "/home/agent/.bun/bin/bun",
+		git: "/usr/bin/git",
+		"harness.claude-cli": "2.1.0 (Claude Code)",
+		"auth.claude-cli": "yes",
+		"harness.codex-cli": "",
+		"auth.codex-cli": "no",
+		gpus: "0",
+		"disk.kib": "1048576",
+		"mem.kib": "2097152",
+		...fields,
+	};
+	// A chatty login shell before the marker must not count as an answer.
+	return `Welcome to the box\nsudo=refused\nMFW_HOST_PROBE_V1\n${Object.entries(
+		base,
+	)
+		.map(([k, v]) => `${k}=${v}`)
+		.join("\n")}\n`;
+}
+
+const okResult = {
+	exitCode: 0,
+	stdout: "",
+	stderr: "",
+	timedOut: false,
+	truncated: false,
+	signalCode: null,
+};
+
+describe("registry SSH hosts", () => {
+	async function key(): Promise<string> {
+		const root = await mkdtemp(join(tmpdir(), "mfw-registry-ssh-"));
+		roots.push(root);
+		const path = join(root, "key");
+		await writeFile(path, "not-a-real-private-key");
+		await chmod(path, 0o600);
+		return path;
+	}
+
+	test("endpoint policy accepts a registry-pinned host and refuses an unpinned one", async () => {
+		const host = registryHost();
+		const policy = registryPinnedPolicy([host]);
+		const privateKeyPath = await key();
+		let argv: string[] = [];
+		const pinned = new SshTransport({
+			endpoint: hostEndpoint(host, privateKeyPath),
+			policy,
+			runner: async (actual) => {
+				argv = actual;
+				return okResult;
+			},
+			carrierRoot: dirname(privateKeyPath),
+		});
+		await pinned.run(["true"]);
+		expect(argv).toContain("StrictHostKeyChecking=yes");
+		expect(argv).toContain("HostKeyAlias=mfw-host-box-a");
+		expect(argv).toContain("agent@box-a.example.invalid");
+		expect(argv).toContain("2222");
+
+		let ran = 0;
+		const counting = async () => {
+			ran++;
+			return okResult;
+		};
+		for (const unpinned of [
+			{ ...hostEndpoint(host, privateKeyPath), host: "other.example.invalid" },
+			{
+				...hostEndpoint(host, privateKeyPath),
+				hostPublicKey: `ssh-ed25519 ${Buffer.alloc(32, 9).toString("base64")}`,
+			},
+			{ ...hostEndpoint(host, privateKeyPath), user: "someone" },
+			{ ...hostEndpoint(host, privateKeyPath), port: 22 },
+			{ ...hostEndpoint(host, privateKeyPath), alias: "mfw-host-unknown" },
+		]) {
+			expect(
+				() =>
+					new SshTransport({ endpoint: unpinned, policy, runner: counting }),
+			).toThrow("not a registry-pinned host");
+		}
+		// A registry edit after construction is enforced on the next command.
+		let registry = [host];
+		const live = new SshTransport({
+			endpoint: hostEndpoint(host, privateKeyPath),
+			policy: (endpoint) => registryPinnedPolicy(registry)(endpoint),
+			runner: counting,
+		});
+		registry = [registryHost({ address: "moved.example.invalid" })];
+		await expect(live.run(["true"])).rejects.toThrow(
+			"not a registry-pinned host",
+		);
+		expect(ran).toBe(0);
+	});
+
+	test("a shared host cannot opt out of bwrap and root is never a host user", () => {
+		expect(() => registryHost({ trust: "shared", sandbox: "none" })).toThrow(
+			"bwrap is mandatory on a shared host",
+		);
+		expect(registryHost({ trust: "owned", sandbox: "none" }).sandbox).toBe(
+			"none",
+		);
+		expect(() => registryHost({ user: "root" })).toThrow(
+			"never run agents as root",
+		);
+	});
+
+	test("probe refuses a host where sudo -n true succeeds", async () => {
+		const host = registryHost();
+		const clean = assessHostProbe(host, probeOutput({}), 1_000);
+		expect(clean.health).toBe("ok");
+		expect(
+			hostCandidate({ config: host, observed: clean }, 2_000),
+		).toMatchObject({ schedulable: true, harnesses: ["claude-cli"] });
+
+		const observed = await probeHost(host, {
+			run: async (command) => {
+				expect(command.join(" ")).toContain("sudo -n true");
+				return { stdout: probeOutput({ sudo: "allowed" }) };
+			},
+		});
+		expect(observed.health).toBe("refused");
+		expect(observed.problems.join(" ")).toContain("sudo -n true succeeded");
+		expect(
+			hostCandidate({ config: host, observed }, observed.checkedAt),
+		).toMatchObject({ schedulable: false });
+	});
+
+	test("bwrap is mandatory on shared hosts; root and stale probes fail closed", () => {
+		const shared = registryHost({ trust: "shared" });
+		const noBwrap = assessHostProbe(
+			shared,
+			probeOutput({ bwrap: "no" }),
+			1_000,
+		);
+		expect(noBwrap.health).toBe("refused");
+		expect(noBwrap.problems.join(" ")).toContain("bwrap is mandatory");
+		expect(
+			hostCandidate({ config: shared, observed: noBwrap }, 1_000).schedulable,
+		).toBe(false);
+
+		const owned = registryHost({ trust: "owned", sandbox: "none" });
+		expect(
+			assessHostProbe(owned, probeOutput({ bwrap: "no" }), 1_000).health,
+		).toBe("ok");
+		expect(
+			assessHostProbe(owned, probeOutput({ uid: "0" }), 1_000).health,
+		).toBe("refused");
+		const fresh = assessHostProbe(owned, probeOutput({}), 1_000);
+		expect(
+			hostCandidate({ config: owned, observed: fresh }, 1_000 + 31 * 60_000),
+		).toMatchObject({
+			schedulable: false,
+			reason: expect.stringContaining("stale"),
+		});
+		expect(
+			hostCandidate({ config: owned, observed: null }, 0).schedulable,
+		).toBe(false);
+	});
+
+	test("admission waits FIFO on remote.<id>.slots", async () => {
+		const home = await mkdtemp(join(tmpdir(), "mfw-host-slots-"));
+		roots.push(home);
+		const registry = HostRegistry.at(home, {
+			keygenPath: Bun.which("ssh-keygen") as string,
+		});
+		await registry.put({ ...registryHost(), slots: 1 });
+		const coordinator = await HostResourceCoordinator.create(
+			await openHostResourceStore(home, {
+				processBootId: "process-a",
+				kernelBootId: "kernel-a",
+			}),
+			{
+				liveness: {
+					inspect: async () => ({
+						status: "unavailable",
+						checkedAt: Date.now(),
+						kernelBootId: "kernel-a",
+					}),
+				},
+			},
+		);
+		try {
+			const hosts = new HostService({ registry, ledger: coordinator });
+			await hosts.syncSlots();
+			expect(
+				coordinator
+					.readModel()
+					.definitions.find((d) => d.id === "remote.box-a.slots"),
+			).toMatchObject({ accounting: "slot", capacity: 1n, enabled: true });
+
+			// The SSH target's own slot is a host requirement of the resolved target.
+			const target = resolveExecutionTarget({
+				kind: "ssh",
+				requestedShape: { hostId: "box-a" },
+				targetCapacity: [{ scope: "host", id: hostSlotResourceId("box-a") }],
+			});
+			const requirements = targetHostRequirements(target).map((item) => ({
+				resourceId: item.id,
+				amount: 1n,
+			}));
+			expect(requirements).toEqual([
+				{ resourceId: "remote.box-a.slots", amount: 1n },
+			]);
+			expect(() =>
+				resolveExecutionTarget({
+					kind: "local",
+					targetCapacity: [{ scope: "host", id: "remote.box-a.slots" }],
+				}),
+			).toThrow("only valid for a non-local");
+
+			const waiter = (key: string, projectId: string) =>
+				coordinator.putWaiter({ requestKey: key, projectId, requirements });
+			const first = await waiter("p1/run-1", "p1");
+			const second = await waiter("p2/run-2", "p2");
+			const third = await waiter("p1/run-3", "p1");
+			const generation = () => coordinator.readModel().generation;
+
+			const grant = await coordinator.tryGrant(first.id, generation());
+			expect("kind" in grant).toBe(false);
+			expect(hosts.free("box-a")).toBe(0);
+			// The youngest waiter cannot jump the queue when capacity returns.
+			expect(await coordinator.tryGrant(third.id, generation())).toMatchObject({
+				kind: "held",
+			});
+			expect(await coordinator.tryGrant(second.id, generation())).toMatchObject(
+				{ kind: "held", blockedBy: ["remote.box-a.slots"] },
+			);
+			if ("kind" in grant) throw new Error("unreachable");
+			await coordinator.cancelOrRelease(grant.id, grant.fence, "run ended");
+			expect(hosts.free("box-a")).toBe(1);
+			expect(await coordinator.tryGrant(third.id, generation())).toMatchObject({
+				kind: "held",
+				reason: "fifo",
+			});
+			expect(
+				"kind" in (await coordinator.tryGrant(second.id, generation())),
+			).toBe(false);
+
+			// Removing a host with a run on it is refused; its slot drains after.
+			await expect(hosts.remove("box-a")).rejects.toThrow("still holds 1");
+		} finally {
+			coordinator.close();
+		}
+	});
+
+	test("an unreachable host records the transport failure, not its output", async () => {
+		const observed = await probeHost(registryHost(), {
+			run: async () => {
+				throw new RemoteTransportError("network_lost", "lost");
+			},
+		});
+		expect(observed.health).toBe("unreachable");
+		expect(observed.problems[0]).toContain("could not connect");
 	});
 });

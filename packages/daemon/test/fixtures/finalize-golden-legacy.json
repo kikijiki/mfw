@@ -1,0 +1,1107 @@
+[
+	{
+		"name": "01 success, no checks configured: straight to merge",
+		"ctx": {
+			"kind": "task",
+			"outcome": null,
+			"done": [],
+			"isDraftExpand": false,
+			"task": {
+				"exists": true,
+				"hasDod": false,
+				"escalation": null,
+				"attempt": 1,
+				"maxRepairs": 2,
+				"stallCount": 0,
+				"maxStalls": 3,
+				"resumeCount": 0,
+				"maxResumes": 2,
+				"reviewRound": 0,
+				"maxReviewRounds": 2,
+				"worktreeDirty": false,
+				"exitCode": 0
+			},
+			"gates": {
+				"mainRed": false,
+				"reviewGated": false,
+				"brainEnabled": false,
+				"criticEnabled": false,
+				"replanEnabled": false,
+				"scopeOnFinish": false
+			},
+			"verify": null,
+			"critic": null,
+			"replan": null,
+			"importReview": null,
+			"planParsed": null,
+			"reportHasSubtasks": false,
+			"reportHasFollowUps": false,
+			"localWorktree": false,
+			"leftBackground": false,
+			"resumeDecision": null,
+			"planHasSpecs": false,
+			"planHasQuestions": false
+		},
+		"script": {},
+		"trace": {
+			"steps": [
+				{
+					"row": "T0",
+					"step": "classify",
+					"args": null
+				},
+				{
+					"row": "T0",
+					"step": "ingest_report",
+					"args": null
+				},
+				{
+					"row": "T16",
+					"step": "clear_stall",
+					"args": null
+				},
+				{
+					"row": "T16",
+					"step": "enqueue_merge",
+					"args": null
+				}
+			],
+			"terminal": {
+				"row": "T16",
+				"state": "completed",
+				"note": "merging"
+			}
+		}
+	},
+	{
+		"name": "02 success, verify passes: merge",
+		"ctx": {
+			"kind": "task",
+			"outcome": null,
+			"done": [],
+			"isDraftExpand": false,
+			"task": {
+				"exists": true,
+				"hasDod": true,
+				"escalation": null,
+				"attempt": 1,
+				"maxRepairs": 2,
+				"stallCount": 0,
+				"maxStalls": 3,
+				"resumeCount": 0,
+				"maxResumes": 2,
+				"reviewRound": 0,
+				"maxReviewRounds": 2,
+				"worktreeDirty": false,
+				"exitCode": 0
+			},
+			"gates": {
+				"mainRed": false,
+				"reviewGated": false,
+				"brainEnabled": false,
+				"criticEnabled": false,
+				"replanEnabled": false,
+				"scopeOnFinish": false
+			},
+			"verify": null,
+			"critic": null,
+			"replan": null,
+			"importReview": null,
+			"planParsed": null,
+			"reportHasSubtasks": false,
+			"reportHasFollowUps": false,
+			"localWorktree": false,
+			"leftBackground": false,
+			"resumeDecision": null,
+			"planHasSpecs": false,
+			"planHasQuestions": false
+		},
+		"script": {},
+		"trace": {
+			"steps": [
+				{
+					"row": "T0",
+					"step": "classify",
+					"args": null
+				},
+				{
+					"row": "T0",
+					"step": "ingest_report",
+					"args": null
+				},
+				{
+					"row": "T12",
+					"step": "verify",
+					"args": null
+				},
+				{
+					"row": "T16",
+					"step": "clear_stall",
+					"args": null
+				},
+				{
+					"row": "T16",
+					"step": "enqueue_merge",
+					"args": null
+				}
+			],
+			"terminal": {
+				"row": "T16",
+				"state": "completed",
+				"note": "merging"
+			}
+		}
+	},
+	{
+		"name": "03 success, verify passes, critic floor says merge",
+		"ctx": {
+			"kind": "task",
+			"outcome": null,
+			"done": [],
+			"isDraftExpand": false,
+			"task": {
+				"exists": true,
+				"hasDod": true,
+				"escalation": null,
+				"attempt": 1,
+				"maxRepairs": 2,
+				"stallCount": 0,
+				"maxStalls": 3,
+				"resumeCount": 0,
+				"maxResumes": 2,
+				"reviewRound": 0,
+				"maxReviewRounds": 2,
+				"worktreeDirty": false,
+				"exitCode": 0
+			},
+			"gates": {
+				"mainRed": false,
+				"reviewGated": false,
+				"brainEnabled": false,
+				"criticEnabled": true,
+				"replanEnabled": false,
+				"scopeOnFinish": false
+			},
+			"verify": null,
+			"critic": null,
+			"replan": null,
+			"importReview": null,
+			"planParsed": null,
+			"reportHasSubtasks": false,
+			"reportHasFollowUps": false,
+			"localWorktree": false,
+			"leftBackground": false,
+			"resumeDecision": null,
+			"planHasSpecs": false,
+			"planHasQuestions": false
+		},
+		"script": {
+			"critic": {
+				"status": "ok",
+				"flagged": false,
+				"verdict": "merge",
+				"round": 1
+			}
+		},
+		"trace": {
+			"steps": [
+				{
+					"row": "T0",
+					"step": "classify",
+					"args": null
+				},
+				{
+					"row": "T0",
+					"step": "ingest_report",
+					"args": null
+				},
+				{
+					"row": "T12",
+					"step": "verify",
+					"args": null
+				},
+				{
+					"row": "T13",
+					"step": "critic",
+					"args": null
+				},
+				{
+					"row": "T16",
+					"step": "clear_stall",
+					"args": null
+				},
+				{
+					"row": "T16",
+					"step": "enqueue_merge",
+					"args": null
+				}
+			],
+			"terminal": {
+				"row": "T16",
+				"state": "completed",
+				"note": "merging"
+			}
+		}
+	},
+	{
+		"name": "04 critic floor says reject: blocked for a human, no repair",
+		"ctx": {
+			"kind": "task",
+			"outcome": null,
+			"done": [],
+			"isDraftExpand": false,
+			"task": {
+				"exists": true,
+				"hasDod": true,
+				"escalation": null,
+				"attempt": 1,
+				"maxRepairs": 2,
+				"stallCount": 0,
+				"maxStalls": 3,
+				"resumeCount": 0,
+				"maxResumes": 2,
+				"reviewRound": 0,
+				"maxReviewRounds": 2,
+				"worktreeDirty": false,
+				"exitCode": 0
+			},
+			"gates": {
+				"mainRed": false,
+				"reviewGated": false,
+				"brainEnabled": false,
+				"criticEnabled": true,
+				"replanEnabled": false,
+				"scopeOnFinish": false
+			},
+			"verify": null,
+			"critic": null,
+			"replan": null,
+			"importReview": null,
+			"planParsed": null,
+			"reportHasSubtasks": false,
+			"reportHasFollowUps": false,
+			"localWorktree": false,
+			"leftBackground": false,
+			"resumeDecision": null,
+			"planHasSpecs": false,
+			"planHasQuestions": false
+		},
+		"script": {
+			"critic": {
+				"status": "ok",
+				"flagged": true,
+				"verdict": "reject",
+				"round": 1
+			}
+		},
+		"trace": {
+			"steps": [
+				{
+					"row": "T0",
+					"step": "classify",
+					"args": null
+				},
+				{
+					"row": "T0",
+					"step": "ingest_report",
+					"args": null
+				},
+				{
+					"row": "T12",
+					"step": "verify",
+					"args": null
+				},
+				{
+					"row": "T13",
+					"step": "critic",
+					"args": null
+				},
+				{
+					"row": "T14r",
+					"step": "release_task",
+					"args": {
+						"to": "blocked"
+					}
+				},
+				{
+					"row": "T14r",
+					"step": "notify",
+					"args": {
+						"reason": "blocked"
+					}
+				}
+			],
+			"terminal": {
+				"row": "T14r",
+				"state": "failed",
+				"note": "review verdict reject: a human decides"
+			}
+		}
+	},
+	{
+		"name": "05 critic failed (no verdict): fail closed to review",
+		"ctx": {
+			"kind": "task",
+			"outcome": null,
+			"done": [],
+			"isDraftExpand": false,
+			"task": {
+				"exists": true,
+				"hasDod": true,
+				"escalation": null,
+				"attempt": 1,
+				"maxRepairs": 2,
+				"stallCount": 0,
+				"maxStalls": 3,
+				"resumeCount": 0,
+				"maxResumes": 2,
+				"reviewRound": 0,
+				"maxReviewRounds": 2,
+				"worktreeDirty": false,
+				"exitCode": 0
+			},
+			"gates": {
+				"mainRed": false,
+				"reviewGated": false,
+				"brainEnabled": false,
+				"criticEnabled": true,
+				"replanEnabled": false,
+				"scopeOnFinish": false
+			},
+			"verify": null,
+			"critic": null,
+			"replan": null,
+			"importReview": null,
+			"planParsed": null,
+			"reportHasSubtasks": false,
+			"reportHasFollowUps": false,
+			"localWorktree": false,
+			"leftBackground": false,
+			"resumeDecision": null,
+			"planHasSpecs": false,
+			"planHasQuestions": false
+		},
+		"script": {
+			"critic": {
+				"status": "failed",
+				"flagged": false,
+				"cause": "not_independent"
+			}
+		},
+		"trace": {
+			"steps": [
+				{
+					"row": "T0",
+					"step": "classify",
+					"args": null
+				},
+				{
+					"row": "T0",
+					"step": "ingest_report",
+					"args": null
+				},
+				{
+					"row": "T12",
+					"step": "verify",
+					"args": null
+				},
+				{
+					"row": "T13",
+					"step": "critic",
+					"args": null
+				},
+				{
+					"row": "T14",
+					"step": "clear_stall",
+					"args": null
+				},
+				{
+					"row": "T14",
+					"step": "release_task",
+					"args": {
+						"to": "review"
+					}
+				},
+				{
+					"row": "T14",
+					"step": "notify",
+					"args": {
+						"reason": "review"
+					}
+				}
+			],
+			"terminal": {
+				"row": "T14",
+				"state": "completed",
+				"note": "critic gate → review: not_independent"
+			}
+		}
+	},
+	{
+		"name": "06 critic fix with rounds left: one repair",
+		"ctx": {
+			"kind": "task",
+			"outcome": null,
+			"done": [],
+			"isDraftExpand": false,
+			"task": {
+				"exists": true,
+				"hasDod": true,
+				"escalation": null,
+				"attempt": 1,
+				"maxRepairs": 2,
+				"stallCount": 0,
+				"maxStalls": 3,
+				"resumeCount": 0,
+				"maxResumes": 2,
+				"reviewRound": 0,
+				"maxReviewRounds": 2,
+				"worktreeDirty": false,
+				"exitCode": 0
+			},
+			"gates": {
+				"mainRed": false,
+				"reviewGated": false,
+				"brainEnabled": false,
+				"criticEnabled": true,
+				"replanEnabled": false,
+				"scopeOnFinish": false
+			},
+			"verify": null,
+			"critic": null,
+			"replan": null,
+			"importReview": null,
+			"planParsed": null,
+			"reportHasSubtasks": false,
+			"reportHasFollowUps": false,
+			"localWorktree": false,
+			"leftBackground": false,
+			"resumeDecision": null,
+			"planHasSpecs": false,
+			"planHasQuestions": false
+		},
+		"script": {
+			"critic": {
+				"status": "ok",
+				"flagged": true,
+				"verdict": "fix",
+				"round": 1
+			}
+		},
+		"trace": {
+			"steps": [
+				{
+					"row": "T0",
+					"step": "classify",
+					"args": null
+				},
+				{
+					"row": "T0",
+					"step": "ingest_report",
+					"args": null
+				},
+				{
+					"row": "T12",
+					"step": "verify",
+					"args": null
+				},
+				{
+					"row": "T13",
+					"step": "critic",
+					"args": null
+				},
+				{
+					"row": "T14f",
+					"step": "clear_stall",
+					"args": null
+				},
+				{
+					"row": "T14f",
+					"step": "bump_review_round",
+					"args": null
+				},
+				{
+					"row": "T14f",
+					"step": "spawn_repair",
+					"args": null
+				}
+			],
+			"terminal": {
+				"row": "T14f",
+				"state": "completed",
+				"note": "review asked for fixes (round 1 of 2): repair spawned"
+			}
+		}
+	},
+	{
+		"name": "07 critic fix with rounds exhausted: human review",
+		"ctx": {
+			"kind": "task",
+			"outcome": null,
+			"done": [],
+			"isDraftExpand": false,
+			"task": {
+				"exists": true,
+				"hasDod": true,
+				"escalation": null,
+				"attempt": 1,
+				"maxRepairs": 2,
+				"stallCount": 0,
+				"maxStalls": 3,
+				"resumeCount": 0,
+				"maxResumes": 2,
+				"reviewRound": 2,
+				"maxReviewRounds": 2,
+				"worktreeDirty": false,
+				"exitCode": 0
+			},
+			"gates": {
+				"mainRed": false,
+				"reviewGated": false,
+				"brainEnabled": false,
+				"criticEnabled": true,
+				"replanEnabled": false,
+				"scopeOnFinish": false
+			},
+			"verify": null,
+			"critic": null,
+			"replan": null,
+			"importReview": null,
+			"planParsed": null,
+			"reportHasSubtasks": false,
+			"reportHasFollowUps": false,
+			"localWorktree": false,
+			"leftBackground": false,
+			"resumeDecision": null,
+			"planHasSpecs": false,
+			"planHasQuestions": false
+		},
+		"script": {
+			"critic": {
+				"status": "ok",
+				"flagged": true,
+				"verdict": "fix",
+				"round": 3
+			}
+		},
+		"trace": {
+			"steps": [
+				{
+					"row": "T0",
+					"step": "classify",
+					"args": null
+				},
+				{
+					"row": "T0",
+					"step": "ingest_report",
+					"args": null
+				},
+				{
+					"row": "T12",
+					"step": "verify",
+					"args": null
+				},
+				{
+					"row": "T13",
+					"step": "critic",
+					"args": null
+				},
+				{
+					"row": "T14x",
+					"step": "clear_stall",
+					"args": null
+				},
+				{
+					"row": "T14x",
+					"step": "release_task",
+					"args": {
+						"to": "review"
+					}
+				},
+				{
+					"row": "T14x",
+					"step": "notify",
+					"args": {
+						"reason": "review"
+					}
+				}
+			],
+			"terminal": {
+				"row": "T14x",
+				"state": "completed",
+				"note": "critic gate → review: review_rounds_exhausted (2 of 2 fix rounds used)"
+			}
+		}
+	},
+	{
+		"name": "08 scope gate: files outside owns go to review before the critic",
+		"ctx": {
+			"kind": "task",
+			"outcome": null,
+			"done": [],
+			"isDraftExpand": false,
+			"task": {
+				"exists": true,
+				"hasDod": true,
+				"escalation": null,
+				"attempt": 1,
+				"maxRepairs": 2,
+				"stallCount": 0,
+				"maxStalls": 3,
+				"resumeCount": 0,
+				"maxResumes": 2,
+				"reviewRound": 0,
+				"maxReviewRounds": 2,
+				"worktreeDirty": false,
+				"exitCode": 0
+			},
+			"gates": {
+				"mainRed": false,
+				"reviewGated": false,
+				"brainEnabled": false,
+				"criticEnabled": true,
+				"replanEnabled": false,
+				"scopeOnFinish": true
+			},
+			"verify": null,
+			"critic": null,
+			"replan": null,
+			"importReview": null,
+			"planParsed": null,
+			"reportHasSubtasks": false,
+			"reportHasFollowUps": false,
+			"localWorktree": false,
+			"leftBackground": false,
+			"resumeDecision": null,
+			"planHasSpecs": false,
+			"planHasQuestions": false
+		},
+		"script": {
+			"scopeOutside": 3,
+			"critic": {
+				"status": "ok",
+				"flagged": false,
+				"verdict": "merge",
+				"round": 1
+			}
+		},
+		"trace": {
+			"steps": [
+				{
+					"row": "T0",
+					"step": "classify",
+					"args": null
+				},
+				{
+					"row": "T0",
+					"step": "ingest_report",
+					"args": null
+				},
+				{
+					"row": "T12",
+					"step": "verify",
+					"args": null
+				},
+				{
+					"row": "T12s",
+					"step": "scope_check",
+					"args": null
+				},
+				{
+					"row": "T14s",
+					"step": "clear_stall",
+					"args": null
+				},
+				{
+					"row": "T14s",
+					"step": "release_task",
+					"args": {
+						"to": "review"
+					}
+				},
+				{
+					"row": "T14s",
+					"step": "notify",
+					"args": {
+						"reason": "review"
+					}
+				}
+			],
+			"terminal": {
+				"row": "T14s",
+				"state": "completed",
+				"note": "scope gate → review: files changed outside the task's owns"
+			}
+		}
+	},
+	{
+		"name": "09 scope gate clean: scope check, critic, then merge",
+		"ctx": {
+			"kind": "task",
+			"outcome": null,
+			"done": [],
+			"isDraftExpand": false,
+			"task": {
+				"exists": true,
+				"hasDod": true,
+				"escalation": null,
+				"attempt": 1,
+				"maxRepairs": 2,
+				"stallCount": 0,
+				"maxStalls": 3,
+				"resumeCount": 0,
+				"maxResumes": 2,
+				"reviewRound": 0,
+				"maxReviewRounds": 2,
+				"worktreeDirty": false,
+				"exitCode": 0
+			},
+			"gates": {
+				"mainRed": false,
+				"reviewGated": false,
+				"brainEnabled": false,
+				"criticEnabled": true,
+				"replanEnabled": false,
+				"scopeOnFinish": true
+			},
+			"verify": null,
+			"critic": null,
+			"replan": null,
+			"importReview": null,
+			"planParsed": null,
+			"reportHasSubtasks": false,
+			"reportHasFollowUps": false,
+			"localWorktree": false,
+			"leftBackground": false,
+			"resumeDecision": null,
+			"planHasSpecs": false,
+			"planHasQuestions": false
+		},
+		"script": {
+			"scopeOutside": 0,
+			"critic": {
+				"status": "ok",
+				"flagged": false,
+				"verdict": "merge",
+				"round": 1
+			}
+		},
+		"trace": {
+			"steps": [
+				{
+					"row": "T0",
+					"step": "classify",
+					"args": null
+				},
+				{
+					"row": "T0",
+					"step": "ingest_report",
+					"args": null
+				},
+				{
+					"row": "T12",
+					"step": "verify",
+					"args": null
+				},
+				{
+					"row": "T12s",
+					"step": "scope_check",
+					"args": null
+				},
+				{
+					"row": "T13",
+					"step": "critic",
+					"args": null
+				},
+				{
+					"row": "T16",
+					"step": "clear_stall",
+					"args": null
+				},
+				{
+					"row": "T16",
+					"step": "enqueue_merge",
+					"args": null
+				}
+			],
+			"terminal": {
+				"row": "T16",
+				"state": "completed",
+				"note": "merging"
+			}
+		}
+	},
+	{
+		"name": "10 human review gate: review, not merge",
+		"ctx": {
+			"kind": "task",
+			"outcome": null,
+			"done": [],
+			"isDraftExpand": false,
+			"task": {
+				"exists": true,
+				"hasDod": true,
+				"escalation": null,
+				"attempt": 1,
+				"maxRepairs": 2,
+				"stallCount": 0,
+				"maxStalls": 3,
+				"resumeCount": 0,
+				"maxResumes": 2,
+				"reviewRound": 0,
+				"maxReviewRounds": 2,
+				"worktreeDirty": false,
+				"exitCode": 0
+			},
+			"gates": {
+				"mainRed": false,
+				"reviewGated": true,
+				"brainEnabled": false,
+				"criticEnabled": false,
+				"replanEnabled": false,
+				"scopeOnFinish": false
+			},
+			"verify": null,
+			"critic": null,
+			"replan": null,
+			"importReview": null,
+			"planParsed": null,
+			"reportHasSubtasks": false,
+			"reportHasFollowUps": false,
+			"localWorktree": false,
+			"leftBackground": false,
+			"resumeDecision": null,
+			"planHasSpecs": false,
+			"planHasQuestions": false
+		},
+		"script": {},
+		"trace": {
+			"steps": [
+				{
+					"row": "T0",
+					"step": "classify",
+					"args": null
+				},
+				{
+					"row": "T0",
+					"step": "ingest_report",
+					"args": null
+				},
+				{
+					"row": "T12",
+					"step": "verify",
+					"args": null
+				},
+				{
+					"row": "T15",
+					"step": "clear_stall",
+					"args": null
+				},
+				{
+					"row": "T15",
+					"step": "release_task",
+					"args": {
+						"to": "review"
+					}
+				},
+				{
+					"row": "T15",
+					"step": "notify",
+					"args": {
+						"reason": "review"
+					}
+				}
+			],
+			"terminal": {
+				"row": "T15",
+				"state": "completed",
+				"note": "review gate"
+			}
+		}
+	},
+	{
+		"name": "11 verify crashed: infrastructure, back to ready, no stall",
+		"ctx": {
+			"kind": "task",
+			"outcome": null,
+			"done": [],
+			"isDraftExpand": false,
+			"task": {
+				"exists": true,
+				"hasDod": true,
+				"escalation": null,
+				"attempt": 1,
+				"maxRepairs": 2,
+				"stallCount": 0,
+				"maxStalls": 3,
+				"resumeCount": 0,
+				"maxResumes": 2,
+				"reviewRound": 0,
+				"maxReviewRounds": 2,
+				"worktreeDirty": false,
+				"exitCode": 0
+			},
+			"gates": {
+				"mainRed": false,
+				"reviewGated": false,
+				"brainEnabled": false,
+				"criticEnabled": false,
+				"replanEnabled": false,
+				"scopeOnFinish": false
+			},
+			"verify": null,
+			"critic": null,
+			"replan": null,
+			"importReview": null,
+			"planParsed": null,
+			"reportHasSubtasks": false,
+			"reportHasFollowUps": false,
+			"localWorktree": false,
+			"leftBackground": false,
+			"resumeDecision": null,
+			"planHasSpecs": false,
+			"planHasQuestions": false
+		},
+		"script": {
+			"verify": {
+				"passed": false,
+				"crashed": true
+			}
+		},
+		"trace": {
+			"steps": [
+				{
+					"row": "T0",
+					"step": "classify",
+					"args": null
+				},
+				{
+					"row": "T0",
+					"step": "ingest_report",
+					"args": null
+				},
+				{
+					"row": "T12",
+					"step": "verify",
+					"args": null
+				},
+				{
+					"row": "T12i",
+					"step": "release_task",
+					"args": {
+						"to": "ready"
+					}
+				}
+			],
+			"terminal": {
+				"row": "T12i",
+				"state": "failed",
+				"note": "verify crashed: infrastructure, not a regression"
+			}
+		}
+	},
+	{
+		"name": "12 scope watchdog kill in a local worktree: reap, archive wip, block",
+		"ctx": {
+			"kind": "task",
+			"outcome": null,
+			"done": [],
+			"isDraftExpand": false,
+			"task": {
+				"exists": true,
+				"hasDod": true,
+				"escalation": null,
+				"attempt": 1,
+				"maxRepairs": 2,
+				"stallCount": 0,
+				"maxStalls": 3,
+				"resumeCount": 0,
+				"maxResumes": 2,
+				"reviewRound": 0,
+				"maxReviewRounds": 2,
+				"worktreeDirty": false,
+				"exitCode": 0
+			},
+			"gates": {
+				"mainRed": false,
+				"reviewGated": false,
+				"brainEnabled": false,
+				"criticEnabled": false,
+				"replanEnabled": false,
+				"scopeOnFinish": false
+			},
+			"verify": null,
+			"critic": null,
+			"replan": null,
+			"importReview": null,
+			"planParsed": null,
+			"reportHasSubtasks": false,
+			"reportHasFollowUps": false,
+			"localWorktree": true,
+			"leftBackground": false,
+			"resumeDecision": null,
+			"planHasSpecs": false,
+			"planHasQuestions": false
+		},
+		"script": {
+			"outcome": "killed_watchdog",
+			"killReason": "watchdog-scope",
+			"leftovers": false
+		},
+		"trace": {
+			"steps": [
+				{
+					"row": "T0",
+					"step": "classify",
+					"args": null
+				},
+				{
+					"row": "local-reap",
+					"step": "reap_leftovers",
+					"args": null
+				},
+				{
+					"row": "T0",
+					"step": "ingest_report",
+					"args": null
+				},
+				{
+					"row": "T4s",
+					"step": "archive_wip",
+					"args": null
+				},
+				{
+					"row": "T4s",
+					"step": "bump_stall",
+					"args": null
+				},
+				{
+					"row": "T4s",
+					"step": "release_task",
+					"args": {
+						"to": "blocked"
+					}
+				},
+				{
+					"row": "T4s",
+					"step": "notify",
+					"args": {
+						"reason": "scope_violation"
+					}
+				},
+				{
+					"row": "T4s",
+					"step": "gc_worktree",
+					"args": {
+						"force": true
+					}
+				}
+			],
+			"terminal": {
+				"row": "T4s",
+				"state": "killed",
+				"note": "scope watchdog: the run changed files another claimed task owns"
+			}
+		}
+	}
+]

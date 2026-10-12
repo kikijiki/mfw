@@ -20,27 +20,16 @@ function taskCtx(over: Partial<FinalizeCtx> = {}): FinalizeCtx {
 			hasDod: true,
 			escalation: null,
 			attempt: 1,
-			maxRepairs: 2,
-			stallCount: 0,
-			maxStalls: 3,
-			resumeCount: 0,
-			maxResumes: 2,
 			worktreeDirty: false,
 			exitCode: 0,
 		},
 		gates: { mainRed: false, reviewGated: false, brainEnabled: true },
 		verify: null,
 		critic: null,
-		replan: null,
-		importReview: null,
 		planParsed: null,
-		reportHasSubtasks: false,
 		reportHasFollowUps: false,
 		localWorktree: false,
 		leftBackground: false,
-		resumeDecision: null,
-		planHasSpecs: false,
-		planHasQuestions: false,
 		...over,
 	};
 }
@@ -56,12 +45,15 @@ function drive(
 		outcome?: RunOutcome;
 		verify?: { passed: boolean; crashed?: boolean };
 		critic?: FinalizeCtx["critic"];
-		replan?: FinalizeCtx["replan"];
-		importReview?: FinalizeCtx["importReview"];
 		planParsed?: boolean;
-		stallAfterBump?: number;
 		/** Whether `reap_leftovers` finds processes. */
 		leftovers?: boolean;
+		/** Whether `classify` saw background jobs the turn never saw finish. */
+		background?: boolean;
+		/** `classify`'s kill reason for a killed run. */
+		killReason?: string;
+		/** What `scope_check` finds outside the task's owns. */
+		scopeOutside?: number;
 	} = {},
 ): { steps: string[]; terminal: Terminal } {
 	const done = new Set<StepName>(ctx.done);
@@ -71,28 +63,24 @@ function drive(
 		const d = next(cur);
 		if (d.kind === "terminal") return { steps, terminal: d };
 		const dir = d as Directive;
-		steps.push(dir.args?.to ? `${dir.step}(${dir.args.to})` : dir.step);
+		steps.push(
+			dir.args?.to
+				? `${dir.step}(${dir.args.to})`
+				: dir.args?.settle
+					? `${dir.step}(${dir.args.settle})`
+					: dir.step,
+		);
 		done.add(dir.step);
 		// fold scripted step results, mimicking the StepRunner
-		if (dir.step === "decide_resume" && cur.task)
-			cur = {
-				...cur,
-				resumeDecision: {
-					selected:
-						cur.task.resumeCount < cur.task.maxResumes &&
-						(cur.outcome !== "interrupted" || cur.task.worktreeDirty),
-					ordinal: cur.task.resumeCount + 1,
-				},
-			};
-		if (dir.step === "spawn_resume" && cur.task)
-			cur = {
-				...cur,
-				task: { ...cur.task, resumeCount: cur.task.resumeCount + 1 },
-			};
-		if (dir.step === "clear_stall" && cur.task)
-			cur = { ...cur, task: { ...cur.task, stallCount: 0 } };
 		if (dir.step === "classify")
-			cur = { ...cur, outcome: script.outcome ?? "completed" };
+			cur = {
+				...cur,
+				outcome: script.outcome ?? "completed",
+				backgroundOutstanding: script.background ?? false,
+				...(script.killReason ? { killReason: script.killReason } : {}),
+			};
+		if (dir.step === "scope_check")
+			cur = { ...cur, scope: { outside: script.scopeOutside ?? 0 } };
 		if (dir.step === "verify")
 			cur = {
 				...cur,
@@ -105,31 +93,10 @@ function drive(
 				...cur,
 				critic: script.critic ?? { status: "ok", flagged: false },
 			};
-		if (dir.step === "replan_decide")
-			cur = {
-				...cur,
-				replan: script.replan ?? { status: "ok", action: "escalate" },
-			};
-		if (dir.step === "import_review")
-			cur = {
-				...cur,
-				importReview: script.importReview ?? {
-					status: "ok",
-					approved: true,
-				},
-			};
 		if (dir.step === "reap_leftovers")
 			cur = { ...cur, leftBackground: script.leftovers ?? false };
 		if (dir.step === "parse_plan")
 			cur = { ...cur, planParsed: script.planParsed ?? true };
-		if (dir.step === "bump_stall" && cur.task)
-			cur = {
-				...cur,
-				task: {
-					...cur.task,
-					stallCount: script.stallAfterBump ?? cur.task.stallCount + 1,
-				},
-			};
 		cur = { ...cur, done };
 	}
 	throw new Error(
@@ -172,68 +139,169 @@ describe("finalize machine: task rows", () => {
 		expect(terminal.state).toBe("killed");
 	});
 
-	test("T4 watchdog kill: counts as a stall, task blocked, human notified", () => {
+	test("T4 watchdog kill settles watchdog_killed: no block, no ping, the brain decides", () => {
 		const { steps, terminal } = drive(taskCtx(), {
 			outcome: "killed_watchdog",
 		});
 		expect(steps).toEqual([
 			"classify",
 			"ingest_report",
-			"bump_stall",
-			"release_task(blocked)",
-			"notify",
+			"settle(watchdog_killed)",
 			"gc_worktree",
 		]);
-		expect(terminal.state).toBe("killed");
+		expect(terminal).toMatchObject({ row: "T4", state: "killed" });
+		expect(steps.join()).not.toContain("release_task(blocked)");
+		expect(steps).not.toContain("notify");
 	});
 
-	test("T5 interrupted + dirty + resume budget: spawn resume, claim moves to child", () => {
+	for (const killReason of ["watchdog-scope", "watchdog-files"]) {
+		test(`T4s ${killReason}: archive before a forced gc, then settle scope_violation`, () => {
+			const { steps, terminal } = drive(taskCtx(), {
+				outcome: "killed_watchdog",
+				killReason,
+			});
+			expect(steps).toEqual([
+				"classify",
+				"ingest_report",
+				"archive_wip",
+				"settle(scope_violation)",
+				"gc_worktree",
+			]);
+			expect(terminal).toMatchObject({ row: "T4s", state: "killed" });
+			// The order is the safety property: the worktree is forced away only
+			// once its snapshot is journaled.
+			expect(steps.indexOf("archive_wip")).toBeLessThan(
+				steps.indexOf("gc_worktree"),
+			);
+			expect(steps).not.toContain("notify");
+		});
+	}
+
+	test("T4s directives: the gc after the settle is forced", () => {
+		const done = new Set<StepName>([
+			"classify",
+			"ingest_report",
+			"archive_wip",
+			"settle",
+		]);
+		const ctx = taskCtx({
+			outcome: "killed_watchdog",
+			killReason: "watchdog-scope",
+			done,
+		});
+		expect(next(ctx)).toMatchObject({
+			step: "gc_worktree",
+			args: { force: true },
+		});
+		// Without the archive journaled, nothing past it is reachable.
+		const unarchived = taskCtx({
+			outcome: "killed_watchdog",
+			killReason: "watchdog-files",
+			done: new Set<StepName>(["classify", "ingest_report"]),
+		});
+		expect(next(unarchived)).toMatchObject({ step: "archive_wip" });
+	});
+
+	test("other watchdog kills keep T4 (no archive, non-forced gc)", () => {
+		const { steps, terminal } = drive(taskCtx(), {
+			outcome: "killed_watchdog",
+			killReason: "watchdog-idle",
+		});
+		expect(terminal.row).toBe("T4");
+		expect(steps).not.toContain("archive_wip");
+	});
+
+	test("T12s/T14s: verified work with files outside its owns settles scope_outside, before the critic", () => {
+		const ctx = taskCtx({
+			gates: {
+				mainRed: false,
+				reviewGated: false,
+				brainEnabled: true,
+				scopeOnFinish: true,
+			},
+		});
+		const { steps, terminal } = drive(ctx, { scopeOutside: 2 });
+		expect(steps).toEqual([
+			"classify",
+			"ingest_report",
+			"verify",
+			"scope_check",
+			"settle(scope_outside)",
+		]);
+		expect(terminal).toMatchObject({ row: "T14s", state: "needs_review" });
+		expect(terminal.note).toContain("scope gate");
+	});
+
+	test("T12s: inside its owns, verified work goes on to the critic and merge", () => {
+		const ctx = taskCtx({
+			gates: {
+				mainRed: false,
+				reviewGated: false,
+				brainEnabled: true,
+				scopeOnFinish: true,
+			},
+		});
+		const { steps, terminal } = drive(ctx, { scopeOutside: 0 });
+		expect(steps).toContain("scope_check");
+		expect(steps).toContain("critic");
+		expect(terminal.row).toBe("T16");
+	});
+
+	test("order: scope check, then review, then the verdict's settle", () => {
+		const ctx = taskCtx({
+			gates: {
+				mainRed: false,
+				reviewGated: false,
+				brainEnabled: true,
+				scopeOnFinish: true,
+			},
+		});
+		const { steps, terminal } = drive(ctx, {
+			scopeOutside: 0,
+			critic: { status: "ok", flagged: true, verdict: "fix", round: 1 },
+		});
+		expect(steps.indexOf("scope_check")).toBeLessThan(steps.indexOf("critic"));
+		expect(steps.indexOf("critic")).toBeLessThan(
+			steps.indexOf("settle(review_fix)"),
+		);
+		expect(terminal.row).toBe("T14f");
+	});
+
+	test("without the onFinish gate there is no scope_check step", () => {
+		const { steps } = drive(taskCtx(), { scopeOutside: 5 });
+		expect(steps).not.toContain("scope_check");
+	});
+
+	test("T5 interrupted settles interrupted and keeps a dirty worktree; no resume is decided here", () => {
 		const ctx = taskCtx();
 		if (ctx.task) ctx.task.worktreeDirty = true;
 		const { steps, terminal } = drive(ctx, { outcome: "interrupted" });
 		expect(steps).toEqual([
 			"classify",
 			"ingest_report",
-			"decide_resume",
-			"spawn_resume",
-		]);
-		expect(terminal.state).toBe("interrupted");
-		expect(terminal.row).toBe("T5");
-	});
-
-	test("T6 interrupted, resume budget exhausted: back to ready", () => {
-		const ctx = taskCtx();
-		if (ctx.task) {
-			ctx.task.worktreeDirty = true;
-			ctx.task.resumeCount = 2;
-		}
-		const { steps, terminal } = drive(ctx, { outcome: "interrupted" });
-		expect(steps).toEqual([
-			"classify",
-			"ingest_report",
-			"decide_resume",
-			"release_task(ready)",
+			"settle(interrupted)",
 			"gc_worktree",
 		]);
-		expect(terminal.row).toBe("T6");
+		expect(terminal).toMatchObject({ row: "T5", state: "interrupted" });
 	});
 
-	test("T8/T9/T10 agent escalations route archived/backlog/blocked", () => {
-		for (const [esc, to, row] of [
-			["drop", "archived", "T8"],
-			["needs-replan", "backlog", "T9"],
-			["blocked", "blocked", "T10"],
+	test("T8/T9/T10 agent escalations settle report_drop/report_replan/report_blocked", () => {
+		for (const [esc, cls, row] of [
+			["drop", "report_drop", "T8"],
+			["needs-replan", "report_replan", "T9"],
+			["blocked", "report_blocked", "T10"],
 		] as const) {
 			const ctx = taskCtx();
 			if (ctx.task) ctx.task.escalation = esc;
 			const { steps, terminal } = drive(ctx);
-			expect(steps).toContain(`release_task(${to})`);
+			expect(steps).toContain(`settle(${cls})`);
+			expect(steps).not.toContain("notify");
 			expect(terminal.row).toBe(row);
 			expect(terminal.state).toBe("failed");
 		}
 	});
 
-	test("no checks: exit 0 still needs acceptance; nonzero returns ready", () => {
+	test("no checks: exit 0 still needs acceptance; nonzero settles verify_failed", () => {
 		const ok = taskCtx();
 		if (ok.task) ok.task.hasDod = false;
 		expect(drive(ok).steps).toEqual([
@@ -249,8 +317,8 @@ describe("finalize machine: task rows", () => {
 			bad.task.exitCode = 1;
 		}
 		const r = drive(bad);
-		expect(r.steps).toContain("release_task(ready)");
-		expect(r.terminal.state).toBe("failed");
+		expect(r.steps).toContain("settle(verify_failed)");
+		expect(r.terminal).toMatchObject({ row: "T11", state: "failed" });
 	});
 
 	test("no checks: assisted semantic acceptance can merge without a human", () => {
@@ -285,7 +353,7 @@ describe("finalize machine: task rows", () => {
 		expect(r1.terminal.row).toBe("T15");
 	});
 
-	test("T16 happy path: verify → critic ok → clear stall → merge queue", () => {
+	test("T16 happy path (the single-run fast path): verify → critic ok → clear stall → merge queue, no settle", () => {
 		const { steps, terminal } = drive(taskCtx());
 		expect(steps).toEqual([
 			"classify",
@@ -297,6 +365,7 @@ describe("finalize machine: task rows", () => {
 		]);
 		expect(terminal.note).toBe("merging");
 		expect(terminal.row).toBe("T16");
+		expect(steps.some((s) => s.startsWith("settle"))).toBe(false);
 	});
 
 	test("T12i verify crashed: not blamed, no stall bumped, back to ready (MFW-47)", () => {
@@ -309,21 +378,61 @@ describe("finalize machine: task rows", () => {
 			"verify",
 			"release_task(ready)",
 		]);
-		expect(steps).not.toContain("bump_stall");
-		expect(steps).not.toContain("spawn_repair");
 		expect(terminal.row).toBe("T12i");
 		expect(terminal.state).toBe("failed");
 	});
 
-	test("T14 critic flagged AND critic failed both park in review (fail-closed)", () => {
+	test("T14 critic flagged AND critic failed both settle infra_failure (fail-closed: nothing merges)", () => {
 		for (const critic of [
 			{ status: "ok", flagged: true },
 			{ status: "failed", flagged: false },
 		] as const) {
 			const { steps, terminal } = drive(taskCtx(), { critic });
-			expect(steps).toContain("release_task(review)");
+			expect(steps).toContain("settle(infra_failure)");
+			expect(steps).not.toContain("enqueue_merge");
 			expect(terminal.row).toBe("T14");
-			expect(terminal.state).toBe("completed");
+			expect(terminal.state).toBe("needs_review");
+		}
+	});
+
+	test("T14 carries a failed review's cause into the terminal note", () => {
+		const { terminal } = drive(taskCtx(), {
+			critic: {
+				status: "failed",
+				flagged: false,
+				cause: "reviewer_not_independent",
+			},
+		});
+		expect(terminal.row).toBe("T14");
+		expect(terminal.note).toBe("review gate: reviewer_not_independent");
+	});
+
+	test("verdict merge merges; verdict reject settles review_reject; fix settles review_fix", () => {
+		const merge = drive(taskCtx(), {
+			critic: { status: "ok", flagged: false, verdict: "merge", round: 1 },
+		});
+		expect(merge.terminal.row).toBe("T16");
+		const reject = drive(taskCtx(), {
+			critic: { status: "ok", flagged: true, verdict: "reject", round: 1 },
+		});
+		expect(reject.terminal.row).toBe("T14r");
+		expect(reject.steps.slice(-1)).toEqual(["settle(review_reject)"]);
+		const fix = drive(taskCtx(), {
+			critic: { status: "ok", flagged: true, verdict: "fix", round: 1 },
+		});
+		expect(fix.terminal.row).toBe("T14f");
+		expect(fix.steps.slice(-1)).toEqual(["settle(review_fix)"]);
+	});
+
+	test("a fix verdict is never capped by the machine: any round settles review_fix", () => {
+		// Rounds, repairs and stalls are no longer machine policy: the brain's
+		// action caps and loop guard bound a task that keeps failing review.
+		for (const round of [1, 2, 3, 9]) {
+			const { terminal, steps } = drive(taskCtx(), {
+				critic: { status: "ok", flagged: true, verdict: "fix", round },
+			});
+			expect(terminal.row).toBe("T14f");
+			expect(steps.slice(-1)).toEqual(["settle(review_fix)"]);
 		}
 	});
 
@@ -345,109 +454,60 @@ describe("finalize machine: task rows", () => {
 		expect(steps).toContain("enqueue_merge");
 	});
 
-	test("T20 verify fails with repair budget: brain resume/retry spawns repair", () => {
-		for (const action of ["resume", "retry"] as const) {
-			const { steps, terminal } = drive(taskCtx(), {
-				verify: { passed: false },
-				replan: { status: "ok", action },
+	test("T17 verify fails: one settle verify_failed, whatever the attempt number or stall count", () => {
+		for (const attempt of [1, 2, 3, 7]) {
+			const base = taskCtx();
+			const ctx = taskCtx({
+				task: {
+					...(base.task as NonNullable<FinalizeCtx["task"]>),
+					attempt,
+				},
 			});
+			const { steps, terminal } = drive(ctx, { verify: { passed: false } });
 			expect(steps).toEqual([
 				"classify",
 				"ingest_report",
 				"verify",
-				"bump_stall",
-				"replan_decide",
-				"spawn_repair",
+				"settle(verify_failed)",
 			]);
-			expect(terminal.row).toBe("T20");
+			expect(terminal).toMatchObject({ row: "T17", state: "failed" });
 		}
 	});
 
-	test("T20 brain disabled: repair spawns without a decision", () => {
-		const ctx = taskCtx({
-			gates: { mainRed: false, reviewGated: false, brainEnabled: false },
-		});
-		const { steps } = drive(ctx, { verify: { passed: false } });
-		expect(steps).not.toContain("replan_decide");
-		expect(steps).toContain("spawn_repair");
-	});
-
-	test("T18 stall cap crossed: blocked before any replan decision", () => {
-		const ctx = taskCtx();
-		if (ctx.task) ctx.task.stallCount = 2;
-		const { steps, terminal } = drive(ctx, {
-			verify: { passed: false },
-			stallAfterBump: 3,
-		});
-		expect(steps).not.toContain("replan_decide");
-		expect(steps).toContain("release_task(blocked)");
-		expect(terminal.row).toBe("T18");
-	});
-
-	test("T21/T22/T23 replan decisions route backlog/split/archived", () => {
-		const cases = [
-			{ action: "replan", expectStep: "release_task(backlog)", row: "T21" },
-			// split needs subtasks; the no-subtask case has its own test above
-			{
-				action: "split",
-				expectStep: "create_tasks",
-				row: "T22",
-				reportHasSubtasks: true,
-			},
-			{ action: "abandon", expectStep: "release_task(archived)", row: "T23" },
-		] as const;
-		for (const c of cases) {
-			const { steps, terminal } = drive(
-				taskCtx({ reportHasSubtasks: "reportHasSubtasks" in c }),
-				{
-					verify: { passed: false },
-					replan: { status: "ok", action: c.action },
-				},
-			);
-			expect(steps).toContain(c.expectStep);
-			expect(terminal.row).toBe(c.row);
+	test("no row decides repair, replan, split, abandon or escalate any more", () => {
+		const outcomes: RunOutcome[] = [
+			"completed",
+			"killed_watchdog",
+			"interrupted",
+		];
+		const seen = new Set<string>();
+		for (const outcome of outcomes) {
+			for (const verify of [{ passed: false }, { passed: true }]) {
+				for (const critic of [
+					undefined,
+					{ status: "ok", flagged: true, verdict: "fix", round: 1 },
+					{ status: "ok", flagged: true, verdict: "reject", round: 1 },
+				] as const) {
+					const r = drive(taskCtx({ localWorktree: true }), {
+						outcome,
+						verify,
+						...(critic ? { critic } : {}),
+						leftovers: outcome === "completed",
+					});
+					for (const s of r.steps) seen.add(s.replace(/\(.*\)/, ""));
+				}
+			}
 		}
-	});
-
-	test("T22 split ONLY when the report actually proposed subtasks", () => {
-		// Guarding on ingest_report-done (always true on this path) let an empty-report split archive the task and create nothing.
-		const withSubtasks = drive(taskCtx({ reportHasSubtasks: true }), {
-			verify: { passed: false },
-			replan: { status: "ok", action: "split" },
-		});
-		expect(withSubtasks.terminal.row).toBe("T22");
-		expect(withSubtasks.steps).toContain("create_tasks");
-		expect(withSubtasks.steps).toContain("release_task(archived)");
-
-		const withoutSubtasks = drive(taskCtx({ reportHasSubtasks: false }), {
-			verify: { passed: false },
-			replan: { status: "ok", action: "split" },
-		});
-		expect(withoutSubtasks.terminal.row).toBe("T24"); // escalate to a human
-		expect(withoutSubtasks.steps).not.toContain("create_tasks");
-		expect(withoutSubtasks.steps).toContain("release_task(blocked)");
-	});
-
-	test("T24 fail-closed: replan failure, escalate, and exhausted attempts all block", () => {
-		// brain failure
-		const failed = drive(taskCtx(), {
-			verify: { passed: false },
-			replan: { status: "failed", action: null },
-		});
-		expect(failed.terminal.row).toBe("T24");
-		expect(failed.steps).toContain("release_task(blocked)");
-		// explicit escalate
-		const esc = drive(taskCtx(), {
-			verify: { passed: false },
-			replan: { status: "ok", action: "escalate" },
-		});
-		expect(esc.terminal.row).toBe("T24");
-		// attempts exhausted: no replan_decide at all
-		const ctx = taskCtx();
-		if (ctx.task) ctx.task.attempt = 3;
-		const spent = drive(ctx, { verify: { passed: false } });
-		expect(spent.steps).not.toContain("replan_decide");
-		expect(spent.terminal.row).toBe("T24");
+		for (const gone of [
+			"spawn_repair",
+			"spawn_resume",
+			"decide_resume",
+			"bump_stall",
+			"bump_review_round",
+			"replan_decide",
+		]) {
+			expect(seen.has(gone), gone).toBe(false);
+		}
 	});
 
 	test("orphaned task row: gc only, never a release on a ghost", () => {
@@ -458,13 +518,13 @@ describe("finalize machine: task rows", () => {
 	});
 
 	test("crash-resume: a mid-sequence resume executes only the remaining steps", () => {
-		// Crashed after ingest_report+bump_stall of the T4 path.
+		// Crashed after ingest_report+settle of the T4 path.
 		const ctx = taskCtx({
 			outcome: "killed_watchdog",
-			done: new Set<StepName>(["classify", "ingest_report", "bump_stall"]),
+			done: new Set<StepName>(["classify", "ingest_report", "settle"]),
 		});
 		const { steps, terminal } = drive(ctx, { outcome: "killed_watchdog" });
-		expect(steps).toEqual(["release_task(blocked)", "notify", "gc_worktree"]);
+		expect(steps).toEqual(["gc_worktree"]);
 		expect(terminal.state).toBe("killed");
 	});
 
@@ -528,10 +588,9 @@ describe("finalize machine: follow-ups and leftover processes", () => {
 			leftovers: true,
 		});
 		expect(steps).not.toContain("reap_leftovers");
-		expect(steps).not.toContain("spawn_resume");
 	});
 
-	test("T10L: completed but left processes running: resumed instead of verified", () => {
+	test("T10L: completed but left processes running: settles background_work instead of being verified", () => {
 		const { steps, terminal } = drive(taskCtx({ localWorktree: true }), {
 			leftovers: true,
 		});
@@ -539,42 +598,90 @@ describe("finalize machine: follow-ups and leftover processes", () => {
 			"classify",
 			"reap_leftovers",
 			"ingest_report",
-			"decide_resume",
-			"spawn_resume",
+			"settle(background_work)",
 		]);
-		expect(terminal.row).toBe("T10L");
-		expect(terminal.state).toBe("completed");
+		expect(terminal).toMatchObject({ row: "T10L", state: "failed" });
 	});
 
-	test("T10L: resumes exhausted: verification decides as usual", () => {
-		const ctx = taskCtx({ localWorktree: true });
-		if (ctx.task) ctx.task.resumeCount = ctx.task.maxResumes;
-		const { steps, terminal } = drive(ctx, { leftovers: true });
-		expect(steps).not.toContain("spawn_resume");
-		expect(steps).toContain("verify");
-		expect(terminal.note).toBe("merging");
-	});
-
-	test("T10L: an agent-declared escalation wins over the resume", () => {
+	test("T10L: an agent-declared escalation wins over the leftover processes", () => {
 		const ctx = taskCtx({ localWorktree: true });
 		if (ctx.task) ctx.task.escalation = "blocked";
 		const { steps, terminal } = drive(ctx, { leftovers: true });
-		expect(steps).not.toContain("spawn_resume");
+		expect(steps).not.toContain("settle(background_work)");
 		expect(terminal.row).toBe("T10");
 	});
 
-	test("T10L: a killed run with leftovers is not resumed", () => {
+	test("T10L: a killed run with leftovers settles by its kill row, not as background work", () => {
 		const { steps } = drive(taskCtx({ localWorktree: true }), {
 			outcome: "killed_manual",
 			leftovers: true,
 		});
-		expect(steps).not.toContain("spawn_resume");
+		expect(steps).not.toContain("settle(background_work)");
 	});
 
 	test("T0-reap: clean reap goes on to verify", () => {
 		const { steps } = drive(taskCtx({ localWorktree: true }));
 		expect(steps).toContain("verify");
-		expect(steps).not.toContain("spawn_resume");
+		expect(steps.some((s) => s.startsWith("settle"))).toBe(false);
+	});
+
+	test("T10L: a turn that ended on background jobs settles background_work without verify", () => {
+		const { steps, terminal } = drive(taskCtx({ localWorktree: true }), {
+			background: true,
+		});
+		expect(steps).toEqual([
+			"classify",
+			"reap_leftovers",
+			"ingest_report",
+			"settle(background_work)",
+		]);
+		expect(terminal).toMatchObject({ row: "T10L", state: "failed" });
+	});
+
+	test("T10L: background jobs on a remote run (no reap) settle too", () => {
+		const { steps } = drive(taskCtx({ localWorktree: false }), {
+			background: true,
+		});
+		expect(steps).toContain("settle(background_work)");
+		expect(steps).not.toContain("verify");
+	});
+});
+
+describe("finalize machine: a task run that asked a question", () => {
+	const asked = () => {
+		const ctx = taskCtx({ localWorktree: true });
+		if (ctx.task) ctx.task.escalation = "question";
+		return ctx;
+	};
+
+	test("T10Q: question recorded, then settled: no verify, no release to blocked, no ping, worktree kept", () => {
+		const { steps, terminal } = drive(asked());
+		expect(steps).toEqual([
+			"classify",
+			"reap_leftovers",
+			"ingest_report",
+			"record_question",
+			"settle(question)",
+		]);
+		for (const burned of [
+			"verify",
+			"notify",
+			"release_task(blocked)",
+			"gc_worktree",
+		])
+			expect(steps).not.toContain(burned);
+		expect(terminal).toMatchObject({ row: "T10Q", state: "completed" });
+	});
+
+	test("T10Q: a question wins over background work the turn ended on", () => {
+		const { steps, terminal } = drive(asked(), { background: true });
+		expect(steps).not.toContain("settle(background_work)");
+		expect(terminal.row).toBe("T10Q");
+	});
+
+	test("T10Q: a killed run's question is not honoured (the kill row decides)", () => {
+		const { terminal } = drive(asked(), { outcome: "killed_watchdog" });
+		expect(terminal.row).toBe("T4");
 	});
 });
 
@@ -609,151 +716,110 @@ describe("finalize machine: import rows", () => {
 	const importCtx = (over: Partial<FinalizeCtx> = {}): FinalizeCtx =>
 		taskCtx({ kind: "import", task: null, ...over });
 
-	test("I7 happy path: parse → review approved → tasks on the board", () => {
-		// An importer proposes work; it writes no code, so nothing is merged.
+	test("I7 happy path: parse, then settle plan_output: nothing is created, the brain applies the proposal", () => {
+		// An importer proposes work; it writes no code and, since P3, no tasks.
 		const { steps, terminal } = drive(importCtx());
 		expect(steps).toEqual([
 			"classify",
 			"parse_plan",
-			"import_review",
-			"create_tasks",
+			"settle(plan_output)",
 			"gc_worktree",
 		]);
-		expect(steps).not.toContain("enqueue_merge");
-		expect(terminal.state).toBe("completed");
-	});
-
-	test("I7 an import that proposed specs writes them after the tasks", () => {
-		const { steps } = drive(importCtx({ planHasSpecs: true }));
-		expect(steps).toEqual([
-			"classify",
-			"parse_plan",
+		for (const gone of [
 			"import_review",
 			"create_tasks",
 			"create_specs",
-			"gc_worktree",
-		]);
+			"record_questions",
+			"enqueue_merge",
+			"notify",
+		]) {
+			expect(steps).not.toContain(gone);
+		}
+		expect(terminal).toMatchObject({ row: "I7", state: "completed" });
 	});
 
-	test("I7 an importer's questions land in the clarify gate too", () => {
-		const { steps } = drive(importCtx({ planHasQuestions: true }));
-		expect(steps).toContain("record_questions");
-		expect(steps).not.toContain("create_tasks");
-		expect(steps).not.toContain("create_specs");
-	});
-
-	test("I3 an unparseable proposal fails without review", () => {
+	test("an unparseable proposal still settles plan_output (parsed: false) and ends failed", () => {
 		const { steps, terminal } = drive(importCtx(), { planParsed: false });
-		expect(steps).not.toContain("import_review");
-		expect(steps).not.toContain("create_tasks");
+		expect(steps).toContain("settle(plan_output)");
+		expect(terminal.state).toBe("failed");
 		expect(terminal.note).toContain("proposed nothing");
 	});
 
-	test("I5 review failure NEVER auto-approves: parks as needs_review", () => {
-		const { steps, terminal } = drive(importCtx(), {
-			importReview: { status: "failed", approved: false },
-		});
-		expect(steps).toContain("notify");
-		expect(steps).not.toContain("enqueue_merge");
-		expect(terminal.state).toBe("needs_review");
-	});
-
-	test("I6 rejected import is force-GC'd", () => {
-		const { steps, terminal } = drive(importCtx(), {
-			importReview: { status: "ok", approved: false },
-		});
-		expect(steps).toContain("gc_worktree");
-		expect(terminal.state).toBe("failed");
-	});
-
-	test("brain disabled = explicit opt-out: creates tasks without review", () => {
-		const ctx = importCtx({
-			gates: { mainRed: false, reviewGated: false, brainEnabled: false },
-		});
-		const { steps } = drive(ctx);
-		expect(steps).not.toContain("import_review");
-		expect(steps).toContain("create_tasks");
-	});
-
-	test("I1 killed import preserves evidence and terminates per outcome", () => {
-		const { terminal } = drive(importCtx(), { outcome: "killed_manual" });
-		expect(terminal.state).toBe("killed");
+	test("an import that did not complete settles by how it ended", () => {
+		for (const [outcome, cls, state] of [
+			["killed_manual", "stopped", "killed"],
+			["killed_watchdog", "watchdog_killed", "killed"],
+			["interrupted", "interrupted", "interrupted"],
+			["rate_limited", "rate_limited", "rate_limited"],
+			["start_failed", "infra_failure", "failed"],
+		] as const) {
+			const { steps, terminal } = drive(importCtx(), { outcome });
+			expect(steps, outcome).toContain(`settle(${cls})`);
+			expect(terminal.state, outcome).toBe(state);
+		}
 	});
 });
 
 describe("finalize machine: plan / action / brain rows", () => {
-	test("P3 a plan with no questions creates tasks and does NOT notify clarify", () => {
+	test("P3 a finished plan settles plan_output; it creates nothing and notifies nobody", () => {
 		const ctx = taskCtx({ kind: "plan", task: null });
 		const { steps, terminal } = drive(ctx);
 		expect(steps).toEqual([
 			"classify",
 			"parse_plan",
-			"create_tasks",
+			"settle(plan_output)",
 			"gc_worktree",
 		]);
-		// `notify(clarify)` must not fire on every successful plan run.
+		for (const gone of ["create_tasks", "create_specs", "record_questions"]) {
+			expect(steps).not.toContain(gone);
+		}
 		expect(steps).not.toContain("notify");
-		expect(steps).not.toContain("record_questions");
-		expect(terminal.state).toBe("completed");
+		expect(terminal).toMatchObject({ row: "P3", state: "completed" });
 	});
 
-	test("P3 a plan WITH questions records them and then notifies clarify", () => {
-		const ctx = taskCtx({
-			kind: "plan",
-			task: null,
-			planHasQuestions: true,
-		});
-		const { steps, terminal } = drive(ctx);
-		expect(steps).toEqual([
-			"classify",
-			"parse_plan",
-			"record_questions",
-			"notify",
-			"gc_worktree",
-		]);
-		expect(terminal.state).toBe("completed");
-	});
-
-	test("P3 a plan with specs writes them AFTER the tasks they link to", () => {
-		const ctx = taskCtx({ kind: "plan", task: null, planHasSpecs: true });
-		const { steps } = drive(ctx);
-		expect(steps).toEqual([
-			"classify",
-			"parse_plan",
-			"create_tasks",
-			"create_specs",
-			"gc_worktree",
-		]);
-		expect(steps.indexOf("create_specs")).toBeGreaterThan(
-			steps.indexOf("create_tasks"),
-		);
-	});
-
-	test("P2 unparseable plan fails but keeps the run dir evidence", () => {
+	test("P2 an unparseable plan fails but still settles for the brain, with the run dir evidence kept", () => {
 		const ctx = taskCtx({ kind: "plan", task: null });
-		const { terminal } = drive(ctx, { planParsed: false });
+		const { steps, terminal } = drive(ctx, { planParsed: false });
+		expect(steps).toContain("settle(plan_output)");
 		expect(terminal.note).toContain("no valid plan");
 	});
 
-	// A draft-expanding plan run records a failed attempt on its way to gc; an ordinary
-	// goal-to-DAG plan (isDraftExpand false) must never journal that step.
-	test("P0 a draft-expansion plan that never completed records a failed attempt", () => {
+	// A draft-expanding plan run records the failed attempt (retry bookkeeping)
+	// before it settles; an ordinary goal-to-DAG plan never journals that step.
+	test("P0 a draft-expansion plan that never completed records a failed attempt, then settles by its outcome", () => {
 		const ctx = taskCtx({ kind: "plan", task: null, isDraftExpand: true });
 		const { steps, terminal } = drive(ctx, { outcome: "killed_manual" });
-		expect(steps).toEqual(["classify", "draft_expand_failed", "gc_worktree"]);
+		expect(steps).toEqual([
+			"classify",
+			"draft_expand_failed",
+			"settle(stopped)",
+			"gc_worktree",
+		]);
 		expect(terminal.state).toBe("killed");
 	});
 
-	test("P2 a draft-expansion plan that failed to parse records a failed attempt", () => {
+	test("P2 a draft-expansion plan that failed to parse records a failed attempt and settles plan_output", () => {
 		const ctx = taskCtx({ kind: "plan", task: null, isDraftExpand: true });
 		const { steps, terminal } = drive(ctx, { planParsed: false });
 		expect(steps).toEqual([
 			"classify",
 			"parse_plan",
 			"draft_expand_failed",
+			"settle(plan_output)",
 			"gc_worktree",
 		]);
 		expect(terminal.note).toContain("no valid plan");
+	});
+
+	test("a successful draft expansion settles plan_output without recording a failure", () => {
+		const ctx = taskCtx({ kind: "plan", task: null, isDraftExpand: true });
+		const { steps } = drive(ctx);
+		expect(steps).toEqual([
+			"classify",
+			"parse_plan",
+			"settle(plan_output)",
+			"gc_worktree",
+		]);
 	});
 
 	test("an ordinary plan (not expanding a draft) never journals draft_expand_failed", () => {

@@ -3,8 +3,10 @@ import { type ReactNode, useMemo, useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import { Textarea } from "~/components/ui/textarea";
+import { TipButton, TipSpan } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
 import { RelativeTime } from "../../components/RelativeTime";
+import { ShortcutKbd } from "../../components/ShortcutKbd";
 import { useKeyBindings } from "../../lib/keyboard";
 import type { RouterOutputs } from "../../lib/trpc";
 import type { DiffRow } from "./diff";
@@ -23,6 +25,18 @@ export interface DiffViewProps {
 	onResolve: (id: number, resolved: boolean) => void;
 	onRemove: (id: number) => void;
 	adding?: boolean;
+	/**
+	 * Show the diff and any comments, but offer no way to comment (a competing
+	 * attempt's diff in the group compare, where nothing is under review yet).
+	 */
+	readOnly?: boolean;
+	/**
+	 * Register the `n` / `p` hunk keys. Several diffs side by side (the group
+	 * compare) turn this off so the keys are not bound once per column.
+	 */
+	keys?: boolean;
+	/** Replaces the review-flavoured binary/oversize sentence (the repo view has no checks or agent report to judge it from). */
+	binaryNote?: ReactNode;
 }
 
 export function DiffView({
@@ -33,6 +47,9 @@ export function DiffView({
 	onResolve,
 	onRemove,
 	adding = false,
+	readOnly = false,
+	keys = true,
+	binaryNote,
 }: DiffViewProps) {
 	const rows = useMemo(
 		() => diffLines(file.oldText, file.newText),
@@ -75,14 +92,14 @@ export function DiffView({
 			key: "n",
 			label: "Next hunk",
 			group: "Review",
-			enabled: hunkCount > 0,
+			enabled: keys && hunkCount > 0,
 			run: () => gotoHunk(1),
 		},
 		{
 			key: "p",
 			label: "Previous hunk",
 			group: "Review",
-			enabled: hunkCount > 0,
+			enabled: keys && hunkCount > 0,
 			run: () => gotoHunk(-1),
 		},
 	]);
@@ -90,8 +107,12 @@ export function DiffView({
 	if (file.binary) {
 		return (
 			<Note>
-				Binary or oversized file ({file.status}). There is nothing to read here;
-				judge it from the checks and the agent's report.
+				{binaryNote ?? (
+					<>
+						Binary or oversized file ({file.status}). There is nothing to read
+						here; judge it from the checks and the agent's report.
+					</>
+				)}
 			</Note>
 		);
 	}
@@ -110,9 +131,9 @@ export function DiffView({
 					fontSize: "var(--mfw-text-xs)",
 				}}
 			>
-				<span className="mfw-num truncate" title={file.path}>
+				<TipSpan className="mfw-num truncate" tip={file.path} clipped>
 					{file.path}
-				</span>
+				</TipSpan>
 				<span className="mfw-num" style={{ color: "var(--mfw-ok)" }}>
 					+{stats.added}
 				</span>
@@ -157,7 +178,7 @@ export function DiffView({
 										setExpanded((prev) => new Set(prev).add(blockIndex))
 									}
 								>
-									⋯ {block.rows.length} unchanged lines, click to expand
+									… {block.rows.length} unchanged lines, click to expand
 								</button>
 							);
 						}
@@ -176,6 +197,7 @@ export function DiffView({
 								onResolve={onResolve}
 								onRemove={onRemove}
 								adding={adding}
+								readOnly={readOnly}
 							/>
 						);
 					}
@@ -201,6 +223,7 @@ export function DiffView({
 								onResolve={onResolve}
 								onRemove={onRemove}
 								adding={adding}
+								readOnly={readOnly}
 							/>
 						</div>
 					);
@@ -222,6 +245,7 @@ interface RowsProps {
 	onResolve: (id: number, resolved: boolean) => void;
 	onRemove: (id: number) => void;
 	adding: boolean;
+	readOnly: boolean;
 }
 
 function Rows(props: RowsProps) {
@@ -252,7 +276,11 @@ const ROW_BG: Record<DiffRow["kind"], { left?: string; right?: string }> = {
 	},
 };
 
-function SplitRow({ row, setComposer }: RowsProps & { row: DiffRow }) {
+function SplitRow({
+	row,
+	setComposer,
+	readOnly,
+}: RowsProps & { row: DiffRow }) {
 	const bg = ROW_BG[row.kind];
 	return (
 		<div className="grid grid-cols-2">
@@ -261,7 +289,7 @@ function SplitRow({ row, setComposer }: RowsProps & { row: DiffRow }) {
 				text={row.oldText}
 				background={bg.left}
 				onComment={
-					row.oldLine === null
+					readOnly || row.oldLine === null
 						? undefined
 						: () => setComposer({ line: row.oldLine as number, side: "old" })
 				}
@@ -272,7 +300,7 @@ function SplitRow({ row, setComposer }: RowsProps & { row: DiffRow }) {
 				text={row.newText}
 				background={bg.right}
 				onComment={
-					row.newLine === null
+					readOnly || row.newLine === null
 						? undefined
 						: () => setComposer({ line: row.newLine as number, side: "new" })
 				}
@@ -281,7 +309,11 @@ function SplitRow({ row, setComposer }: RowsProps & { row: DiffRow }) {
 	);
 }
 
-function UnifiedRow({ row, setComposer }: RowsProps & { row: DiffRow }) {
+function UnifiedRow({
+	row,
+	setComposer,
+	readOnly,
+}: RowsProps & { row: DiffRow }) {
 	if (row.kind === "change") {
 		return (
 			<>
@@ -290,8 +322,10 @@ function UnifiedRow({ row, setComposer }: RowsProps & { row: DiffRow }) {
 					text={row.oldText}
 					background="var(--mfw-diff-del-bg)"
 					marker="−"
-					onComment={() =>
-						setComposer({ line: row.oldLine as number, side: "old" })
+					onComment={
+						readOnly
+							? undefined
+							: () => setComposer({ line: row.oldLine as number, side: "old" })
 					}
 				/>
 				<Side
@@ -299,8 +333,10 @@ function UnifiedRow({ row, setComposer }: RowsProps & { row: DiffRow }) {
 					text={row.newText}
 					background="var(--mfw-diff-add-bg)"
 					marker="+"
-					onComment={() =>
-						setComposer({ line: row.newLine as number, side: "new" })
+					onComment={
+						readOnly
+							? undefined
+							: () => setComposer({ line: row.newLine as number, side: "new" })
 					}
 				/>
 			</>
@@ -320,11 +356,15 @@ function UnifiedRow({ row, setComposer }: RowsProps & { row: DiffRow }) {
 						: undefined
 			}
 			marker={isAdd ? "+" : isDel ? "−" : " "}
-			onComment={() => {
-				const side = isDel ? "old" : "new";
-				const line = isDel ? row.oldLine : row.newLine;
-				if (line !== null) setComposer({ line, side });
-			}}
+			onComment={
+				readOnly
+					? undefined
+					: () => {
+							const side = isDel ? "old" : "new";
+							const line = isDel ? row.oldLine : row.newLine;
+							if (line !== null) setComposer({ line, side });
+						}
+			}
 		/>
 	);
 }
@@ -349,10 +389,10 @@ function Side({
 			className={cn("flex min-w-0", borderRight && "border-r")}
 			style={{ background, borderColor: "var(--mfw-border)" }}
 		>
-			<button
+			<TipButton
 				type="button"
 				disabled={!onComment}
-				title={onComment ? "Comment on this line" : undefined}
+				tip={onComment ? "Comment on this line" : undefined}
 				aria-label={line === null ? undefined : `Comment on line ${line}`}
 				onClick={onComment}
 				className="mfw-focus mfw-num w-12 shrink-0 px-1 text-right select-none disabled:cursor-default"
@@ -363,7 +403,7 @@ function Side({
 				}}
 			>
 				{line ?? ""}
-			</button>
+			</TipButton>
 			{marker ? (
 				<span
 					aria-hidden
@@ -379,7 +419,9 @@ function Side({
 			 * bordered container scrolls all rows at once. `flex-1` lets short lines
 			 * paint their add/delete background across the column.
 			 */}
-			<pre className="flex-1 px-2 whitespace-pre">{text ?? ""}</pre>
+			<pre className="min-w-0 flex-1 px-2 whitespace-pre-wrap break-all">
+				{text ?? ""}
+			</pre>
 		</div>
 	);
 }
@@ -452,7 +494,6 @@ function Threads({
 							size="icon-xs"
 							variant="ghost"
 							aria-label="Delete comment"
-							title="Delete"
 							onClick={() => onRemove(c.id)}
 						>
 							<Trash2 aria-hidden />
@@ -511,7 +552,9 @@ function Threads({
 							>
 								Cancel
 							</Button>
-							<span style={{ color: "var(--mfw-fg-faint)" }}>⌘⏎ to submit</span>
+							<span style={{ color: "var(--mfw-fg-faint)" }}>
+								<ShortcutKbd keys="mod+Enter" bordered={false} /> to submit
+							</span>
 						</div>
 					</form>
 				) : null}

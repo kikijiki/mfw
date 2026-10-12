@@ -41,6 +41,7 @@ class FakeScheduler {
 			// No master switch in the fake.
 			projectPlaying: playing,
 			globalPlaying: true,
+			blocked: null,
 			running: this.running,
 			enabled: !this.paused,
 			state,

@@ -25,8 +25,9 @@ import {
 	User,
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef } from "react";
-
+import { TipSpan, TipTime } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
+import { Glyph } from "../../components/icons";
 import { Chip } from "../../components/Page";
 
 /**
@@ -43,6 +44,11 @@ type TranscriptPosition = {
 	seqs?: number[];
 	latestSeq?: number;
 	updatedAt?: string;
+	/**
+	 * The subagent this entry belongs to (the starting `Agent` call's id, or a
+	 * Codex sub-thread id); absent on the run's own entries.
+	 */
+	parent?: string;
 };
 
 export type TranscriptItem = TranscriptPosition &
@@ -136,6 +142,8 @@ export function buildItems(entries: AgentEvent[]): TranscriptItem[] {
 	const richActivityIds = new Set<string>();
 	let activeTurn = "unscoped";
 	for (const e of entries) {
+		const before = items.length;
+		const parent = e.parent?.toolUseId ?? e.parent?.threadId;
 		switch (e.type) {
 			case "message":
 				items.push({
@@ -379,6 +387,14 @@ export function buildItems(entries: AgentEvent[]): TranscriptItem[] {
 			default:
 				break;
 		}
+		// Entries this event opened belong to its subagent; later events folded
+		// into an existing card leave the card where it started.
+		if (parent !== undefined) {
+			for (let i = before; i < items.length; i++) {
+				const item = items[i];
+				if (item) item.parent = parent;
+			}
+		}
 	}
 	// App-server streams can describe one operation twice (generic tool and
 	// richer file/MCP lifecycle); filter after the fold to handle either order.
@@ -437,6 +453,7 @@ const TOOL_ICON: Record<string, LucideIcon> = {
 	glob: Search,
 	grep: Search,
 	task: Bot,
+	agent: Bot,
 	webfetch: Globe,
 	websearch: Globe,
 };
@@ -467,6 +484,7 @@ function primaryArg(name: string, input: unknown): string {
 		case "multiedit":
 			return pick("file_path", "path");
 		case "task":
+		case "agent":
 			return pick("description", "prompt");
 		case "grep":
 		case "glob":
@@ -498,7 +516,7 @@ export interface TranscriptEntryProps {
 	onToggle: () => void;
 	/** Lowercased search needle; matches are highlighted. */
 	query?: string;
-	/** `tail` renders one dense line per item (the NOW card). */
+	/** `tail` renders one dense line per item (`RunConsole`). Pending approvals keep their buttons. */
 	density?: "full" | "tail";
 	focused?: boolean;
 	flash?: boolean;
@@ -507,7 +525,23 @@ export interface TranscriptEntryProps {
 		decision: "accept" | "acceptForSession" | "decline" | "cancel",
 	) => void;
 	approvalPending?: boolean;
+	/** How deeply this entry is nested in subagents (0: the run's own). Indents it under its `Agent` call. */
+	depth?: number;
+	/** Set on an `Agent` call that started a subagent: the count chip and its toggle. */
+	subagent?: SubagentChip;
 }
+
+/** The `12 entries` toggle an `Agent` call carries. */
+export interface SubagentChip {
+	entries: number;
+	tools: number;
+	open: boolean;
+	finished: boolean;
+	onToggle?: () => void;
+}
+
+/** Indent step per level of subagent nesting, px. */
+const SUB_INDENT = 16;
 
 export function TranscriptEntry({
 	item,
@@ -519,6 +553,8 @@ export function TranscriptEntry({
 	flash = false,
 	onApproval,
 	approvalPending = false,
+	depth = 0,
+	subagent,
 }: TranscriptEntryProps) {
 	const tail = density === "tail";
 	const rowRef = useRef<HTMLDivElement>(null);
@@ -529,6 +565,8 @@ export function TranscriptEntry({
 		<div
 			ref={rowRef}
 			data-seq={item.seq}
+			data-depth={depth > 0 ? depth : undefined}
+			data-subagent={item.parent}
 			tabIndex={focused ? 0 : -1}
 			aria-current={focused ? "true" : undefined}
 			className={cn(
@@ -541,38 +579,19 @@ export function TranscriptEntry({
 					? "var(--mfw-accent)"
 					: flash
 						? "var(--mfw-warn)"
-						: "transparent",
+						: depth > 0
+							? "color-mix(in oklch, var(--mfw-accent) 45%, transparent)"
+							: "transparent",
 				background: flash
 					? "color-mix(in oklch, var(--mfw-warn) 12%, transparent)"
 					: undefined,
 				fontSize: tail ? "var(--mfw-text-xs)" : "var(--mfw-font-data)",
+				marginLeft: depth > 0 ? depth * SUB_INDENT : undefined,
 			}}
 		>
 			{/* Timestamp gutter (fixed width, tabular figures; full timestamp in tooltip). Omitted in `tail` density. */}
-			{tail ? (
-				<Body
-					item={item}
-					expanded={expanded}
-					onToggle={onToggle}
-					query={query}
-					tail={tail}
-					onApproval={onApproval}
-					approvalPending={approvalPending}
-				/>
-			) : (
-				<div className="flex min-w-0 items-start gap-2">
-					<time
-						dateTime={item.ts}
-						title={new Date(item.ts).toLocaleString()}
-						className="mfw-num shrink-0 select-none tabular-nums"
-						style={{
-							color: "var(--mfw-fg-faint)",
-							fontSize: "var(--mfw-text-2xs)",
-							lineHeight: "var(--mfw-leading-data)",
-						}}
-					>
-						{clock(item.ts)}
-					</time>
+			{tail && subagent ? (
+				<div className="flex min-w-0 items-center gap-2">
 					<div className="min-w-0 flex-1">
 						<Body
 							item={item}
@@ -584,9 +603,92 @@ export function TranscriptEntry({
 							approvalPending={approvalPending}
 						/>
 					</div>
+					<SubagentToggle chip={subagent} />
+				</div>
+			) : tail ? (
+				<Body
+					item={item}
+					expanded={expanded}
+					onToggle={onToggle}
+					query={query}
+					tail={tail}
+					onApproval={onApproval}
+					approvalPending={approvalPending}
+				/>
+			) : (
+				<div className="flex min-w-0 items-start gap-2">
+					<TipTime
+						dateTime={item.ts}
+						tip={new Date(item.ts).toLocaleString()}
+						className="mfw-num shrink-0 select-none tabular-nums"
+						style={{
+							color: "var(--mfw-fg-faint)",
+							fontSize: "var(--mfw-text-2xs)",
+							lineHeight: "var(--mfw-leading-data)",
+						}}
+					>
+						{clock(item.ts)}
+					</TipTime>
+					<div className="min-w-0 flex-1">
+						<Body
+							item={item}
+							expanded={expanded}
+							onToggle={onToggle}
+							query={query}
+							tail={tail}
+							onApproval={onApproval}
+							approvalPending={approvalPending}
+						/>
+						{subagent ? <SubagentToggle chip={subagent} /> : null}
+					</div>
 				</div>
 			)}
 		</div>
+	);
+}
+
+/** `12 entries · 4 tools`: opens and closes the subagent's entries under its call. */
+function SubagentToggle({ chip }: { chip: SubagentChip }) {
+	const label = `${chip.entries} ${chip.entries === 1 ? "entry" : "entries"}${chip.tools > 0 ? ` · ${chip.tools} ${chip.tools === 1 ? "tool" : "tools"}` : ""}`;
+	const body = (
+		<>
+			<Glyph name="fork" className="mr-1 inline size-3 align-[-2px]" />
+			{label}
+			{chip.finished ? "" : " · running"}
+		</>
+	);
+	const style = {
+		color: chip.finished ? "var(--mfw-fg-muted)" : "var(--mfw-accent)",
+		fontSize: "var(--mfw-text-2xs)",
+	};
+	return chip.onToggle ? (
+		<button
+			type="button"
+			data-subagent-toggle=""
+			aria-expanded={chip.open}
+			aria-label={`Subagent, ${label}${chip.finished ? "" : ", running"}`}
+			onClick={(e) => {
+				e.stopPropagation();
+				chip.onToggle?.();
+			}}
+			className="mfw-focus mfw-num mt-0.5 inline-flex items-center gap-1 whitespace-nowrap"
+			style={style}
+		>
+			{chip.open ? (
+				<ChevronDown aria-hidden className="size-3" />
+			) : (
+				<ChevronRight aria-hidden className="size-3" />
+			)}
+			{body}
+		</button>
+	) : (
+		<span
+			data-subagent-toggle=""
+			className="mfw-num mt-0.5 inline-flex items-center gap-1 whitespace-nowrap"
+			style={style}
+		>
+			{body}
+		</span>
 	);
 }
 
@@ -691,13 +793,16 @@ function Body({
 						) : null}
 						{item.steps.map((step) => (
 							<div key={`${step.status}-${step.step}`} className="flex gap-2">
-								<span aria-hidden>
-									{step.status === "completed"
-										? "✓"
-										: step.status === "in_progress"
-											? "●"
-											: "○"}
-								</span>
+								<Glyph
+									name={
+										step.status === "completed"
+											? "check"
+											: step.status === "in_progress"
+												? "dot"
+												: "ring"
+									}
+									className="mt-0.5 size-3"
+								/>
 								<span>
 									<span className="sr-only">{humanStatus(step.status)}: </span>
 									<Highlight text={step.step} query={query} />
@@ -801,7 +906,8 @@ function Body({
 						query={query}
 						tail={tail}
 					/>
-					{item.status === "pending" && onApproval && !tail ? (
+					{/* Answerable in the dense tail too: a dock row is often where a pending approval is first seen. */}
+					{item.status === "pending" && onApproval ? (
 						<div className="flex flex-wrap gap-1 pl-5">
 							<ApprovalButton
 								label="Accept"
@@ -1065,13 +1171,14 @@ function ToolBlock({
 	const summary = (
 		<span className="flex min-w-0 flex-1 items-center gap-2">
 			<span className="shrink-0 font-medium">{item.name}</span>
-			<span
+			<TipSpan
 				className="mfw-num min-w-0 flex-1 truncate"
 				style={{ color: "var(--mfw-fg-muted)" }}
-				title={arg}
+				tip={arg}
+				clipped
 			>
 				<Highlight text={firstLine(arg)} query={query} />
-			</span>
+			</TipSpan>
 			{item.result ? (
 				ok ? (
 					<CircleCheck

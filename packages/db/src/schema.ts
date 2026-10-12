@@ -3,6 +3,7 @@ import {
 	index,
 	integer,
 	primaryKey,
+	real,
 	sqliteTable,
 	text,
 	uniqueIndex,
@@ -30,6 +31,33 @@ export type RunKind =
 	| "plan"
 	| "action"
 	| "brain";
+/** Why a run exists relative to its `parent_run_id` (data-and-api §2.1). */
+export type RunRelation =
+	| "fresh"
+	| "continue"
+	| "repair"
+	| "resume"
+	| "answer"
+	| "unblock"
+	| "replan"
+	| "judge"
+	| "recovery"
+	| "session"
+	| "trigger"
+	| "attempt";
+
+/** What a run is for inside its group (0017). NULL on runs that predate groups. */
+export type RunRole =
+	| "implement"
+	| "attempt"
+	| "review"
+	| "verify"
+	| "spike"
+	| "research"
+	| "plan"
+	| "conflict"
+	| "brain";
+
 export type RunReasoningEffort =
 	| "none"
 	| "low"
@@ -63,7 +91,11 @@ export type KillReason =
 	| "watchdog-idle"
 	| "watchdog-wall"
 	| "watchdog-turns"
-	| "watchdog-timebox";
+	| "watchdog-timebox"
+	/** Touched files another claimed task owns (scope watchdog). */
+	| "watchdog-scope"
+	/** Changed more files than the scope watchdog allows. */
+	| "watchdog-files";
 
 export type TargetLifecycleState =
 	| "legacy"
@@ -186,15 +218,122 @@ export const runs = sqliteTable(
 			string,
 			number
 		> | null>(),
+		/**
+		 * The running total while the run is live (0017): sampled from the
+		 * transcript, at most every 30 s. Display only; `usage` (final) and the
+		 * spend ledger stay the source for budgets.
+		 */
+		usageLive: text("usage_live", { mode: "json" }).$type<Record<
+			string,
+			number
+		> | null>(),
 
 		startedAt: integer("started_at", { mode: "timestamp_ms" }).notNull(),
 		finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
+
+		// Outcome facts (0009). Snapshotted when the run row is created so later
+		// task edits never rewrite history; NULL on rows that predate them.
+		/** Adapter that drove the run (today equal to `provider_id`). */
+		harness: text("harness"),
+		/** Who serves the model: `anthropic | openai | openrouter | local | …`. */
+		modelVendor: text("model_vendor"),
+		/** Routing decision that picked harness/model (routing phase). */
+		routing: text("routing", { mode: "json" }).$type<Record<
+			string,
+			unknown
+		> | null>(),
+		/** Last diff-scope sample (scope watchdog phase). */
+		scopeSample: text("scope_sample", { mode: "json" }).$type<Record<
+			string,
+			unknown
+		> | null>(),
+		/** Activity classification, separate from lifecycle `state`. */
+		activity: text("activity"),
+		activityDetail: text("activity_detail", { mode: "json" }).$type<Record<
+			string,
+			unknown
+		> | null>(),
+		taskSize: text("task_size"),
+		taskType: text("task_type"),
+		modelTier: text("model_tier"),
+		/** Execution host id (host registry phase). */
+		hostId: text("host_id"),
+		/**
+		 * The harness's own session handle (0010): Claude's `--session-id` uuid,
+		 * Codex's `thread/start` thread id. Lets a later run resume the native
+		 * conversation. NULL until the session is reported.
+		 */
+		nativeSessionId: text("native_session_id"),
+
+		// Typed lineage (0012). `parent_run_id` alone is overloaded (worktree
+		// continuation, source plan, subject run); `relation` says which.
+		/** Why this run exists relative to `parent_run_id` (or `fresh`). NULL only before backfill. */
+		relation: text("relation").$type<RunRelation>(),
+		/** First run of this worktree chain; equals `id` for a root. */
+		chainRootId: text("chain_root_id"),
+		/** The `decisions.id` whose action created this run. */
+		spawnedByDecisionId: integer("spawned_by_decision_id"),
+		/** Non-run origin: `session:<id>`, `trigger:<deliveryId>`, `clarify:<runId>`, `human:<actor>`. */
+		originRef: text("origin_ref"),
+		/**
+		 * The attempt group this run belongs to (0017). NULL means "a group of
+		 * one whose id is this run's own id": every claim is held by a group, and
+		 * a single-run group is named after its run (`groupIdOf`).
+		 */
+		groupId: text("group_id"),
+		/** What the run is for inside its group (0017). */
+		role: text("role").$type<RunRole>(),
+		/**
+		 * What remains once gc removed the run directory (0015): last assistant
+		 * message, tool counts, files touched, first error, `prunedAt`. Written
+		 * before the directory is deleted; NULL while the transcript exists.
+		 */
+		transcriptSummary: text("transcript_summary", {
+			mode: "json",
+		}).$type<Record<string, unknown> | null>(),
 	},
 	(t) => [
 		index("ix_runs_state").on(t.state),
 		index("ix_runs_task").on(t.taskId, t.startedAt),
 		index("ix_runs_kind").on(t.kind, t.startedAt),
+		index("ix_runs_parent").on(t.parentRunId),
+		index("ix_runs_chain").on(t.chainRootId),
+		index("ix_runs_group").on(t.groupId),
 	],
+);
+
+/** The group a run belongs to: its stored group, else itself (a group of one). */
+export function groupIdOf(run: {
+	id: string;
+	groupId?: string | null;
+}): string {
+	return run.groupId ?? run.id;
+}
+
+export type RunGroupKind = "single" | "competing" | "pipeline";
+export type RunGroupSelection = "brain" | "first_verified";
+export type RunGroupStatus = "open" | "selecting" | "merged" | "abandoned";
+
+/**
+ * The unit that holds a task's claim (design §3.5). A `single` group is named
+ * after its only run; a `competing` group has N sibling `attempt` runs, each
+ * in its own worktree, of which one may win and be merged.
+ */
+export const runGroups = sqliteTable(
+	"run_groups",
+	{
+		id: text("id").primaryKey(),
+		taskId: text("task_id").notNull(),
+		kind: text("kind").$type<RunGroupKind>().notNull(),
+		selection: text("selection").$type<RunGroupSelection>().notNull(),
+		status: text("status").$type<RunGroupStatus>().notNull(),
+		winnerRunId: text("winner_run_id"),
+		/** The `brain_actions.id` that created the group (NULL for human starts). */
+		createdByAction: text("created_by_action"),
+		createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+		closedAt: integer("closed_at", { mode: "timestamp_ms" }),
+	},
+	(t) => [index("ix_run_groups_task").on(t.taskId, t.createdAt)],
 );
 
 /** Target lifecycle journal. Stable unique operation ids make write-ahead boundaries idempotent (no transaction spans the account store). */
@@ -310,8 +449,75 @@ export const events = sqliteTable(
 	},
 	(t) => [
 		index("ix_events_task").on(t.taskId, t.seq),
+		index("ix_events_run").on(t.runId, t.seq),
 		index("ix_events_type").on(t.type, t.seq),
 		index("ix_events_ts").on(t.ts),
+	],
+);
+
+// ---------- spans ----------
+
+/**
+ * Durable per-subject timeline (0014): a value held on one lane between two
+ * events. Written by `appendEvent` in the event's own transaction (`spans.ts`);
+ * `end_ts` is NULL while the span is open. Subjects: `run:<id>`, `task:<id>`.
+ */
+export const runSpans = sqliteTable(
+	"run_spans",
+	{
+		id: integer("id").primaryKey({ autoIncrement: true }),
+		subject: text("subject").notNull(),
+		/** `state | activity | status | hold | admission | merge` */
+		lane: text("lane").notNull(),
+		value: text("value").notNull(),
+		startTs: integer("start_ts", { mode: "timestamp_ms" }).notNull(),
+		endTs: integer("end_ts", { mode: "timestamp_ms" }),
+		/** Question text, stall cause, hold reason, actor. */
+		detail: text("detail", { mode: "json" }).$type<Record<
+			string,
+			unknown
+		> | null>(),
+		/** The `events.seq` that opened / closed it, for scrub alignment. */
+		startSeq: integer("start_seq"),
+		endSeq: integer("end_seq"),
+	},
+	(t) => [
+		index("ix_run_spans_subject").on(t.subject, t.lane, t.startTs),
+		index("ix_run_spans_start").on(t.startTs),
+	],
+);
+
+/**
+ * `run_subagents`: one row per subagent a run started (U7, data-and-api §2.5),
+ * written by the run-event tail as it reads `events.jsonl`. The key is the
+ * run and the id of the subagent's starting tool call (Claude `Agent` /
+ * `Task`) or, for a Codex sub-thread, the thread id. `entry_from_seq` and
+ * `entry_to_seq` are the `events.jsonl` seqs the subagent's own entries span,
+ * so the UI can slice the parent transcript without a second file.
+ */
+export const runSubagents = sqliteTable(
+	"run_subagents",
+	{
+		runId: text("run_id").notNull(),
+		toolUseId: text("tool_use_id").notNull(),
+		/** The subagent that started this one (nested), else null: the run itself. */
+		parentToolUseId: text("parent_tool_use_id"),
+		agentType: text("agent_type").notNull(),
+		description: text("description").notNull(),
+		startedAt: integer("started_at", { mode: "timestamp_ms" }).notNull(),
+		endedAt: integer("ended_at", { mode: "timestamp_ms" }),
+		/** `running | ok | error` */
+		status: text("status").notNull(),
+		/** Tool calls the subagent made, by tool name. */
+		tools: text("tools", { mode: "json" })
+			.$type<Record<string, number>>()
+			.notNull(),
+		entryFromSeq: integer("entry_from_seq").notNull(),
+		entryToSeq: integer("entry_to_seq").notNull(),
+	},
+	(t) => [
+		primaryKey({ columns: [t.runId, t.toolUseId] }),
+		index("ix_run_subagents_started").on(t.startedAt),
 	],
 );
 
@@ -550,16 +756,35 @@ export const clarifications = sqliteTable(
 
 export type DecisionRole =
 	| "planner"
+	| "brain"
 	| "supervisor"
 	| "replan"
 	| "critic"
 	| "import_review"
 	| "groomer"
-	// Picks a subset of the dependency-ready frontier; the scheduler still enforces hard limits.
+	// A person's mutation through the API (U4-03): the human half of the audit trail.
+	| "human"
+	// Retired: the project brain's `spawn` actions replaced wave planning. Old rows only.
 	| "dispatch_plan"
 	// Second opinion on a sweep failure that neither the crash check nor
 	// green-sha corroboration could place as infra.
 	| "diagnose";
+/** What a decisions row records (0010); NULL on rows that predate the column. */
+export type DecisionKind =
+	| "action"
+	| "plan"
+	| "note"
+	| "rollover"
+	| "escalation"
+	| "judge"
+	| "override";
+export type DecisionConfidence = "low" | "medium" | "high";
+/** What a decision cited: event seqs, run ids and task revs read before it. */
+export interface DecisionContextRefs {
+	events?: number[];
+	runs?: string[];
+	tasks?: { id: string; rev: number | string }[];
+}
 export type DecisionStatus =
 	| "running"
 	| "ok"
@@ -628,12 +853,318 @@ export const decisions = sqliteTable(
 			.notNull()
 			.$defaultFn(() => ({})),
 		durationMs: integer("duration_ms"),
+		/** Token/cost envelope of the brain call itself (0009); NULL when unknown. */
+		usage: text("usage", { mode: "json" }).$type<Record<
+			string,
+			number
+		> | null>(),
 		supersededBy: integer("superseded_by"),
 		finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
+
+		// Audit-trail columns (0010), all nullable and additive: written by the
+		// brain-led design; legacy rows leave them NULL.
+		brainSessionId: text("brain_session_id"),
+		turnRunId: text("turn_run_id"),
+		kind: text("kind").$type<DecisionKind | null>(),
+		alternatives: text("alternatives", { mode: "json" }).$type<
+			{ option: string; why_not: string }[] | null
+		>(),
+		confidence: text("confidence").$type<DecisionConfidence | null>(),
+		contextRefs: text("context_refs", {
+			mode: "json",
+		}).$type<DecisionContextRefs | null>(),
+		harness: text("harness"),
+		/** Filled when the effect's attempt chain closes: `{final, firstPass, repairs, costUsd, durationMs}`. */
+		outcome: text("outcome", { mode: "json" }).$type<Record<
+			string,
+			unknown
+		> | null>(),
+		/** Id of the human override decision that reversed this one. */
+		overriddenBy: integer("overridden_by"),
 	},
 	(t) => [
 		index("ix_decisions_task").on(t.taskId, t.ts),
 		index("ix_decisions_role").on(t.role, t.ts),
 		index("ix_decisions_subject").on(t.subjectRunId),
+	],
+);
+
+// ---------- spend ledger ----------
+
+export type SpendKind = "agent" | "brain" | "resource";
+export type SpendSource =
+	| "run_usage"
+	| "brain_usage"
+	| "runpod_billing"
+	| "host_slot_time";
+
+/**
+ * Append-only spend facts (0010). One row per usage ingest: a run's final
+ * usage (`run_usage`, upserted on `run_id + source`), a brain call's delta
+ * (`brain_usage`), or a resource charge. A budget is a windowed sum over
+ * `(account_key, ts)`. `usd` is NULL when the harness reports no dollars;
+ * tokens still count.
+ */
+export const spendLedger = sqliteTable(
+	"spend_ledger",
+	{
+		id: text("id").primaryKey(), // ULID
+		ts: integer("ts", { mode: "timestamp_ms" }).notNull(),
+		kind: text("kind").$type<SpendKind>().notNull(),
+		/** Provider hold key (`claude-cli`, `codex-cli@<ep>`) or resource key (`runpod:<acct>`, `host:<id>`). */
+		accountKey: text("account_key").notNull(),
+		runId: text("run_id"),
+		brainSessionId: text("brain_session_id"),
+		taskId: text("task_id"),
+		usd: real("usd"),
+		tokensIn: integer("tokens_in"),
+		tokensOut: integer("tokens_out"),
+		estimated: integer("estimated", { mode: "boolean" })
+			.notNull()
+			.default(false),
+		source: text("source").$type<SpendSource>().notNull(),
+	},
+	(t) => [
+		index("ix_spend_account_ts").on(t.accountKey, t.ts),
+		// NULL run ids (resource charges) never collide: SQLite unique indexes treat NULLs as distinct.
+		uniqueIndex("uq_spend_run_source").on(t.runId, t.source),
+	],
+);
+
+// ---------- project brain runtime ----------
+
+export type BrainSessionStatus =
+	/** Asleep between wakes. */
+	| "idle"
+	/** A turn is live. */
+	| "turn"
+	/** Held by a human or a budget; no wake starts a turn. */
+	| "paused"
+	/** Circuit open after repeated failed turns; a human resets it. */
+	| "failed"
+	| "retired";
+
+export type BrainTurnStatus =
+	| "running"
+	| "ok"
+	| "failed"
+	| "timeout"
+	| "aborted";
+
+/**
+ * One row per brain (0011). `scope` is `{kind: "project"}` today; the field is
+ * there so a subtree brain is another row later. The native session is a cache:
+ * everything the brain needs is rebuilt from the board, `events` and
+ * `decisions` by a rollover (new `generation`).
+ */
+export const brainSessions = sqliteTable(
+	"brain_sessions",
+	{
+		id: text("id").primaryKey(), // ULID
+		scope: text("scope", { mode: "json" })
+			.$type<{ kind: "project" } | { kind: "subtree"; root: string }>()
+			.notNull(),
+		status: text("status").$type<BrainSessionStatus>().notNull(),
+		harness: text("harness").notNull(),
+		model: text("model").notNull(),
+		effort: text("effort"),
+		endpoint: text("endpoint"),
+		/** Claude `--session-id` uuid (minted by mfw) / Codex thread id. NULL until the first turn of a generation reports it. */
+		nativeSessionId: text("native_session_id"),
+		/** Cumulative `total_cost_usd` the last turn reported, so the ledger writes deltas. */
+		lastCostTotal: real("last_cost_total"),
+		/** Hostname the session file lives on; resume is host-local. */
+		nativeHost: text("native_host").notNull(),
+		generation: integer("generation").notNull().default(0),
+		generationStartedAt: integer("generation_started_at", {
+			mode: "timestamp_ms",
+		}).notNull(),
+		contextTokens: integer("context_tokens").notNull().default(0),
+		/** Last consumed `events.seq`; advances only when a turn ends `ok`. */
+		cursor: integer("cursor").notNull().default(0),
+		wakeHint: text("wake_hint", { mode: "json" }).$type<Record<
+			string,
+			unknown
+		> | null>(),
+		/** bootId fencing, as `runs.finalize_owner`. */
+		leaseOwner: text("lease_owner"),
+		leaseUntil: integer("lease_until", { mode: "timestamp_ms" }),
+		consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+		/** Earliest next attempt after a failed turn (retry backoff). */
+		retryAfter: integer("retry_after", { mode: "timestamp_ms" }),
+		createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+		retiredAt: integer("retired_at", { mode: "timestamp_ms" }),
+		retireReason: text("retire_reason"),
+	},
+	(t) => [index("ix_brain_sessions_status").on(t.status)],
+);
+
+/** One turn: a `kind: brain` run, its wake, the event range it consumes. */
+export const brainTurns = sqliteTable(
+	"brain_turns",
+	{
+		runId: text("run_id").primaryKey(),
+		sessionId: text("session_id").notNull(),
+		seq: integer("seq").notNull(),
+		generation: integer("generation").notNull(),
+		wakeClass: text("wake_class").notNull(),
+		eventsFrom: integer("events_from").notNull(),
+		eventsTo: integer("events_to").notNull(),
+		resumed: integer("resumed", { mode: "boolean" }).notNull(),
+		status: text("status").$type<BrainTurnStatus>().notNull(),
+		/** Cumulative usage as the turn reported it, plus the `deltaUsd` it added to the ledger. */
+		usage: text("usage", { mode: "json" }).$type<Record<
+			string,
+			number
+		> | null>(),
+		actionsCount: integer("actions_count").notNull().default(0),
+		startedAt: integer("started_at", { mode: "timestamp_ms" }).notNull(),
+		endedAt: integer("ended_at", { mode: "timestamp_ms" }),
+		error: text("error"),
+	},
+	(t) => [
+		uniqueIndex("uq_brain_turn_seq").on(t.sessionId, t.seq),
+		index("ix_brain_turns_status").on(t.status, t.startedAt),
+	],
+);
+
+export type BrainActionStatus =
+	| "accepted"
+	| "applied"
+	| "rejected"
+	| "failed"
+	/** Validated by the real invariants, recorded, never executed (shadow mode). */
+	| "proposed";
+
+/** Outbox and action audit: one row per act-tool call, keyed for idempotency. */
+export const brainActions = sqliteTable(
+	"brain_actions",
+	{
+		id: text("id").primaryKey(), // ULID, returned to the brain
+		idemKey: text("idem_key").notNull(),
+		sessionId: text("session_id").notNull(),
+		turnRunId: text("turn_run_id").notNull(),
+		tool: text("tool").notNull(),
+		args: text("args", { mode: "json" })
+			.$type<Record<string, unknown>>()
+			.notNull(),
+		status: text("status").$type<BrainActionStatus>().notNull(),
+		rejection: text("rejection", { mode: "json" }).$type<{
+			code: string;
+			message: string;
+			fix?: { kind: string; text: string };
+		} | null>(),
+		/** Ids written before the effect (pre-minted run ids, created task ids). */
+		effects: text("effects", { mode: "json" }).$type<Record<
+			string,
+			unknown
+		> | null>(),
+		decisionId: integer("decision_id"),
+		createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+		appliedAt: integer("applied_at", { mode: "timestamp_ms" }),
+	},
+	(t) => [
+		uniqueIndex("uq_brain_action_idem").on(t.idemKey),
+		index("ix_brain_actions_turn").on(t.turnRunId, t.createdAt),
+		index("ix_brain_actions_session").on(t.sessionId, t.createdAt),
+	],
+);
+
+// ---------- outcomes ----------
+
+/** How a task attempt chain ended. NULL `final` = the chain is still open. */
+export type AttemptFinal =
+	| "merged"
+	| "blocked"
+	| "review_human"
+	| "abandoned"
+	| "killed_scope"
+	| "killed_watchdog"
+	| "rate_limited"
+	| "interrupted";
+
+/**
+ * One row per task attempt chain: a root `task` run plus the repair, resume
+ * and unblock children that continue it in the same worktree (`parent_run_id`
+ * lineage). A derived cache: `rollupAttemptChain` recomputes a row from
+ * `runs` / `run_steps` / `merge_jobs` / `review_verdicts` from scratch, so
+ * writes are idempotent and the table is safe to drop and backfill.
+ */
+export const taskAttemptOutcomes = sqliteTable(
+	"task_attempt_outcomes",
+	{
+		rootRunId: text("root_run_id").primaryKey(),
+		taskId: text("task_id"),
+		harness: text("harness"),
+		modelVendor: text("model_vendor"),
+		model: text("model").notNull(),
+		effort: text("effort"),
+		tier: text("tier"),
+		size: text("size"),
+		type: text("type"),
+		target: text("target"),
+		hostId: text("host_id"),
+		startedAt: integer("started_at", { mode: "timestamp_ms" }).notNull(),
+		finishedAt: integer("finished_at", { mode: "timestamp_ms" }),
+		/** Agent runs in the chain (root included). */
+		runs: integer("runs").notNull(),
+		/** Repair children in the chain, counted from lineage, never from `attempt`. */
+		repairs: integer("repairs").notNull(),
+		/** Review `fix` verdicts on chain runs. */
+		reviewRounds: integer("review_rounds").notNull(),
+		/** Merged with zero repairs and zero review fix rounds. */
+		firstPass: integer("first_pass", { mode: "boolean" }).notNull(),
+		final: text("final").$type<AttemptFinal | null>(),
+		/** Verdict counts on chain runs, e.g. `{ "merge": 1, "critic:flagged": 1 }`. */
+		verdicts: text("verdicts", { mode: "json" })
+			.$type<Record<string, number>>()
+			.notNull()
+			.default(sql`'{}'`),
+		tokensIn: integer("tokens_in"),
+		tokensOut: integer("tokens_out"),
+		tokensCached: integer("tokens_cached"),
+		tokensReasoning: integer("tokens_reasoning"),
+		costUsd: real("cost_usd"),
+		/** False when any agent run in the chain reported no cost. */
+		costComplete: integer("cost_complete", { mode: "boolean" }).notNull(),
+		filesChanged: integer("files_changed"),
+		updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+	},
+	(t) => [
+		index("ix_outcomes_task").on(t.taskId, t.startedAt),
+		index("ix_outcomes_started").on(t.startedAt),
+	],
+);
+
+export type ReviewVerdictValue = "merge" | "fix" | "reject";
+
+/** One reviewer verdict on a subject run (review phase writes these). */
+export const reviewVerdicts = sqliteTable(
+	"review_verdicts",
+	{
+		id: text("id").primaryKey(), // ULID
+		taskId: text("task_id"),
+		subjectRunId: text("subject_run_id").notNull(),
+		reviewerRunId: text("reviewer_run_id"),
+		decisionId: integer("decision_id"),
+		mode: text("mode").$type<"critic" | "agent" | "human">().notNull(),
+		reviewerHarness: text("reviewer_harness"),
+		reviewerModel: text("reviewer_model"),
+		round: integer("round").notNull().default(0),
+		verdict: text("verdict").$type<ReviewVerdictValue>().notNull(),
+		findings: text("findings", { mode: "json" })
+			.$type<unknown[]>()
+			.notNull()
+			.default(sql`'[]'`),
+		criteria: text("criteria", { mode: "json" })
+			.$type<unknown[]>()
+			.notNull()
+			.default(sql`'[]'`),
+		independent: integer("independent", { mode: "boolean" }),
+		createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+	},
+	(t) => [
+		index("ix_review_verdicts_task").on(t.taskId, t.createdAt),
+		index("ix_review_verdicts_subject").on(t.subjectRunId),
 	],
 );

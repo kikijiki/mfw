@@ -8,8 +8,20 @@ import { createTRPCRouter, projectProcedure } from "../trpc.ts";
 export const reviewRouter = createTRPCRouter({
 	/** Diff, verification results, acceptance verdict, cost and run meta in one call. */
 	bundle: projectProcedure
+		.input(z.object({ taskId: z.string(), runId: z.string().optional() }))
+		.query(({ ctx, input }) =>
+			ctx.svc.review.bundle(input.taskId, input.runId),
+		),
+
+	/** Every reviewer verdict on the task, oldest first, with the current round count. */
+	verdicts: projectProcedure
 		.input(z.object({ taskId: z.string() }))
-		.query(({ ctx, input }) => ctx.svc.review.bundle(input.taskId)),
+		.query(({ ctx, input }) => ctx.svc.review.verdicts(input.taskId)),
+
+	/** Latest verdict per task, for board card chips. */
+	latestVerdicts: projectProcedure.query(({ ctx }) =>
+		ctx.svc.review.latestVerdicts(),
+	),
 
 	/** Tasks whose branch is already queued or mid-merge; the review queue uses this to stop offering a decision already made. */
 	activeMerges: projectProcedure.query(({ ctx }) =>

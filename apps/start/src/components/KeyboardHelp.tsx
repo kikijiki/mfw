@@ -9,10 +9,10 @@ import {
 } from "~/components/ui/dialog";
 import {
 	activeBindings,
-	describeKey,
 	type KeyBinding,
 	useKeyBindings,
 } from "../lib/keyboard";
+import { ShortcutKbd } from "./ShortcutKbd";
 
 /**
  * The `?` cheat sheet.
@@ -54,7 +54,8 @@ export function KeyboardHelp() {
 					<DialogDescription asChild>
 						<div style={{ color: "var(--mfw-fg-muted)" }}>
 							What this screen answers to right now. Text fields swallow
-							single-key shortcuts.
+							single-key shortcuts. "G then H" means press the keys one after
+							the other.
 						</div>
 					</DialogDescription>
 				</DialogHeader>
@@ -74,16 +75,7 @@ export function KeyboardHelp() {
 							<ul className="flex flex-col gap-0.5">
 								{bindings.map((binding) => (
 									<li key={binding.key} className="flex items-baseline gap-2">
-										<kbd
-											className="mfw-num border px-1"
-											style={{
-												borderColor: "var(--mfw-border)",
-												borderRadius: "var(--mfw-radius-sm)",
-												fontSize: "var(--mfw-text-2xs)",
-											}}
-										>
-											{describeKey(binding.key)}
-										</kbd>
+										<ShortcutKbd keys={binding.key} />
 										<span>{binding.label}</span>
 									</li>
 								))}

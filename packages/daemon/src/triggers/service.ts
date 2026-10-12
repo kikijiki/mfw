@@ -13,6 +13,7 @@ import { triggerCursor, triggerDeliveries } from "@mfw/db/schema";
 import { desc, eq, sql } from "drizzle-orm";
 import type { QuarantinedDefinition } from "../definitions.ts";
 import type { Logger } from "../log.ts";
+import type { NotificationType } from "../notify.ts";
 import type { TriggerActionRegistry, TriggerDispatch } from "./actions.ts";
 import { ArmingStore } from "./arming.ts";
 import {
@@ -168,7 +169,10 @@ export interface TriggerServiceDeps {
 	now?: () => number;
 	/** Failure escalation (§9.1) via the project's `Notifier`. */
 	notifier?: {
-		notify(kind: string, detail: Record<string, unknown>): Promise<unknown>;
+		notify(
+			kind: NotificationType,
+			detail: Record<string, unknown>,
+		): Promise<unknown>;
 	};
 	/** `on_failure: hold_dispatch` (§9.2) via `scheduler.hold`. Late-bound: `boot.ts` builds the scheduler after triggers. */
 	holdDispatch?: (untilMs: number, reason: string) => Promise<void>;

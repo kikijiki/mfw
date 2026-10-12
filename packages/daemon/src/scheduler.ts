@@ -1,5 +1,4 @@
 import { overlappingPatterns } from "@mfw/board";
-import type { Priority as TaskPriority } from "@mfw/core/types";
 import type { ProjectDbHandle } from "@mfw/db/client";
 import { appendEvent, type EventBus, type StoredEvent } from "@mfw/db/eventlog";
 import {
@@ -10,12 +9,16 @@ import {
 	resources,
 } from "@mfw/db/schema";
 import { and, eq, type SQL, sql } from "drizzle-orm";
+import type {
+	LaunchOutcome,
+	PendingSpawn,
+	TaskHolds,
+} from "./brain-runtime/executor.ts";
 import type { HostAdmissionSnapshot } from "./host-resources/index.ts";
 import type { Logger } from "./log.ts";
-import { AdmissionHeldError } from "./project-dispatch-admission.ts";
+import { refusalFix } from "./refusal-fix.ts";
 import type { RunRegistry, RunRow } from "./run-registry.ts";
-import type { TaskRow, TaskService, TaskWithRefs } from "./task-service.ts";
-import { TaskOwnershipHeldError } from "./tasks/index.ts";
+import type { TaskRow, TaskService } from "./task-service.ts";
 
 /**
  * The only dispatcher.
@@ -25,9 +28,13 @@ import { TaskOwnershipHeldError } from "./tasks/index.ts";
  * the sleep. A failed start is logged with context, releases whatever it held
  * and is counted in `stats.errors`.
  *
- * The concurrency cap is an absolute ceiling. When more than one run could be
- * in flight, an advisory brain chooses a subset of the dependency-ready
- * frontier; the scheduler then re-enforces the cap and every resource boundary.
+ * The project brain decides what runs: the scheduler starts runs only from
+ * accepted `spawn` / `spawn_attempts` actions, in the order the brain made
+ * them. Promotion, the gates (pause, hold, red main, global stop), the
+ * concurrency cap and every resource boundary are still its job and are
+ * re-enforced on every launch. A ready task with no spawn action never starts,
+ * and a project with no configured brain route dispatches nothing (status
+ * `blocked: no_brain_route`).
  *
  * Resource slots are a real semaphore (`resource_slots`, PK `(resourceId,
  * slot)`).
@@ -70,12 +77,23 @@ export interface SchedulerConfig {
 /** The slice of RunEngine the scheduler is allowed to touch. */
 export interface DispatchEngine {
 	readonly admissionIntegrated?: boolean;
-	startTask(
-		taskId: string,
-		opts?: { model?: string; hostSnapshot?: HostAdmissionSnapshot },
-	): Promise<{ runId: string }>;
 	syncEligibleTasks?(taskIds: readonly string[]): Promise<void>;
 	captureAdmissionSnapshot?(): HostAdmissionSnapshot | undefined;
+}
+
+/**
+ * Where the runs come from: the brain's accepted spawn actions (the action
+ * executor). The scheduler asks what is pending, applies admission, and
+ * launches through `launch`, which is idempotent by the pre-minted run ids.
+ */
+export interface SpawnSource {
+	pending(): Promise<PendingSpawn[]>;
+	launch(
+		actionId: string,
+		ctx: { hostSnapshot?: HostAdmissionSnapshot },
+	): Promise<LaunchOutcome>;
+	/** Tasks the brain paused or parked for a person: their spawns wait. */
+	holds(): Promise<TaskHolds>;
 }
 
 export interface SchedulerDeps {
@@ -100,55 +118,49 @@ export interface SchedulerDeps {
 	globalPaused?: () => { reason: string } | null;
 	/** Injectable clock for tests. */
 	now?: () => number;
-	/** Advisory wave planner. It may only narrow the dependency-ready frontier;
-	 * caps and resource admission are rechecked after every answer. */
-	dispatchPlanner?: DispatchPlanner;
+	/** The brain's spawn actions. Absent = nothing can start. */
+	spawns?: SpawnSource;
+	/**
+	 * Whether the project has a brain route. Without one there is no decider
+	 * and no headless fallback: dispatch is blocked and says so.
+	 */
+	brainRoute?: () => boolean;
+	/**
+	 * The machine-wide provider hold the task's route is under, or null
+	 * (`RunEngine.routeTask`). Checked per candidate, so a Claude hold leaves
+	 * a Codex-routed task free to start. Throws for an unroutable task (an
+	 * unknown provider pin): that task is held with the reason. Absent = no
+	 * per-provider holds.
+	 */
+	routeHold?: (
+		task: TaskRow,
+	) => Promise<{ key: string; until: number; reason: string } | null>;
+	/**
+	 * The exhausted resource budget the task depends on, or null
+	 * (`BudgetService.holdFor`). The task is held with `task.held_for_resource`;
+	 * tasks that do not use the resource still start.
+	 */
+	budgetHold?: (
+		task: TaskRow,
+	) => Promise<{ key: string; until: number; reason: string } | null>;
+	/** For `status()`: every provider hold in force on this machine. */
+	providerHolds?: {
+		active(): Promise<Record<string, { until: number; reason: string }>>;
+	};
 }
 
-export interface DispatchTaskSummary {
-	id: string;
-	title: string;
-	body: string;
-	type: TaskRow["type"];
-	priority: TaskRow["priority"];
-	size: TaskRow["size"];
-	labels: string[];
-	/** Declared file ownership; overlapping tasks are never started together. */
-	owns: string[];
-	dependsOn: string[];
-	requiresResources: TaskRow["requiresResources"];
-	executionTarget: string;
-	parentId: string | null;
-	contentRev: number;
-}
-
-export interface DispatchRunningSummary {
-	runId: string;
-	kind: RunKind;
-	task: DispatchTaskSummary | null;
-}
-
-export interface DispatchPlanInput {
-	/** Remaining room below the operator's hard maximum. */
-	maxToStart: number;
-	/** Priority-ordered dependency-ready frontier. */
-	candidates: DispatchTaskSummary[];
-	/** Non-terminal hosted work already consuming the project ceiling. */
-	running: DispatchRunningSummary[];
-}
-
-export interface DispatchPlanResult {
-	status: "ok" | "failed";
-	selectedTaskIds: string[];
-	reason: string;
-}
-
-export interface DispatchPlanner {
-	planDispatch(input: DispatchPlanInput): Promise<DispatchPlanResult>;
-}
+/** The one sentence a project without a brain route reports. */
+export const NO_BRAIN_ROUTE_REASON =
+	"blocked: no brain route: configure brain.routes in the project's config so a brain can decide what runs";
 
 /** Why a tick dispatched nothing. */
-export type SkipReason = "global" | "paused" | "hold" | "main_red" | "board";
+export type SkipReason =
+	| "global"
+	| "paused"
+	| "hold"
+	| "main_red"
+	| "board"
+	| "no_brain";
 
 /**
  * The one-word answer to "is this project dispatching?".
@@ -171,12 +183,14 @@ export interface TickStats {
 	ready: number;
 	/** Non-terminal runs counted against `maxConcurrent`. */
 	inFlight: number;
-	/** Task ids handed to `engine.startTask` this tick. */
+	/** Task ids whose runs were launched from a spawn action this tick (one per run). */
 	started: string[];
 	/** Task ids skipped because a required resource had no free slot. */
 	heldForResource: string[];
 	/** Task ids skipped because their `owns` overlaps a running or picked task. */
 	heldForOverlap: string[];
+	/** Task ids skipped because their route's provider is held (or unroutable). */
+	heldForProvider: string[];
 	/** Gate that returned early, if any. */
 	skipped: SkipReason | null;
 	/** Human-readable detail for `skipped`. */
@@ -187,10 +201,10 @@ export interface TickStats {
 	maintenance: boolean;
 	/** Failures surfaced (never swallowed) this tick. */
 	errors: number;
-	/** How this tick chose its candidate subset. */
-	planning: "not_needed" | "brain" | "fallback";
-	/** Brain or fallback explanation for the selected wave. */
-	planReason: string | null;
+	/** Spawn actions waiting on the brain's own holds (pause, awaiting a person). */
+	heldByBrain: string[];
+	/** Accepted spawn actions the tick looked at. */
+	pendingSpawns: number;
 }
 
 /**
@@ -224,9 +238,17 @@ export interface SchedulerStatus {
 	 *  its own (hold, red main, suspended board). Pressing play does not clear
 	 *  any of them. */
 	selfStopped: boolean;
+	/**
+	 * What blocks dispatch in a way no switch fixes: the project has no brain
+	 * route (`brain.routes`), so nothing decides what runs.
+	 */
+	blocked: "no_brain_route" | null;
 	lastTickAt: number;
 	lastTickMs: number;
 	hold: { until: number; reason: string } | null;
+	/** Machine-wide per-provider rate-limit holds in force (key → hold). They
+	 *  hold only tasks routed to that provider, so they never stop the project. */
+	providerHolds?: { key: string; until: number; reason: string }[];
 	mainRed: boolean;
 	recovery?: {
 		incidentId: string | null;
@@ -271,13 +293,6 @@ interface SlotRef {
 /** Free-slot bookkeeping for one tick: DB state + this wave's reservations. */
 type SlotState = Map<string, { max: number; used: Set<number> }>;
 
-const RANK: Record<TaskPriority, number> = {
-	critical: 0,
-	high: 1,
-	medium: 2,
-	low: 3,
-};
-
 /** Runs that still occupy a concurrency slot. */
 const LIVE_STATES: RunState[] = [
 	"starting",
@@ -311,11 +326,6 @@ export class Scheduler {
 
 	/** Resource ids already warned about as unregistered (warn once). */
 	private readonly warnedUnknownResources = new Set<string>();
-	private cachedPlan: {
-		key: string;
-		at: number;
-		result: DispatchPlanResult;
-	} | null = null;
 	/** Health surface. */
 	readonly stats = {
 		lastTickAt: 0,
@@ -394,13 +404,14 @@ export class Scheduler {
 			started: [],
 			heldForResource: [],
 			heldForOverlap: [],
+			heldForProvider: [],
 			skipped: null,
 			reason: null,
 			capped: false,
 			maintenance: false,
 			errors: 0,
-			planning: "not_needed",
-			planReason: null,
+			heldByBrain: [],
+			pendingSpawns: 0,
 		};
 		this.ticks++;
 
@@ -430,10 +441,9 @@ export class Scheduler {
 		 * same DoD checks the sweep just failed, on a branch that is knowingly
 		 * red (the fix has to land on top of whatever broke it).
 		 *
-		 * Runaway repair is bounded by existing machinery: a failing verify bumps
-		 * `stallCount` (T17), and past `maxStalls` the task is released to
-		 * `blocked` (T18, which also fires `notify`). That drops it out of
-		 * `readySet()` and ends the exemption.
+		 * Runaway repair is bounded by the brain's loop guard (I10): the fix task
+		 * is refused further spawns after four consecutive failed groups, and
+		 * the sweep's own cap turns self-repair off.
 		 */
 		const repairTaskId =
 			gate?.skipped === "main_red" && gates.mainRed?.selfRepairEligible
@@ -442,6 +452,12 @@ export class Scheduler {
 		if (gate && !repairTaskId) {
 			stats.skipped = gate.skipped;
 			stats.reason = gate.reason;
+			return stats;
+		}
+		// No brain route, no decider: there is no headless fallback.
+		if (!this.hasBrainRoute()) {
+			stats.skipped = "no_brain";
+			stats.reason = NO_BRAIN_ROUTE_REASON;
 			return stats;
 		}
 
@@ -459,9 +475,10 @@ export class Scheduler {
 		// (still `in_progress`, or `blocked` past its stall cap), in which case
 		// nothing is dispatched.
 		const allReady = await this.deps.tasks.readySet();
-		const ready = repairTaskId
-			? allReady.filter((t) => t.id === repairTaskId)
-			: allReady;
+		const ready = await this.withoutHeldRoutes(
+			repairTaskId ? allReady.filter((t) => t.id === repairTaskId) : allReady,
+			stats,
+		);
 		stats.ready = ready.length;
 		await this.deps.engine.syncEligibleTasks?.(ready.map((task) => task.id));
 
@@ -473,23 +490,78 @@ export class Scheduler {
 			stats.capped = true;
 			return stats;
 		}
-		if (ready.length === 0) return stats;
 
-		// (5) the maximum is a ceiling, not a target. The planner may narrow the
-		// frontier further but cannot widen it or exceed `room`; admission below
-		// rechecks every lock.
-		const selected = await this.selectCandidates(ready, liveRuns, room, stats);
-		if (selected.length === 0) return stats;
-
-		// (6) reserve deterministic project resources for the chosen subset.
-		const picked = await this.pickWave(selected, liveRuns, room, stats);
-
-		// (7) dispatch sequentially: the DB serializes transactions anyway.
-		for (const { task, plan, hostSnapshot } of picked) {
-			if (stats.started.length >= room) break;
-			await this.dispatch(task, plan, stats, hostSnapshot);
+		// (5) the brain's spawns, in the order it made them. The maximum is a
+		// ceiling, not a target; admission below rechecks every lock.
+		let pending: PendingSpawn[] = [];
+		try {
+			pending = (await this.deps.spawns?.pending()) ?? [];
+		} catch (e) {
+			stats.errors++;
+			this.stats.tickErrors++;
+			this.log.error({ err: e }, "reading pending spawns failed");
 		}
+		if (repairTaskId)
+			pending = pending.filter((j) => j.taskId === repairTaskId);
+		stats.pendingSpawns = pending.length;
+		if (pending.length === 0) return stats;
+		await this.launchPending(pending, liveRuns, room, stats);
 		return stats;
+	}
+
+	/**
+	 * Drop the tasks whose route is under a provider hold, announcing each
+	 * once. Per candidate, not a gate: a Claude hold never stops a task routed
+	 * to Codex (or to a fallback that is free).
+	 */
+	private async withoutHeldRoutes<T extends TaskRow>(
+		tasks: T[],
+		stats: TickStats,
+	): Promise<T[]> {
+		const routeHold = this.deps.routeHold;
+		const budgetHold = this.deps.budgetHold;
+		if (!routeHold && !budgetHold) return tasks;
+		const out: T[] = [];
+		for (const task of tasks) {
+			const spent = budgetHold ? await budgetHold(task) : null;
+			if (spent) {
+				stats.heldForResource.push(task.id);
+				await this.announceHold(task.id, [spent.key], {
+					code: "budget_exhausted",
+					reason: `${spent.key}: ${spent.reason}, resets ${new Date(spent.until).toISOString()}`,
+				});
+				continue;
+			}
+			if (!routeHold) {
+				out.push(task);
+				continue;
+			}
+			let held: { key: string; until: number; reason: string } | null;
+			let code = "provider_held";
+			try {
+				held = await routeHold(task);
+			} catch (e) {
+				code = "route_invalid";
+				held = {
+					key: task.id,
+					until: Number.POSITIVE_INFINITY,
+					reason: e instanceof Error ? e.message : String(e),
+				};
+			}
+			if (!held) {
+				out.push(task);
+				continue;
+			}
+			stats.heldForProvider.push(task.id);
+			await this.announceHold(task.id, [held.key], {
+				code,
+				reason:
+					code === "route_invalid"
+						? held.reason
+						: `${held.key} is held until ${new Date(held.until).toISOString()}: ${held.reason}`,
+			});
+		}
+		return out;
 	}
 
 	private async inFlightRuns(): Promise<RunRow[]> {
@@ -497,111 +569,6 @@ export class Scheduler {
 			states: LIVE_STATES,
 			kinds: COUNTED_KINDS,
 		});
-	}
-
-	private taskSummary(
-		task: TaskRow,
-		dependsOn: string[] = [],
-	): DispatchTaskSummary {
-		return {
-			id: task.id,
-			title: task.title,
-			body: task.body,
-			type: task.type,
-			priority: task.priority,
-			size: task.size,
-			labels: [...task.labels],
-			owns: [...task.owns],
-			dependsOn: [...dependsOn],
-			requiresResources: structuredClone(task.requiresResources),
-			executionTarget: task.executionTarget,
-			parentId: task.parentId,
-			contentRev: task.contentRev,
-		};
-	}
-
-	private async selectCandidates(
-		ready: TaskWithRefs[],
-		liveRuns: RunRow[],
-		room: number,
-		stats: TickStats,
-	): Promise<TaskWithRefs[]> {
-		const ordered = [...ready].sort(
-			(a, b) => RANK[a.priority] - RANK[b.priority] || a.num - b.num,
-		);
-		const claimed = await this.runningOwnership(liveRuns);
-		const admissible: TaskWithRefs[] = [];
-		for (const task of ordered) {
-			if (!(await this.holdForOverlap(task, claimed, stats)))
-				admissible.push(task);
-		}
-		const bounded = admissible.slice(0, 64);
-		const planner = this.deps.dispatchPlanner;
-		// A lone candidate with nothing running needs no brain call. With several
-		// ready, the brain still picks the order even when the maximum is one; an
-		// existing run makes a lone candidate a parallel-safety call too.
-		if (!planner || (liveRuns.length === 0 && bounded.length === 1)) {
-			// Let pickWave scan past conflicts within the wave to fill the available
-			// slots. A planner's explicitly selected subset stays bounded below.
-			return admissible;
-		}
-		if (bounded.length === 0) return [];
-
-		const running: DispatchRunningSummary[] = await Promise.all(
-			liveRuns.map(async (run) => {
-				const task = run.taskId ? await this.deps.tasks.get(run.taskId) : null;
-				return {
-					runId: run.id,
-					kind: run.kind,
-					task: task ? this.taskSummary(task, task.dependsOn) : null,
-				};
-			}),
-		);
-		const input: DispatchPlanInput = {
-			maxToStart: room,
-			candidates: bounded.map((task) => this.taskSummary(task, task.dependsOn)),
-			running,
-		};
-		const key = JSON.stringify({
-			maxToStart: room,
-			candidates: input.candidates.map((task) => [task.id, task.contentRev]),
-			running: running.map((item) => [
-				item.runId,
-				item.task?.id ?? null,
-				item.task?.contentRev ?? null,
-			]),
-		});
-		let result: DispatchPlanResult;
-		if (
-			this.cachedPlan?.key === key &&
-			(this.cachedPlan.result.status === "ok" ||
-				this.now() - this.cachedPlan.at < 60_000)
-		) {
-			result = this.cachedPlan.result;
-		} else {
-			try {
-				result = await planner.planDispatch(input);
-			} catch (error) {
-				result = {
-					status: "failed",
-					selectedTaskIds: [],
-					reason:
-						error instanceof Error ? error.message : "dispatch planner failed",
-				};
-			}
-			this.cachedPlan = { key, at: this.now(), result };
-		}
-
-		if (result.status !== "ok") {
-			stats.planning = "fallback";
-			stats.planReason = `${result.reason}; using conservative serial fallback`;
-			// Never add a second run without an affirmative safety decision.
-			return liveRuns.length === 0 ? bounded.slice(0, 1) : [];
-		}
-		stats.planning = "brain";
-		stats.planReason = result.reason;
-		const selected = new Set(result.selectedTaskIds.slice(0, room));
-		return bounded.filter((task) => selected.has(task.id)).slice(0, room);
 	}
 
 	/** Read every gate. `tick()` and `status()` both apply the same precedence
@@ -674,70 +641,133 @@ export class Scheduler {
 	}
 
 	/**
-	 * Priority rank, then task number, skipping tasks whose resources cannot all
-	 * be reserved or whose declared `owns` overlaps a running task or one picked
-	 * earlier in this wave. Label-based collision avoidance was removed because
-	 * it was a no-op for unlabelled tasks. Genuine contention goes through
-	 * `requires_resources` against the `resource_slots` semaphore (a resource
-	 * with `maxConcurrent: 1` is a mutex) and through `owns`; tasks that declare
-	 * no `owns` are unconstrained, and the remainder (independent tasks touching
-	 * the same undeclared file) is resolved by the merge queue's bounded retry.
+	 * Launch the brain's pending spawns in the order it made them, until the
+	 * cap is used. A spawn is skipped (and stays accepted for the next tick)
+	 * when its task is held by the brain, its `owns` overlaps running or
+	 * earlier work, or a project resource has no free slot. A spawn_attempts
+	 * needs a slot per variant and starts all or none.
 	 */
-	private async pickWave(
-		ready: TaskWithRefs[],
+	private async launchPending(
+		pending: PendingSpawn[],
 		liveRuns: RunRow[],
 		room: number,
 		stats: TickStats,
-	): Promise<
-		{ task: TaskRow; plan: SlotRef[]; hostSnapshot?: HostAdmissionSnapshot }[]
-	> {
-		const candidates = [...ready].sort(
-			(a, b) => RANK[a.priority] - RANK[b.priority] || a.num - b.num,
-		);
+	): Promise<void> {
+		const spawns = this.deps.spawns;
+		if (!spawns) return;
+		const holds = await spawns.holds().catch(() => ({}) as TaskHolds);
 		const claimed = await this.runningOwnership(liveRuns);
-		if (this.deps.engine.admissionIntegrated) {
-			const hostSnapshot = this.deps.engine.captureAdmissionSnapshot?.();
-			if (!hostSnapshot) {
-				throw new Error(
-					"integrated host admission did not provide a wave snapshot",
-				);
-			}
-			const wave: {
-				task: TaskRow;
-				plan: SlotRef[];
-				hostSnapshot?: HostAdmissionSnapshot;
-			}[] = [];
-			for (const task of candidates) {
-				if (await this.holdForOverlap(task, claimed, stats)) continue;
-				this.announcedHolds.delete(task.id);
-				claimed.push({ id: task.id, owns: task.owns });
-				wave.push({ task, plan: [], hostSnapshot });
-			}
-			return wave;
+		const integrated = this.deps.engine.admissionIntegrated === true;
+		const hostSnapshot = integrated
+			? this.deps.engine.captureAdmissionSnapshot?.()
+			: undefined;
+		if (integrated && !hostSnapshot) {
+			throw new Error(
+				"integrated host admission did not provide a wave snapshot",
+			);
 		}
-		const needsResources = candidates.some(
-			(t) => (t.requiresResources ?? []).length > 0,
-		);
-		const slots: SlotState = needsResources
-			? await this.slotState()
-			: new Map();
-
-		const picked: { task: TaskRow; plan: SlotRef[] }[] = [];
-		for (const task of candidates) {
-			if (picked.length >= room) break;
-			if (await this.holdForOverlap(task, claimed, stats)) continue;
-
-			const reserved = this.reserve(task, slots);
-			if ("blockedBy" in reserved) {
-				stats.heldForResource.push(task.id);
-				await this.announceHold(task.id, reserved.blockedBy);
+		let slots: SlotState | null = null;
+		let used = 0;
+		for (const job of pending) {
+			if (used >= room) {
+				stats.capped = true;
+				break;
+			}
+			const need = job.runIds.length;
+			if (used + need > room) {
+				stats.capped = true;
+				break; // the brain's order is kept: a later job does not jump it
+			}
+			const task = await this.deps.tasks.get(job.taskId);
+			if (!task) continue; // the executor fails the action when it launches
+			if (holds[task.id]) {
+				stats.heldByBrain.push(task.id);
 				continue;
 			}
+			// A spawn for a spent resource budget waits; the others still start.
+			const spent = this.deps.budgetHold
+				? await this.deps.budgetHold(task)
+				: null;
+			if (spent) {
+				stats.heldForResource.push(task.id);
+				await this.announceHold(task.id, [spent.key], {
+					code: "budget_exhausted",
+					reason: `${spent.key}: ${spent.reason}, resets ${new Date(spent.until).toISOString()}`,
+				});
+				continue;
+			}
+			if (await this.holdForOverlap(task, claimed, stats)) continue;
+
+			// Project resources: one reservation per run, all or nothing.
+			const plans: SlotRef[][] = [];
+			if (!integrated) {
+				if ((task.requiresResources ?? []).length > 0) {
+					slots ??= await this.slotState();
+					let blocked: string[] | null = null;
+					for (let i = 0; i < need && !blocked; i++) {
+						const r = this.reserve(task, slots);
+						if ("blockedBy" in r) blocked = r.blockedBy;
+						else plans.push(r.plan);
+					}
+					if (blocked) {
+						for (const plan of plans) {
+							for (const p of plan)
+								slots.get(p.resourceId)?.used.delete(p.slot);
+						}
+						stats.heldForResource.push(task.id);
+						await this.announceHold(task.id, blocked);
+						continue;
+					}
+				}
+			}
 			this.announcedHolds.delete(task.id);
+
+			let outcome: LaunchOutcome | null = null;
+			try {
+				outcome = await spawns.launch(job.actionId, {
+					...(hostSnapshot ? { hostSnapshot } : {}),
+				});
+			} catch (e) {
+				stats.errors++;
+				this.stats.tickErrors++;
+				this.log.error(
+					{ err: e, taskId: task.id, actionId: job.actionId },
+					"dispatch failed",
+				);
+				continue;
+			}
+			if (outcome.outcome === "held") {
+				if (outcome.kind === "overlap") stats.heldForOverlap.push(task.id);
+				else if (outcome.kind === "provider")
+					stats.heldForProvider.push(task.id);
+				else stats.heldForResource.push(task.id);
+				continue;
+			}
+			if (outcome.outcome === "failed") {
+				stats.errors++;
+				this.stats.tickErrors++;
+				this.log.warn(
+					{ taskId: task.id, actionId: job.actionId, error: outcome.error },
+					"spawn action failed",
+				);
+				continue;
+			}
+			if (outcome.outcome !== "applied") continue;
+			for (const [i, runId] of outcome.runIds.entries()) {
+				const plan = plans[i];
+				if (!integrated && plan && plan.length > 0) {
+					await this.acquireSlots(runId, plan).catch(async (e: unknown) => {
+						stats.errors++;
+						this.log.error({ err: e, runId }, "slot acquisition failed");
+						await this.releaseSlots(runId).catch(() => {});
+					});
+				}
+				stats.started.push(task.id);
+				this.stats.dispatched++;
+				used++;
+			}
 			claimed.push({ id: task.id, owns: task.owns });
-			picked.push({ task, plan: reserved.plan });
 		}
-		return picked;
 	}
 
 	/** Declared ownership of the tasks behind live counted runs. */
@@ -783,55 +813,6 @@ export class Scheduler {
 			reason: `owns overlaps: ${pairs.join(", ")}`,
 		});
 		return true;
-	}
-
-	/** One task's turn at dispatch. Failures are logged and counted, never swallowed. */
-	private async dispatch(
-		task: TaskRow,
-		plan: SlotRef[],
-		stats: TickStats,
-		hostSnapshot?: HostAdmissionSnapshot,
-	): Promise<void> {
-		let runId: string | null = null;
-		try {
-			runId = (
-				await this.deps.engine.startTask(task.id, {
-					...(hostSnapshot ? { hostSnapshot } : {}),
-				})
-			).runId;
-			if (!this.deps.engine.admissionIntegrated) {
-				// Legacy/test engines do not own the prepare/acquire/launch seam.
-				await this.acquireSlots(runId, plan);
-			}
-			stats.started.push(task.id);
-			this.stats.dispatched++;
-		} catch (e) {
-			if (e instanceof TaskOwnershipHeldError) {
-				stats.heldForOverlap.push(task.id);
-				return;
-			}
-			if (e instanceof AdmissionHeldError) {
-				stats.heldForResource.push(task.id);
-				return;
-			}
-			stats.errors++;
-			this.stats.tickErrors++;
-			this.log.error(
-				{
-					err: e,
-					taskId: task.id,
-					runId,
-					resources: plan.map((p) => p.resourceId),
-				},
-				"dispatch failed",
-			);
-			if (runId) {
-				// Return anything held so a start that never happened blocks nothing.
-				await this.releaseSlots(runId).catch((err: unknown) => {
-					this.log.error({ err, runId }, "slot release after failed dispatch");
-				});
-			}
-		}
 	}
 
 	// ------------------------------------------------------------------
@@ -1023,7 +1004,11 @@ export class Scheduler {
 			appendEvent(tx, {
 				type: "task.held_for_resource",
 				taskId,
-				payload: { waitingFor, ...(why ?? {}) },
+				payload: {
+					waitingFor,
+					...(why ?? {}),
+					fix: refusalFix(why?.code ?? "resource", waitingFor),
+				},
 			}),
 		);
 		this.deps.bus.publish([event]);
@@ -1065,6 +1050,21 @@ export class Scheduler {
 			);
 		});
 		this.deps.bus.publish([event]);
+	}
+
+	private hasBrainRoute(): boolean {
+		return this.deps.brainRoute?.() === true;
+	}
+
+	/**
+	 * Why a brain spawn cannot be accepted right now (master stop, suspended
+	 * board, the project's own stop, red main), or null. A rate-limit hold is
+	 * not here: spawns wait out a hold.
+	 */
+	async blockedReason(): Promise<{ reason: string } | null> {
+		const g = await this.gates();
+		const gate = blockingGate({ ...g, hold: null });
+		return gate ? { reason: gate.reason } : null;
 	}
 
 	/** Whether the dispatch loop exists (not the persisted pause flag). */
@@ -1139,14 +1139,17 @@ export class Scheduler {
 		// underneath.
 		const projectPlaying = running && gates.paused === null;
 		const globalPlaying = gates.globalPaused === null;
-		const playing = projectPlaying && globalPlaying;
+		const noBrain = !this.hasBrainRoute();
+		const playing = projectPlaying && globalPlaying && !noBrain;
 		// Most specific cause first: an individually stopped project stays stopped
 		// when the master goes back on.
 		const state: DispatchState = !projectPlaying
 			? "stopped"
 			: !globalPlaying
 				? "stopped_global"
-				: playingState(gates);
+				: noBrain
+					? "held"
+					: playingState(gates);
 		return {
 			playing,
 			projectPlaying,
@@ -1154,7 +1157,11 @@ export class Scheduler {
 			running,
 			enabled: gates.paused === null,
 			state,
-			reason: stateReason(state, gates, running),
+			// No brain route is the cause no switch fixes, so it is the one named.
+			reason: noBrain
+				? NO_BRAIN_ROUTE_REASON
+				: stateReason(state, gates, running),
+			blocked: noBrain ? "no_brain_route" : null,
 			selfStopped:
 				state !== "dispatching" &&
 				state !== "stopped" &&
@@ -1162,6 +1169,11 @@ export class Scheduler {
 			lastTickAt: this.stats.lastTickAt,
 			lastTickMs: this.stats.lastTickMs,
 			hold: gates.hold,
+			providerHolds: this.deps.providerHolds
+				? Object.entries(
+						await this.deps.providerHolds.active().catch(() => ({})),
+					).map(([key, h]) => ({ key, until: h.until, reason: h.reason }))
+				: [],
 			mainRed: gates.mainRed !== null,
 			recovery: gates.mainRed
 				? {

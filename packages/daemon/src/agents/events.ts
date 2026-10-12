@@ -6,9 +6,22 @@ import { z } from "zod";
  * everything downstream consumes only validated AgentEvents.
  */
 
+/**
+ * Set on an entry that belongs to a subagent rather than the run's own agent:
+ * `toolUseId` is the id of the parent agent's `Agent`/`Task` tool call (Claude
+ * `parent_tool_use_id`); `threadId` is the provider sub-thread (Codex). Absent
+ * on the run's own entries, so a transcript without subagents is unchanged.
+ */
+export const AgentEventParentSchema = z.object({
+	toolUseId: z.string().optional(),
+	threadId: z.string().optional(),
+});
+export type AgentEventParent = z.infer<typeof AgentEventParentSchema>;
+
 const base = {
 	ts: z.string(), // ISO timestamp, driver-stamped
 	seq: z.number().int(), // monotonic within the run
+	parent: AgentEventParentSchema.optional(),
 };
 
 export const AgentEventSchema = z.discriminatedUnion("type", [

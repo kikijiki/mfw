@@ -5,7 +5,7 @@ import { git } from "../git.ts";
 import type { Logger } from "../log.ts";
 
 /**
- * Commits the board (`.mfw/tasks/`, `.mfw/adrs/`, `.mfw/board.yaml`) on the
+ * Commits the board (`tasks/`, `adrs/`, `board.yaml` at the root of the board folder) on the
  * integration branch, path-scoped and debounced, so the human's staged and
  * unstaged work is left untouched. Refuses to commit when the checkout is in
  * a state where that would be wrong (see `canCommit()`). Run worktrees
@@ -14,22 +14,23 @@ import type { Logger } from "../log.ts";
  */
 
 /**
- * Repo-relative paths this class stages. Narrower than the `.mfw/` exclusion
- * in `worktree.ts` / `merge-queue.ts`: widening it would `git add -A` the
- * database (`.mfw/mfw.db`, `.mfw/runs/`). `board.yaml` is included: the new
- * board layer writes it directly under `.mfw/`, outside `tasks/`/`adrs/`.
+ * Repo-relative paths this class stages: the board's own files and nothing
+ * else, so a human's staged code and the daemon's `.mfw/` state are never
+ * swept in. `board.yaml` sits beside `tasks/` and `adrs/` in the board folder.
  */
-function relPaths(projectRoot: string, mfwDir: string): readonly string[] {
+function relPaths(projectRoot: string, boardDir: string): readonly string[] {
 	return [
-		relative(projectRoot, join(mfwDir, "tasks")),
-		relative(projectRoot, join(mfwDir, "adrs")),
-		relative(projectRoot, join(mfwDir, "board.yaml")),
+		relative(projectRoot, join(boardDir, "tasks")),
+		relative(projectRoot, join(boardDir, "adrs")),
+		relative(projectRoot, join(boardDir, "board.yaml")),
 	];
 }
 
 export interface BoardRepoDeps {
+	/** The checkout the board is committed to (the board folder's repository). */
 	projectRoot: string;
-	mfwDir: string;
+	/** The board folder: where `board.yaml`, `tasks/` and `adrs/` live. */
+	boardDir: string;
 	/** The branch the board belongs to. Commits happen on this branch or not at all. */
 	integrationBranch: string;
 	log: Logger;
@@ -77,7 +78,7 @@ export class BoardRepo {
 	}
 
 	private get paths(): readonly string[] {
-		return relPaths(this.deps.projectRoot, this.deps.mfwDir);
+		return relPaths(this.deps.projectRoot, this.deps.boardDir);
 	}
 
 	/** Idempotent; a no-op (unversioned board) outside a git repo or when the board is git-ignored. */
@@ -91,12 +92,12 @@ export class BoardRepo {
 		}
 
 		// `tasks/`/`adrs/` must actually EXIST as directories before the
-		// check-ignore loop below: a `!/.mfw/adrs/` negation (trailing slash)
+		// check-ignore loop below: a trailing-slash negation (trailing slash)
 		// only reliably un-ignores a path git can confirm is a directory, so a
 		// not-yet-created `adrs/` reads as still-ignored even with the exception
 		// in place. `board.yaml` is a bare file negation, no such requirement.
-		await mkdir(join(this.deps.mfwDir, "tasks"), { recursive: true });
-		await mkdir(join(this.deps.mfwDir, "adrs"), { recursive: true });
+		await mkdir(join(this.deps.boardDir, "tasks"), { recursive: true });
+		await mkdir(join(this.deps.boardDir, "adrs"), { recursive: true });
 
 		// An ignored board makes every commit a silent no-op; carry on unversioned.
 		for (const p of this.paths) {
@@ -216,6 +217,14 @@ export class BoardRepo {
 		return this.serialize(() => this.commitNow());
 	}
 
+	/** Commit whatever is pending now under `message` (a one-off board
+	 * migration that should read as one commit, not as N task edits). */
+	async commit(message: string): Promise<string | null> {
+		if (!this.enabled) return null;
+		this.dirty = true;
+		return this.serialize(() => this.commitNow(message));
+	}
+
 	private serialize<T>(fn: () => Promise<T>): Promise<T> {
 		const next = this.chain.then(fn, fn);
 		this.chain = next.catch(() => {
@@ -265,13 +274,13 @@ export class BoardRepo {
 					"commit",
 					"-q",
 					// Skip hooks (husky/lefthook): a failing hook would wedge the board
-					// out of git. Safe because these commits only touch `.mfw/tasks`
-					// and `.mfw/adrs`.
+					// out of git. Safe because these commits only touch `tasks/`
+					// and `adrs/`.
 					"--no-verify",
 					"-m",
 					summary,
 					// Files, not directories: `git commit -- <dir>` fails on a pathspec
-					// git knows nothing about (e.g. an empty `.mfw/adrs/`).
+					// git knows nothing about (e.g. an empty `adrs/`).
 					"--",
 					...described.paths,
 				],
@@ -365,7 +374,7 @@ export class BoardRepo {
 	}
 }
 
-/** `.mfw/tasks/MFW-4-slug/task.md` → `task`, `.mfw/adrs/MFW-ADR-1-y.md` → `adr`, `.mfw/board.yaml` → `(root)`. */
+/** `tasks/MFW-4-slug/task.md` → `task`, `adrs/MFW-ADR-1-y.md` → `adr`, `board.yaml` → `(root)`. */
 function whereOf(path: string): string {
 	const parts = path.split("/").filter((p) => p !== "" && p !== ".mfw");
 	if (parts[0] === "adrs") return "adr";
@@ -375,7 +384,7 @@ function whereOf(path: string): string {
 	return parts.length > 1 ? (parts[0] as string) : "(root)";
 }
 
-/** `.mfw/tasks/MFW-4-slug/task.md` → `MFW-4`, `.mfw/adrs/MFW-ADR-1-y.md` → `MFW-ADR-1`, falling back to the name. */
+/** `tasks/MFW-4-slug/task.md` → `MFW-4`, `adrs/MFW-ADR-1-y.md` → `MFW-ADR-1`, falling back to the name. */
 function idOf(path: string): string {
 	const parts = path.split("/").filter((p) => p !== "" && p !== ".mfw");
 	const name =

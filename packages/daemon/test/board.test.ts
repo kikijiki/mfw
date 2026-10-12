@@ -183,7 +183,8 @@ describe("the database is an optimization", () => {
 		const revived = new TaskService({
 			handle,
 			bus: new EventBus(),
-			mfwDir: env.dir,
+			boardDir: env.dir,
+			stateDir: env.dir,
 			config: await loadBoardConfig(join(env.dir, "board.yaml")),
 			taskKey: "MFW",
 			log: silentLogger(),

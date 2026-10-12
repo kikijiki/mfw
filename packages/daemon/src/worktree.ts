@@ -1,6 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+	access,
+	copyFile,
+	mkdir,
+	mkdtemp,
+	readFile,
+	rm,
+	writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { readProtectedBoardPaths } from "./board-layout.ts";
 import { git, gitOk } from "./git.ts";
 
 export interface Worktree {
@@ -11,6 +21,15 @@ export interface Worktree {
 
 export interface OwnedWorktree extends Worktree {
 	runId: string;
+}
+
+/** A run's work saved on a plain branch by `WorktreeManager.archiveWip`. */
+export interface WipArchive {
+	/** Short branch name, `wip/<task>-<run>` (a `-<n>` suffix if taken). */
+	ref: string;
+	sha: string;
+	/** False when an identical archive already existed. */
+	created: boolean;
 }
 
 export type WorktreeReportIdentity =
@@ -27,7 +46,7 @@ const OWNER_BRANCH = "mfw.owner-branch";
 const OWNER_BASE_SHA = "mfw.owner-base-sha";
 
 /**
- * Git worktree lifecycle (ARCHITECTURE.md §5.3). Each task runs in its own
+ * Git worktree lifecycle (backstage architecture.md, "Runs"). Each task runs in its own
  * worktree on its own branch so concurrent agents never collide. Clean
  * worktrees are auto-removed; dirty ones are preserved for review (Factory
  * `droid exec -w` semantics).
@@ -91,6 +110,10 @@ export class WorktreeManager {
 	 * code-review artifacts and cannot execute until an operator arms their
 	 * exact hash.
 	 *
+	 * The board itself (`board.yaml` and each document type's directory at the
+	 * root of the board folder, see `board-layout.ts`) is excluded the same way
+	 * when the board folder is inside this repository.
+	 *
 	 * AGENTS.md must still be readable; see `deliverAgentRules`.
 	 *
 	 * `sparse-checkout` sets `extensions.worktreeConfig` and writes
@@ -98,6 +121,7 @@ export class WorktreeManager {
 	 * it would apply to the primary checkout and hide the human's board.
 	 */
 	private async excludeBoard(worktreePath: string): Promise<void> {
+		const board = await readProtectedBoardPaths(this.repoRoot);
 		const r = await git(
 			[
 				"sparse-checkout",
@@ -106,6 +130,7 @@ export class WorktreeManager {
 				"/*",
 				"!/.mfw/*",
 				"/.mfw/triggers/",
+				...board.map((p) => `!/${p}`),
 			],
 			worktreePath,
 		);
@@ -343,6 +368,143 @@ export class WorktreeManager {
 				);
 			}
 		}
+	}
+
+	/**
+	 * Save a run's work to a plain `wip/<task>-<run>` branch before anything
+	 * destroys it. The commit captures the worktree as it is: committed work,
+	 * staged and unstaged edits and untracked files (ignored files stay out, as
+	 * they would for any commit). It is built in a temporary copy of the
+	 * worktree's index, so the agent's own index and HEAD are never touched;
+	 * the copy keeps the sparse `skip-worktree` bits, so the absent board does
+	 * not read as deleted. With no worktree on disk the branch tip is saved.
+	 *
+	 * Returns null when there is nothing beyond `baseSha` to save. `wip/` refs
+	 * are never deleted by MFW: gc only touches `mfw/<runId>`.
+	 */
+	async archiveWip(
+		wt: Worktree,
+		name: { runId: string; taskId?: string | null },
+	): Promise<WipArchive | null> {
+		const present =
+			(await this.list()).some(
+				(candidate) => resolve(candidate) === resolve(wt.path),
+			) &&
+			(await access(wt.path).then(
+				() => true,
+				() => false,
+			));
+		let sha: string;
+		if (present) {
+			sha = await this.snapshotWorktree(wt.path, name);
+		} else {
+			const tip = await git(
+				["rev-parse", "--verify", "-q", `refs/heads/${wt.branch}^{commit}`],
+				this.repoRoot,
+			);
+			if (tip.exitCode !== 0) return null;
+			sha = tip.stdout.trim();
+		}
+		if (sha === wt.baseSha) return null;
+
+		const base = `refs/heads/wip/${name.taskId ? `${name.taskId}-` : ""}${name.runId}`;
+		for (let n = 1; n <= 20; n++) {
+			const ref = n === 1 ? base : `${base}-${n}`;
+			// Create-only (empty old value): an earlier archive is never overwritten.
+			const created = await git(["update-ref", ref, sha, ""], this.repoRoot);
+			if (created.exitCode === 0) {
+				return { ref: ref.slice("refs/heads/".length), sha, created: true };
+			}
+			const existing = await git(
+				["rev-parse", "--verify", "-q", ref],
+				this.repoRoot,
+			);
+			if (existing.exitCode === 0 && existing.stdout.trim() === sha) {
+				return { ref: ref.slice("refs/heads/".length), sha, created: false };
+			}
+		}
+		throw new Error(`could not create a wip branch for run ${name.runId}`);
+	}
+
+	/** Commit the worktree's full state (see `archiveWip`) without moving HEAD. */
+	private async snapshotWorktree(
+		path: string,
+		name: { runId: string; taskId?: string | null },
+	): Promise<string> {
+		const head = await gitOk(["rev-parse", "HEAD"], path);
+		const index = await gitOk(
+			["rev-parse", "--path-format=absolute", "--git-path", "index"],
+			path,
+		);
+		const tmp = await mkdtemp(join(tmpdir(), "mfw-wip-"));
+		try {
+			const env = { GIT_INDEX_FILE: join(tmp, "index") };
+			const copied = await copyFile(index, env.GIT_INDEX_FILE).then(
+				() => true,
+				() => false,
+			);
+			if (!copied) await gitOk(["read-tree", "HEAD"], path, { env });
+			await gitOk(["add", "-A"], path, { env });
+			const tree = await gitOk(["write-tree"], path, { env });
+			if (tree === (await gitOk(["rev-parse", "HEAD^{tree}"], path))) {
+				return head;
+			}
+			return await gitOk(
+				[
+					"-c",
+					"user.name=mfw",
+					"-c",
+					"user.email=mfw@localhost",
+					"commit-tree",
+					tree,
+					"-p",
+					head,
+					"-m",
+					`mfw wip: run ${name.runId}${name.taskId ? ` (${name.taskId})` : ""}`,
+				],
+				path,
+			);
+		} finally {
+			await rm(tmp, { recursive: true, force: true });
+		}
+	}
+
+	/**
+	 * Throw away a run's worktree and `mfw/` branch, after saving them with
+	 * `archiveWip`. The caller proves the run is not live (this class does not
+	 * know runs). An unproven worktree is refused like `remove`.
+	 */
+	async discard(
+		wt: Worktree,
+		name: { runId: string; taskId?: string | null },
+	): Promise<{ archive: WipArchive | null; removed: boolean }> {
+		const archive = await this.archiveWip(wt, name);
+		const registered = (await this.list()).some(
+			(candidate) => resolve(candidate) === resolve(wt.path),
+		);
+		if (registered) {
+			await this.remove(wt, { force: true, deleteBranch: true });
+			return { archive, removed: true };
+		}
+		// No worktree: only the branch is left. Compare-and-delete the exact tip
+		// that was archived, so a concurrently advanced branch survives.
+		const tip = await git(
+			["rev-parse", "--verify", "-q", `refs/heads/${wt.branch}`],
+			this.repoRoot,
+		);
+		if (tip.exitCode === 0 && wt.branch.startsWith("mfw/")) {
+			const expected = tip.stdout.trim();
+			if (archive && archive.sha !== expected) {
+				throw new Error(
+					`branch '${wt.branch}' moved while it was archived; it was preserved`,
+				);
+			}
+			await gitOk(
+				["update-ref", "-d", `refs/heads/${wt.branch}`, expected],
+				this.repoRoot,
+			);
+		}
+		return { archive, removed: false };
 	}
 
 	private async markerAt(path: string): Promise<OwnedWorktree | null> {

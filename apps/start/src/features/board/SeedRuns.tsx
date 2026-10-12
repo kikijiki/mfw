@@ -16,6 +16,7 @@ import { useGo } from "../../lib/nav";
 import { useToast } from "../../lib/toast";
 import { useTRPC } from "../../lib/trpc";
 import { href } from "../../routes";
+import { ImportDocSources, useDocImportChoice } from "../docs/ImportDocSources";
 import { Setting } from "../settings/controls";
 import { ModelPicker } from "../settings/ProviderPicker";
 
@@ -82,6 +83,7 @@ function ImportDialog({
 }) {
 	const start = useStartImport(project, "Import", onOpenChange);
 	const run = useRunModel(project);
+	const docChoice = useDocImportChoice(project, open);
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
@@ -108,6 +110,8 @@ function ImportDialog({
 					</li>
 				</Consequences>
 
+				<ImportDocSources choice={docChoice} />
+
 				<ModelRow
 					providerId={run.providerId}
 					model={run.model}
@@ -124,7 +128,13 @@ function ImportDialog({
 					</Button>
 					<Button
 						disabled={start.isPending}
-						onClick={() => start.mutate({ project, model: run.override })}
+						onClick={() =>
+							start.mutate({
+								project,
+								model: run.override,
+								docSources: docChoice.chosen,
+							})
+						}
 					>
 						{start.isPending ? "Starting…" : "Start import"}
 					</Button>
@@ -261,7 +271,16 @@ function useStartImport(
 			meta: { label },
 			onSuccess: (started) => {
 				onOpenChange(false);
-				toast({ tone: "success", title: `${label} run started` });
+				const docs = started.docSources.length;
+				toast({
+					tone: "success",
+					title: `${label} run started`,
+					...(docs > 0
+						? {
+								description: `${docs} documentation director${docs === 1 ? "y" : "ies"} added to Docs`,
+							}
+						: {}),
+				});
 				// The run takes minutes; its transcript is the progress display.
 				go(href.run(project, started.runId));
 			},

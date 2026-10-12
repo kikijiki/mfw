@@ -24,6 +24,18 @@ export interface RunState {
 	draftExhausted: boolean;
 	/** Retained until the ready transition and one-shot field cleanup both finish. */
 	reopenIntent?: { conditions: ReopenCondition[] };
+	/**
+	 * A human's rejection brief (reason plus the unresolved review comments at
+	 * that moment), carried into every later run prompt until the task is done
+	 * or archived, or replaced by a newer rejection.
+	 */
+	pendingFeedback?: { brief: string; at: number } | null;
+	/**
+	 * Review `fix` rounds consumed by the current attempt (each one spawned a
+	 * repair with the reviewer's findings). Reset when the work merges, the
+	 * task closes, or a human rejects it. Absent = 0.
+	 */
+	reviewRound?: number;
 	/** Last time anything about this task changed; `task-service.ts`'s `touch()`. */
 	updatedAt: number | null;
 }

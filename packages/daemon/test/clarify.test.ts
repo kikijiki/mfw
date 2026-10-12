@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
-import { EventBus } from "@mfw/db/eventlog";
+import { EventBus, eventsSince } from "@mfw/db/eventlog";
 import { events } from "@mfw/db/schema";
 import { buildPrompts } from "../src/boot.ts";
 import {
@@ -12,6 +12,7 @@ import {
 	ContinuationRunTerminalError,
 	continuationTerminalError,
 	type ReplanFn,
+	TASK_QUESTION_KIND,
 } from "../src/clarify.ts";
 import { InboxService } from "../src/inbox.ts";
 import { silentLogger } from "../src/log.ts";
@@ -474,6 +475,101 @@ describe("ClarifyService", () => {
 		});
 
 		expect((await inbox.list()).map((i) => i.kind)).not.toContain("clarify");
+	});
+});
+
+describe("ClarifyService: a task run's own question", () => {
+	async function taskEnv() {
+		const env = await freshEnv();
+		await env.clarify.raise({
+			runId: "TASKRUN",
+			kind: TASK_QUESTION_KIND,
+			goal: null,
+			questions: ["Keep the v1 endpoint?"],
+		});
+		return env;
+	}
+
+	async function resolvedEvents(env: Env) {
+		return (await eventsSince(env.handle.db, 0, 1000)).filter(
+			(e) => e.type === "clarify.resolved",
+		);
+	}
+
+	test("answering it resolves the set and starts nothing: the brain continues the run (never a re-plan)", async () => {
+		const env = await taskEnv();
+		const result = await env.clarify.answer("TASKRUN", [
+			{ index: 0, answer: "Keep it until March" },
+		]);
+		expect(env.replans).toEqual([]);
+		expect(result.continuation).toEqual({ status: "not_requested" });
+		expect(result.clarification.resolvedAt).not.toBeNull();
+		expect(result.clarification.items[0]?.answer).toBe("Keep it until March");
+		const events = await resolvedEvents(env);
+		expect(events).toHaveLength(1);
+		expect(events[0]?.payload).toMatchObject({ answered: true });
+		// A repeat answer changes nothing.
+		await env.clarify.answer("TASKRUN", [{ index: 0, answer: "again" }]);
+		expect(await resolvedEvents(env)).toHaveLength(1);
+	});
+
+	test("who answered rides the resolved event, so the brain's own answer can be told from a person's", async () => {
+		const env = await taskEnv();
+		await env.clarify.answer("TASKRUN", [{ index: 0, answer: "Keep it" }], {
+			by: "brain",
+		});
+		const [event] = await resolvedEvents(env);
+		expect(event?.payload).toMatchObject({ answered: true, by: "brain" });
+	});
+
+	test("a partial answer keeps the question open", async () => {
+		const env = await freshEnv();
+		await env.clarify.raise({
+			runId: "TWO",
+			kind: TASK_QUESTION_KIND,
+			goal: null,
+			questions: ["a?", "b?"],
+		});
+		const r = await env.clarify.answer("TWO", [{ index: 0, answer: "x" }]);
+		expect(r.clarification.resolvedAt).toBeNull();
+		expect(await resolvedEvents(env)).toHaveLength(0);
+	});
+
+	test("it is a needs_answer inbox item, and its blocked task is not listed twice", async () => {
+		const env = await freshEnv();
+		const registry = new RunRegistry({
+			handle: env.handle,
+			bus: env.bus,
+			runsDir: join(env.dir, "runs"),
+		});
+		const task = await env.tasks.create({ title: "asks", status: "ready" });
+		const run = await registry.create({
+			kind: "task",
+			taskId: task.id,
+			label: task.id,
+			model: "sonnet",
+			cwd: env.dir,
+		});
+		await env.tasks.release(task.id, null, "blocked", "scheduler", "asked");
+		await env.clarify.raise({
+			runId: run.id,
+			kind: TASK_QUESTION_KIND,
+			goal: null,
+			questions: ["Keep the v1 endpoint?"],
+		});
+		const inbox = new InboxService({
+			handle: env.handle,
+			project: "demo",
+			tasks: env.tasks,
+		});
+		const items = await inbox.list();
+		expect(items.map((i) => i.kind)).toEqual(["needs_answer"]);
+		expect(items[0]).toMatchObject({
+			taskId: task.id,
+			runId: run.id,
+			severity: "attention",
+			detail: "Keep the v1 endpoint?",
+		});
 	});
 });
 

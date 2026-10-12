@@ -57,7 +57,7 @@ async function freshEnv(): Promise<Env> {
 	const tasks = await makeTasks(handle, bus, mfwDir);
 	const board = new BoardRepo({
 		projectRoot: root,
-		mfwDir,
+		boardDir: mfwDir,
 		integrationBranch: "main",
 		log: silentLogger(),
 		minIntervalMs: 0,

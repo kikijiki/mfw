@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { DiagramPre } from "../features/docs/DiagramPre";
 import { attachmentUrl } from "../features/tasks/attachments";
 import { isAdrId, md, remarkTaskIds, TASK_HREF } from "../lib/markdown";
 import { useGo } from "../lib/nav";
@@ -71,6 +72,7 @@ export function MarkdownField(props: {
 						remarkPlugins={[remarkGfm, remarkTaskIds(known)]}
 						components={{
 							...md,
+							pre: DiagramPre,
 							a: ({ href: linkHref, ...rest }) => {
 								if (linkHref?.startsWith(TASK_HREF)) {
 									const refId = linkHref.slice(TASK_HREF.length);
@@ -82,7 +84,7 @@ export function MarkdownField(props: {
 												e.preventDefault();
 												go(
 													isAdrId(refId)
-														? href.adrs(props.project, refId)
+														? href.adr(props.project, refId)
 														: href.task(props.project, refId),
 												);
 											}}

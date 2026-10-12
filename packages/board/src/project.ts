@@ -1,6 +1,11 @@
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { type BoardConfig, BoardStore, loadBoardConfig } from "@mfw/board-core";
+import {
+	type BoardConfig,
+	BoardStore,
+	type BoardStoreOptions,
+	loadBoardConfig,
+} from "@mfw/board-core";
 import type { ClaimConfig } from "./claim.ts";
 
 /** mfw's own field-name choices for claim semantics — kept out of `claim.ts`
@@ -13,23 +18,10 @@ export const MFW_CLAIM_FIELDS: Omit<ClaimConfig, "root"> = {
 	activeStatus: "in_progress",
 };
 
-/** Both `board.yaml` and `.mfw/board.yaml` exist in one directory. */
-export class AmbiguousBoardError extends Error {
-	constructor(
-		readonly dir: string,
-		readonly candidates: string[],
-	) {
-		super(
-			`ambiguous board in ${dir}: both ${candidates.join(" and ")} exist; remove one or pick with --config / MFW_BOARD`,
-		);
-		this.name = "AmbiguousBoardError";
-	}
-}
-
 export interface BoardLocation {
 	/** Absolute path of the `board.yaml` that was found. */
 	configPath: string;
-	/** Directory containing it: where locks/state live (`.mfw` for the nested layout). */
+	/** Directory containing it: the board folder, where locks/state live. */
 	root: string;
 }
 
@@ -47,9 +39,11 @@ function located(configPath: string): BoardLocation {
 
 /**
  * Finds the board gitignore-style: from `startDir` and each parent up to `/`,
- * check `board.yaml` then `.mfw/board.yaml`; the first directory with a hit
- * wins. `--config` beats `MFW_BOARD` beats the search. Returns null if there
- * is no board; throws `AmbiguousBoardError` on a both-present directory.
+ * look for `board.yaml` at the directory's root; the first directory with a
+ * hit wins. `--config` beats `MFW_BOARD` beats the search. Returns null if
+ * there is no board. A board from the `.mfw/` era is not searched for: the
+ * daemon moves it out of `.mfw/` when it attaches the project (see
+ * `legacyBoardNear`, used only to say so).
  */
 export function discoverBoard(
 	startDir: string = process.cwd(),
@@ -67,13 +61,20 @@ export function discoverBoard(
 	let dir = resolve(startDir);
 	for (;;) {
 		const direct = join(dir, "board.yaml");
+		if (existsSync(direct)) return located(direct);
+		const parent = dirname(dir);
+		if (parent === dir) return null;
+		dir = parent;
+	}
+}
+
+/** A `.mfw/board.yaml` (the layout before the board moved to its folder's
+ * root) in `startDir` or a parent, to name in the "no board" error. */
+export function legacyBoardNear(startDir: string): string | null {
+	let dir = resolve(startDir);
+	for (;;) {
 		const nested = join(dir, ".mfw", "board.yaml");
-		const hasDirect = existsSync(direct);
-		const hasNested = existsSync(nested);
-		if (hasDirect && hasNested)
-			throw new AmbiguousBoardError(dir, [direct, nested]);
-		if (hasDirect) return located(direct);
-		if (hasNested) return located(nested);
+		if (existsSync(nested)) return nested;
 		const parent = dirname(dir);
 		if (parent === dir) return null;
 		dir = parent;
@@ -86,7 +87,7 @@ export function findMfwRoot(startDir: string): string | null {
 }
 
 export interface MfwProject {
-	/** The board root: the directory `board.yaml` lives in (`.mfw` for the nested layout). */
+	/** The board root: the directory `board.yaml` lives in. */
 	root: string;
 	/** Absolute path of the `board.yaml` in use. */
 	configPath: string;
@@ -97,16 +98,23 @@ export interface MfwProject {
 
 export async function openMfwProject(
 	startDir: string = process.cwd(),
-	opts: DiscoverOptions = {},
+	opts: DiscoverOptions & BoardStoreOptions = {},
 ): Promise<MfwProject> {
 	const loc = discoverBoard(startDir, opts);
 	if (!loc) {
+		const legacy = legacyBoardNear(startDir);
 		throw new Error(
-			`no board found: looked for board.yaml and .mfw/board.yaml in ${resolve(startDir)} and every parent up to / (override with --config <board.yaml> or MFW_BOARD)`,
+			`no board found: looked for board.yaml in ${resolve(startDir)} and every parent up to / (override with --config <board.yaml> or MFW_BOARD)` +
+				(legacy
+					? `; ${legacy} is a board from the .mfw/ layout, attach its project in mfw (it moves the board out of .mfw) or point --config at it`
+					: ""),
 		);
 	}
 	const config = await loadBoardConfig(loc.configPath);
-	const store = new BoardStore(loc.root, config);
+	const store = new BoardStore(loc.root, config, {
+		...(opts.overrideRules ? { overrideRules: opts.overrideRules } : {}),
+		...(opts.onOverride ? { onOverride: opts.onOverride } : {}),
+	});
 	return {
 		root: loc.root,
 		configPath: loc.configPath,

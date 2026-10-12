@@ -20,7 +20,7 @@ export interface AgentActionDeps {
 	engine: {
 		startAction(
 			prompt: string,
-			opts?: { model?: string },
+			opts?: { model?: string; originRef?: string },
 		): Promise<{ runId: string }>;
 	};
 	tasks?: { get(id: string): Promise<{ title: string } | null> };
@@ -42,6 +42,7 @@ export function createAgentAction(deps: AgentActionDeps): TriggerActionHandler {
 		const prompt = renderPlaceholders(action.prompt, values);
 		const { runId } = await deps.engine.startAction(prompt, {
 			model: action.model,
+			originRef: `trigger:${dispatch.deliveryId}`,
 		});
 		return { ok: true, runId };
 	};

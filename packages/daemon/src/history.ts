@@ -10,6 +10,8 @@ const NOISE = new Set([
 	"task.edited",
 	"resource.locked",
 	"resource.released",
+	// Sampled every 30 s per live run (U2-05): a heartbeat, not an event.
+	"run.usage_sampled",
 ]);
 
 export interface DigestEntry {
@@ -28,6 +30,24 @@ export interface DigestEntry {
 	detail?: string;
 }
 
+/**
+ * Activity over the digest's window, for the "Since you left" strip: how many
+ * (non-routine) events fell in each equal bucket. A bucket's index maps back
+ * to a time with `from + i * bucketMs`.
+ */
+export interface DigestHistogram {
+	/** Window start (the first counted event), epoch ms. */
+	from: number;
+	/** Window end: the last event, or `now` when given. */
+	to: number;
+	bucketMs: number;
+	counts: number[];
+}
+
+/** At most this many buckets, and never narrower than a minute. */
+export const HISTOGRAM_BUCKETS = 24;
+const MIN_BUCKET_MS = 60_000;
+
 export interface Digest {
 	project: string;
 	sinceSeq: number;
@@ -37,6 +57,8 @@ export interface Digest {
 	entries: DigestEntry[];
 	/** Whether anything in here needs the operator to act. */
 	needsAttention: boolean;
+	/** Event counts over time; null when nothing countable happened. */
+	histogram: DigestHistogram | null;
 }
 
 /**
@@ -64,6 +86,8 @@ export function buildDigest(
 	events: StoredEvent[],
 	/** Each task's current board status, or undefined if deleted. Optional to keep this pure; omitted means history only. */
 	currentStatus?: (taskId: string) => string | undefined,
+	/** `now` extends the histogram to the present, so a bucket click past the last event is live. */
+	opts: { now?: number; buckets?: number } = {},
 ): Digest {
 	const buckets = new Map<DigestEntry["kind"], DigestEntry>();
 	const add = (kind: DigestEntry["kind"], taskId?: string, detail?: string) => {
@@ -124,7 +148,36 @@ export function buildDigest(
 		summary: summarize(entries),
 		entries,
 		needsAttention,
+		histogram: histogramOf(events, opts.now, opts.buckets ?? HISTOGRAM_BUCKETS),
 	};
+}
+
+/** Event counts in equal buckets over `[first event, max(last event, now)]`. */
+export function histogramOf(
+	events: readonly { type: string; ts: number }[],
+	now?: number,
+	buckets = HISTOGRAM_BUCKETS,
+): DigestHistogram | null {
+	const counted = events.filter((e) => !NOISE.has(e.type));
+	if (counted.length === 0) return null;
+	let from = Number.POSITIVE_INFINITY;
+	let to = 0;
+	for (const e of counted) {
+		if (e.ts < from) from = e.ts;
+		if (e.ts > to) to = e.ts;
+	}
+	if (now !== undefined && now > to) to = now;
+	const bucketMs = Math.max(
+		MIN_BUCKET_MS,
+		Math.ceil((to - from) / Math.max(1, buckets)),
+	);
+	const n = Math.floor((to - from) / bucketMs) + 1;
+	const counts = new Array<number>(n).fill(0);
+	for (const e of counted) {
+		const i = Math.min(n - 1, Math.floor((e.ts - from) / bucketMs));
+		counts[i] = (counts[i] ?? 0) + 1;
+	}
+	return { from, to, bucketMs, counts };
 }
 
 /**

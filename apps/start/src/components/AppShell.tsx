@@ -1,21 +1,17 @@
 import { useQuery } from "@tanstack/react-query";
 import { useRouterState } from "@tanstack/react-router";
 import {
-	Activity,
 	Boxes,
-	Cloud,
 	Ellipsis,
 	FolderPlus,
-	History,
-	Inbox,
+	House,
 	type LucideIcon,
-	Monitor,
 	PanelLeftClose,
 	PanelLeftOpen,
-	Route as RouteIcon,
+	Search,
 	Settings,
 } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import {
@@ -25,12 +21,18 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "~/components/ui/select";
+import { Tip } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
-import {
-	GlobalDispatchButton,
-	ProjectDispatchButton,
-} from "../features/dispatch/DispatchControls";
+import { GlobalDispatchButton } from "../features/dispatch/DispatchControls";
+import { PresenceBar } from "../features/presence/PresenceBar";
 import { AddProjectDialog } from "../features/projects/AddProjectDialog";
+import { ProjectEntry, useRailRows } from "../features/shell/SidebarProject";
+import {
+	UsageSidebarBlock,
+	UsageStripBlock,
+	useUsageFeed,
+} from "../features/usage/UsageMeters";
+import { handleKeyDown } from "../lib/keyboard";
 import {
 	LiveContext,
 	type LiveStatus,
@@ -41,6 +43,7 @@ import { useSidebarPreference } from "../lib/sidebarPreference";
 import { ToastProvider } from "../lib/toast";
 import { useTRPC } from "../lib/trpc";
 import { href, isActive, withBase } from "../routes";
+import { ShortcutKbd } from "./ShortcutKbd";
 import "../styles/tokens.css";
 import { DaemonUnreachableBanner, ReconnectingOverlay } from "./ErrorState";
 
@@ -87,40 +90,46 @@ function Shell({ children, project, activePath, navigate }: AppShellProps) {
 
 	const { inboxCount } = useInboxBadge();
 	const sidebar = useSidebarPreference();
+	// The one 60 s usage refetch and change subscription; surfaces only read the cache.
+	useUsageFeed();
 
 	return (
 		/* Exactly the viewport; never scrolls, so the sidebar cannot grow with content. */
 		<div
-			className="mfw-v2 flex h-full w-full flex-col overflow-hidden md:flex-row"
+			className="mfw-v2 flex h-full w-full flex-col overflow-hidden"
 			style={{ background: "var(--mfw-bg)" }}
 		>
-			<Sidebar
-				path={path}
-				project={project}
-				inboxCount={inboxCount}
-				onNavigate={go}
-				expanded={sidebar.expanded}
-				onToggle={sidebar.toggle}
-			/>
-			<div className="flex min-h-0 min-w-0 flex-1 flex-col">
-				<HealthBanner />
-				<MobileHeader project={project} onNavigate={go} />
-				{/*
-				 * Positioning boundary for transient overlays. `min-h-0` lets it shrink
-				 * below its content; `main` is the one scroll container, and screens
-				 * with their own scrolling resolve `h-full` against it.
-				 *
-				 * `data-scroll-root`: the element a task panel locks while open
-				 * (`document.body` is never the scroll container).
-				 */}
-				<div data-content-region className="relative min-h-0 min-w-0 flex-1">
-					<ReconnectingStatus />
-					<main
-						data-scroll-root
-						className="h-full min-h-0 min-w-0 overflow-auto pb-14 md:pb-0"
-					>
-						{children}
-					</main>
+			{/* Who is working where and what needs you, on every screen. */}
+			<PresenceBar onNavigate={go} />
+			<div className="flex min-h-0 flex-1 flex-col md:flex-row">
+				<Sidebar
+					path={path}
+					project={project}
+					inboxCount={inboxCount}
+					onNavigate={go}
+					expanded={sidebar.expanded}
+					onToggle={sidebar.toggle}
+				/>
+				<div className="flex min-h-0 min-w-0 flex-1 flex-col">
+					<HealthBanner />
+					<MobileHeader project={project} onNavigate={go} />
+					{/*
+					 * Positioning boundary for transient overlays. `min-h-0` lets it shrink
+					 * below its content; `main` is the one scroll container, and screens
+					 * with their own scrolling resolve `h-full` against it.
+					 *
+					 * `data-scroll-root`: the element a task panel locks while open
+					 * (`document.body` is never the scroll container).
+					 */}
+					<div data-content-region className="relative min-h-0 min-w-0 flex-1">
+						<ReconnectingStatus />
+						<main
+							data-scroll-root
+							className="h-full min-h-0 min-w-0 overflow-auto pb-14 md:pb-0"
+						>
+							{children}
+						</main>
+					</div>
 				</div>
 			</div>
 			{/* Reset transient mobile menus whenever the router commits a path. */}
@@ -159,20 +168,58 @@ interface NavEntry {
 	icon: LucideIcon;
 }
 
+/** Opens the command palette (it owns its open state behind mod+K; press the key). */
+function openPalette() {
+	handleKeyDown(
+		new KeyboardEvent("keydown", { key: "k", ctrlKey: true, metaKey: true }),
+	);
+}
+
+function SearchButton({ expanded }: { expanded: boolean }) {
+	if (!expanded) {
+		return (
+			<Tip label="Jump to task, run…" side="right">
+				<Button
+					type="button"
+					variant="ghost"
+					size="icon-sm"
+					className="self-center"
+					aria-label="Search"
+					onClick={openPalette}
+				>
+					<Search />
+				</Button>
+			</Tip>
+		);
+	}
+	return (
+		<button
+			type="button"
+			className="mfw-focus flex h-[var(--mfw-row-h)] w-full items-center gap-2 border px-2 text-left"
+			style={{
+				borderColor: "var(--mfw-border)",
+				borderRadius: "var(--mfw-radius-sm)",
+				color: "var(--mfw-fg-muted)",
+				background: "transparent",
+				fontSize: "var(--mfw-text-sm)",
+			}}
+			onClick={openPalette}
+		>
+			<Search aria-hidden className="size-3.5 shrink-0" />
+			<span className="min-w-0 flex-1 truncate">Jump to task, run…</span>
+			<ShortcutKbd keys="mod+k" spaced bordered={false} />
+		</button>
+	);
+}
+
 const PRIMARY_NAV: NavEntry[] = [
-	{ label: "Now", to: href.now(), icon: Activity },
-	{ label: "Inbox", to: href.inbox(), icon: Inbox },
-	{ label: "History", to: href.history(), icon: History },
-	{ label: "Resources", to: href.resources(), icon: Boxes },
-	{ label: "RunPod", to: href.runpod(), icon: Cloud },
-	{ label: "OpenRouter", to: href.openrouter(), icon: RouteIcon },
+	{ label: "Home", to: href.home(), icon: House },
+	{ label: "Fleet", to: href.fleet(), icon: Boxes },
 ];
 
 const MOBILE_NAV: NavEntry[] = [
-	{ label: "Now", to: href.now(), icon: Activity },
-	{ label: "Inbox", to: href.inbox(), icon: Inbox },
-	{ label: "Resources", to: href.resources(), icon: Boxes },
-	{ label: "RunPod", to: href.runpod(), icon: Cloud },
+	{ label: "Home", to: href.home(), icon: House },
+	{ label: "Fleet", to: href.fleet(), icon: Boxes },
 ];
 
 function Sidebar({
@@ -196,6 +243,47 @@ function Sidebar({
 		staleTime: 5 * 60_000,
 	});
 	const [addingProject, setAddingProject] = useState(false);
+	const names = useMemo(
+		() => (projects.data ?? []).map((p) => p.name),
+		[projects.data],
+	);
+	const rows = useRailRows(names);
+
+	const addProject = expanded ? (
+		<Button
+			type="button"
+			variant="ghost"
+			className="h-[var(--mfw-row-h)] w-full justify-start gap-0 px-2 pr-0"
+			aria-label="Add project"
+			onClick={() => setAddingProject(true)}
+		>
+			<span
+				className="min-w-0 flex-1 truncate text-left"
+				style={{
+					fontSize: "var(--mfw-text-md)",
+					fontWeight: "var(--mfw-weight-regular, 400)",
+				}}
+			>
+				Add project
+			</span>
+			<span aria-hidden className="flex size-7 items-center justify-center">
+				<FolderPlus />
+			</span>
+		</Button>
+	) : (
+		<Tip label="Add project" side="right">
+			<Button
+				type="button"
+				variant="ghost"
+				size="icon-sm"
+				className="self-center"
+				aria-label="Add project"
+				onClick={() => setAddingProject(true)}
+			>
+				<FolderPlus />
+			</Button>
+		</Tip>
+	);
 
 	return (
 		<nav
@@ -209,50 +297,62 @@ function Sidebar({
 				borderColor: "var(--mfw-border)",
 			}}
 		>
-			{/* Health belongs to the mfw identity; global dispatch sits at the bottom. */}
+			{/* Identity and the collapse control. Daemon status and the master switch are ONE group right below. */}
 			<div
 				className={cn(
 					"flex items-center gap-1 px-2 py-1.5",
 					!expanded && "flex-col px-0",
 				)}
 			>
-				<div className="flex items-center gap-1">
+				{expanded ? (
 					<span
 						className="font-semibold"
-						style={{
-							fontSize: "var(--mfw-text-lg)",
-							display: expanded ? undefined : "none",
-						}}
+						style={{ fontSize: "var(--mfw-text-lg)" }}
 					>
 						mfw
 					</span>
-					<HealthDot />
-				</div>
-				{expanded ? <div className="flex-1" /> : null}
-				<Button
-					type="button"
-					variant="ghost"
-					size="icon-sm"
-					aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
-					aria-expanded={expanded}
-					onClick={onToggle}
+				) : null}
+				{/* Title, daemon status and master switch share one row. */}
+				{expanded ? (
+					<GlobalDispatchButton
+						variant="status"
+						className="w-auto min-w-0 flex-1"
+					/>
+				) : (
+					<GlobalDispatchButton variant="status" compact />
+				)}
+				<Tip
+					label={expanded ? "Collapse sidebar" : "Expand sidebar"}
+					side="right"
 				>
-					{expanded ? <PanelLeftClose /> : <PanelLeftOpen />}
-				</Button>
+					<Button
+						type="button"
+						variant="ghost"
+						size="icon-sm"
+						className={cn(!expanded && "order-first")}
+						aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
+						aria-expanded={expanded}
+						onClick={onToggle}
+					>
+						{expanded ? <PanelLeftClose /> : <PanelLeftOpen />}
+					</Button>
+				</Tip>
 			</div>
+
+			<SearchButton expanded={expanded} />
 
 			{PRIMARY_NAV.map((entry) => (
 				<NavLink
 					key={entry.to}
 					entry={entry}
 					active={isActive(path, entry.to)}
-					badge={entry.to === href.inbox() ? inboxCount : undefined}
+					badge={entry.to === href.home() ? inboxCount : undefined}
 					onNavigate={onNavigate}
 					compact={!expanded}
 				/>
 			))}
 
-			{expanded ? <Divider /> : null}
+			<Divider />
 
 			{expanded ? (
 				<>
@@ -266,60 +366,24 @@ function Sidebar({
 					>
 						Projects
 					</div>
-					<Button
-						type="button"
-						variant="ghost"
-						className="h-[var(--mfw-row-h)] w-full justify-start gap-0 px-2 pr-0"
-						aria-label="Add project"
-						onClick={() => setAddingProject(true)}
-					>
-						<span className="min-w-0 flex-1 truncate text-left">
-							Add project
-						</span>
-						<span
-							aria-hidden
-							className="flex size-7 items-center justify-center"
-						>
-							<FolderPlus />
-						</span>
-					</Button>
+					{addProject}
 				</>
-			) : (
-				<Button
-					type="button"
-					variant="ghost"
-					size="icon-sm"
-					className="self-center"
-					aria-label="Add project"
-					title="Add project"
-					onClick={() => setAddingProject(true)}
-				>
-					<FolderPlus />
-				</Button>
-			)}
-			{/*
-			 * Project row: link plus per-project play/stop. The button is a sibling
-			 * of the anchor; nested in a link it would also navigate.
-			 */}
-			{(projects.data ?? []).map((p) => (
-				<fieldset
-					key={p.name}
-					aria-label={`${p.name} project`}
-					className={cn(
-						"m-0 flex min-w-0 items-center gap-1 border-0 p-0",
-						!expanded && "flex-col",
-					)}
-				>
-					<NavLink
-						className={cn("min-w-0", expanded ? "flex-1" : "w-full")}
-						entry={{ label: p.name, to: href.board(p.name), icon: Monitor }}
+			) : null}
+			{/* One entry per project: its link, badge, and a menu for everything else. */}
+			{(projects.data ?? []).map((p) => {
+				const row = rows.get(p.name);
+				if (!row) return null;
+				return (
+					<ProjectEntry
+						key={p.name}
+						row={row}
+						appearance={{ icon: p.icon, color: p.color }}
 						active={p.name === project}
+						expanded={expanded}
 						onNavigate={onNavigate}
-						compact={!expanded}
 					/>
-					<ProjectDispatchButton project={p.name} variant="icon" />
-				</fieldset>
-			))}
+				);
+			})}
 			{expanded && projects.data?.length === 0 ? (
 				<div
 					className="px-2 py-1"
@@ -331,12 +395,14 @@ function Sidebar({
 					No projects attached yet.
 				</div>
 			) : null}
+			{expanded ? null : addProject}
 
 			<AddProjectDialog open={addingProject} onOpenChange={setAddingProject} />
 
 			<div className="flex-1" />
+			{/* Subscription usage (5h, 7d, ...): after the projects, just above Settings. */}
+			<UsageSidebarBlock expanded={expanded} onNavigate={onNavigate} />
 			<Divider />
-			<GlobalDispatchButton variant="navigation" compact={!expanded} />
 			<NavLink
 				entry={{ label: "Settings", to: href.settings(), icon: Settings }}
 				active={isActive(path, href.settings())}
@@ -374,12 +440,11 @@ function NavLink({
 }) {
 	const Icon = entry.icon;
 	const badgeLabel = badge ? `${entry.label}, ${badge} items` : entry.label;
-	return (
+	const link = (
 		<a
 			href={withBase(entry.to)}
 			aria-current={active ? "page" : undefined}
 			aria-label={compact ? badgeLabel : undefined}
-			title={compact ? badgeLabel : undefined}
 			className={cn(
 				"mfw-focus relative flex items-center gap-2 no-underline",
 				compact ? "justify-center px-0" : "px-2",
@@ -405,6 +470,13 @@ function NavLink({
 			)}
 			{badge ? <CountBadge count={badge} compact={compact} /> : null}
 		</a>
+	);
+	return compact ? (
+		<Tip label={badgeLabel} side="right">
+			{link}
+		</Tip>
+	) : (
+		link
 	);
 }
 
@@ -472,13 +544,8 @@ function TabBar({
 			document.removeEventListener("keydown", dismissWithKeyboard);
 		};
 	}, [moreOpen]);
-	const moreActive =
-		isActive(path, href.history()) ||
-		isActive(path, href.openrouter()) ||
-		isActive(path, href.settings());
+	const moreActive = isActive(path, href.settings());
 	const moreEntries: NavEntry[] = [
-		{ label: "History", to: href.history(), icon: History },
-		{ label: "OpenRouter", to: href.openrouter(), icon: RouteIcon },
 		{ label: "Settings", to: href.settings(), icon: Settings },
 	];
 	return (
@@ -540,7 +607,7 @@ function TabBar({
 						>
 							<span className="relative">
 								<Icon aria-hidden className="size-5" />
-								{entry.to === href.inbox() && inboxCount > 0 ? (
+								{entry.to === href.home() && inboxCount > 0 ? (
 									<span
 										aria-hidden
 										className="absolute -top-0.5 -right-1 size-2 rounded-full"
@@ -616,6 +683,7 @@ function MobileHeader({
 				</Button>
 				<GlobalDispatchButton variant="icon" />
 			</div>
+			<UsageStripBlock onNavigate={onNavigate} />
 			<AddProjectDialog open={addingProject} onOpenChange={setAddingProject} />
 		</>
 	);
@@ -675,16 +743,17 @@ const STATUS_LABEL: Record<LiveStatus, string> = {
 export function HealthDot() {
 	const { status } = useLive();
 	return (
-		<span
-			role="img"
-			aria-label={STATUS_LABEL[status]}
-			title={STATUS_LABEL[status]}
-			className={cn(
-				"inline-block size-2.5 shrink-0 rounded-full",
-				status !== "connected" && "mfw-pulse",
-			)}
-			style={{ background: `var(${STATUS_TOKEN[status]})` }}
-		/>
+		<Tip label={STATUS_LABEL[status]}>
+			<span
+				role="img"
+				aria-label={STATUS_LABEL[status]}
+				className={cn(
+					"inline-block size-2.5 shrink-0 rounded-full",
+					status !== "connected" && "mfw-pulse",
+				)}
+				style={{ background: `var(${STATUS_TOKEN[status]})` }}
+			/>
+		</Tip>
 	);
 }
 

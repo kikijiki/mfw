@@ -116,6 +116,32 @@ describe("what the chip says", () => {
 	});
 });
 
+describe("a project with no brain route", () => {
+	const blocked = status({
+		playing: false,
+		projectPlaying: true,
+		running: true,
+		state: "held",
+		blocked: "no_brain_route",
+		selfStopped: true,
+		reason: "blocked: no brain route: configure brain.routes",
+	});
+
+	test("reads as an unconfigured brain, not as a rate limit", () => {
+		expect(dispatchLabel(blocked)).toBe("Brain not configured");
+		expect(dispatchTone(blocked)).toBe("warn");
+		expect(dispatchExplain(blocked)).toContain(
+			"Brain not configured \u2014 set brain.routes in project settings",
+		);
+		expect(dispatchExplain(blocked)).not.toContain("holding dispatch");
+	});
+
+	test("the chip links to the project's settings", () => {
+		expect(dispatchControlsSource).toContain("href.projectSettings(project)");
+		expect(dispatchControlsSource).toContain('"no_brain_route"');
+	});
+});
+
 describe("the master stop, and the fleet underneath it", () => {
 	const fleet = (
 		playing: number,
@@ -240,52 +266,44 @@ describe("where the controls landed", () => {
 	/** `toContain` on a whole source file dumps the file into the failure. */
 	const has = (source: string, needle: string) => source.includes(needle);
 
-	test("the sidebar carries a play/stop on every project row", () => {
-		// Must be a sibling of the row's NavLink; nested, every click also navigates.
-		const rows = shell.slice(
-			shell.indexOf("(projects.data ?? []).map"),
-			shell.indexOf("projects.data?.length === 0"),
+	test("the sidebar carries a play/stop for every project, inside its entry", () => {
+		const entry = read("features/shell/SidebarProject.tsx");
+		// The toggle is a sibling of the row's link, never nested in it.
+		expect(has(entry, "useProjectDispatch(name)")).toBe(true);
+		expect(has(entry, 'data-testid="project-dispatch"')).toBe(true);
+		expect(has(entry, "<GlobalDispatchButton")).toBe(false);
+		const sidebar = shell.slice(
+			shell.indexOf("function Sidebar"),
+			shell.indexOf("function Divider"),
 		);
-		expect(
-			/<NavLink[\s\S]*?\/>\s*<ProjectDispatchButton\s+project=\{p\.name\}/.test(
-				rows,
-			),
-		).toBe(true);
-		expect(has(rows, "<GlobalDispatchButton")).toBe(false);
-		expect(rows.indexOf("<NavLink")).toBeLessThan(
-			rows.indexOf("<ProjectDispatchButton"),
-		);
+		expect(has(sidebar, "<ProjectEntry")).toBe(true);
 	});
 
 	test("the global mfw control is in the shell, reachable from any route", () => {
 		expect(has(shell, "<GlobalDispatchButton")).toBe(true);
 	});
 
-	test("the sidebar puts the global mfw action in a full row directly above Settings", () => {
+	test("the sidebar groups mfw status and the master switch directly under the title", () => {
 		const sidebar = shell.slice(
 			shell.indexOf("function Sidebar"),
 			shell.indexOf("function Divider"),
 		);
 		const header = sidebar.slice(
-			sidebar.indexOf("{/* Health belongs to the mfw identity"),
+			sidebar.indexOf("{/* Identity and the collapse control."),
+			sidebar.indexOf("<GlobalDispatchButton"),
+		);
+		const control = '<GlobalDispatchButton variant="status" compact />';
+		expect(header).toContain(">\n\t\t\t\t\t\tmfw\n");
+		expect(header).not.toContain("<HealthDot />");
+		expect(sidebar).toContain(control);
+		expect(sidebar.indexOf(control)).toBeLessThan(
 			sidebar.indexOf("{PRIMARY_NAV.map"),
 		);
+		// Nothing global is left at the bottom beside Settings.
 		const bottom = sidebar.slice(
 			sidebar.lastIndexOf('<div className="flex-1" />'),
 		);
-		const control =
-			'<GlobalDispatchButton variant="navigation" compact={!expanded} />';
-		expect(
-			/<div className="flex items-center gap-1">[\s\S]*?>\s*mfw\s*<\/span>\s*<HealthDot \/>\s*<\/div>/.test(
-				header,
-			),
-		).toBe(true);
-		expect(header).not.toContain("<GlobalDispatchButton");
-		expect(bottom).toContain(control);
-		expect(bottom.indexOf(control)).toBeLessThan(
-			bottom.indexOf('label: "Settings"'),
-		);
-		expect(bottom).toContain(`${control}\n\t\t\t<NavLink`);
+		expect(bottom).not.toContain("<GlobalDispatchButton");
 	});
 
 	test("the phone header carries only the global control, not a redundant per-project one", () => {

@@ -2,7 +2,7 @@
  * Shared domain primitives.
  *
  * Task and spec SHAPES are not here: parsing owns them (`taskfile.ts`) and the
- * board on disk owns their state (`board.ts` + `.mfw/tasks/`). This
+ * board on disk owns their state (`board.ts` + `tasks/`). This
  * file holds only the small vocabulary every side agrees on, so the enums
  * cannot drift apart.
  */

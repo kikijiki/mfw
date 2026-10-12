@@ -307,7 +307,18 @@ describe("process-global host observation lifecycle", () => {
 				}>
 			)[0]?.code,
 		).toBe("partial-observation");
+		// The loop remembers the failure: one in a row, after discovery was ok.
+		expect(coordinator.observations.healthTrack()["linux-cpu"]).toMatchObject({
+			result: "error",
+			lastOkAt: time.now(),
+			consecutiveFailures: 1,
+		});
 		await time.fireNext();
+		expect(coordinator.observations.healthTrack()["linux-cpu"]).toMatchObject({
+			result: "ok",
+			lastOkAt: time.now(),
+			consecutiveFailures: 0,
+		});
 		const recovered = coordinator.readModel().health[0];
 		expect(recovered?.result).toBe("ok");
 		expect(recovered?.detail?.latest).toMatchObject({

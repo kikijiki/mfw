@@ -1,3 +1,4 @@
+export * from "./checks.ts";
 export * from "./cli-support.ts";
 export * from "./config.ts";
 export * from "./document.ts";
@@ -7,6 +8,7 @@ export * from "./ids.ts";
 export { acquireKernelLock } from "./kernel-lock.ts";
 export { KeyedLock } from "./lock.ts";
 export * from "./ownership.ts";
+export * from "./rules.ts";
 export * from "./schedule.ts";
 export * from "./store.ts";
 export * from "./workflow.ts";

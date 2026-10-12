@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
 	ArrowDownToLine,
 	ArrowLeft,
@@ -15,9 +15,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
+import { TipSpan } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
 import { AppLink } from "../../components/AppLink";
-import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { Cost, Mono, Tokens } from "../../components/Cost";
 import { Empty } from "../../components/Empty";
 import { ErrorState, StaleWhenOffline } from "../../components/ErrorState";
@@ -28,9 +28,22 @@ import { StatusPill } from "../../components/StatusPill";
 import type { VirtualListHandle } from "../../components/VirtualList";
 import { VirtualList } from "../../components/VirtualList";
 import { useKeyBindings } from "../../lib/keyboard";
-import { humanizeError, useToast } from "../../lib/toast";
+import { humanizeError } from "../../lib/toast";
 import { useTRPC } from "../../lib/trpc";
 import { href } from "../../routes";
+import { ActivityChip, ScopeMeter } from "../agents/ActivityChip";
+import {
+	activityExplanation,
+	asActivityDetail,
+	killReasonLabel,
+	shownActivity,
+} from "../agents/activity";
+import { activityAttention } from "../agents/attention";
+import { RouteBadge } from "../agents/RouteBadge";
+import { RunMoves } from "../agents/RunMoves";
+import { StopRunDialog, useRunControls } from "../agents/useRunControls";
+import { AnswerBox } from "../clarify/AnswerBox";
+import { nearestIndexByTs } from "../inspector/bandModel";
 import {
 	buildItems,
 	isFailure,
@@ -38,6 +51,13 @@ import {
 	TranscriptEntry,
 	type TranscriptItem,
 } from "./entries";
+import {
+	ancestry,
+	depthOf,
+	isSubagentOpen,
+	subagentGroups,
+	visibleItems,
+} from "./subagents";
 import { isTerminalRunState, useRunStream } from "./useRunStream";
 
 /**
@@ -55,16 +75,17 @@ export function RunPage({
 	query,
 	onQueryChange,
 	entrySeq,
+	scrollToTs,
 }: {
 	project: string;
 	runId: string;
 	query: string;
 	onQueryChange: (q: string) => void;
 	entrySeq?: number;
+	/** An instant (epoch ms), e.g. from the inspector's state band: scroll to the entry nearest it. */
+	scrollToTs?: number | null;
 }) {
 	const trpc = useTRPC();
-	const queryClient = useQueryClient();
-	const { toast } = useToast();
 
 	const runQuery = useQuery(trpc.runs.get.queryOptions({ project, runId }));
 	const run = runQuery.data ?? null;
@@ -82,12 +103,8 @@ export function RunPage({
 	const [focus, setFocus] = useState(-1);
 	const [matchIndex, setMatchIndex] = useState(0);
 	const [flashSeq, setFlashSeq] = useState<number | null>(entrySeq ?? null);
-	const [confirmStop, setConfirmStop] = useState(false);
 	const [steerText, setSteerText] = useState("");
 	const [journalOpen, setJournalOpen] = useState(false);
-	const [respondingApproval, setRespondingApproval] = useState<string | null>(
-		null,
-	);
 
 	const listRef = useRef<VirtualListHandle | null>(null);
 	const searchRef = useRef<HTMLInputElement | null>(null);
@@ -104,7 +121,20 @@ export function RunPage({
 		[stream.entries],
 	);
 
-	const items = useMemo(
+	// Subagents: a running one is open under its `Agent` call, a finished one
+	// collapses to `N entries`; `toggledSubs` flips either.
+	const [toggledSubs, setToggledSubs] = useState<Set<string>>(() => new Set());
+	const groups = useMemo(() => subagentGroups(allItems), [allItems]);
+	const toggleSub = useCallback((key: string) => {
+		setToggledSubs((prev) => {
+			const next = new Set(prev);
+			if (next.has(key)) next.delete(key);
+			else next.add(key);
+			return next;
+		});
+	}, []);
+
+	const filtered = useMemo(
 		() =>
 			allItems.filter((item) => {
 				if (item.kind === "tool") return showCommands;
@@ -130,6 +160,10 @@ export function RunPage({
 			showMessages,
 			showSystem,
 		],
+	);
+	const items = useMemo(
+		() => visibleItems(filtered, toggledSubs, groups),
+		[filtered, toggledSubs, groups],
 	);
 
 	const needle = query.trim().toLowerCase();
@@ -177,15 +211,44 @@ export function RunPage({
 	// biome-ignore lint/correctness/useExhaustiveDependencies: runs once per deep link, after the entries that satisfy it arrive
 	useEffect(() => {
 		if (entrySeq == null || items.length === 0) return;
-		const index = items.findIndex(
-			(i) => i.seq === entrySeq || i.seqs?.includes(entrySeq),
-		);
-		if (index === -1) return;
+		const at = (i: TranscriptItem) =>
+			i.seq === entrySeq || i.seqs?.includes(entrySeq);
+		const index = items.findIndex(at);
+		if (index === -1) {
+			// Inside a collapsed subagent: open it (and those around it) so the entry shows.
+			const hidden = filtered.find(at);
+			if (!hidden) return;
+			const closed = ancestry(hidden.parent, groups).filter((k) => {
+				const g = groups.get(k);
+				return g && !isSubagentOpen(g, toggledSubs);
+			});
+			if (closed.length === 0) return;
+			setToggledSubs((prev) => {
+				const next = new Set(prev);
+				for (const k of closed) next.add(k);
+				return next;
+			});
+			return;
+		}
 		jumpTo(index, true);
 		setFlashSeq(items[index]?.seq ?? entrySeq);
 		const timer = setTimeout(() => setFlashSeq(null), 2500);
 		return () => clearTimeout(timer);
 	}, [entrySeq, items.length]);
+
+	// The state band's cursor: the entry nearest that instant comes into view.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: a scrub is the only trigger; entries arriving must not re-scroll
+	useEffect(() => {
+		if (scrollToTs == null || items.length === 0) return;
+		let last = 0;
+		const stamps = items.map((item) => {
+			const t = Date.parse(item.ts);
+			last = Number.isFinite(t) ? t : last;
+			return last;
+		});
+		const index = nearestIndexByTs(stamps, scrollToTs);
+		if (index >= 0) jumpTo(index);
+	}, [scrollToTs]);
 
 	const cycle = useCallback(
 		(
@@ -211,72 +274,22 @@ export function RunPage({
 		setFollow(atBottom);
 	}, []);
 
-	const stop = useMutation(
-		trpc.runs.stop.mutationOptions({
-			meta: { label: "Stop run" },
-			onMutate: async () => {
-				const filter = trpc.runs.get.queryFilter({ project, runId });
-				await queryClient.cancelQueries(filter);
-				const key = trpc.runs.get.queryKey({ project, runId });
-				const previous = queryClient.getQueryData(key);
-				queryClient.setQueryData(key, (row) =>
-					row ? { ...row, state: "ended" as const } : row,
-				);
-				return { previous };
-			},
-			onError: (_err, _vars, ctx) => {
-				if (ctx?.previous)
-					queryClient.setQueryData(
-						trpc.runs.get.queryKey({ project, runId }),
-						ctx.previous,
-					);
-			},
-			onSuccess: () => {
-				setConfirmStop(false);
-				toast({ tone: "success", title: "Stopping run" });
-			},
-			onSettled: () => {
-				void queryClient.invalidateQueries(
-					trpc.runs.get.queryFilter({ project, runId }),
-				);
-				void queryClient.invalidateQueries(trpc.runs.active.queryFilter());
-			},
-		}),
-	);
-
-	const steer = useMutation(
-		trpc.runs.steer.mutationOptions({
-			meta: { label: "Steer" },
-			onSuccess: () => {
-				setSteerText("");
-				toast({ tone: "success", title: "Steer delivered" });
-			},
-		}),
-	);
-	const respondApproval = useMutation(
-		trpc.runs.respondApproval.mutationOptions({
-			meta: { label: "Respond to approval" },
-			onMutate: ({ requestId }) => setRespondingApproval(requestId),
-			onSuccess: () =>
-				toast({ tone: "success", title: "Approval response delivered" }),
-			onError: () => setRespondingApproval(null),
-		}),
-	);
+	const target = {
+		project,
+		runId,
+		label: run?.label ?? runId,
+		state: run?.state ?? "unknown",
+		capabilities: run?.capabilities,
+	};
+	const controls = useRunControls(target);
+	const settleApproval = controls.approval.settle;
 	useEffect(() => {
-		if (!respondingApproval) return;
-		const approval = allItems.find(
-			(item) =>
-				item.kind === "approval" && item.requestId === respondingApproval,
-		);
-		if (approval?.kind === "approval" && approval.status !== "pending")
-			setRespondingApproval(null);
-	}, [allItems, respondingApproval]);
+		settleApproval(allItems);
+	}, [allItems, settleApproval]);
 
 	const live = !isTerminalRunState(run?.state);
-	const providerActive = run?.state === "running";
-	const steerable = Boolean(
-		providerActive && run?.capabilities.verified && run?.capabilities.steer,
-	);
+	const providerActive = controls.stoppable;
+	const steerable = controls.steerable;
 
 	useKeyBindings([
 		{
@@ -351,14 +364,15 @@ export function RunPage({
 			<PageHeader
 				back={
 					<Button size="xs" variant="ghost" asChild>
-						<AppLink to={href.runs(project)}>
-							<ArrowLeft aria-hidden /> Runs
+						<AppLink to={href.board(project)}>
+							<ArrowLeft aria-hidden /> Board
 						</AppLink>
 					</Button>
 				}
 				title={
 					<span className="flex min-w-0 flex-wrap items-center gap-2">
 						{run ? <StatusPill kind="run" value={run.state} /> : null}
+						{run ? <ActivityChip run={run} /> : null}
 						<span className="min-w-0 truncate">
 							{run?.taskTitle ??
 								(run?.taskId && run.label === run.taskId
@@ -379,8 +393,8 @@ export function RunPage({
 							{run.executionTarget === "runpod" ? (
 								<AppLink to={href.runpod()}>RunPod operations</AppLink>
 							) : null}
-							{run.providerId ? <Chip>{run.providerId}</Chip> : null}
 							<span>{run.model}</span>
+							<RouteBadge route={run.route} providerId={run.providerId} />
 							{run.reasoningEffort ? (
 								<span>{run.reasoningEffort} effort</span>
 							) : null}
@@ -416,23 +430,45 @@ export function RunPage({
 								</span>
 							) : null}
 							{totals.turns != null ? <span>{totals.turns} turns</span> : null}
-							{run.branch ? <Mono value={run.branch} /> : null}
+							{run.branch ? (
+								<AppLink
+									to={href.repoBranch(project, run.branch)}
+									title="Open this branch in the repo view"
+								>
+									<Mono value={run.branch} />
+								</AppLink>
+							) : null}
+							<ScopeMeter sample={run.scopeSample} />
+							{killReasonLabel(run.killReason) ? (
+								<Chip
+									tone={run.killReason === "manual" ? "neutral" : "critical"}
+									title={`kill reason: ${run.killReason}`}
+								>
+									{killReasonLabel(run.killReason)}
+								</Chip>
+							) : null}
 						</>
 					) : null
 				}
 				actions={
-					providerActive ? (
-						<Button
-							size="sm"
-							variant="destructive"
-							disabled={stop.isPending}
-							onClick={() => setConfirmStop(true)}
-						>
-							<Square aria-hidden /> {stop.isPending ? "Stopping…" : "Stop"}
-						</Button>
-					) : null
+					<>
+						<RunMoves target={target} controls={controls} />
+						{providerActive || controls.stop.pending ? (
+							<Button
+								size="sm"
+								variant="destructive"
+								disabled={controls.stop.pending}
+								onClick={controls.stop.request}
+							>
+								<Square aria-hidden />{" "}
+								{controls.stop.pending ? "Stopping…" : "Stop"}
+							</Button>
+						) : null}
+					</>
 				}
 			/>
+
+			{run ? <RunActivityBanner project={project} run={run} /> : null}
 
 			<HarnessBar
 				provider={run?.providerId ?? hello?.provider ?? null}
@@ -551,23 +587,41 @@ export function RunPage({
 							}
 						/>
 					}
-					renderItem={(item: TranscriptItem, index: number) => (
-						<TranscriptEntry
-							item={item}
-							expanded={expanded.has(item.seq)}
-							onToggle={() => toggle(item.seq)}
-							query={needle || undefined}
-							focused={index === focus}
-							flash={item.seq === flashSeq}
-							approvalPending={
-								item.kind === "approval" &&
-								respondingApproval === item.requestId
-							}
-							onApproval={(requestId, decision) =>
-								respondApproval.mutate({ project, runId, requestId, decision })
-							}
-						/>
-					)}
+					renderItem={(item: TranscriptItem, index: number) => {
+						const sub =
+							item.kind === "tool" && groups.get(item.id)?.entries
+								? groups.get(item.id)
+								: undefined;
+						return (
+							<TranscriptEntry
+								item={item}
+								depth={depthOf(item, groups)}
+								{...(sub
+									? {
+											subagent: {
+												entries: sub.entries,
+												tools: sub.tools,
+												finished: sub.finished,
+												open: isSubagentOpen(sub, toggledSubs),
+												onToggle: () => toggleSub(sub.key),
+											},
+										}
+									: {})}
+								expanded={expanded.has(item.seq)}
+								onToggle={() => toggle(item.seq)}
+								query={needle || undefined}
+								focused={index === focus}
+								flash={item.seq === flashSeq}
+								approvalPending={
+									item.kind === "approval" &&
+									controls.approval.respondingId === item.requestId
+								}
+								onApproval={
+									controls.approvals ? controls.approval.respond : undefined
+								}
+							/>
+						);
+					}}
 				/>
 			)}
 
@@ -580,9 +634,7 @@ export function RunPage({
 					}}
 					onSubmit={(e) => {
 						e.preventDefault();
-						const message = steerText.trim();
-						if (!message) return;
-						steer.mutate({ project, runId, message });
+						controls.steer.send(steerText, { onSent: () => setSteerText("") });
 					}}
 				>
 					<Send
@@ -600,26 +652,14 @@ export function RunPage({
 					<Button
 						type="submit"
 						size="sm"
-						disabled={steer.isPending || steerText.trim().length === 0}
+						disabled={controls.steer.pending || steerText.trim().length === 0}
 					>
-						{steer.isPending ? "Sending…" : "Send"}
+						{controls.steer.pending ? "Sending…" : "Send"}
 					</Button>
 				</form>
 			) : null}
 
-			<ConfirmDialog
-				open={confirmStop}
-				onOpenChange={setConfirmStop}
-				title={`Stop ${run?.label ?? runId}?`}
-				description={
-					run?.capabilities.verified && run.capabilities.interrupt
-						? "The harness is asked to interrupt the active turn cleanly. If it does not acknowledge in time, mfw stops the process. Committed work is kept; nothing is merged."
-						: "The agent process is stopped and the run finalizes as interrupted. Committed work is kept; nothing is merged."
-				}
-				confirmLabel="Stop run"
-				pending={stop.isPending}
-				onConfirm={() => stop.mutate({ project, runId })}
-			/>
+			<StopRunDialog controls={controls} target={target} />
 		</Page>
 	);
 }
@@ -677,16 +717,16 @@ function HarnessBar({
 			</span>
 			{capabilities?.verified ? <Chip tone="ok">verified harness</Chip> : null}
 			{session ? (
-				<span title={`session ${session.sessionId}`}>
+				<TipSpan tip={`session ${session.sessionId}`}>
 					turn {session.ordinal} · {session.status}
 					{session.turnId ? ` · ${session.turnId.slice(-8)}` : ""}
-				</span>
+				</TipSpan>
 			) : null}
 			{features.length > 0 ? (
-				<span title={features.join(", ")}>
+				<TipSpan tip={features.join(", ")}>
 					{features.length} harness{" "}
 					{features.length === 1 ? "feature" : "features"}
-				</span>
+				</TipSpan>
 			) : null}
 		</div>
 	);
@@ -936,19 +976,63 @@ function Journal({
 							>
 								{s.step}
 							</span>
-							<span
+							<TipSpan
 								className="min-w-0 flex-1 truncate"
 								style={{
 									color: "var(--mfw-fg-muted)",
 									fontSize: "var(--mfw-text-xs)",
 								}}
-								title={s.error ?? JSON.stringify(s.result ?? {})}
+								tip={s.error ?? JSON.stringify(s.result ?? {})}
 							>
 								{s.error ?? JSON.stringify(s.result ?? {})}
-							</span>
+							</TipSpan>
 						</li>
 					))}
 				</ul>
+			) : null}
+		</div>
+	);
+}
+
+/**
+ * What the run needs from you, above the transcript: its open question with
+ * an answer box (a finished run that asked keeps it until answered), or, for
+ * a live run, the approval it waits on or why it looks stalled.
+ */
+function RunActivityBanner({
+	project,
+	run,
+}: {
+	project: string;
+	run: {
+		id: string;
+		state: string;
+		activity?: unknown;
+		activityDetail?: unknown;
+	};
+}) {
+	const activity = shownActivity(run);
+	const attention = activityAttention({
+		project,
+		runId: run.id,
+		state: run.state,
+		activity: activity ?? null,
+		activityDetail: run.activityDetail,
+	});
+	return (
+		<div className="flex shrink-0 flex-col gap-1 px-3 pt-2 empty:hidden">
+			<AnswerBox project={project} runId={run.id} />
+			{activity && attention && attention !== "question" ? (
+				<p
+					className="px-2 py-1"
+					style={{
+						background: "color-mix(in oklch, var(--mfw-warn) 12%, transparent)",
+						borderRadius: "var(--mfw-radius-sm)",
+						fontSize: "var(--mfw-text-xs)",
+					}}
+				>
+					{activityExplanation(activity, asActivityDetail(run.activityDetail))}
+				</p>
 			) : null}
 		</div>
 	);

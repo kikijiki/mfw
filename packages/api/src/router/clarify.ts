@@ -1,3 +1,4 @@
+import { recordHumanAction, taskOfRun } from "@mfw/daemon/human-actions";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
@@ -13,12 +14,17 @@ import {
  * project the operator is not viewing is still discoverable.
  */
 export const clarifyRouter = createTRPCRouter({
-	/** Every unanswered question set, across every project. */
+	/**
+	 * Every unanswered question set, across every project. `taskId` is the
+	 * asking run's task (null for an import), so the board can mark the card
+	 * of a task waiting on its own run's question.
+	 */
 	open: publicProcedure.query(async ({ ctx }) => {
 		const out = [];
 		for (const svc of ctx.orchestrator.list()) {
 			for (const c of await svc.clarify.list({ open: true })) {
-				out.push({ project: svc.name, ...c });
+				const source = await svc.registry.get(c.runId);
+				out.push({ project: svc.name, ...c, taskId: source?.taskId ?? null });
 			}
 		}
 		out.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
@@ -82,11 +88,21 @@ export const clarifyRouter = createTRPCRouter({
 				continuePlanning: z.boolean().default(false),
 			}),
 		)
-		.mutation(({ ctx, input }) =>
-			ctx.svc.clarify.answer(input.runId, input.answers, {
+		.mutation(async ({ ctx, input }) => {
+			const result = await ctx.svc.clarify.answer(input.runId, input.answers, {
 				continuePlanning: input.continuePlanning,
-			}),
-		),
+			});
+			await recordHumanAction(ctx.svc, {
+				action: "runs.answer",
+				runId: input.runId,
+				taskId: await taskOfRun(ctx.svc, input.runId),
+				input: {
+					answered: input.answers.length,
+					continuePlanning: input.continuePlanning,
+				},
+			});
+			return result;
+		}),
 
 	/**
 	 * Abandon a Draft paused on these questions. The task moves first (claim

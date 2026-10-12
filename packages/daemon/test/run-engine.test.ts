@@ -1,12 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openProjectDb } from "@mfw/db/client";
 import { EventBus, type StoredEvent } from "@mfw/db/eventlog";
 import { ulid } from "@mfw/db/ids";
 import { AgentHost } from "../src/agent-host.ts";
-import { AdapterRegistry } from "../src/agents/adapter.ts";
+import {
+	AdapterRegistry,
+	claudeAdapter,
+	type ProviderConfig,
+} from "../src/agents/adapter.ts";
 import { SecretEnvironment } from "../src/execution-environment.ts";
 import {
 	ExecutionLaunchUncertainError,
@@ -17,12 +22,15 @@ import {
 } from "../src/execution-target.ts";
 import { git } from "../src/git.ts";
 import { silentLogger } from "../src/log.ts";
+import type { RoutingSettings } from "../src/routing.ts";
 import {
 	GlobalStopError,
+	noBackgroundAgents,
+	ProviderHeldError,
 	RunEngine,
 	type RunEngineDeps,
-	resolveTaskModel,
 	SteerUnsupportedError,
+	TaskNotClaimableError,
 } from "../src/run-engine.ts";
 import { RunRegistry } from "../src/run-registry.ts";
 import { TaskOwnershipHeldError } from "../src/tasks/index.ts";
@@ -52,6 +60,20 @@ emit({ type: "done", reason: "complete" });
 process.exit(0);
 `;
 
+/** Records the provider each invocation was built for (prepare and launch). */
+class RecordingAdapters extends AdapterRegistry {
+	readonly calls: ProviderConfig[] = [];
+	override invocation(
+		cfg: ProviderConfig,
+		model: string,
+		prompt: string,
+		opts: { steer: boolean; disallowBackgroundAgents?: boolean },
+	) {
+		this.calls.push(structuredClone(cfg));
+		return super.invocation(cfg, model, prompt, opts);
+	}
+}
+
 async function fixture(
 	opts: {
 		globalPaused?: () => { reason: string } | null;
@@ -61,6 +83,9 @@ async function fixture(
 		projectId?: string;
 		provider?: { id: string; type: "claude-cli" | "codex-cli" };
 		modelTiers?: Partial<Record<"light" | "standard" | "strong", string>>;
+		routing?: RoutingSettings["routing"];
+		providerHolds?: RunEngineDeps["providerHolds"];
+		adapters?: AdapterRegistry;
 		workloadSecretGrantIds?: string[];
 		resolveWorkloadSecrets?: (selection: {
 			projectId: string;
@@ -92,12 +117,19 @@ async function fixture(
 		runsDir: join(mfwDir, "runs"),
 	});
 	const host = new AgentHost();
-	const adapters = new AdapterRegistry();
+	const adapters = opts.adapters ?? new AdapterRegistry();
 	const driverPath = join(root, "fake-driver.ts");
 	await writeFile(driverPath, FAKE_DRIVER);
 	adapters.driverOverride = driverPath;
 	adapters.buildArgv = () => ["true"];
 
+	const live: RoutingSettings = {
+		provider: opts.provider ?? { id: "claude-cli", type: "claude-cli" },
+		model: "sonnet",
+		...(opts.modelTiers ? { modelTiers: opts.modelTiers } : {}),
+		reasoningEffort: "high",
+		routing: opts.routing ?? null,
+	};
 	const engineDeps: RunEngineDeps = {
 		handle,
 		registry,
@@ -115,23 +147,19 @@ async function fixture(
 		projectRoot: root,
 		projectName: "demo",
 		integrationBranch: "main",
-		provider: opts.provider ?? { id: "claude-cli", type: "claude-cli" },
+		// Mutable on purpose: tests change the project's routing mid-flight.
+		routing: () => live,
+		providerHolds: opts.providerHolds,
 		defaults: {
-			model: "sonnet",
-			modelTiers: opts.modelTiers,
-			reasoningEffort: "high",
-			maxRepairs: 2,
 			leaseMs: 60_000,
 		},
 		globalPaused: opts.globalPaused,
 		buildPrompt: {
 			task: opts.buildTaskPrompt ?? (async (id) => `do task ${id}`),
-			repair: async (id) => `repair ${id}`,
-			resume: async (id) => `resume ${id}`,
+			continuation: async (id, parentRunId) =>
+				`continue ${id} (from ${parentRunId})`,
 			import: async () => "import",
 			plan: async (goal) => `plan: ${goal}`,
-			unblock: async (id, parentRunId, reason) =>
-				`unblock ${id} (from ${parentRunId}): ${reason}`,
 		},
 	};
 	const engine = new RunEngine(engineDeps);
@@ -144,85 +172,27 @@ async function fixture(
 		engine,
 		restartEngine: () => new RunEngine(engineDeps),
 		seen,
+		live,
 	};
 }
 
-describe("resolveTaskModel", () => {
-	const base = {
-		explicit: undefined,
-		modelTier: null,
-		providerId: "claude-cli",
-		projectModel: "sonnet",
-		projectModelTiers: undefined,
-	} as const;
-
-	test("an explicit override always wins", () => {
-		expect(
-			resolveTaskModel({ ...base, explicit: "opus", modelTier: "light" }),
-		).toEqual({ model: "opus", rule: "explicit" });
-	});
-
-	test("no task tier: the project model", () => {
-		expect(resolveTaskModel({ ...base, modelTier: null })).toEqual({
-			model: "sonnet",
-			rule: "project-model",
-		});
-	});
-
-	test("a project modelTiers override wins over both the project model and the catalogue", () => {
-		expect(
-			resolveTaskModel({
-				...base,
-				modelTier: "strong",
-				projectModelTiers: { strong: "claude-opus-5" },
-			}),
-		).toEqual({ model: "claude-opus-5", rule: "project-tier" });
-		// standard is no exception: an explicit override for it still wins.
-		expect(
-			resolveTaskModel({
-				...base,
-				modelTier: "standard",
-				projectModelTiers: { standard: "claude-sonnet-5" },
-			}),
-		).toEqual({ model: "claude-sonnet-5", rule: "project-tier" });
-	});
-
-	test("standard with no project override falls back to the project model, not the catalogue", () => {
-		expect(
-			resolveTaskModel({
-				...base,
-				modelTier: "standard",
-				projectModel: "claude-sonnet-5",
-			}),
-		).toEqual({ model: "claude-sonnet-5", rule: "project-model-standard" });
-	});
-
-	test("light/strong with no project override fall back to the provider catalogue's tier default", () => {
-		expect(resolveTaskModel({ ...base, modelTier: "light" })).toEqual({
-			model: "haiku",
-			rule: "catalogue-tier",
-		});
-		expect(resolveTaskModel({ ...base, modelTier: "strong" })).toEqual({
-			model: "opus",
-			rule: "catalogue-tier",
-		});
-		expect(
-			resolveTaskModel({
-				...base,
-				modelTier: "light",
-				providerId: "codex-cli",
-			}),
-		).toEqual({ model: "gpt-5.6-luna", rule: "catalogue-tier" });
-	});
-
-	test("a tier with no catalogue entry (unknown provider) falls back to the project model", () => {
-		expect(
-			resolveTaskModel({
-				...base,
-				modelTier: "light",
-				providerId: "unknown-cli",
-			}),
-		).toEqual({ model: "sonnet", rule: "project-model" });
+describe("noBackgroundAgents", () => {
+	test("task and repair runs (and draft expansion) cannot start background agents", () => {
+		expect(noBackgroundAgents({ kind: "task", taskId: "T-1" })).toBe(true);
+		expect(noBackgroundAgents({ kind: "repair", taskId: "T-1" })).toBe(true);
+		expect(noBackgroundAgents({ kind: "plan", taskId: "T-1" })).toBe(true);
+		expect(noBackgroundAgents({ kind: "plan", taskId: null })).toBe(false);
+		expect(noBackgroundAgents({ kind: "action" })).toBe(false);
+		const argv = claudeAdapter.invocation(
+			{ id: "claude-cli", type: "claude-cli" },
+			"sonnet",
+			"p",
+			{
+				steer: true,
+				disallowBackgroundAgents: noBackgroundAgents({ kind: "task" }),
+			},
+		).providerArgv;
+		expect(argv[argv.indexOf("--disallowedTools") + 1]).toContain("Agent");
 	});
 });
 
@@ -334,35 +304,7 @@ describe("RunEngine v2", () => {
 			await expect(
 				stale.tryClaim(candidate.id, "next-run", 60_000, "human"),
 			).rejects.toBeInstanceOf(TaskOwnershipHeldError);
-			expect(stale.store.get(candidate.id)?.state.claimedByRunId).toBeNull();
-		} finally {
-			await f.handle.close();
-			await rm(f.root, { recursive: true, force: true });
-		}
-	});
-
-	test("replaying a launched child finishes its claim handoff without stealing a successor", async () => {
-		const f = await fixture();
-		try {
-			const task = await f.tasks.create({
-				title: "resume handoff",
-				status: "ready",
-			});
-			await f.tasks.tryClaim(task.id, "parent", 60_000);
-			const child = await f.registry.create({
-				kind: "task",
-				taskId: task.id,
-				label: "resume handoff child",
-				parentRunId: "parent",
-				model: "sonnet",
-				cwd: f.root,
-			});
-			await f.registry.transition(child.id, "running");
-			await f.engine.startResume("parent", child.id);
-			expect((await f.tasks.get(task.id))?.claimedByRunId).toBe(child.id);
-			await f.tasks.moveLease(task.id, "successor", child.id);
-			await f.engine.startResume("parent", child.id);
-			expect((await f.tasks.get(task.id))?.claimedByRunId).toBe("successor");
+			expect(stale.store.get(candidate.id)?.state.claimedByGroupId).toBeNull();
 		} finally {
 			await f.handle.close();
 			await rm(f.root, { recursive: true, force: true });
@@ -465,6 +407,152 @@ describe("RunEngine v2", () => {
 			"claude-fable-5",
 		);
 
+		f.handle.close();
+		await rm(f.root, { recursive: true, force: true });
+	}, 20_000);
+
+	test("changing the project provider between prepare and launch keeps the run's provider", async () => {
+		const adapters = new RecordingAdapters();
+		const f = await fixture({ adapters });
+		const task = await f.tasks.create({ title: "prepared on claude" });
+		await f.tasks.move(task.id, "ready", "human");
+
+		const prepared = await f.engine.prepareTaskRun(task.id);
+		const row = await f.registry.get(prepared.runId);
+		expect(row).toMatchObject({
+			providerId: "claude-cli",
+			model: "sonnet",
+			harness: "claude-cli",
+			modelVendor: "anthropic",
+		});
+		expect(row?.routing).toMatchObject({
+			provider: "claude-cli",
+			model: "sonnet",
+			reason: "project-model",
+			target: "local",
+		});
+
+		// The operator switches the project to Codex live, before launch.
+		f.live.provider = { id: "codex-cli", type: "codex-cli" };
+		f.live.model = "gpt-5.6-sol";
+		adapters.calls.length = 0;
+		await f.engine.launchPreparedRun(prepared);
+
+		expect(adapters.calls.map((c) => c.id)).toEqual(["claude-cli"]);
+		const driverConfig = JSON.parse(
+			await Bun.file(
+				join(f.registry.runDir(prepared.runId), "driver.json"),
+			).text(),
+		);
+		expect(driverConfig.model).toBe("sonnet");
+
+		// The next run follows the new settings without a restart.
+		const next = await f.tasks.create({ title: "after the switch" });
+		await f.tasks.move(next.id, "ready", "human");
+		const nextRun = await f.engine.startTask(next.id);
+		expect(await f.registry.get(nextRun.runId)).toMatchObject({
+			providerId: "codex-cli",
+			model: "gpt-5.6-sol",
+			modelVendor: "openai",
+		});
+		f.handle.close();
+		await rm(f.root, { recursive: true, force: true });
+	}, 20_000);
+
+	test("task provider/model pins route the run and are persisted with the reason", async () => {
+		const f = await fixture();
+		const task = await f.tasks.create({
+			title: "pinned",
+			provider: "codex-cli",
+			model: "gpt-5.6-terra",
+		});
+		expect((await f.tasks.get(task.id))?.provider).toBe("codex-cli");
+		await f.tasks.move(task.id, "ready", "human");
+		const { runId } = await f.engine.prepareTaskRun(task.id);
+		const run = await f.registry.get(runId);
+		expect(run).toMatchObject({
+			providerId: "codex-cli",
+			model: "gpt-5.6-terra",
+		});
+		expect(run?.routing).toMatchObject({ reason: "task", pinned: true });
+		f.handle.close();
+		await rm(f.root, { recursive: true, force: true });
+	}, 20_000);
+
+	test("a held route refuses a scheduled start before the claim; a human start goes ahead", async () => {
+		const f = await fixture({
+			providerHolds: {
+				snapshot: async () => (key: string) =>
+					key === "claude-cli"
+						? { until: Date.now() + 60_000, reason: "rate-limited run X" }
+						: null,
+			},
+		});
+		const task = await f.tasks.create({ title: "held" });
+		await f.tasks.move(task.id, "ready", "human");
+		await expect(f.engine.startTask(task.id)).rejects.toBeInstanceOf(
+			ProviderHeldError,
+		);
+		expect((await f.tasks.get(task.id))?.claimedByRunId).toBeNull();
+		expect(await f.registry.list()).toEqual([]);
+
+		const { runId } = await f.engine.prepareTaskRun(task.id, {
+			actor: "human",
+		});
+		expect((await f.registry.get(runId))?.providerId).toBe("claude-cli");
+		f.handle.close();
+		await rm(f.root, { recursive: true, force: true });
+	}, 20_000);
+
+	test("an endpoint route launches Codex on it, with the key only via the endpoint's grant", async () => {
+		const adapters = new RecordingAdapters();
+		const selections: string[][] = [];
+		const f = await fixture({
+			adapters,
+			routing: {
+				endpoints: {
+					or: {
+						baseUrl: "https://openrouter.ai/api/v1",
+						envKey: "OPENROUTER_API_KEY",
+						grant: "or-key",
+						model: "qwen/qwen3-coder",
+						vendor: "openrouter",
+					},
+				},
+			},
+			resolveWorkloadSecrets: async (selection) => {
+				selections.push([...selection.grantIds]);
+				return {
+					secretEnvironment: new SecretEnvironment(
+						selection.grantIds.includes("or-key")
+							? { OPENROUTER_API_KEY: "sk-test" }
+							: {},
+					),
+					binding: "b1",
+				};
+			},
+		});
+		const task = await f.tasks.create({
+			title: "via openrouter",
+			provider: "or",
+		});
+		await f.tasks.move(task.id, "ready", "human");
+		const { runId } = await f.engine.startTask(task.id);
+		const run = await f.registry.get(runId);
+		expect(run).toMatchObject({
+			providerId: "codex-cli",
+			model: "qwen/qwen3-coder",
+			modelVendor: "openrouter",
+			workloadSecretGrantIds: ["or-key"],
+		});
+		expect(adapters.calls.at(-1)?.endpoint).toEqual({
+			id: "or",
+			baseUrl: "https://openrouter.ai/api/v1",
+			envKey: "OPENROUTER_API_KEY",
+		});
+		expect(selections.at(-1)).toEqual(["or-key"]);
+		// The key value never lands on the row.
+		expect(JSON.stringify(run)).not.toContain("sk-test");
 		f.handle.close();
 		await rm(f.root, { recursive: true, force: true });
 	}, 20_000);
@@ -1034,27 +1122,70 @@ describe("RunEngine v2", () => {
 		await rm(f.root, { recursive: true, force: true });
 	}, 20_000);
 
-	test("repair child reuses the parent worktree and takes the lease", async () => {
-		const f = await fixture();
-		const t = await f.tasks.create({ title: "flaky" });
+	/** A finished run whose settle released its task, as finalize leaves it. */
+	async function settledParent(
+		f: Awaited<ReturnType<typeof fixture>>,
+		title: string,
+	) {
+		const t = await f.tasks.create({ title });
 		await f.tasks.move(t.id, "ready", "human");
 		const { runId } = await f.engine.startTask(t.id);
 		await waitFor(async () => {
 			const exit = await f.host.readExit(f.registry.runDir(runId));
 			return exit.kind === "exit";
 		});
-		const childId = ulid();
-		await f.engine.startRepair(runId, childId);
-		const child = await f.registry.get(childId);
+		await f.registry.transition(runId, "failed", { outcome: "completed" });
+		await f.tasks.release(t.id, runId, "ready", "scheduler", "settled");
 		const parent = await f.registry.get(runId);
+		return { taskId: t.id, runId, parent };
+	}
+
+	test("a continue: group run reuses the parent's worktree and branch, takes the claim as its own group, and writes relation continue", async () => {
+		const f = await fixture();
+		const { taskId, runId, parent } = await settledParent(f, "flaky");
+		const childId = ulid();
+		const spec = {
+			runId: childId,
+			taskId,
+			groupId: childId,
+			groupKind: "single" as const,
+			role: "implement" as const,
+			actionId: "act-1",
+			worktree: { mode: "continue" as const, runId },
+		};
+
+		await f.engine.startGroupRun(spec);
+
+		const child = await f.registry.get(childId);
 		expect(child?.worktreePath).toBe(parent?.worktreePath);
 		expect(child?.branch).toBe(parent?.branch);
+		expect(child?.baseSha).toBe(parent?.baseSha);
 		expect(child?.attempt).toBe((parent?.attempt ?? 1) + 1);
+		// With no pick from the brain, the continuation keeps the parent's route.
 		expect(child?.providerId).toBe(parent?.providerId);
+		expect(child?.model).toBe(parent?.model);
 		expect(child?.reasoningEffort).toBe(parent?.reasoningEffort);
-		expect((await f.tasks.get(t.id))?.claimedByRunId).toBe(childId);
-		// idempotent by child id
-		await f.engine.startRepair(runId, childId);
+		expect(child?.initialPrompt).toContain(
+			`continue ${taskId} (from ${runId})`,
+		);
+		expect((await f.tasks.get(taskId))?.claimedByRunId).toBe(childId);
+		// typed lineage: the first run roots its chain, the continuation joins it
+		expect(parent?.relation).toBe("fresh");
+		expect(parent?.chainRootId).toBe(runId);
+		expect(child?.relation).toBe("continue");
+		expect(child?.chainRootId).toBe(runId);
+		expect(child?.originRef).toBe("brain:act-1");
+		const started = f.seen.find(
+			(e) => e.type === "run.started" && e.runId === childId,
+		);
+		expect(started?.payload).toMatchObject({
+			kind: "task",
+			taskId,
+			parentRunId: runId,
+			relation: "continue",
+		});
+		// idempotent by run id
+		await f.engine.startGroupRun(spec);
 		expect(
 			(await f.registry.list({})).filter((r) => r.id === childId).length,
 		).toBe(1);
@@ -1062,60 +1193,122 @@ describe("RunEngine v2", () => {
 		await rm(f.root, { recursive: true, force: true });
 	}, 20_000);
 
-	test("MFW-58: unblock child reuses the parent worktree and takes the lease", async () => {
+	test("a continuation never re-asks the parent's journaled question: its report is removed from the worktree", async () => {
 		const f = await fixture();
-		const t = await f.tasks.create({ title: "merge conflict" });
-		await f.tasks.move(t.id, "ready", "human");
-		const { runId } = await f.engine.startTask(t.id);
-		await waitFor(async () => {
-			const exit = await f.host.readExit(f.registry.runDir(runId));
-			return exit.kind === "exit";
-		});
+		const { taskId, runId, parent } = await settledParent(f, "asks");
+		const worktree = parent?.worktreePath as string;
+		await writeFile(
+			join(worktree, "MFW_REPORT.json"),
+			JSON.stringify({ status: "question", question: "Keep v1?" }),
+		);
+
 		const childId = ulid();
-		await f.engine.startUnblock(runId, childId, "merge conflict in a.txt");
+		await f.engine.startGroupRun({
+			runId: childId,
+			taskId,
+			groupId: childId,
+			groupKind: "single",
+			role: "implement",
+			actionId: "act-2",
+			brief: "The answer is: until March.",
+			worktree: { mode: "continue", runId },
+		});
+
 		const child = await f.registry.get(childId);
-		const parent = await f.registry.get(runId);
-		expect(child?.worktreePath).toBe(parent?.worktreePath);
-		expect(child?.branch).toBe(parent?.branch);
-		expect(child?.taskId).toBe(t.id);
-		expect((await f.tasks.get(t.id))?.claimedByRunId).toBe(childId);
-		expect(child?.initialPrompt).toContain("merge conflict in a.txt");
-		// idempotent by child id
-		await f.engine.startUnblock(runId, childId, "merge conflict in a.txt");
-		expect(
-			(await f.registry.list({})).filter((r) => r.id === childId).length,
-		).toBe(1);
+		expect(child?.worktreePath).toBe(worktree);
+		expect(child?.initialPrompt).toContain("until March");
+		expect(existsSync(join(worktree, "MFW_REPORT.json"))).toBe(false);
 		f.handle.close();
 		await rm(f.root, { recursive: true, force: true });
 	}, 20_000);
 
-	test("MFW-58: an unblock lineage cannot recursively spawn another unblock", async () => {
+	test("a continue: spawn for a task a human has since moved out of ready starts nothing", async () => {
 		const f = await fixture();
-		const t = await f.tasks.create({ title: "persistent merge conflict" });
-		await f.tasks.move(t.id, "ready", "human");
-		const { runId } = await f.engine.startTask(t.id);
-		await waitFor(async () => {
-			const exit = await f.host.readExit(f.registry.runDir(runId));
-			return exit.kind === "exit";
-		});
-		const unblockId = ulid();
-		await f.engine.startUnblock(runId, unblockId, "first conflict");
-		await waitFor(async () => {
-			const exit = await f.host.readExit(f.registry.runDir(unblockId));
-			return exit.kind === "exit";
-		});
-
-		// Ordinary repair remains available to the attempt, but neither the
-		// unblock run nor one of its descendants receives a fresh attempt budget.
-		const repairId = ulid();
-		await f.engine.startRepair(unblockId, repairId);
+		const { taskId, runId } = await settledParent(f, "asks, then moved");
+		await f.tasks.move(taskId, "backlog", "human", "not now");
+		const childId = ulid();
 		await expect(
-			f.engine.startUnblock(repairId, ulid(), "conflicted again"),
-		).rejects.toThrow(/already part of an automatic unblock attempt/);
-
+			f.engine.startGroupRun({
+				runId: childId,
+				taskId,
+				groupId: childId,
+				groupKind: "single",
+				role: "implement",
+				actionId: "act-3",
+				worktree: { mode: "continue", runId },
+			}),
+		).rejects.toThrow(TaskNotClaimableError);
+		expect((await f.tasks.get(taskId))?.status).toBe("backlog");
+		expect(await f.registry.get(childId)).toBeNull();
 		f.handle.close();
 		await rm(f.root, { recursive: true, force: true });
 	}, 20_000);
+
+	test("the autonomous continuation entry points are gone: repair, resume, answered resume and unblock are spawns", () => {
+		const e = RunEngine.prototype as unknown as Record<string, unknown>;
+		for (const gone of [
+			"startRepair",
+			"startResume",
+			"startAnsweredResume",
+			"startUnblock",
+		]) {
+			expect(e[gone], gone).toBeUndefined();
+		}
+	});
+
+	test("non-task entry points write their relation and origin", async () => {
+		const f = await fixture();
+		const imp = await f.engine.startImport({ originRef: "human:ui" });
+		const plan = await f.engine.startPlan("ship it");
+		const replan = await f.engine.startPlan("ship it", {
+			parentRunId: plan.runId,
+			answers: [{ question: "q", answer: "a" }],
+		});
+		const action = await f.engine.startAction("do", {
+			originRef: "trigger:del-9",
+		});
+		const manual = await f.engine.startAction("do");
+		const session = await f.engine.startSession("help", { sessionId: "s-1" });
+		const get = async (id: string) => {
+			const r = await f.registry.get(id);
+			return {
+				relation: r?.relation,
+				chainRootId: r?.chainRootId === id ? "self" : r?.chainRootId,
+				originRef: r?.originRef,
+			};
+		};
+		expect(await get(imp.runId)).toEqual({
+			relation: "fresh",
+			chainRootId: "self",
+			originRef: "human:ui",
+		});
+		expect(await get(plan.runId)).toMatchObject({ relation: "fresh" });
+		expect(await get(replan.runId)).toEqual({
+			relation: "replan",
+			chainRootId: "self",
+			originRef: `clarify:${plan.runId}`,
+		});
+		expect(await get(action.runId)).toMatchObject({
+			relation: "trigger",
+			originRef: "trigger:del-9",
+		});
+		expect(await get(manual.runId)).toMatchObject({
+			relation: "fresh",
+			originRef: null,
+		});
+		expect(await get(session.runId)).toMatchObject({
+			relation: "session",
+			originRef: "session:s-1",
+		});
+		for (const r of [imp, plan, replan, action, manual, session]) {
+			await waitFor(async () => {
+				const exit = await f.host.readExit(f.registry.runDir(r.runId));
+				return exit.kind === "exit";
+			});
+		}
+		f.handle.close();
+		await rm(f.root, { recursive: true, force: true });
+	}, 30_000);
 
 	test("a regression repair references a done task without claiming or reopening it", async () => {
 		const f = await fixture();
@@ -1129,6 +1322,8 @@ describe("RunEngine v2", () => {
 		);
 		const run = await f.registry.get(runId);
 		expect(run).toMatchObject({ kind: "repair", taskId: task.id });
+		expect(run?.relation).toBe("recovery");
+		expect(run?.chainRootId).toBe(runId);
 		expect((await f.tasks.get(task.id))?.status).toBe("done");
 		expect((await f.tasks.get(task.id))?.claimedByRunId).toBeNull();
 
@@ -1161,5 +1356,84 @@ describe("run context", () => {
 
 		f.handle.close();
 		await rm(f.root, { recursive: true, force: true });
+	}, 20_000);
+});
+
+describe("approvals", () => {
+	test("an approval requested after a 2 MiB transcript is answerable, and its answer is seen incrementally", async () => {
+		const controls: unknown[] = [];
+		const target: ExecutionTarget = {
+			kind: "approval-test",
+			async prepare() {
+				throw new Error("not launched in this test");
+			},
+			async launch() {},
+			async observe() {
+				return { state: "running" };
+			},
+			async control(_ref, command) {
+				controls.push(command);
+			},
+			async collect() {
+				return { observedShape: null };
+			},
+			async dispose() {
+				return { absenceConfirmed: true, observedShape: null };
+			},
+			async inventory() {
+				return [];
+			},
+			async reconcile() {
+				return { observations: [], errors: [] };
+			},
+		};
+		const f = await fixture({ executionTarget: target });
+		try {
+			const run = await f.registry.create({
+				kind: "task",
+				label: "long transcript",
+				model: "sonnet",
+				cwd: f.root,
+				executionTarget: target.kind,
+				capabilities: { steer: false, verified: true, approvals: true },
+			});
+			await f.registry.transition(run.id, "running");
+			const events = join(f.registry.runDir(run.id), "events.jsonl");
+			let seq = 0;
+			const line = (e: Record<string, unknown>) =>
+				`${JSON.stringify({ ts: new Date().toISOString(), seq: seq++, ...e })}\n`;
+			const filler = line({
+				type: "message",
+				role: "assistant",
+				text: "é".repeat(2000), // multi-byte, so byte and char offsets differ
+			});
+			const approval = (status: string) =>
+				line({
+					type: "approval",
+					requestId: "req-1",
+					kind: "command",
+					status,
+					summary: "run the tests",
+				});
+			const count = Math.ceil((2 * 1024 * 1024) / filler.length) + 1;
+			await writeFile(events, filler.repeat(count) + approval("pending"));
+
+			await f.engine.respondApproval(run.id, "req-1", "accept");
+			expect(controls).toEqual([
+				{ type: "approval", requestId: "req-1", decision: "accept" },
+			]);
+
+			await appendFile(events, filler + approval("accepted"));
+			await expect(
+				f.engine.respondApproval(run.id, "req-1", "accept"),
+			).rejects.toThrow(/not pending/);
+			await expect(
+				f.engine.respondApproval(run.id, "req-unknown", "accept"),
+			).rejects.toThrow(/not pending/);
+			expect(controls).toHaveLength(1);
+		} finally {
+			f.handle.close();
+			await rm(f.root, { recursive: true, force: true });
+		}
 	}, 20_000);
 });

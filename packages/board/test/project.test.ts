@@ -16,27 +16,33 @@ afterEach(async () => {
 });
 
 describe("findMfwRoot", () => {
-	test("finds .mfw/board.yaml by walking up from a nested cwd", async () => {
+	test("finds board.yaml by walking up from a nested cwd", async () => {
+		const repo = await freshRepo();
+		await writeFile(join(repo, "board.yaml"), "mfw: 1\ntypes: {}\n");
+		const nested = join(repo, "a", "b", "c");
+		await mkdir(nested, { recursive: true });
+		expect(findMfwRoot(nested)).toBe(repo);
+	});
+
+	test("returns null when no board.yaml exists anywhere above", async () => {
+		const repo = await freshRepo();
+		expect(findMfwRoot(repo)).toBeNull();
+	});
+
+	test("a board left in .mfw/ is not discovered, and the error says why", async () => {
 		const repo = await freshRepo();
 		await mkdir(join(repo, ".mfw"), { recursive: true });
 		await writeFile(join(repo, ".mfw", "board.yaml"), "mfw: 1\ntypes: {}\n");
-		const nested = join(repo, "a", "b", "c");
-		await mkdir(nested, { recursive: true });
-		expect(findMfwRoot(nested)).toBe(join(repo, ".mfw"));
-	});
-
-	test("returns null when no .mfw/board.yaml exists anywhere above", async () => {
-		const repo = await freshRepo();
 		expect(findMfwRoot(repo)).toBeNull();
+		expect(openMfwProject(repo)).rejects.toThrow(/\.mfw\/ layout/);
 	});
 });
 
 describe("openMfwProject", () => {
 	test("opens a store against the discovered config", async () => {
 		const repo = await freshRepo();
-		await mkdir(join(repo, ".mfw"), { recursive: true });
 		await writeFile(
-			join(repo, ".mfw", "board.yaml"),
+			join(repo, "board.yaml"),
 			[
 				"mfw: 1",
 				"types:",

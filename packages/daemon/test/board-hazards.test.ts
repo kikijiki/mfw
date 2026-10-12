@@ -60,7 +60,7 @@ async function env(): Promise<Env> {
 	const errors: string[] = [];
 	const board = new BoardRepo({
 		projectRoot: root,
-		mfwDir,
+		boardDir: mfwDir,
 		integrationBranch: "main",
 		log: {
 			...silentLogger(),
@@ -203,7 +203,7 @@ describe("git commands that move the board underneath the daemon", () => {
 		// "Restart": a fresh BoardRepo and index over the same directory.
 		const fresh = new BoardRepo({
 			projectRoot: e.root,
-			mfwDir: e.mfwDir,
+			boardDir: e.mfwDir,
 			integrationBranch: "main",
 			log: silentLogger(),
 			minIntervalMs: 0,
@@ -469,7 +469,7 @@ describe("a board file the project genuinely ignores", () => {
 
 		const fresh = new BoardRepo({
 			projectRoot: e.root,
-			mfwDir: e.mfwDir,
+			boardDir: e.mfwDir,
 			integrationBranch: "main",
 			log: silentLogger(),
 			minIntervalMs: 0,

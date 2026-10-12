@@ -1,4 +1,5 @@
 import { check } from "./check.ts";
+import { checklist } from "./checklist.ts";
 import { claim, release } from "./claim.ts";
 import { conflicts } from "./conflicts.ts";
 import { create } from "./create.ts";
@@ -17,7 +18,6 @@ import { show } from "./show.ts";
 import { skill } from "./skill.ts";
 import type { Command } from "./types.ts";
 import { update } from "./update.ts";
-import { validate } from "./validate.ts";
 import { view } from "./view.ts";
 
 /** The command registry. Adding a command = one new file + one line here. */
@@ -28,7 +28,7 @@ export const commands: Command[] = [
 	update,
 	claim,
 	release,
-	validate,
+	check,
 	skill,
 	ready,
 	levels,
@@ -47,7 +47,7 @@ export const commands: Command[] = [
 	dec,
 	toggle,
 	unset,
-	check,
+	checklist,
 	note,
 	row,
 ];

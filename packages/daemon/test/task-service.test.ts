@@ -6,12 +6,14 @@ import { loadBoardConfig } from "@mfw/board-core";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
 import { EventBus, type StoredEvent } from "@mfw/db/eventlog";
 import { ulid } from "@mfw/db/ids";
+import { defaultBoardYaml } from "../src/default-board-config.ts";
 import { silentLogger } from "../src/log.ts";
 import {
 	ConflictError,
 	DraftStatusError,
 	HumanInProgressError,
 	MalformedTaskFileError,
+	RULE_VIOLATION_CAUSE,
 	TaskClaimedError,
 	TaskService,
 } from "../src/task-service.ts";
@@ -71,8 +73,8 @@ describe("create", () => {
 		const got = await svc.get(b.id);
 		expect(got?.dependsOn).toEqual([a.id]);
 		expect(got?.criteria).toEqual([
-			{ text: "does the thing", checked: false },
-			{ text: "tested", checked: true },
+			{ id: "c1", text: "does the thing", checked: false },
+			{ id: "c2", text: "tested", checked: true },
 		]);
 		expect(seen.map((e) => e.type)).toEqual(["task.created", "task.created"]);
 	});
@@ -100,7 +102,8 @@ describe("create", () => {
 		const peer = new TaskService({
 			handle,
 			bus,
-			mfwDir: dir,
+			boardDir: dir,
+			stateDir: dir,
 			config: await loadBoardConfig(`${dir}/board.yaml`),
 			taskKey: "MFW",
 			log: silentLogger(),
@@ -165,7 +168,7 @@ describe("edit", () => {
 		});
 		expect(out.contentRev).toBe(2);
 		expect(out.dependsOn).toEqual([a.id]);
-		expect(out.criteria).toEqual([{ text: "new", checked: true }]);
+		expect(out.criteria).toEqual([{ id: "c2", text: "new", checked: true }]);
 		const edited = seen.find((e) => e.type === "task.edited");
 		expect(edited?.payload).toMatchObject({ source: "api", rev: 2 });
 		expect((edited?.payload as { fields: string[] }).fields.sort()).toEqual([
@@ -558,6 +561,74 @@ describe("claim / release / lease", () => {
 	});
 });
 
+describe("merge tail under board rules", () => {
+	/** A project board.yaml whose task type adds `rules` (written before load). */
+	async function ruledEnv(rules: string[]): Promise<Env> {
+		const dir = await mkdtemp(join(tmpdir(), "mfw-v2-svc-rules-"));
+		const yaml = defaultBoardYaml("MFW").replace(
+			"    slugFrom: title\n",
+			() =>
+				`    slugFrom: title\n    rules:\n${rules.map((r) => `      - ${r}\n`).join("")}`,
+		);
+		await writeFile(join(dir, "board.yaml"), yaml);
+		const handle = await openProjectDb(dir);
+		const bus = new EventBus();
+		const seen: StoredEvent[] = [];
+		bus.subscribe((e) => seen.push(e));
+		const svc = await makeTasks(handle, bus, dir, "MFW");
+		const env = { dir, handle, bus, svc, seen };
+		envs.push(env);
+		return env;
+	}
+	const DONE_NEEDS_VERIFIED =
+		"{ id: done-verified, field: labels, when: { status: done }, must_match: '^verified$' }";
+
+	test("a rule refusing done lands the merged task in review, cause rule_violation, without throwing", async () => {
+		const { svc, seen } = await ruledEnv([DONE_NEEDS_VERIFIED]);
+		const t = await svc.create({
+			title: "t",
+			status: "ready",
+			labels: ["unverified"],
+		});
+		const runId = ulid();
+		expect(await svc.tryClaim(t.id, runId, 60_000)).toBe(true);
+		// The gate is real: a plain release to done is refused.
+		await expect(
+			svc.release(t.id, runId, "done", "scheduler", "merged"),
+		).rejects.toThrow(/done-verified/);
+
+		const landed = await svc.releaseMerged(t.id, runId);
+
+		expect(landed.to).toBe("review");
+		expect(landed.violation).toContain("done-verified");
+		const row = await svc.get(t.id);
+		expect(row?.status).toBe("review");
+		expect(row?.claimedByRunId).toBeNull();
+		const moved = seen
+			.filter((e) => e.type === "task.status_changed")
+			.map((e) => e.payload as { to?: string; reason?: string })
+			.at(-1);
+		expect(moved?.to).toBe("review");
+		expect(moved?.reason?.startsWith(`${RULE_VIOLATION_CAUSE}:`)).toBe(true);
+	});
+
+	test("without a violation the merged task goes to done", async () => {
+		const { svc } = await ruledEnv([DONE_NEEDS_VERIFIED]);
+		const t = await svc.create({
+			title: "t",
+			status: "ready",
+			labels: ["verified"],
+		});
+		const runId = ulid();
+		expect(await svc.tryClaim(t.id, runId, 60_000)).toBe(true);
+		expect(await svc.releaseMerged(t.id, runId)).toEqual({
+			to: "done",
+			violation: null,
+		});
+		expect((await svc.get(t.id))?.status).toBe("done");
+	});
+});
+
 describe("DoR promotion + ready set", () => {
 	test("promoteReady gates on specification and done deps, not checks", async () => {
 		const { svc } = await freshEnv();
@@ -883,7 +954,9 @@ describe("MFW-49: draft capture + expansion", () => {
 		expect(got.modelTier).toBe("strong");
 		expect(got.body).toBe("A fleshed-out description.");
 		expect(got.dod).toEqual(DOD);
-		expect(got.criteria).toEqual([{ text: "it works", checked: false }]);
+		expect(got.criteria).toEqual([
+			{ id: "c1", text: "it works", checked: false },
+		]);
 		// draftPrompt survives: a bad expansion must stay diagnosable.
 		expect(got.draftPrompt).toBe("build the thing");
 		expect(seen.some((e) => e.type === "task.edited")).toBe(true);
@@ -1100,8 +1173,21 @@ describe("graph + list", () => {
 		});
 		const ready = await svc.list("ready");
 		expect(ready.map((t) => t.id)).toEqual([r.id]);
-		expect(ready[0]?.criteria).toEqual([{ text: "c", checked: false }]);
+		expect(ready[0]?.criteria).toEqual([
+			{ id: "c1", text: "c", checked: false },
+		]);
 		expect((await svc.list()).length).toBe(2);
+	});
+
+	test("titles resolves many ids in one call and skips unknown ones", async () => {
+		const { svc } = await freshEnv();
+		const a = await svc.create({ title: "first" });
+		const b = await svc.create({ title: "second" });
+		const titles = svc.titles([b.id, "MFW-404", a.id, b.id]);
+		expect([...titles.entries()]).toEqual([
+			[b.id, "second"],
+			[a.id, "first"],
+		]);
 	});
 });
 

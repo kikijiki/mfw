@@ -12,8 +12,10 @@ import {
 	textInput,
 	writeEnvelope,
 } from "../app-server-protocol.ts";
+import { resumeIdFromArgv, sessionIdFromArgv } from "../native-session.ts";
 
 let proc: ChildProcessWithoutNullStreams | undefined;
+let providerExit: { code: number | null; signal: string | null } | undefined;
 let state: "new" | "initialized" | "session" | "active" | "shutdown" = "new";
 let sessionId: string | undefined;
 let turnId: string | undefined;
@@ -50,8 +52,17 @@ function spawnProvider() {
 		"--include-partial-messages",
 		"--replay-user-messages",
 	]);
-	const actual =
+	const withModel =
 		model && !argv.includes("--model") ? [...argv, "--model", model] : argv;
+	// No `--session-id` given (a hand-built argv): hand Claude the id this
+	// bridge reports, so the reported id is always the real native one.
+	const actual =
+		sessionId &&
+		withModel[0] === "claude" &&
+		!sessionIdFromArgv(withModel) &&
+		!withModel.some((a) => a === "--resume" || a === "--continue")
+			? [...withModel, "--session-id", sessionId]
+			: withModel;
 	const command = actual[0] ?? "claude";
 	proc = spawn(command, actual.slice(1), {
 		cwd,
@@ -61,6 +72,35 @@ function spawnProvider() {
 		process.stderr.write(`${capText(line, 2048)}\n`);
 	});
 	void readLines(proc.stdout, translate);
+	// A brain turn resumes a native session that may be gone: the CLI then
+	// exits at once, without a result. Fail the turn now rather than leave the
+	// driver waiting for the idle watchdog. (Worker runs keep their behaviour.)
+	if (process.env.MFW_RUN_KIND === "brain") {
+		proc.on("exit", (code, signal) => {
+			providerExit = { code, signal };
+			if (state !== "active") return;
+			const message = `claude exited (${code ?? signal}) before the turn completed`;
+			event({ type: "error", message, fatal: true });
+			event({
+				type: "session",
+				provider: "claude-cli",
+				sessionId,
+				turnId,
+				status: "failed",
+				ordinal,
+			});
+			writeEnvelope(
+				notify("turn/completed", {
+					sessionId,
+					turnId,
+					status: "failed",
+					error: { message },
+					resultText: lastResultText,
+				}),
+			);
+			state = "session";
+		});
+	}
 }
 function translate(line: string) {
 	let o: unknown;
@@ -75,6 +115,10 @@ function translate(line: string) {
 	if (type === "assistant" || type === "user") {
 		const message = isRecord(o.message) ? o.message : {};
 		if (!Array.isArray(message.content)) return;
+		// A subagent's traffic names the tool call that started it.
+		const parentId = str(o.parent_tool_use_id);
+		const sub = (value: Record<string, unknown>) =>
+			event(parentId ? { ...value, parent: { toolUseId: parentId } } : value);
 		for (const raw of message.content) {
 			if (!isRecord(raw)) continue;
 			if (raw.type === "text" && typeof raw.text === "string") {
@@ -83,27 +127,28 @@ function translate(line: string) {
 				// of its own at turn/start and turn/steer time, so a user-role echo
 				// here would double it in the transcript. An assistant text part is
 				// never an echo and always new.
-				if (type === "assistant") {
-					event({
+				// A user text with a parent is the subagent's prompt, not an echo.
+				if (type === "assistant" || parentId) {
+					sub({
 						type: "message",
-						role: "assistant",
+						role: type === "assistant" ? "assistant" : "user",
 						text: capText(raw.text, 64 * 1024),
 					});
 				}
 			} else if (raw.type === "thinking" && str(raw.thinking).trim())
-				event({
+				sub({
 					type: "thinking",
 					text: capText(str(raw.thinking), 64 * 1024),
 				});
 			else if (raw.type === "tool_use")
-				event({
+				sub({
 					type: "tool_call",
 					id: str(raw.id),
 					name: str(raw.name, "tool"),
 					input: sanitize(raw.input),
 				});
 			else if (raw.type === "tool_result")
-				event({
+				sub({
 					type: "tool_result",
 					id: str(raw.tool_use_id),
 					ok: raw.is_error !== true,
@@ -214,18 +259,31 @@ async function handle(req: AppServerRequest) {
 					}),
 				);
 				break;
-			case "session/start":
+			case "session/start": {
 				if (state !== "initialized") throw new StateError();
 				cwd = str(p.cwd, cwd);
 				model = typeof p.model === "string" ? p.model : undefined;
-				sessionId = crypto.randomUUID();
+				// The daemon passes `--session-id <uuid derived from the run id>`;
+				// report that same id so what is recorded is what Claude was given.
+				// A resumed (brain) turn continues the session it was handed.
+				const argv = providerArgv([]);
+				sessionId =
+					sessionIdFromArgv(argv) ??
+					resumeIdFromArgv(argv) ??
+					crypto.randomUUID();
 				state = "session";
 				spawnProvider();
 				writeEnvelope(response(req.id, { sessionId }));
 				break;
+			}
 			case "turn/start": {
 				if (state !== "session" || p.sessionId !== sessionId)
 					throw new StateError();
+				if (providerExit) {
+					throw new Error(
+						`claude exited (${providerExit.code ?? providerExit.signal}) before the turn started`,
+					);
+				}
 				const input = textInput(p.input);
 				if (!input) throw new Error("invalid text input");
 				turnId = crypto.randomUUID();

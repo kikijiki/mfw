@@ -68,11 +68,11 @@ async function put(d: string, id: string, extra = "", status = "todo") {
 const getFields = async (d: string, id: string) =>
 	JSON.parse((await mfwb(d, ["show", id, "--json"])).stdout).fields;
 
-describe("validate exit codes and --json", () => {
+describe("check exit codes and --json", () => {
 	test("ok", async () => {
 		const d = await board(2);
-		expect((await mfwb(d, ["validate"])).stdout).toBe("ok");
-		const j = await mfwb(d, ["validate", "--json"]);
+		expect((await mfwb(d, ["check"])).stdout).toBe("ok");
+		const j = await mfwb(d, ["check", "--json"]);
 		expect(j.code).toBe(0);
 		expect(JSON.parse(j.stdout)).toEqual({ ok: true, issues: [] });
 	});
@@ -105,35 +105,36 @@ describe("validate exit codes and --json", () => {
 				),
 		],
 	];
-	for (const [kind, code, setup] of classes) {
-		test(`${kind} exits ${code}`, async () => {
+	for (const [kind, , setup] of classes) {
+		test(`${kind} fails the check`, async () => {
 			const d = await board();
 			await setup(d);
-			const r = await mfwb(d, ["validate"]);
-			expect(r.code).toBe(code);
-			const j = await mfwb(d, ["validate", "--json"]);
-			expect(j.code).toBe(code);
+			const r = await mfwb(d, ["check"]);
+			expect(r.code).toBe(1);
+			const j = await mfwb(d, ["check", "--json"]);
+			expect(j.code).toBe(1);
 			const out = JSON.parse(j.stdout);
 			expect(out.ok).toBe(false);
-			expect(out.issues.map((i: { kind: string }) => i.kind)).toContain(kind);
+			expect(out.issues.map((i: { rule: string }) => i.rule)).toContain(kind);
 			expect(Object.keys(out.issues[0]).sort()).toEqual([
 				"id",
-				"kind",
 				"message",
 				"path",
+				"rule",
+				"severity",
 				"type",
 			]);
 		});
 	}
 
-	test("several classes: lowest code wins, --json lists all", async () => {
+	test("several classes: one exit code, --json lists all", async () => {
 		const d = await board();
 		await put(d, "TK-1", "depends_on: [TK-2, TK-99]\n");
 		await put(d, "TK-2", "depends_on: [TK-1]\n");
-		const j = await mfwb(d, ["validate", "--json"]);
-		expect(j.code).toBe(12);
+		const j = await mfwb(d, ["check", "--json"]);
+		expect(j.code).toBe(1);
 		const kinds = new Set(
-			JSON.parse(j.stdout).issues.map((i: { kind: string }) => i.kind),
+			JSON.parse(j.stdout).issues.map((i: { rule: string }) => i.rule),
 		);
 		expect(kinds.has("reference")).toBe(true);
 		expect(kinds.has("cycle")).toBe(true);
@@ -142,9 +143,9 @@ describe("validate exit codes and --json", () => {
 	test("no board and bad board.yaml exit 3", async () => {
 		const d = await realpath(await mkdtemp(join(tmpdir(), "mfwb-h-")));
 		dirs.push(d);
-		expect((await mfwb(d, ["validate"])).code).toBe(3);
+		expect((await mfwb(d, ["check"])).code).toBe(3);
 		await writeFile(join(d, "board.yaml"), "types: [not, a, map\n");
-		expect((await mfwb(d, ["validate"])).code).toBe(3);
+		expect((await mfwb(d, ["check"])).code).toBe(3);
 	});
 });
 
@@ -158,7 +159,7 @@ describe("hierarchy through create / update / reparent", () => {
 		expect((await mfwb(d, ["update", "TK-3", "parent=TK-2"])).code).toBe(0);
 		expect((await getFields(d, "TK-1")).children ?? []).toEqual([]);
 		expect((await getFields(d, "TK-2")).children).toEqual(["TK-3"]);
-		expect((await mfwb(d, ["validate"])).code).toBe(0);
+		expect((await mfwb(d, ["check"])).code).toBe(0);
 	});
 
 	test("reparent moves, clears with '-', and supports --json", async () => {
@@ -171,7 +172,7 @@ describe("hierarchy through create / update / reparent", () => {
 		expect((await mfwb(d, ["reparent", "TK-3", "-"])).code).toBe(0);
 		expect((await getFields(d, "TK-3")).parent ?? "").toBe("");
 		expect((await getFields(d, "TK-2")).children ?? []).toEqual([]);
-		expect((await mfwb(d, ["validate"])).code).toBe(0);
+		expect((await mfwb(d, ["check"])).code).toBe(0);
 	});
 
 	test("reparent errors carry the HierarchyError code and exit 1", async () => {
@@ -197,14 +198,14 @@ describe("repair", () => {
 		await put(d, "TK-1");
 		await put(d, "TK-2", "parent: TK-1\n");
 		await put(d, "TK-3", "parent: TK-1\n");
-		expect((await mfwb(d, ["validate"])).code).toBe(13);
+		expect((await mfwb(d, ["check"])).code).toBe(1);
 		const r = await mfwb(d, ["repair"]);
 		expect(r.code).toBe(0);
 		expect(r.stdout).toContain(
 			"repaired task TK-1: children [] -> [TK-2, TK-3]",
 		);
 		expect((await getFields(d, "TK-1")).children).toEqual(["TK-2", "TK-3"]);
-		expect((await mfwb(d, ["validate"])).code).toBe(0);
+		expect((await mfwb(d, ["check"])).code).toBe(0);
 		expect((await mfwb(d, ["repair"])).stdout).toBe("nothing to repair");
 		const j = await mfwb(d, ["repair", "--json"]);
 		expect(JSON.parse(j.stdout)).toEqual({ repaired: [] });

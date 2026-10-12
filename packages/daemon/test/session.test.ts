@@ -300,6 +300,8 @@ describe("SessionService.open: the run that actually costs something", () => {
 						branch: "mfw/MFW-8",
 						baseSha: "deadbeef",
 					},
+					// the run records which session opened it (`runs.origin_ref`)
+					sessionId: raised?.id,
 				},
 			},
 		]);
@@ -326,7 +328,7 @@ describe("SessionService.open: the run that actually costs something", () => {
 			environment: "an ephemeral sweep worktree",
 		});
 		await env.sessions.open(raised?.id as string);
-		expect(seen).toEqual([{ reuse: undefined }]);
+		expect(seen).toEqual([{ reuse: undefined, sessionId: raised?.id }]);
 	});
 
 	test("opening an already-opened session is idempotent, no second run", async () => {

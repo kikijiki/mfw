@@ -5,7 +5,7 @@ import { join } from "node:path";
 const source = readFileSync(join(import.meta.dir, "ResourcesPage.tsx"), "utf8");
 const format = readFileSync(join(import.meta.dir, "resourceFormat.ts"), "utf8");
 const route = readFileSync(
-	join(import.meta.dir, "..", "..", "routes", "resources.tsx"),
+	join(import.meta.dir, "..", "..", "routes", "fleet.resources.tsx"),
 	"utf8",
 );
 const projectSettings = readFileSync(
@@ -18,8 +18,8 @@ const projectSemaphores = readFileSync(
 );
 
 describe("the process-global Resources route", () => {
-	test("is a top-level route backed only by hostResources procedures", () => {
-		expect(route).toContain('createFileRoute("/resources")');
+	test("is a Fleet sub-route backed only by hostResources procedures", () => {
+		expect(route).toContain('createFileRoute("/fleet/resources")');
 		expect(route).toContain("component: ResourcesPage");
 		expect(source).toContain("trpc.hostResources.read.queryOptions()");
 		expect(source).toContain("trpc.hostResources.audit.queryOptions");

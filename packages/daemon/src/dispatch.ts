@@ -43,6 +43,24 @@ export interface DispatchTarget {
 export const DEFAULT_STOP_REASON = "stopped from the UI";
 
 /**
+ * Dispatch was asked to start on a project with no brain route. There is no
+ * headless fixed pipeline to fall back to, so this fails closed, with the fix.
+ */
+export class NoBrainRouteError extends Error {
+	readonly code = "no_brain_route";
+	readonly fix = {
+		kind: "setting" as const,
+		text: "configure brain.routes (a harness and model for the project brain) in the project's config, then start dispatch",
+	};
+	constructor(readonly project: string) {
+		super(
+			`cannot start dispatch for '${project}': no brain route is configured, so nothing decides what runs. Fix: configure brain.routes.`,
+		);
+		this.name = "NoBrainRouteError";
+	}
+}
+
+/**
  * Serializes `setDispatching` per target (double-click, two tabs). The settings
  * queue does not cover `scheduler.setEnabled`, so overlapping calls could
  * interleave their second halves and leave `schedulerAutostart` and the pause
@@ -77,6 +95,9 @@ async function applyDispatching(
 	reason: string,
 ): Promise<SchedulerStatus> {
 	if (on) {
+		if ((await target.scheduler.status()).blocked === "no_brain_route") {
+			throw new NoBrainRouteError(target.name);
+		}
 		await target.scheduler.setEnabled(true);
 		await target.settings.update({ schedulerAutostart: true });
 	} else {

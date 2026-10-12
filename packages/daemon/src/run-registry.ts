@@ -1,21 +1,35 @@
 import { mkdir, open } from "node:fs/promises";
 import { join } from "node:path";
+import {
+	isRunActivity,
+	type RunActivity,
+	type RunActivityDetail,
+} from "@mfw/core/activity";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
 import type { ProjectDbHandle, ProjectDbTx } from "@mfw/db/client";
 import { appendEvent, type EventBus, type StoredEvent } from "@mfw/db/eventlog";
 import { ulid } from "@mfw/db/ids";
+import { CHAIN_RELATIONS, relationOf } from "@mfw/db/lineage-backfill";
 import {
 	type KillReason,
+	type RunGroupKind,
+	type RunGroupSelection,
+	type RunGroupStatus,
 	type RunKind,
 	type RunOutcome,
 	type RunReasoningEffort,
+	type RunRelation,
+	type RunRole,
 	type RunState,
+	runGroups,
 	runSteps,
 	runs,
 	runTargetJournal,
 	type TargetJournalPhase,
 	type TargetLifecycleState,
 } from "@mfw/db/schema";
+import { isTerminalRunState } from "@mfw/db/spans";
+import { recordBrainUsage, recordRunUsage } from "@mfw/db/spend";
 import {
 	and,
 	asc,
@@ -27,6 +41,9 @@ import {
 	or,
 	sql,
 } from "drizzle-orm";
+import type { SubagentFold } from "./agents/activity.ts";
+import { isBrainTurnRun } from "./brain-runtime/turn-run.ts";
+import { writeRunSubagents } from "./run-subagents.ts";
 
 /**
  * The DB row is authoritative for run state; the run dir is a debugging
@@ -36,6 +53,7 @@ import {
  */
 
 export type RunRow = typeof runs.$inferSelect;
+export type RunGroupRow = typeof runGroups.$inferSelect;
 export type StepRow = typeof runSteps.$inferSelect;
 export type TargetJournalRow = typeof runTargetJournal.$inferSelect;
 export interface RunCapabilities {
@@ -105,7 +123,6 @@ export interface NewRunSpec {
 	attempt?: number;
 	resumeOrdinal?: number;
 	/** Repair budget for this run; the finalize machine reads it from the row. */
-	maxRepairs?: number;
 	argv?: string[];
 	initialPrompt?: string;
 	goal?: string;
@@ -121,6 +138,23 @@ export interface NewRunSpec {
 	workloadSecretBinding?: string;
 	/** Stable write-ahead identity; defaults to `<runId>/prepare/intent`. */
 	targetPrepareOperationId?: string;
+	/** Routing decision (`routing.ts`); launch reads the provider from it. */
+	routing?: Record<string, unknown>;
+	harness?: string;
+	modelVendor?: string | null;
+	/** Registry SSH host the run executes on (`runs.host_id`). */
+	hostId?: string | null;
+	/** Typed lineage. Derived from kind/label/parent when absent (the same rules the backfill uses). */
+	relation?: RunRelation;
+	/** First run of the worktree chain; derived from the parent's chain when absent. */
+	chainRootId?: string;
+	/** The `decisions.id` whose action created this run. */
+	spawnedByDecisionId?: number;
+	/** Non-run origin: `session:<id>`, `trigger:<deliveryId>`, `clarify:<runId>`, `human:<actor>`. */
+	originRef?: string;
+	/** The attempt group (`run_groups.id`); absent = a group of one named after this run. */
+	groupId?: string;
+	role?: RunRole;
 }
 
 export interface TargetLifecycleEntry {
@@ -224,6 +258,13 @@ export class RunRegistry {
 	async create(spec: NewRunSpec): Promise<RunRow> {
 		const id = spec.id ?? ulid();
 		const now = Date.now();
+		const relation: RunRelation =
+			spec.relation ??
+			relationOf({
+				kind: spec.kind,
+				label: spec.label,
+				parentRunId: spec.parentRunId,
+			});
 		const values = {
 			id,
 			kind: spec.kind,
@@ -240,7 +281,6 @@ export class RunRegistry {
 			baseSha: spec.baseSha ?? null,
 			attempt: spec.attempt ?? 1,
 			resumeOrdinal: spec.resumeOrdinal ?? 0,
-			maxRepairs: spec.maxRepairs ?? null,
 			argv: spec.argv ?? [],
 			initialPrompt: spec.initialPrompt ?? null,
 			goal: spec.goal ?? null,
@@ -254,6 +294,16 @@ export class RunRegistry {
 			workloadSecretNames: spec.workloadSecretNames ?? [],
 			workloadSecretBinding: spec.workloadSecretBinding ?? null,
 			targetLifecycleState: "preparing" as TargetLifecycleState,
+			routing: spec.routing ?? null,
+			harness: spec.harness ?? null,
+			modelVendor: spec.modelVendor ?? null,
+			hostId: spec.hostId ?? null,
+			relation,
+			chainRootId: spec.chainRootId ?? null,
+			spawnedByDecisionId: spec.spawnedByDecisionId ?? null,
+			originRef: spec.originRef ?? null,
+			groupId: spec.groupId ?? null,
+			role: spec.role ?? null,
 			state: "starting" as RunState,
 			capabilities: normalizeRunCapabilities(
 				spec.capabilities ?? { steer: false, verified: false },
@@ -270,7 +320,19 @@ export class RunRegistry {
 		);
 
 		return this.withEvents(async (tx, events) => {
-			const [row] = await tx.insert(runs).values(values).returning();
+			// A chain-extending run joins its parent's chain; everything else roots its own.
+			let chainRootId = values.chainRootId;
+			if (!chainRootId && CHAIN_RELATIONS.has(relation) && spec.parentRunId) {
+				const [parent] = await tx
+					.select({ id: runs.id, chainRootId: runs.chainRootId })
+					.from(runs)
+					.where(eq(runs.id, spec.parentRunId));
+				chainRootId = parent ? (parent.chainRootId ?? parent.id) : id;
+			}
+			const [row] = await tx
+				.insert(runs)
+				.values({ ...values, chainRootId: chainRootId ?? id })
+				.returning();
 			if (!row) throw new Error(`run insert returned no row for ${id}`);
 			await tx.insert(runTargetJournal).values({
 				operationId: spec.targetPrepareOperationId ?? `${id}/prepare/intent`,
@@ -291,11 +353,15 @@ export class RunRegistry {
 					{
 						type: "run.started",
 						runId: id,
+						...(spec.taskId ? { taskId: spec.taskId } : {}),
 						payload: {
 							kind: spec.kind,
 							...(spec.taskId ? { taskId: spec.taskId } : {}),
 							model: spec.model,
 							...(spec.branch ? { branch: spec.branch } : {}),
+							...(spec.parentRunId ? { parentRunId: spec.parentRunId } : {}),
+							relation,
+							label: spec.label,
 						},
 					},
 					now,
@@ -422,6 +488,72 @@ export class RunRegistry {
 		return rows.map(normalizeRunRow);
 	}
 
+	// ---- attempt groups (0017) ----
+
+	/** Insert a group row; a replay of the same id is a no-op that returns the stored row. */
+	async ensureGroup(g: {
+		id: string;
+		taskId: string;
+		kind: RunGroupKind;
+		selection?: RunGroupSelection;
+		createdByAction?: string | null;
+	}): Promise<RunGroupRow> {
+		await this.handle.db
+			.insert(runGroups)
+			.values({
+				id: g.id,
+				taskId: g.taskId,
+				kind: g.kind,
+				selection: g.selection ?? "brain",
+				status: "open",
+				createdByAction: g.createdByAction ?? null,
+				createdAt: new Date(),
+			})
+			.onConflictDoNothing();
+		const row = await this.getGroup(g.id);
+		if (!row) throw new Error(`run group ${g.id} was not stored`);
+		return row;
+	}
+
+	async getGroup(id: string): Promise<RunGroupRow | null> {
+		const [row] = await this.handle.db
+			.select()
+			.from(runGroups)
+			.where(eq(runGroups.id, id));
+		return row ?? null;
+	}
+
+	/** Every run of a group, oldest first. A run with no stored group is a group named after itself. */
+	async groupRuns(groupId: string): Promise<RunRow[]> {
+		const rows = await this.handle.db
+			.select()
+			.from(runs)
+			.where(
+				or(
+					eq(runs.groupId, groupId),
+					and(isNull(runs.groupId), eq(runs.id, groupId)),
+				),
+			)
+			.orderBy(asc(runs.startedAt), asc(runs.id));
+		return rows.map(normalizeRunRow);
+	}
+
+	async setGroup(
+		id: string,
+		patch: {
+			status?: RunGroupStatus;
+			winnerRunId?: string | null;
+			closedAt?: Date | null;
+		},
+	): Promise<RunGroupRow | null> {
+		const [row] = await this.handle.db
+			.update(runGroups)
+			.set(patch)
+			.where(eq(runGroups.id, id))
+			.returning();
+		return row ?? null;
+	}
+
 	/**
 	 * Guarded state change: if `patch.from` is given the update applies only
 	 * while the row is still in that state (compare-and-set); otherwise it is
@@ -444,10 +576,39 @@ export class RunRegistry {
 				.where(eq(runs.id, runId))
 				.returning();
 			if (!row) return null;
+			// The ledger is written in the same tx as the usage it mirrors, so a
+			// run's spend can never be on the row and missing from the ledger.
+			if (fields.usage) {
+				const accountKey =
+					typeof row.routing?.holdKey === "string"
+						? row.routing.holdKey
+						: (row.providerId ?? "unknown");
+				if (isBrainTurnRun(row)) {
+					// A resumed project-brain turn reports its conversation's running
+					// total. `BrainRuntime` writes the delta when it closes the turn.
+				} else if (row.kind === "brain") {
+					// A one-shot brain call: its usage is its own spend. Resumed
+					// brain sessions pass the previous cumulative total instead.
+					await recordBrainUsage(tx, {
+						runId,
+						taskId: row.taskId,
+						accountKey,
+						cumulative: fields.usage,
+					});
+				} else {
+					await recordRunUsage(tx, {
+						runId,
+						taskId: row.taskId,
+						accountKey,
+						usage: fields.usage,
+					});
+				}
+			}
 			events.push(
 				await appendEvent(tx, {
 					type: "run.state_changed",
 					runId,
+					...(prev.taskId ? { taskId: prev.taskId } : {}),
 					payload: {
 						from: prev.state,
 						to,
@@ -657,6 +818,187 @@ export class RunRegistry {
 			.update(runs)
 			.set({ capabilities: normalizeRunCapabilities(caps) })
 			.where(eq(runs.id, runId));
+	}
+
+	/**
+	 * Persist the run's activity and detail. Appends `run.activity_changed`
+	 * only when the activity itself changed; a detail-only change (another
+	 * pending approval, a new question) is written silently. Not a lifecycle
+	 * transition: `state` is untouched.
+	 */
+	async setActivity(
+		runId: string,
+		activity: RunActivity,
+		detail: RunActivityDetail,
+	): Promise<{ changed: boolean; from: RunActivity | null }> {
+		return this.withEvents(async (tx, events) => {
+			const [prev] = await tx
+				.select({ activity: runs.activity, taskId: runs.taskId })
+				.from(runs)
+				.where(eq(runs.id, runId));
+			if (!prev) return { changed: false, from: null };
+			const from = isRunActivity(prev.activity) ? prev.activity : null;
+			await tx
+				.update(runs)
+				.set({
+					activity,
+					activityDetail: detail as unknown as Record<string, unknown>,
+				})
+				.where(eq(runs.id, runId));
+			if (from === activity) return { changed: false, from };
+			events.push(
+				await appendEvent(tx, {
+					type: "run.activity_changed",
+					runId,
+					...(prev.taskId ? { taskId: prev.taskId } : {}),
+					payload: {
+						from,
+						to: activity,
+						...(detail.question ? { question: detail.question } : {}),
+						...(detail.stallCause ? { stallCause: detail.stallCause } : {}),
+						...(detail.pendingApprovals.length
+							? { pendingApprovals: detail.pendingApprovals.length }
+							: {}),
+					},
+				}),
+			);
+			return { changed: true, from };
+		});
+	}
+
+	/**
+	 * Persist the scope watchdog's last sample (`runs.scope_sample`). Appends
+	 * `run.scope_changed` only when the level moved (ok, warn, violation);
+	 * new counts at the same level are written silently.
+	 */
+	async setScopeSample(
+		runId: string,
+		sample: {
+			level: "ok" | "warn" | "violation";
+			files: number;
+			outside: number;
+			foreign: number;
+		} & Record<string, unknown>,
+	): Promise<{ changed: boolean }> {
+		return this.withEvents(async (tx, events) => {
+			const [prev] = await tx
+				.select({ scopeSample: runs.scopeSample, taskId: runs.taskId })
+				.from(runs)
+				.where(eq(runs.id, runId));
+			if (!prev) return { changed: false };
+			const prevLevel = prev.scopeSample?.level;
+			const from =
+				prevLevel === "ok" || prevLevel === "warn" || prevLevel === "violation"
+					? prevLevel
+					: null;
+			await tx
+				.update(runs)
+				.set({ scopeSample: sample })
+				.where(eq(runs.id, runId));
+			if (from === sample.level) return { changed: false };
+			events.push(
+				await appendEvent(tx, {
+					type: "run.scope_changed",
+					runId,
+					...(prev.taskId ? { taskId: prev.taskId } : {}),
+					payload: {
+						from,
+						level: sample.level,
+						files: sample.files,
+						outside: sample.outside,
+						foreign: sample.foreign,
+					},
+				}),
+			);
+			return { changed: true };
+		});
+	}
+
+	/**
+	 * Persist a live run's sampled usage totals (`runs.usage_live`) and announce
+	 * `run.usage_sampled`. Display only: the final `usage` and the ledger are
+	 * written by finalize and are not touched. Returns false for a run that is
+	 * gone or no longer live.
+	 */
+	async recordUsageSample(
+		runId: string,
+		sample: { tokensIn: number; tokensOut: number; costUsd?: number },
+	): Promise<boolean> {
+		return this.withEvents(async (tx, events) => {
+			const [prev] = await tx
+				.select({ taskId: runs.taskId, state: runs.state })
+				.from(runs)
+				.where(eq(runs.id, runId));
+			if (!prev || isTerminalRunState(prev.state)) return false;
+			await tx
+				.update(runs)
+				.set({
+					usageLive: {
+						inputTokens: sample.tokensIn,
+						outputTokens: sample.tokensOut,
+						...(sample.costUsd !== undefined
+							? { costUsd: sample.costUsd }
+							: {}),
+					},
+				})
+				.where(eq(runs.id, runId));
+			events.push(
+				await appendEvent(tx, {
+					type: "run.usage_sampled",
+					runId,
+					...(prev.taskId ? { taskId: prev.taskId } : {}),
+					payload: {
+						tokensIn: sample.tokensIn,
+						tokensOut: sample.tokensOut,
+						...(sample.costUsd !== undefined
+							? { costUsd: sample.costUsd }
+							: {}),
+					},
+				}),
+			);
+			return true;
+		});
+	}
+
+	/**
+	 * Upsert the run's subagents (`run_subagents`) from its transcript fold;
+	 * announces `run.subagents_changed` when one started or finished.
+	 */
+	async recordSubagents(
+		runId: string,
+		subs: readonly SubagentFold[],
+	): Promise<void> {
+		await this.withEvents(async (tx, events) => {
+			const event = await writeRunSubagents(tx, runId, subs);
+			if (event) events.push(event);
+		});
+	}
+
+	/**
+	 * Record the harness's own session id (`runs.native_session_id`). Silent
+	 * (no event) and idempotent; a changed id replaces the old one, since a
+	 * driver that restarts its session reports the new handle. Returns whether
+	 * the row changed.
+	 */
+	async recordNativeSession(
+		runId: string,
+		nativeSessionId: string,
+	): Promise<boolean> {
+		if (!nativeSessionId) return false;
+		const rows = await this.handle.db
+			.update(runs)
+			.set({ nativeSessionId })
+			.where(
+				and(
+					eq(runs.id, runId),
+					or(
+						isNull(runs.nativeSessionId),
+						ne(runs.nativeSessionId, nativeSessionId),
+					),
+				),
+			)
+			.returning({ id: runs.id });
+		return rows.length > 0;
 	}
 
 	/** The run's process is gone: state → "ended" plus the exit facts. */

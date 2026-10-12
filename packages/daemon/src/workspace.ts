@@ -1,5 +1,5 @@
 import { lstat, open, readdir, realpath, stat } from "node:fs/promises";
-import { join, relative, resolve, sep } from "node:path";
+import { extname, join, relative, resolve, sep } from "node:path";
 import { git } from "./git.ts";
 import { runProc } from "./proc.ts";
 import type { RunRegistry } from "./run-registry.ts";
@@ -108,6 +108,24 @@ const SNIFF_BYTES = 8000;
 /** Per side, for `diffFile`. */
 const MAX_DIFF_BYTES = 512 * 1024;
 
+/** Largest image the file viewer will serve as bytes. */
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+const FILE_IMAGE_MIME: Record<string, string> = {
+	".png": "image/png",
+	".jpg": "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif": "image/gif",
+	".webp": "image/webp",
+	".svg": "image/svg+xml",
+	".ico": "image/x-icon",
+	".avif": "image/avif",
+};
+
+/** The content type served for a viewer image; null for anything that is not one (never guessed from content). */
+export const viewerImageMime = (path: string): string | null =>
+	FILE_IMAGE_MIME[extname(path).toLowerCase()] ?? null;
+
 export class WorkspaceService {
 	constructor(private readonly deps: { root: string; registry: RunRegistry }) {}
 
@@ -116,7 +134,8 @@ export class WorkspaceService {
 		const rows = await this.deps.registry.list();
 		const out: WorktreeRef[] = [];
 		for (const run of rows) {
-			if (!run.worktreePath) continue;
+			// A brain turn's scratch dir is not a worktree anyone should base work on.
+			if (!run.worktreePath || run.kind === "brain") continue;
 			try {
 				await stat(run.worktreePath);
 			} catch {
@@ -233,6 +252,34 @@ export class WorkspaceService {
 				? `truncated: showing the first ${want} of ${st.size} bytes`
 				: null,
 		};
+	}
+
+	/**
+	 * Raw bytes of an image in the base, for `<img>`. Same containment as
+	 * `readFile` (realpath inside the base); only image extensions, capped at
+	 * `MAX_IMAGE_BYTES`.
+	 */
+	async readImage(input: {
+		path: string;
+		runId?: string;
+	}): Promise<{ data: Buffer; mime: string; size: number }> {
+		const mime = viewerImageMime(input.path);
+		if (!mime) throw new NotFoundError(`${input.path} is not an image`);
+		const base = await this.baseDir(input.runId);
+		const file = await this.resolveWithin(base, input.path);
+		const st = await stat(file);
+		if (!st.isFile()) throw new NotFoundError(`${input.path} is not a file`);
+		if (st.size > MAX_IMAGE_BYTES) {
+			throw new NotFoundError(`${input.path} is too large to serve`);
+		}
+		const fh = await open(file, "r");
+		try {
+			const data = Buffer.alloc(st.size);
+			if (st.size > 0) await fh.read(data, 0, st.size, 0);
+			return { data, mime, size: st.size };
+		} finally {
+			await fh.close();
+		}
 	}
 
 	async gitStatus(input: { runId?: string } = {}): Promise<WorkspaceStatus> {

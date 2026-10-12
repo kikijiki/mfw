@@ -445,3 +445,123 @@ describe("a run worktree cannot see the board", () => {
 		expect((await git(["status", "--porcelain"], wt.path)).stdout).toBe("");
 	});
 });
+
+describe("archiveWip and discard save work before it is destroyed", () => {
+	test("a dirty worktree is saved to wip/<task>-<run> without touching the agent's index", async () => {
+		const root = await repo();
+		const mgr = new WorktreeManager(root);
+		const wt = await mgr.create("run-wip");
+		// committed, staged, unstaged and untracked work
+		await writeFile(join(wt.path, "src/committed.ts"), "c\n");
+		await git(["add", "src/committed.ts"], wt.path);
+		await git(
+			["-c", "user.email=a@a", "-c", "user.name=a", "commit", "-qm", "agent"],
+			wt.path,
+		);
+		await writeFile(join(wt.path, "src/staged.ts"), "s\n");
+		await git(["add", "src/staged.ts"], wt.path);
+		await writeFile(join(wt.path, "src/a.ts"), "unstaged edit\n");
+		await writeFile(join(wt.path, "src/untracked.ts"), "u\n");
+		const headBefore = (await git(["rev-parse", "HEAD"], wt.path)).stdout;
+
+		const archive = await mgr.archiveWip(wt, {
+			taskId: "MFW-7",
+			runId: "run-wip",
+		});
+
+		expect(archive?.ref).toBe("wip/MFW-7-run-wip");
+		const ref = "refs/heads/wip/MFW-7-run-wip";
+		for (const [file, body] of [
+			["src/committed.ts", "c"],
+			["src/staged.ts", "s"],
+			["src/a.ts", "unstaged edit"],
+			["src/untracked.ts", "u"],
+		] as const) {
+			expect((await git(["show", `${ref}:${file}`], root)).stdout).toBe(body);
+		}
+		// The saved tree differs from base only in the agent's paths: the board,
+		// absent from the sparse worktree, is not recorded as deleted.
+		const changed = (
+			await git(["diff", "--name-only", wt.baseSha, ref], root)
+		).stdout
+			.split("\n")
+			.sort();
+		expect(changed).toEqual([
+			"src/a.ts",
+			"src/committed.ts",
+			"src/staged.ts",
+			"src/untracked.ts",
+		]);
+		// The agent's HEAD and index are untouched.
+		expect((await git(["rev-parse", "HEAD"], wt.path)).stdout).toBe(headBefore);
+		expect(
+			(await git(["diff", "--cached", "--name-only"], wt.path)).stdout,
+		).toBe("src/staged.ts");
+		expect(
+			(await git(["ls-files", "--others", "--exclude-standard"], wt.path))
+				.stdout,
+		).toBe("src/untracked.ts");
+
+		// Archiving again is idempotent.
+		const again = await mgr.archiveWip(wt, {
+			taskId: "MFW-7",
+			runId: "run-wip",
+		});
+		expect(again).toEqual({ ...archive, created: false } as never);
+	});
+
+	test("an untouched worktree has nothing to archive", async () => {
+		const root = await repo();
+		const mgr = new WorktreeManager(root);
+		const wt = await mgr.create("run-clean");
+		expect(await mgr.archiveWip(wt, { runId: "run-clean" })).toBeNull();
+		expect((await git(["for-each-ref", "refs/heads/wip/"], root)).stdout).toBe(
+			"",
+		);
+	});
+
+	test("discard archives, then removes the worktree and its mfw branch", async () => {
+		const root = await repo();
+		const mgr = new WorktreeManager(root);
+		const wt = await mgr.create("run-discard");
+		await writeFile(join(wt.path, "src/new.ts"), "dirty\n");
+
+		const result = await mgr.discard(wt, {
+			taskId: "MFW-3",
+			runId: "run-discard",
+		});
+
+		expect(result.removed).toBe(true);
+		expect(existsSync(wt.path)).toBe(false);
+		expect(
+			(await git(["rev-parse", "--verify", wt.branch], root)).exitCode,
+		).not.toBe(0);
+		expect(
+			(await git(["show", "wip/MFW-3-run-discard:src/new.ts"], root)).stdout,
+		).toBe("dirty");
+	});
+
+	test("with no worktree on disk the branch tip is archived and the branch deleted", async () => {
+		const root = await repo();
+		const mgr = new WorktreeManager(root);
+		const wt = await mgr.create("run-gone");
+		await writeFile(join(wt.path, "src/c.ts"), "c\n");
+		await git(["add", "-A"], wt.path);
+		await git(
+			["-c", "user.email=a@a", "-c", "user.name=a", "commit", "-qm", "work"],
+			wt.path,
+		);
+		const tip = (await git(["rev-parse", wt.branch], root)).stdout;
+		await git(["worktree", "remove", "--force", wt.path], root);
+
+		const result = await mgr.discard(wt, { runId: "run-gone" });
+
+		expect(result).toEqual({
+			archive: { ref: "wip/run-gone", sha: tip, created: true },
+			removed: false,
+		});
+		expect(
+			(await git(["rev-parse", "--verify", wt.branch], root)).exitCode,
+		).not.toBe(0);
+	});
+});

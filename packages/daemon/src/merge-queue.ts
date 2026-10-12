@@ -4,6 +4,7 @@ import type { ProjectDbHandle } from "@mfw/db/client";
 import { appendEvent, type EventBus } from "@mfw/db/eventlog";
 import { engineKv, type MergeJobState, mergeJobs, runs } from "@mfw/db/schema";
 import { and, asc, eq, inArray, lt } from "drizzle-orm";
+import { readProtectedBoardPaths } from "./board-layout.ts";
 import { git } from "./git.ts";
 import type { Logger } from "./log.ts";
 import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
@@ -22,7 +23,7 @@ import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
  *                                │
  *                        (parkRetries ≥ MAX_PARK_RETRIES)
  *                                ▼
- *                        onParked (escalate to a human)
+ *                        onParked (settle merge_parked: the brain decides)
  *                                │  │
  *                        (retry) │  │ (abandon / sendToReady)
  *                                ▼  ▼
@@ -73,7 +74,7 @@ export interface MergeQueueDeps {
 	) => Promise<{ passed: boolean; detail?: string; crashed?: boolean }>;
 	/** Post-merge tail of the owning run's journal (release task → done, etc.). */
 	onMerged: (job: MergeJobView, sha: string) => Promise<void>;
-	/** Parked tail (task → blocked/review, run terminal, preserve worktree). */
+	/** Parked tail: settle `merge_parked` for the brain (task back to ready, run terminal, worktree preserved, job abandoned). */
 	onParked: (
 		job: MergeJobView,
 		reason: string,
@@ -105,18 +106,6 @@ export class MergeQueue {
 	/** Mutable so settings can flip publishing without a restart; affects only
 	 *  what happens after a merge. */
 	private push: { enabled: boolean; remote: string };
-
-	/**
-	 * Late-bound automatic conflict-resolution hook (`RunEngine` does not exist
-	 * yet when the queue is constructed, see boot.ts). `park()` calls it once
-	 * per job, after retries are exhausted and before `onParked`. Absent, or
-	 * returning `null` (brain disabled or spawn failed), escalates straight to
-	 * `onParked`.
-	 */
-	unblock?: (
-		job: MergeJobView,
-		reason: string,
-	) => Promise<{ runId: string } | null>;
 
 	constructor(private readonly deps: MergeQueueDeps) {
 		this.push = deps.push ?? { enabled: false, remote: "origin" };
@@ -423,8 +412,9 @@ export class MergeQueue {
 	 * no conflict.
 	 *
 	 * Protected set: every tracked path under `.mfw/` except `.mfw/triggers/`,
-	 * discovered from the union of base and merged trees (default-deny for new
-	 * mfw paths). Untracked runtime state is unaffected since `git rm` only
+	 * plus the board's own files (`board.yaml`, `tasks/`, `adrs/` at the root of
+	 * the board folder, see `board-layout.ts`), discovered from the union of
+	 * base and merged trees (default-deny for new mfw paths). Untracked runtime state is unaffected since `git rm` only
 	 * touches tracked files. `rm` runs before `checkout` because checkout
 	 * leaves behind anything the branch added.
 	 */
@@ -433,9 +423,10 @@ export class MergeQueue {
 		baseSha: string,
 	): Promise<void> {
 		const dir = this.integrationDir;
+		const board = await readProtectedBoardPaths(this.deps.projectRoot);
 		const treePaths = async (ref: string): Promise<string[]> => {
 			const listed = await git(
-				["ls-tree", "-r", "-z", "--name-only", ref, "--", ".mfw"],
+				["ls-tree", "-r", "-z", "--name-only", ref, "--", ".mfw", ...board],
 				dir,
 			);
 			if (listed.exitCode !== 0) {
@@ -730,24 +721,8 @@ export class MergeQueue {
 		const retries = job.parkRetries + 1;
 		const exhausted = retries >= MAX_PARK_RETRIES;
 
-		// One automatic unblock attempt before escalating; absent, `null` or a
-		// failed spawn falls through to escalation.
-		if (exhausted && this.unblock) {
-			const started = await this.unblock(job, reason).catch((e) => {
-				this.deps.log.error(
-					{ job: job.id, err: e },
-					"automatic unblock attempt failed to start",
-				);
-				return null;
-			});
-			if (started) {
-				await this.markUnblocked(job, reason, kind, retries, started.runId);
-				return;
-			}
-		}
-
 		const finalReason = exhausted
-			? `${reason}; mfw retried this automatically ${retries} time${retries === 1 ? "" : "s"} and could not resolve it; it needs a human`
+			? `${reason}; mfw retried this automatically ${retries} time${retries === 1 ? "" : "s"} and could not resolve it; the brain decides`
 			: reason;
 		const stored = await this.deps.handle.withTx(async (tx) => {
 			await tx
@@ -786,50 +761,6 @@ export class MergeQueue {
 			"merge job parked: automatic retries exhausted",
 		);
 		await this.deps.onParked(job, finalReason, kind);
-	}
-
-	/**
-	 * Hand the job's branch to an automatic unblock run instead of a human.
-	 * Marked `abandoned` (not `parked`) so it drops out of the inbox's
-	 * `state = "parked"` query. The run state and task claim belong to the
-	 * unblock hook (`RunEngine.startUnblock`, boot.ts); this owns only the job
-	 * row and timeline event.
-	 */
-	private async markUnblocked(
-		job: MergeJobView,
-		reason: string,
-		kind: "conflict" | "reverify",
-		retries: number,
-		childRunId: string,
-	): Promise<void> {
-		const stored = await this.deps.handle.withTx(async (tx) => {
-			await tx
-				.update(mergeJobs)
-				.set({
-					state: "abandoned",
-					updatedAt: new Date(),
-					error: reason,
-					parkRetries: retries,
-				})
-				.where(eq(mergeJobs.id, job.id));
-			return appendEvent(tx, {
-				type: "merge.unblock_started",
-				taskId: job.taskId ?? undefined,
-				runId: job.runId,
-				payload: {
-					target: job.targetBranch,
-					kind,
-					reason,
-					retries,
-					childRunId,
-				},
-			});
-		});
-		this.deps.bus.publish([stored]);
-		this.deps.log.warn(
-			{ job: job.id, childRunId },
-			"merge conflict exhausted automatic retries; spawned an unblock run before escalating to a human",
-		);
 	}
 
 	/**

@@ -29,8 +29,9 @@ agents; install it with `mfwb skill install`.
 
 ### Finding the board
 
-Like `.gitignore`: from the current directory upward, in each directory `board.yaml`
-then `.mfw/board.yaml`; the first hit wins (both in one directory is an error).
+Like `.gitignore`: from the current directory upward, the first directory with a
+`board.yaml` at its root wins. (A board still in the old `.mfw/` layout is not found:
+attach its project in mfw, which moves it out, or point `--config` at it.)
 Override with `--config <path-to-board.yaml>` (before or after the command) or the
 `MFW_BOARD` environment variable. No board found: exit 3.
 
@@ -44,6 +45,9 @@ operations, transition verbs) find its type from the id. `list` and `create` def
 
 ```yaml
 mfw: 1
+builtins:                        # optional: severity of the two policy-dependent built-in checks
+  unreachable: error             # error (default) | advisory | off
+  conflicts: advisory
 hierarchy:                       # optional
   parent: parent
   children: children
@@ -63,6 +67,11 @@ types:
       start: { from: [todo], to: doing }
       done: { from: [todo, doing], to: done, arg: outcome, date: closed }
     commit: { prefix: abc }
+    rules:                       # assertions over fields; see "Rules" below
+      - id: done-resolved
+        field: acceptance
+        when: { status: done }
+        forbid: { result: pending }
     fields:
       title: {}
       kind: { values: [epic, task], default: task }
@@ -77,11 +86,91 @@ Field kinds: enum (`values`), ref (`ref: type`, a list of types, or `any`; `list
 `acyclic`), scalar (`type: string|number|boolean|date|json`, `pattern`), and
 `type: checklist`. Common keys: `optional`, `list`, `default`, `required_when`.
 
+## Rules
+
+A type's `rules:` assert things about its fields. Each rule has a board-wide `id`
+and checks the items of one field: the elements of a list, the rows of a `json`
+list, the items of a checklist, or a scalar's value.
+
+| key | meaning |
+| --- | --- |
+| `field` | the field whose items are checked |
+| `when` | only while the document's fields hold these values (like `required_when`) |
+| `forbid: {key: value\|[values]}` | a row / checklist item violates when `key` holds one of the values |
+| `must_match` / `must_not_match` | the item's text must (not) match this regex; `key` names the row key holding the text (checklists use `text`) |
+| `flags` | regex flags: `i`, `m`, `s` |
+| `strip` | removed from the text before `must_match` / `must_not_match` applies |
+| `unless` | an item whose original text matches this is exempt from `must_not_match` |
+| `severity` | `error` (default) or `advisory` |
+| `message` | template with `{id}`, `{text}`, `{field}`, `{rule}` |
+
+`mfwb check` reports every violation. An **error** rule is also a write gate: a
+create, update, row or checklist edit, or transition that would introduce a
+violation is refused, nothing is written, and the offending items are listed. A
+document that already violates a rule stays editable; only new violations block.
+`--override <rule[,rule]>` on any write lets it through (and prints that it did);
+advisory rules never block.
+
+## Refs: markers outside the board
+
+`roots` names directories other than the board's (paths relative to `board.yaml`);
+a `refs` rule scans files in one for a pattern that must name a board document:
+
+```yaml
+roots:
+  code: ../../poot               # also: --root code=<path>, or MFWB_ROOT_CODE
+refs:
+  - id: held-markers
+    root: code
+    paths: ["crates/**/*.rs"]    # root-relative globs (the `owns` grammar)
+    pattern: 'held for (?<id>POOT-\d+)'   # one line at a time; (?<id>...) is the document id
+    flags: i                     # optional
+    to: task                     # the type the id must resolve to
+    status: [planned, doing, deferred]     # allowed status values; omit for existence only
+    severity: error              # or advisory
+    max_bytes: 1048576           # larger files are skipped and reported
+```
+
+An id that is unknown, not an id of `to`, or in another status is an issue at
+`file:line`. A capture cut short of a longer token (`POOT-641` inside `POOT-6410`)
+is never reported. Files come from `git ls-files` (so `.gitignore` holds; symlinks
+and submodules are not followed), otherwise a walk that skips `.git`,
+`node_modules` and `target`; binary and oversized files are skipped and listed as
+advisory issues, and a rule that matched no file at all says so. A root that does
+not exist is exit 3, not a violation.
+
+## Coverage: every row of a table is accounted for
+
+A `coverage` rule says every open row of a table (a TSV, header line first, no
+quoting) must be named by exactly one document, or be waived:
+
+```yaml
+coverage:
+  - id: review-ledger
+    source: reviews/ledger.tsv           # relative to the board, or to `root:` (a `roots` entry)
+    id_column: id
+    open_when: { column: resolution, equals: open }   # only these rows need covering
+    alias_column: merged                 # comma list of ids a row absorbed ...
+    alias_none: "-"                      # ... and the cell value meaning none
+    waivers: { file: reviews/not-carded.tsv, id_column: id }
+    closed_by: { type: task, field: closes, status: [planned, doing, done, deferred] }
+    referenced_by: { type: task, field: contributes }  # a mention that does not close
+```
+
+An open row closed by no document, or by more than `exactly` (default 1), is an
+issue at its table line. A document naming an id that is neither a row nor an alias
+is an issue on that document (both fields). `closed_by.status` limits which
+documents count as closers (a dropped one need not). A waiver that names no row,
+a row that is not open, or one a document already closes is an advisory issue. A
+missing table or column is exit 3. A rule with a `root` is skipped by
+`check --board-only`.
+
 ## Commands
 
-Global flags: `--config <board.yaml>`, `--json` (machine-readable output where noted).
-Exit codes: 0 ok; 1 the command failed; 2 usage error; 3 board/config error; for
-`validate` 10 document, 11 id, 12 reference, 13 hierarchy, 14 cycle (lowest present).
+Global flags: `--config <board.yaml>`, `--json` (machine-readable output where noted),
+`--override <rule[,rule]>` (writes: allow new violations of those error rules).
+Exit codes: 0 ok; 1 the command failed (for `check`: an error issue); 2 usage error;
+3 board/config/environment error (no board, invalid `board.yaml`, a file a check needs is unreadable).
 
 ### Read
 
@@ -89,7 +178,8 @@ Exit codes: 0 ok; 1 the command failed; 2 usage error; 3 board/config error; for
 | --- | --- |
 | `mfwb list [--type t] [--json] [field=a\|b ...] [field~a\|b ...]` | Documents of a type. `field=a\|b`: equals a or b; `field~a\|b`: list contains. Filters AND together. |
 | `mfwb show [--type t] [--json] <id>` | One document: frontmatter and body. |
-| `mfwb validate [--json]` | Checks the whole board: schema, ids, references, hierarchy, dependency cycles, file-scope globs. `--json` lists every issue with its `kind`. |
+| `mfwb check [<id>] [--rule a,b] [--under id] [--board-only] [--root name=path] [--strict] [--json]` | Runs every rule and prints each issue as `severity rule subject: message`; `--board-only` skips rules that read outside the board (`refs`), `--root` repoints a `roots` entry for this run. Built-in rules: `document`, `id`, `reference`, `hierarchy`, `cycle`, `owns-glob`, `exemptions` (always errors), `unreachable` and `conflicts` (error unless `builtins:` in `board.yaml` says `advisory` or `off`), `inert-exemption` (advisory). Exit 1 on an error issue (advisory ones only with `--strict`), 3 if a check cannot run. `<id>` limits output to one document, `--under` to a subtree, `--rule` to named rules. |
+| `mfwb check --list [--json]` | The rules, their severity and what they read. |
 
 ### Create and edit
 
@@ -106,7 +196,7 @@ Exit codes: 0 ok; 1 the command failed; 2 usage error; 3 board/config error; for
 | `mfwb unset <id> <field>` | Clear an optional field (a list becomes empty). |
 | `mfwb row <id> <field> add '<json>' \| set <rowId> '<json>' \| remove <rowId>` | Edit rows of a `json` list keyed by `id`. |
 | `mfwb note <id> [--section name] <text>` | Append a timestamped entry under `## Progress` (or the named section). |
-| `mfwb check <id> <field> add <text>` | Checklist fields: add an item (ids `c1`, `c2`, ... are assigned). Also `toggle\|done\|undone\|remove <selector>` and `edit <selector> <new text>`; a selector is an item id or a unique text prefix. |
+| `mfwb checklist <id> <field> add <text>` | Checklist fields: add an item (ids `c1`, `c2`, ... are assigned). Also `toggle\|done\|undone\|remove <selector>` and `edit <selector> <new text>`; a selector is an item id or a unique text prefix. |
 
 The field operations run under the document's lock on a fresh read, so two agents
 appending to one list both land. All take `--type`, `--base-rev`, `--json`. Text that
@@ -124,12 +214,11 @@ starts with `--` goes after a bare `--`.
 | Command | What it does |
 | --- | --- |
 | `mfwb ready [--type t] [--under id] [--json] [--unblocks] [field=a\|b ...]` | Documents that can start: status in `queued` and every dependency (`depends_on` plus hierarchy children) finished. `--unblocks` adds how many open documents each one frees. |
-| `mfwb ready --check [--under id] [--json]` | Exit 1 if some live document can never become ready (dangling or parked dependency, cycle). |
 | `mfwb levels [--under id] [--format md\|tsv\|json]` | Each document's level: the longest dependency chain below it. Level 0 starts now, level 1 after those, and so on. |
 | `mfwb view board [--type t] [--under id] [--format md\|tsv\|json]` | Counts per type and status, with the status class. |
 | `mfwb graph [--under id] [--format mermaid\|dot\|json] [--all]` | The dependency graph (arrows run dependency to dependent; children dashed; ready highlighted). Finished documents only with `--all`. |
 | `mfwb plan [--under id] [--max n] [--json]` | A conflict-free batch of ready documents to start in parallel: ranked by what they unblock, skipping any whose file scope overlaps work in progress or an earlier pick (reasons listed). Needs `ownership` to avoid file clashes; without it nothing conflicts. When nothing can start it lists the in-progress work blocking the most tasks and what becomes ready when it finishes. |
-| `mfwb conflicts [--type t] [--json]` | Live documents whose file scopes overlap with nothing ordering them. Exit 1 if any. |
+| `mfwb conflicts [--type t] [--json]` | Live documents whose file scopes overlap with nothing ordering them (`check` fails on them). |
 
 File scopes are opt-in (`ownership: {field, exemptions?}` on a type). The exemptions
 file lets two documents share files on purpose: `append_only` globs, and `pairs` of
@@ -173,7 +262,7 @@ mfwb plan --max 4                # a batch that will not collide
 mfwb claim ABC-12                # optional: bind it to your worktree
 mfwb start ABC-12
 mfwb note ABC-12 "found the cause"
-mfwb check ABC-12 acceptance done c2
+mfwb checklist ABC-12 acceptance done c2
 mfwb done ABC-12 "landed in abc123" --commit
 mfwb graph --under ABC-3 > plan.mmd
 ```

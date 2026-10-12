@@ -13,6 +13,19 @@ export interface Context {
 	orchestrator: Orchestrator;
 }
 
+function refusalFix(
+	cause: unknown,
+): { kind: "setting" | "command" | "ui"; text: string } | null {
+	const fix = (cause as { fix?: unknown } | undefined)?.fix as
+		| { kind?: unknown; text?: unknown }
+		| undefined;
+	if (!fix || typeof fix.text !== "string" || fix.text.length === 0)
+		return null;
+	const kind =
+		fix.kind === "setting" || fix.kind === "command" ? fix.kind : "ui";
+	return { kind, text: fix.text };
+}
+
 const t = initTRPC.context<Context>().create({
 	transformer: superjson,
 	errorFormatter({ shape, error }) {
@@ -22,6 +35,14 @@ const t = initTRPC.context<Context>().create({
 				...shape.data,
 				zodError:
 					error.cause instanceof ZodError ? z.flattenError(error.cause) : null,
+				// A refusal's exact remedy (`{kind, text}`), when the daemon gave one.
+				fix: refusalFix(error.cause),
+				// The daemon error class (e.g. `TaskUnmergedError`), so a screen can
+				// offer the matching follow-up action without parsing the message.
+				domainError:
+					error.cause?.name && error.cause.name in ERROR_CODES
+						? error.cause.name
+						: null,
 			},
 		};
 	},
@@ -51,7 +72,29 @@ const ERROR_CODES: Record<string, TRPCError["code"]> = {
 	RunPodControlPlaneError: "PRECONDITION_FAILED",
 	TaskNotClaimableError: "PRECONDITION_FAILED",
 	TriggerReviewStaleError: "PRECONDITION_FAILED",
+	// The remedy is in `data.fix`: stop the run / merge or discard the branch.
+	RunLiveError: "PRECONDITION_FAILED",
+	TaskUnmergedError: "PRECONDITION_FAILED",
+	// A board `error` rule refused the write; the message lists each violation.
+	RuleViolationError: "PRECONDITION_FAILED",
+	// A checklist selector matched nothing or several items, or empty text.
+	FieldOpError: "BAD_REQUEST",
+	// Settings would pair a reviewer with an equal worker; the message has the fix.
+	ReviewIndependenceError: "BAD_REQUEST",
+	// A doc source that leaves the repository or board folder, or repeats an id.
+	DocSourceError: "BAD_REQUEST",
 	NotFoundError: "NOT_FOUND",
+	// A ref name or path that cannot be one (leading `-`, control characters, `..`).
+	InvalidRefError: "BAD_REQUEST",
+	// An act tool outside a live brain turn, or a read the brain may not make.
+	BrainActionError: "PRECONDITION_FAILED",
+	BrainReadError: "BAD_REQUEST",
+	// A person's override of a brain decision that cannot be applied (already overridden, no reason, a step refused).
+	OverrideError: "PRECONDITION_FAILED",
+	HostNotFoundError: "NOT_FOUND",
+	// A person's select_winner / reroute the server's validators refused; the remedy is in `data.fix`.
+	GroupActionRefusedError: "PRECONDITION_FAILED",
+	RerouteError: "PRECONDITION_FAILED",
 	// Path resolved outside the workspace. FORBIDDEN, not NOT_FOUND, so clients can tell them apart.
 	PathEscapeError: "FORBIDDEN",
 };

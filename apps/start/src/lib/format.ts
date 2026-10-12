@@ -82,3 +82,24 @@ export function summarizePayload(payload: unknown): string {
 	if (typeof o.check === "string") parts.push(o.check);
 	return parts.length > 0 ? ` - ${parts.join(" · ")}` : "";
 }
+
+const BLOCK_KINDS: Record<string, string> = {
+	credential: "Needs a credential",
+	product_decision: "Needs your decision",
+	destructive: "Needs your approval (destructive)",
+	outward: "Needs your approval (outward-facing)",
+	brain_stuck: "The brain is stuck",
+	fyi: "For your information",
+};
+
+/**
+ * A blocked reason in words. The brain writes `<kind>: <title>` and the title
+ * often repeats the task id; show "Needs your decision: what does …?" instead.
+ */
+export function blockedReasonText(reason: string): string {
+	const m = /^([a-z_]+):\s*(.*)$/s.exec(reason);
+	const label = m ? BLOCK_KINDS[m[1] as string] : undefined;
+	if (!m || !label) return reason;
+	const rest = (m[2] ?? "").replace(/^[A-Z][A-Z0-9]*-\d+:\s*/, "");
+	return rest ? `${label}: ${rest}` : label;
+}

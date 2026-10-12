@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 
 import { cn } from "~/lib/utils";
 import { formatAbsolute, formatDuration, formatRelative } from "../lib/format";
+import { TipTime } from "./ui/tooltip";
 
 /**
  * "3h ago". The tick is a clock, not a poll: one app-wide interval, alive only
@@ -76,13 +77,13 @@ export function RelativeTime({
 	if (!Number.isFinite(ts))
 		return <span className={className}>{placeholder}</span>;
 	return (
-		<time
+		<TipTime
 			dateTime={new Date(ts).toISOString()}
-			title={formatAbsolute(ts)}
+			tip={formatAbsolute(ts)}
 			className={cn("whitespace-nowrap", className)}
 		>
 			{formatRelative(ts, now)}
-		</time>
+		</TipTime>
 	);
 }
 

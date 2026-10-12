@@ -5,7 +5,7 @@
  * an `assistant` echo + a `result` event. Exits on stdin EOF — letting the
  * driver drive completion + steering without the real `claude`.
  */
-export {};
+import { subagentLines } from "./claude-subagent-lines.ts";
 
 const dec = new TextDecoder();
 let buf = "";
@@ -46,6 +46,9 @@ for await (const bytes of Bun.stdin.stream()) {
 					message: { content: [{ type: "text", text: `got: ${text}` }] },
 				})}\n`,
 			);
+			// Subagent traffic (parent_tool_use_id on the subagent's messages).
+			if (text === "SUBAGENT")
+				for (const l of subagentLines()) process.stdout.write(`${l}\n`);
 			process.stdout.write(
 				`${JSON.stringify({
 					type: "result",

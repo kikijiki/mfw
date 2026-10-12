@@ -8,6 +8,7 @@ import {
 	dispatchAdmissions,
 } from "@mfw/db/schema";
 import { and, desc, eq, inArray } from "drizzle-orm";
+import { DispatchPreflightError } from "./dispatch-preflight.ts";
 import type { ResolvedExecutionTarget } from "./execution-target.ts";
 import type {
 	HostAdmissionSnapshot,
@@ -18,6 +19,7 @@ import type {
 	HostResourceReadModel,
 	Waiter,
 } from "./host-resources/index.ts";
+import { REMOTE_RUN_SESSION_PREFIX } from "./host-resources/liveness.ts";
 import {
 	parseIecBytes,
 	parseIntegerQuantity,
@@ -25,9 +27,14 @@ import {
 } from "./host-resources/quantity.ts";
 import type { Logger } from "./log.ts";
 import type { ProjectResourceSlots } from "./project-resource-slots.ts";
+import { type RefusalFix, refusalFix } from "./refusal-fix.ts";
 import type { RunEngine, TaskDispatchAdmissionPort } from "./run-engine.ts";
 import type { RunRegistry } from "./run-registry.ts";
-import type { StatusActor, TaskService } from "./task-service.ts";
+import {
+	runHoldsClaim,
+	type StatusActor,
+	type TaskService,
+} from "./task-service.ts";
 
 export type AdmissionRecord = typeof dispatchAdmissions.$inferSelect;
 type AdmissionRow = AdmissionRecord;
@@ -49,7 +56,22 @@ const OPEN_STATES: DispatchAdmissionState[] = [
 
 export type AdmissionTransition = DispatchAdmissionState;
 
+/**
+ * Every host-coordinator requirement of a resolved target: daemon-host
+ * execution capacity, local staging, and a remote host's own slots
+ * (`remote.<id>.slots`), so remote capacity waits in the same FIFO ledger.
+ */
+export function targetHostRequirements(target: ResolvedExecutionTarget) {
+	return [
+		...target.requirements.executionHost,
+		...target.requirements.localStaging,
+		...(target.requirements.targetCapacity ?? []),
+	];
+}
+
 export class AdmissionHeldError extends Error {
+	/** The exact remedy for this refusal, derived from `code`. */
+	readonly fix: RefusalFix;
 	constructor(
 		readonly taskId: string,
 		readonly scope: "project" | "host",
@@ -61,10 +83,21 @@ export class AdmissionHeldError extends Error {
 	) {
 		super(message);
 		this.name = "AdmissionHeldError";
+		this.fix = refusalFix(code, waitingFor);
 	}
 }
 
 /** Deliberately bypasses compensation to model process death after a commit. */
+/** An open admission problem for the inbox, with its exact remedy. */
+export interface AdmissionIssue {
+	id: string;
+	taskId: string;
+	runId: string;
+	holdReason: string | null;
+	fix: RefusalFix;
+	updatedAt: Date;
+}
+
 export class InjectedAdmissionCrashError extends Error {
 	constructor(
 		readonly transition: AdmissionTransition,
@@ -174,6 +207,24 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 		try {
 			const existingRun = await this.deps.registry.get(row.runId);
 			if (!existingRun && !row.hostLeaseId) {
+				// Before any lease: a start that cannot succeed is a hold with a fix.
+				try {
+					await this.deps.engine.preflightTask(
+						row.runId,
+						target,
+						taskId,
+						actor,
+					);
+				} catch (error) {
+					if (!(error instanceof DispatchPreflightError)) throw error;
+					throw new AdmissionHeldError(
+						taskId,
+						"project",
+						error.waitingFor,
+						error.code,
+						error.message,
+					);
+				}
 				const preflight = await this.deps.projectSlots.plan(
 					normalized.project,
 					taskId,
@@ -313,6 +364,107 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 		}
 	}
 
+	/**
+	 * One run of a task that may have live siblings (an attempt group): keyed
+	 * by its planned run id alone, so it neither supersedes nor is superseded
+	 * by another open admission of the same task. Replays resume the same row.
+	 */
+	async startRun(input: {
+		taskId: string;
+		runId: string;
+		target: ResolvedExecutionTarget;
+		prepare: () => Promise<import("./run-engine.ts").PreparedTaskRun>;
+		hostSnapshot?: HostAdmissionSnapshot;
+	}): Promise<{ runId: string }> {
+		const normalized = this.normalize(input.target);
+		let row = await this.byRun(input.runId);
+		if (row?.state === "compensating") {
+			await this.retryCompensation(row);
+			row = await this.byRun(input.runId);
+		}
+		if (row && !OPEN_STATES.includes(row.state)) {
+			throw new Error(
+				`admission for run ${input.runId} already ended as ${row.state}`,
+			);
+		}
+		if (!row) {
+			row = await this.create(
+				input.taskId,
+				"scheduler",
+				input.target,
+				normalized.hash,
+				input.runId,
+			);
+		}
+		try {
+			const existing = await this.deps.registry.get(row.runId);
+			if (!existing && !row.hostLeaseId) {
+				const preflight = await this.deps.projectSlots.plan(
+					normalized.project,
+					input.taskId,
+				);
+				if ("blockedBy" in preflight) {
+					const held = await this.hold(
+						row,
+						"project",
+						preflight.blockedBy,
+						"capacity",
+						`project resource capacity is unavailable: ${preflight.blockedBy.join(", ")}`,
+					);
+					if (row.waiterId) {
+						await this.cancelWaiting(
+							(await this.byId(row.id)) ?? row,
+							"project resource became unavailable while waiting for host capacity",
+						);
+					}
+					throw held;
+				}
+			}
+			try {
+				return await this.continue(
+					row,
+					input.target,
+					normalized,
+					input.hostSnapshot ? { hostSnapshot: input.hostSnapshot } : {},
+					input.prepare,
+				);
+			} catch (error) {
+				// A held route found while preparing is a hold with a fix, not a failure.
+				if (error instanceof DispatchPreflightError) {
+					throw new AdmissionHeldError(
+						input.taskId,
+						"project",
+						error.waitingFor,
+						error.code,
+						error.message,
+					);
+				}
+				throw error;
+			}
+		} catch (error) {
+			if (error instanceof AdmissionHeldError) {
+				const current = (await this.byId(row.id)) ?? row;
+				if (current.state === "cancelled") throw error;
+				throw await this.hold(
+					current,
+					error.scope,
+					error.waitingFor,
+					error.code,
+					error.message,
+					error.diagnostics,
+					error.snapshotGeneration,
+				);
+			}
+			if (error instanceof InjectedAdmissionCrashError) throw error;
+			if (await this.preserveLiveLaunch(row, error)) throw error;
+			await this.compensate(
+				row.id,
+				`group run admission failed: ${message(error)}`,
+			);
+			throw error;
+		}
+	}
+
 	private normalize(target: ResolvedExecutionTarget): {
 		project: string[];
 		host: AuthoredHostRequirement[];
@@ -321,10 +473,7 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 		const project = [
 			...new Set(target.requirements.projectSemaphores.map((item) => item.id)),
 		].sort();
-		const rawHost = [
-			...target.requirements.executionHost,
-			...target.requirements.localStaging,
-		];
+		const rawHost = targetHostRequirements(target);
 		const seen = new Set<string>();
 		const host = rawHost
 			.map((item): AuthoredHostRequirement => {
@@ -521,7 +670,7 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 					lease = await this.deps.host.activate(
 						lease.id,
 						lease.fence,
-						this.runRef(row.runId),
+						this.runRef(row.runId, target.kind),
 					);
 				} catch (error) {
 					const persisted = this.leaseFor(row);
@@ -652,14 +801,27 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 		);
 	}
 
-	private runRef(runId: string) {
+	/**
+	 * The lease's run identity. A run on a registry SSH host has no local
+	 * session or process and survives a reboot of this machine, so it gets a
+	 * remote marker and no kernel boot id: local evidence never frees its
+	 * slot, project recovery adopts or releases it (`liveness.ts`).
+	 */
+	private runRef(runId: string, targetKind?: string) {
 		const model = this.deps.host.readModel();
+		const remote = targetKind === "ssh";
 		return {
 			runId,
 			runDir: this.deps.registry.runDir(runId),
-			sessionId: this.deps.sessionId(runId),
-			kernelBootId: model.kernelBootId,
+			sessionId: remote
+				? `${REMOTE_RUN_SESSION_PREFIX}${targetKind}`
+				: this.deps.sessionId(runId),
+			kernelBootId: remote ? null : model.kernelBootId,
 		};
+	}
+
+	private targetKindOf(row: AdmissionRow): string | undefined {
+		return (row.resolution as unknown as ResolvedExecutionTarget | null)?.kind;
 	}
 
 	async releaseRun(runId: string, reason = "run reached a terminal state") {
@@ -683,7 +845,7 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 		const model = this.deps.host.readModel();
 		try {
 			await this.deps.host.renewOrAdopt(lease.id, lease.fence, {
-				...this.runRef(runId),
+				...this.runRef(runId, this.targetKindOf(row)),
 				processBootId: model.processBootId,
 				observedAt: this.now(),
 			});
@@ -744,7 +906,11 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 					if (current && current.state !== "launched") {
 						await this.transition(current, "launched", "live run adopted");
 					}
-					if (lease?.state === "active") await this.renewRun(row.runId);
+					if (
+						lease?.state === "active" ||
+						(lease?.state === "uncertain" && this.targetKindOf(row) === "ssh")
+					)
+						await this.renewRun(row.runId);
 					await this.recoveryEvent(row, "adopted");
 					report.adopted++;
 					continue;
@@ -839,27 +1005,22 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 		};
 	}
 
-	async issues(): Promise<
-		Array<{
-			id: string;
-			taskId: string;
-			runId: string;
-			holdReason: string | null;
-			updatedAt: Date;
-		}>
-	> {
+	async issues(): Promise<AdmissionIssue[]> {
 		const rows = await this.openRows();
-		const issues: Array<{
-			id: string;
-			taskId: string;
-			runId: string;
-			holdReason: string | null;
-			updatedAt: Date;
-		}> = rows.filter(
-			(row) =>
-				row.holdCode != null &&
-				!["capacity", "fifo", "generation"].includes(row.holdCode),
-		);
+		const issues: AdmissionIssue[] = rows
+			.filter(
+				(row) =>
+					row.holdCode != null &&
+					!["capacity", "fifo", "generation"].includes(row.holdCode),
+			)
+			.map((row) => ({
+				id: row.id,
+				taskId: row.taskId,
+				runId: row.runId,
+				holdReason: row.holdReason,
+				fix: refusalFix(row.holdCode),
+				updatedAt: row.updatedAt,
+			}));
 		const model = this.deps.host.readModel();
 		for (const incident of model.incidents.filter(
 			(item) => item.state === "open",
@@ -883,6 +1044,14 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 						: incident.kind === "cpu-pressure"
 							? "CPU pressure exceeded the configured host admission threshold"
 							: "external or unknown GPU occupancy conflicts with an active host lease",
+				fix: refusalFix(
+					incident.kind === "ram-low-headroom"
+						? "headroom-exhausted"
+						: incident.kind === "cpu-pressure"
+							? "cpu-pressure"
+							: "external-occupancy",
+					[incident.resourceId],
+				),
 				updatedAt: new Date(incident.updatedAt),
 			});
 		}
@@ -910,7 +1079,12 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 	): Promise<void> {
 		const target = row.resolution as unknown as ResolvedExecutionTarget;
 		const normalized = this.normalize(target);
-		if (normalized.host.length > 0 && lease?.state !== "active") {
+		// A remote run's lease is uncertain after a restart by design; the
+		// caller adopts it (renewOrAdopt) once the run is known to be live.
+		const adoptable =
+			lease?.state === "active" ||
+			(lease?.state === "uncertain" && target.kind === "ssh");
+		if (normalized.host.length > 0 && !adoptable) {
 			throw new Error(`live run ${row.runId} has no active fenced host lease`);
 		}
 		const slots = await this.deps.projectSlots.ensure(
@@ -1052,7 +1226,10 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 					this.deps.tasks.get(current.taskId),
 					this.deps.registry.get(current.runId),
 				]);
-				if (task?.claimedByRunId === current.runId) {
+				if (
+					runHoldsClaim(task, run ?? { id: current.runId }) &&
+					!(await this.deps.tasks.siblingsLive(current.runId))
+				) {
 					throw new Error("task claim remains after prepared-run abort");
 				}
 				if (run?.state === "starting" || run?.state === "running") {
@@ -1352,6 +1529,7 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 						scope,
 						reason,
 						code,
+						fix: refusalFix(code, waitingFor),
 						snapshotGeneration: snapshotGeneration?.toString(),
 						diagnostics: diagnostics.map((diagnostic) =>
 							JSON.parse(

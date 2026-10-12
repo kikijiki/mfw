@@ -1,5 +1,11 @@
 import type { ProjectDbHandle } from "@mfw/db/client";
-import { decisions, events, mergeJobs, runs } from "@mfw/db/schema";
+import {
+	decisions,
+	events,
+	mergeJobs,
+	runs,
+	spendLedger,
+} from "@mfw/db/schema";
 import { and, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import type { TaskService } from "./task-service.ts";
 
@@ -125,6 +131,7 @@ export class Health {
 		const since = new Date(this.now() - windowMs);
 		const rows = await this.deps.handle.db
 			.select({
+				id: runs.id,
 				kind: runs.kind,
 				state: runs.state,
 				startedAt: runs.startedAt,
@@ -133,6 +140,32 @@ export class Health {
 			})
 			.from(runs)
 			.where(gte(runs.startedAt, since));
+
+		// Spend is read from the ledger, windowed by the owning run's start as
+		// before. A run that predates the ledger (no row) still reads its
+		// `runs.usage`, so the totals do not change when 0010 is applied.
+		const ledgerRows = await this.deps.handle.db
+			.select({
+				runId: spendLedger.runId,
+				usd: spendLedger.usd,
+				tokensIn: spendLedger.tokensIn,
+				tokensOut: spendLedger.tokensOut,
+			})
+			.from(spendLedger)
+			.innerJoin(runs, eq(runs.id, spendLedger.runId))
+			.where(gte(runs.startedAt, since));
+		const ledger = new Map<
+			string,
+			{ usd: number; tokensIn: number; tokensOut: number }
+		>();
+		for (const l of ledgerRows) {
+			if (!l.runId) continue;
+			const sum = ledger.get(l.runId) ?? { usd: 0, tokensIn: 0, tokensOut: 0 };
+			sum.usd += l.usd ?? 0;
+			sum.tokensIn += l.tokensIn ?? 0;
+			sum.tokensOut += l.tokensOut ?? 0;
+			ledger.set(l.runId, sum);
+		}
 
 		let costUsd = 0;
 		let inputTokens = 0;
@@ -146,6 +179,13 @@ export class Health {
 			byOutcome[r.state] = (byOutcome[r.state] ?? 0) + 1;
 			if (r.finishedAt)
 				durations.push(r.finishedAt.getTime() - r.startedAt.getTime());
+			const l = ledger.get(r.id);
+			if (l) {
+				costUsd += l.usd;
+				inputTokens += l.tokensIn;
+				outputTokens += l.tokensOut;
+				continue;
+			}
 			const u = r.usage ?? {};
 			costUsd += u.costUsd ?? 0;
 			inputTokens += u.inputTokens ?? 0;

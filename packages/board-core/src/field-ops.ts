@@ -58,10 +58,14 @@ export type FieldOp =
 	| { op: "set-row"; field: string; id: string; patch: Record<string, unknown> }
 	| { op: "remove-row"; field: string; id: string }
 	/** Checklist items; a selector is an item id or a unique text prefix. */
-	| { op: "check-add"; field: string; text: string; done?: boolean }
-	| { op: "check-toggle" | "check-remove"; field: string; selector: string }
-	| { op: "check-set"; field: string; selector: string; done: boolean }
-	| { op: "check-edit"; field: string; selector: string; text: string }
+	| { op: "checklist-add"; field: string; text: string; done?: boolean }
+	| {
+			op: "checklist-toggle" | "checklist-remove";
+			field: string;
+			selector: string;
+	  }
+	| { op: "checklist-set"; field: string; selector: string; done: boolean }
+	| { op: "checklist-edit"; field: string; selector: string; text: string }
 	/** Append a `### <UTC timestamp> - <text>` entry under a `##` section
 	 * (default `Progress`, created at the end of the body if absent). */
 	| { op: "note"; text: string; section?: string }
@@ -76,7 +80,7 @@ export interface FieldOpOptions {
 
 export interface FieldOpResult {
 	doc: BoardDocument;
-	/** `check-add`: the id assigned to the new item. */
+	/** `checklist-add`: the id assigned to the new item. */
 	itemId?: string;
 	/** False when the op was a deliberate no-op (`remove` with `ifPresent`). */
 	changed: boolean;
@@ -106,7 +110,7 @@ function plainList(spec: FieldSpec, field: string, op: string): void {
 	if (spec.kind === "checklist") {
 		throw new FieldOpError(
 			"wrong-kind",
-			`'${op}' does not apply to checklist field '${field}'; use check-add/check-toggle/...`,
+			`'${op}' does not apply to checklist field '${field}'; use checklist-add/checklist-toggle/...`,
 		);
 	}
 	if (!spec.list) {
@@ -384,7 +388,7 @@ export function computeFieldOp(
 			}
 			return fieldsPatch(rows);
 		}
-		case "check-add": {
+		case "checklist-add": {
 			checklistField(spec, field, op.op);
 			if (typeof op.text !== "string" || op.text.trim().length === 0) {
 				throw new FieldOpError(
@@ -403,13 +407,13 @@ export function computeFieldOp(
 			const item = resolveChecklistItem(items, op.selector);
 			const edit = (i: ChecklistItem): ChecklistItem | null => {
 				switch (op.op) {
-					case "check-toggle":
+					case "checklist-toggle":
 						return { ...i, done: !i.done };
-					case "check-set":
+					case "checklist-set":
 						return { ...i, done: op.done };
-					case "check-remove":
+					case "checklist-remove":
 						return null;
-					case "check-edit":
+					case "checklist-edit":
 						if (typeof op.text !== "string" || op.text.trim().length === 0) {
 							throw new FieldOpError(
 								"bad-value",
@@ -534,7 +538,7 @@ async function checkRefTargets(
 }
 
 /** Apply one field operation atomically; see `FieldOp`. Also returns what the
- * op produced (`check-add`'s new item id). */
+ * op produced (`checklist-add`'s new item id). */
 export async function applyFieldOpDetailed(
 	store: BoardStore,
 	config: BoardConfig,

@@ -5,6 +5,7 @@ import type {
 	ProbeBinding,
 	ProbeDiagnostic,
 } from "@mfw/core/host-observation";
+import { type HealthTrackEntry, HostHealthTracker } from "./host-health.ts";
 import type { ProbeClock, ProbeTimer } from "./host-probe-runtime.ts";
 import type { AnyHostProbeAdapter } from "./host-probes.ts";
 import type { HostResourceStore } from "./host-resources/store.ts";
@@ -136,6 +137,7 @@ export class HostObservationService {
 	private scheduled: unknown = null;
 	private running = false;
 	private consecutiveFailures = 0;
+	private readonly healthTracker = new HostHealthTracker();
 
 	constructor(
 		private readonly store: HostResourceStore,
@@ -150,6 +152,11 @@ export class HostObservationService {
 		this.pollTimeoutMs = options.pollTimeoutMs ?? 8_000;
 		this.jitterFraction = options.jitterFraction ?? 0.1;
 		this.diagnosticRateLimitMs = options.diagnosticRateLimitMs ?? 60_000;
+	}
+
+	/** Since-when / last-ok / failure counts per probe kind, for explaining health. */
+	healthTrack(): Record<string, HealthTrackEntry> {
+		return this.healthTracker.snapshot();
 	}
 
 	get isRunning(): boolean {
@@ -180,6 +187,8 @@ export class HostObservationService {
 				kind,
 				status,
 				diagnostics: diagnostics.map((item) => item.code),
+				// The sentence behind the code, so the log says why without a lookup.
+				messages: diagnostics.map((item) => item.message.slice(0, 200)),
 			},
 			"host probe observation is not healthy",
 		);
@@ -263,6 +272,7 @@ export class HostObservationService {
 			};
 		});
 		const persisted = await this.store.recordObservationBatch(health, samples);
+		this.healthTracker.record(health.kind, health.result, health.checkedAt);
 		await this.onPersisted(persisted.meaningfulChange);
 		this.logDiagnostics(observation.kind, result.status, result.diagnostics);
 		return result.status === "error" || result.status === "unsupported";
@@ -345,6 +355,7 @@ export class HostObservationService {
 						// than a sample batch. The next successful generated batch remains
 						// free to recover it.
 						await this.store.recordObservationHealth(health);
+						this.healthTracker.record(health.kind, health.result, checkedAt);
 						await this.onPersisted(true);
 						this.options.log?.warn(
 							{ err: error, kind: adapter.kind },
@@ -438,6 +449,7 @@ export class HostObservationService {
 
 	async recordHealth(health: ObservationHealth): Promise<void> {
 		await this.store.recordObservationHealth(health);
+		this.healthTracker.record(health.kind, health.result, health.checkedAt);
 		await this.onPersisted(true);
 	}
 }

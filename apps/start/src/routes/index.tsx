@@ -1,10 +1,6 @@
-import { createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 
-import { href } from "~/routes";
+import { HomePage } from "~/features/home/HomePage";
 
-/** `/` has no content of its own; NOW is the home route. */
-export const Route = createFileRoute("/")({
-	beforeLoad: () => {
-		throw redirect({ to: href.now(), replace: true });
-	},
-});
+/** Home: what needs you, what is running, what happened since you left. */
+export const Route = createFileRoute("/")({ component: HomePage });

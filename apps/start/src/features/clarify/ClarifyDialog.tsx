@@ -22,7 +22,11 @@ import type { RouterOutputs } from "../../lib/trpc";
 import { useTRPC } from "../../lib/trpc";
 import { href } from "../../routes";
 
-/** Answers a planner's clarify questions. Opens from the inbox because `clarify.open` is cross-project. */
+/**
+ * Answers a clarify set: a planner's questions (answers feed a re-plan) or a
+ * task run's own question (answers resume the agent in its worktree). Opens
+ * from the inbox because `clarify.open` is cross-project.
+ */
 
 type Clarification = NonNullable<RouterOutputs["clarify"]["get"]>;
 
@@ -78,7 +82,9 @@ export function ClarifyDialog({
 				<DialogHeader>
 					<DialogTitle className="flex flex-wrap items-center gap-2">
 						<Chip>{project}</Chip>
-						Questions before planning
+						{set.data?.kind === "task"
+							? "The agent asked"
+							: "Questions before planning"}
 					</DialogTitle>
 					<DialogDescription>
 						An agent stopped rather than guess. What you write here is fed back
@@ -143,6 +149,9 @@ function ClarifyForm({
 	const complete = answered === clarification.items.length;
 	/** No goal (importer questions) means nothing to re-plan; `clarify.answer` returns `not_requested`. */
 	const replannable = clarification.goal !== null;
+	/** A task run's own question: answering it in full resumes the agent. */
+	const resumes = clarification.kind === "task";
+	const continues = replannable || resumes;
 
 	// Browser draft for text typed before it reaches the server (reload, dropped
 	// connection, closed dialog). Loaded in an effect to keep the first render SSR-stable.
@@ -201,7 +210,9 @@ function ClarifyForm({
 					setContinuationFailure(result.continuation.message);
 					toast({
 						tone: "error",
-						title: "Answers saved; expansion did not start",
+						title: resumes
+							? "Answers saved; the agent did not resume"
+							: "Answers saved; expansion did not start",
 						description: result.continuation.message,
 						duration: 0,
 					});
@@ -220,7 +231,9 @@ function ClarifyForm({
 					void queryClient.invalidateQueries(trpc.runs.active.queryFilter());
 					toast({
 						tone: "success",
-						title: "Re-planning with your answers",
+						title: resumes
+							? "Resuming the agent with your answers"
+							: "Re-planning with your answers",
 					});
 					// Show the transcript: answering just started a real agent run.
 					go(href.run(project, result.continuation.runId));
@@ -341,9 +354,10 @@ function ClarifyForm({
 						color: "var(--mfw-warn)",
 					}}
 				>
-					<strong>Your answers are saved.</strong> Expansion did not start:{" "}
-					{continuationFailure}. Nothing needs to be retyped; use Continue
-					expansion to retry.
+					<strong>Your answers are saved.</strong>{" "}
+					{resumes ? "The agent did not resume" : "Expansion did not start"}:{" "}
+					{continuationFailure}. Nothing needs to be retyped; use{" "}
+					{resumes ? "Answer and resume" : "Continue expansion"} to retry.
 				</div>
 			) : null}
 
@@ -388,7 +402,15 @@ function ClarifyForm({
 					fontSize: "var(--mfw-text-2xs)",
 				}}
 			>
-				{replannable ? (
+				{resumes ? (
+					<>
+						The agent stopped its run to ask this. The project brain answers
+						what it can; once you answer every question,{" "}
+						<strong>Answer and resume</strong> wakes it, and it continues the
+						work in the same worktree with your answers. Dismissing leaves the
+						decision to the brain.
+					</>
+				) : replannable ? (
 					<>
 						Incomplete answers can be saved as progress. Once every question is
 						answered, <strong>Continue expansion</strong> starts exactly one
@@ -428,12 +450,16 @@ function ClarifyForm({
 					<Button size="sm" variant="ghost" asChild>
 						<AppLink to={href.run(project, runId)}>See the run</AppLink>
 					</Button>
-					{replannable && complete ? (
+					{continues && complete ? (
 						<Button
 							disabled={interactionLocked || answered === 0}
 							onClick={() => submit(true)}
 						>
-							{answer.isPending ? "Starting…" : "Continue expansion"}
+							{answer.isPending
+								? "Starting…"
+								: resumes
+									? "Answer and resume"
+									: "Continue expansion"}
 						</Button>
 					) : (
 						<Button
@@ -443,7 +469,7 @@ function ClarifyForm({
 						>
 							{answer.isPending
 								? "Saving…"
-								: replannable
+								: continues
 									? "Save progress"
 									: "Save answers"}
 						</Button>

@@ -27,7 +27,12 @@ afterEach(async () => {
 async function setup() {
 	const mfwDir = await mkdtemp(join(tmpdir(), "mfw-adrs-"));
 	dirs.push(mfwDir);
-	const svc = new AdrService({ mfwDir, taskKey: "MFW", log: silentLogger() });
+	const svc = new AdrService({
+		boardDir: mfwDir,
+		stateDir: mfwDir,
+		taskKey: "MFW",
+		log: silentLogger(),
+	});
 	let touched = 0;
 	svc.onBoardChanged = () => touched++;
 	return { svc, mfwDir, adrDir: join(mfwDir, "adrs"), touched: () => touched };

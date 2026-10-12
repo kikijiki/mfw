@@ -9,17 +9,38 @@ import {
 	readLease,
 	type TaskLease,
 	TaskOwnershipHeldError,
+	withClaimLock,
 	writeLease,
 } from "@mfw/board";
-import type { BoardConfig, BoardDocument } from "@mfw/board-core";
+import type {
+	BoardConfig,
+	BoardDocument,
+	ChecklistItem,
+} from "@mfw/board-core";
 import {
 	BoardStore,
+	HierarchyError,
 	KeyedLock,
 	MalformedDocumentError,
+	overlappingPatterns,
+	parentRuleProblem,
 	parseIdNum,
+	RuleViolationError,
 } from "@mfw/board-core";
 import type { TaskStatus } from "@mfw/core/types";
+import { parseStatusMap, type StatusMap } from "../board-status-map.ts";
 import type { Logger } from "../log.ts";
+import {
+	ACCEPTANCE_FIELD,
+	type MigrationReport,
+	planBodyMigration,
+	toChecklist,
+} from "./acceptance.ts";
+import {
+	type ClaimGroupsReport,
+	rewriteClaimSidecars,
+} from "./claim-groups.ts";
+import { flatBoardError } from "./extras.ts";
 import {
 	emptyRunState,
 	patchRunState,
@@ -90,9 +111,31 @@ function idFromTaskDirName(key: string, name: string): string | null {
 	return m ? (m[1] as string) : null;
 }
 
+/** One item of the task's `acceptance` checklist field (`done` on disk). */
 export interface TaskCriterion {
+	/** The checklist item id (`c1`, ...); absent on an item not yet written. */
+	id?: string;
 	text: string;
 	checked: boolean;
+}
+
+function criteriaOf(fields: Record<string, unknown>): TaskCriterion[] {
+	const items = (fields[ACCEPTANCE_FIELD] as ChecklistItem[] | undefined) ?? [];
+	return items.map((i) => ({ id: i.id, text: i.text, checked: i.done }));
+}
+
+function acceptanceOf(
+	criteria: readonly TaskCriterion[],
+	previous: readonly TaskCriterion[] = [],
+): ChecklistItem[] {
+	return toChecklist(
+		criteria.map((c) => ({
+			...(c.id !== undefined ? { id: c.id } : {}),
+			text: c.text.replace(/\r?\n/g, " ").trim(),
+			done: c.checked,
+		})),
+		previous,
+	);
 }
 
 export interface TaskFile {
@@ -145,9 +188,27 @@ export interface CreateInput {
 	captureId?: string | null;
 	owns?: string[];
 	modelTier?: TaskFrontmatter["model_tier"];
+	provider?: string | null;
+	model?: string | null;
 	discoveredFrom?: string | null;
 	discoveryKey?: string | null;
 	reopenWhen?: ReopenCondition[];
+	/**
+	 * Provenance (`brain:<actionId>#<n>`), written with the document. Doubles as
+	 * the brain's idempotency key: a create whose key is already on the board
+	 * returns that task instead of writing another.
+	 */
+	createdBy?: string | null;
+}
+
+/** Why a task may not sit under a parent, in the board's own words. */
+export interface HierarchyProblem {
+	code:
+		| "parent_not_found"
+		| "hierarchy_cycle"
+		| "parent_type_not_allowed"
+		| "max_depth";
+	message: string;
 }
 
 export interface ExternalChange {
@@ -184,71 +245,6 @@ export interface BoardSuspicion {
 
 const BREAKER_MIN_LOST = 5;
 
-const CRITERIA_HEADING_RE = /^##[ \t]+acceptance criteria[ \t]*$/im;
-const CRITERION_RE = /^- (?:\[([ xX])\][ \t]*)?(.*)$/;
-const HEADING_RE = /^#{1,2}[ \t]+\S/;
-const BLANK_RE = /^[ \t]*$/;
-
-/** Pull the (purely documentary — nothing treats it as acceptance evidence)
- * `## Acceptance Criteria` checklist out of the body, the same convention the
- * old taskfile.ts parser used, minus fence-awareness (criteria are cosmetic,
- * not worth re-building a fence scanner for). */
-export function extractCriteria(raw: string): {
-	body: string;
-	criteria: TaskCriterion[];
-} {
-	const lines = raw.split("\n");
-	let start = -1;
-	for (let i = 0; i < lines.length; i++) {
-		if (CRITERIA_HEADING_RE.test(lines[i] as string)) {
-			start = i;
-			break;
-		}
-	}
-	if (start === -1) return { body: raw, criteria: [] };
-	let end = lines.length;
-	for (let i = start + 1; i < lines.length; i++) {
-		if (HEADING_RE.test(lines[i] as string)) {
-			end = i;
-			break;
-		}
-	}
-	const criteria: TaskCriterion[] = [];
-	for (let i = start + 1; i < end; i++) {
-		const line = lines[i] as string;
-		if (BLANK_RE.test(line)) continue;
-		const m = CRITERION_RE.exec(line);
-		if (m) {
-			criteria.push({
-				text: (m[2] as string).trimEnd(),
-				checked: ((m[1] as string | undefined) ?? "").toLowerCase() === "x",
-			});
-		}
-	}
-	let removeStart = start;
-	while (removeStart > 0 && BLANK_RE.test(lines[removeStart - 1] as string))
-		removeStart--;
-	const body = [...lines.slice(0, removeStart), ...lines.slice(end)]
-		.join("\n")
-		.replace(/^(?:[ \t]*\n)+/, "")
-		.replace(/\s+$/, "");
-	return { body, criteria };
-}
-
-/** The inverse of `extractCriteria`: re-append the checklist to the body before writing. */
-export function reassembleBody(
-	body: string,
-	criteria: readonly TaskCriterion[],
-): string {
-	const trimmed = body.trim();
-	if (criteria.length === 0) return trimmed;
-	const items = criteria.map((c) =>
-		`- ${c.text.replace(/\r?\n/g, " ")}`.trimEnd(),
-	);
-	const section = `## Acceptance Criteria\n\n${items.join("\n")}`;
-	return trimmed.length > 0 ? `${trimmed}\n\n${section}` : section;
-}
-
 const eqJson = (a: unknown, b: unknown) =>
 	JSON.stringify(a) === JSON.stringify(b);
 
@@ -258,7 +254,11 @@ export function sortIds(ids: string[]): string[] {
 }
 
 export interface TaskIndexDeps {
-	mfwDir: string;
+	/** The board folder: where `tasks/` (and `board.yaml`) live. */
+	boardDir: string;
+	/** The daemon's directory (`<repo>/.mfw`): per-task sidecars, locks and id
+	 * counters. Nothing but board files is written into `boardDir`. */
+	stateDir: string;
 	config: BoardConfig;
 	taskKey: string;
 	log: Logger;
@@ -266,9 +266,24 @@ export interface TaskIndexDeps {
 
 export class TaskIndex {
 	private readonly board: BoardStore;
+	private readonly config: BoardConfig;
+	/** The board folder. */
 	private readonly root: string;
+	/** Where sidecars, locks and counters go. */
+	private readonly state: string;
 	private readonly taskKey: string;
-	private readonly claimConfig: ClaimConfig;
+	/** The claim lock's fixed half: root and field names. The status VALUES a
+	 * claim compares and writes are board vocabulary, translated per claim. */
+	private readonly claimConfig: Pick<
+		ClaimConfig,
+		"root" | "statusField" | "dependsOnField" | "ownsField"
+	>;
+	/** The board's status vocabulary, translated at this boundary: everything
+	 * inside the index (and behind it) only ever sees the canonical eight. */
+	private readonly statusMap: StatusMap;
+	/** A flat task type's document IS the task file: there is no per-task
+	 * directory, so nothing may be handed one. */
+	private readonly flatLayout: boolean;
 	/**
 	 * One lock serializing every create/update: `@mfw/board-core`'s per-document
 	 * locking can't by itself prevent a race ACROSS two different ids — two
@@ -284,17 +299,28 @@ export class TaskIndex {
 	private wiping = 0;
 
 	constructor(deps: TaskIndexDeps) {
-		this.root = deps.mfwDir;
+		this.config = deps.config;
+		this.root = deps.boardDir;
+		this.state = deps.stateDir;
 		this.taskKey = deps.taskKey;
-		this.board = new BoardStore(deps.mfwDir, deps.config);
-		this.boardLock = new KeyedLock(join(deps.mfwDir, "locks"));
+		this.board = new BoardStore(deps.boardDir, deps.config, {
+			stateDir: join(deps.stateDir, ".board"),
+		});
+		this.boardLock = new KeyedLock(join(deps.stateDir, "locks"));
+		// Parsing here IS the attach check: a board whose statuses cannot be
+		// translated refuses to load, with the map to add in its message. A
+		// board with no task type has nothing to translate against; it stays
+		// exactly as unusable as before (the store refuses it on first use).
+		const taskType = deps.config.types.task;
+		this.statusMap = taskType
+			? parseStatusMap(deps.config.extensions, taskType)
+			: { toCanonical: (v) => v as TaskStatus, toBoard: (r) => r };
+		this.flatLayout = taskType?.layout === "flat";
 		this.claimConfig = {
-			root: this.root,
+			root: this.state,
 			statusField: "status",
 			dependsOnField: "depends_on",
 			ownsField: "owns",
-			doneStatus: "done",
-			activeStatus: "in_progress",
 		};
 	}
 
@@ -317,6 +343,18 @@ export class TaskIndex {
 	}
 
 	// --- record construction -------------------------------------------------
+
+	/** A board document's status read through the map: `undefined` when the
+	 * document has none at all (missing status = simply not `done`, not
+	 * `draft`), never a raw board value. */
+	private readStatus(
+		fields: Record<string, unknown> | undefined,
+	): TaskStatus | undefined {
+		const raw = fields?.status;
+		return typeof raw === "string"
+			? this.statusMap.toCanonical(raw)
+			: undefined;
+	}
 
 	/**
 	 * A hand edit that doesn't bump `rev:` must still break optimistic
@@ -342,10 +380,14 @@ export class TaskIndex {
 			prior && prior.hash !== doc.hash && prior.file.frontmatter.rev === doc.rev
 				? doc.rev + 1
 				: doc.rev;
-		const fm = materializeTaskFrontmatter(doc.fields, doc.id, rev);
-		const { body, criteria } = extractCriteria(doc.body);
-		const lease = await readLease(this.root, doc.id);
-		const runState = await readRunState(this.root, doc.id);
+		const fm = materializeTaskFrontmatter(
+			doc.fields,
+			doc.id,
+			rev,
+			this.statusMap,
+		);
+		const lease = await readLease(this.state, doc.id);
+		const runState = await readRunState(this.state, doc.id);
 		const num = parseIdNum(this.taskKey, undefined, doc.id) ?? 0;
 		return {
 			id: doc.id,
@@ -353,7 +395,12 @@ export class TaskIndex {
 			status: fm.status,
 			path: doc.path,
 			hash: doc.hash,
-			file: { frontmatter: fm, body, criteria, dod: fm.verification },
+			file: {
+				frontmatter: fm,
+				body: doc.body,
+				criteria: criteriaOf(doc.fields),
+				dod: fm.verification,
+			},
 			state: { ...runState, ...lease },
 		};
 	}
@@ -482,7 +529,7 @@ export class TaskIndex {
 		const { readdir } = await import("node:fs/promises");
 		let names: string[];
 		try {
-			names = await readdir(join(this.root, "state", "tasks"));
+			names = await readdir(join(this.state, "state", "tasks"));
 		} catch {
 			return;
 		}
@@ -490,7 +537,7 @@ export class TaskIndex {
 			if (!name.endsWith(".json")) continue;
 			const id = name.replace(/\.run\.json$|\.json$/, "");
 			if (this.index.has(id)) continue;
-			await rm(join(this.root, "state", "tasks", name), { force: true }).catch(
+			await rm(join(this.state, "state", "tasks", name), { force: true }).catch(
 				() => {},
 			);
 		}
@@ -528,21 +575,79 @@ export class TaskIndex {
 	// --- create / update ------------------------------------------------------
 
 	async create(input: CreateInput): Promise<TaskRecord> {
+		return (await this.createWithOutcome(input)).record;
+	}
+
+	/**
+	 * `create`, saying whether the task already existed (the `created_by`
+	 * lookup found it): a replay after a crash must not announce it twice.
+	 */
+	async createWithOutcome(
+		input: CreateInput,
+	): Promise<{ record: TaskRecord; replayed: boolean }> {
 		return this.boardLock.with("::board", () => this.createLocked(input));
 	}
 
-	private async createLocked(input: CreateInput): Promise<TaskRecord> {
+	/** True when the task type is a flat layout (no per-task directory, so no spec.md). */
+	get flat(): boolean {
+		return this.flatLayout;
+	}
+
+	/** Whether a task holds its files right now: status `in_progress` or a live claim, read from disk. */
+	async holdsClaimNow(id: string): Promise<boolean> {
+		const doc = await this.board.readDocument("task", id);
+		if (!doc) return false;
+		if (this.readStatus(doc.fields) === "in_progress") return true;
+		const lease = await readLease(this.state, id);
+		return (
+			lease.claimedByGroupId !== null &&
+			(lease.leaseExpiresAt === null || lease.leaseExpiresAt > Date.now())
+		);
+	}
+
+	/**
+	 * Where a new task with no explicit status starts: `backlog`, or for a board
+	 * whose status map has no backlog column the nearest role it does declare,
+	 * so "new task" works on a kanban board with only todo/doing/review/done.
+	 */
+	private initialStatus(): TaskStatus {
+		for (const role of ["backlog", "draft", "ready"] as const) {
+			try {
+				this.statusMap.toBoard(role);
+				return role;
+			} catch {
+				// not declared by this board's map; try the next role
+			}
+		}
+		return "backlog";
+	}
+
+	private async createLocked(
+		input: CreateInput,
+	): Promise<{ record: TaskRecord; replayed: boolean }> {
 		if (input.discoveryKey) {
 			const existing = await this.board.listDocuments("task", {
 				discovery_key: input.discoveryKey,
 			});
-			if (existing[0]) return this.toRecord(existing[0]);
+			if (existing[0]) {
+				return { record: await this.toRecord(existing[0]), replayed: true };
+			}
+		}
+		if (input.createdBy) {
+			// Re-read from disk: this is the lookup that makes a replay after a
+			// crash (board written, action not yet applied) a no-op.
+			const existing = await this.board.listDocuments("task", {
+				created_by: input.createdBy,
+			});
+			if (existing[0]) {
+				return { record: await this.toRecord(existing[0]), replayed: true };
+			}
 		}
 		const dependsOn = sortIds([...new Set(input.dependsOn ?? [])]);
 		if (input.id && dependsOn.length > 0) {
 			await this.assertNoDependencyCycle(input.id, dependsOn);
 		}
-		const status = input.status ?? "backlog";
+		const status = input.status ?? this.initialStatus();
 		const now = new Date();
 		const fm: Omit<TaskFrontmatter, "id" | "rev"> = {
 			title: input.title,
@@ -570,29 +675,37 @@ export class TaskIndex {
 			capture_id: input.captureId ?? null,
 			owns: input.owns ?? [],
 			model_tier: input.modelTier ?? null,
+			// Only written when set, so a board whose board.yaml predates the
+			// routing fields still accepts every task created without them.
+			...(input.provider ? { provider: input.provider } : {}),
+			...(input.model ? { model: input.model } : {}),
 			discovered_from: input.discoveredFrom ?? null,
 			discovery_key: input.discoveryKey ?? null,
+			// Absent unless set: a board that predates the field still accepts
+			// every task written without it.
+			...(input.createdBy ? { created_by: input.createdBy } : {}),
 			reopen_when: input.reopenWhen ?? [],
 			verification: input.dod ?? null,
 		};
 		const doc = await this.board.createDocument("task", {
 			id: input.id,
-			fields: dematerializeTaskFields(fm),
-			body: reassembleBody(input.body ?? "", input.criteria ?? []),
+			fields: {
+				...dematerializeTaskFields(fm, this.statusMap),
+				[ACCEPTANCE_FIELD]: acceptanceOf(input.criteria ?? []),
+			},
+			body: (input.body ?? "").trim(),
 		});
-		await writeLease(this.root, doc.id, {
+		await writeLease(this.state, doc.id, {
 			...emptyLease(),
 			statusChangedAt: now.getTime(),
 		});
-		await writeRunState(this.root, doc.id, emptyRunState());
+		await writeRunState(this.state, doc.id, emptyRunState());
 		const rec = await this.toRecord(doc);
-		// The canonical render never re-encodes a checkbox (same as the old
-		// renderer); re-parsing the just-written body would silently clear every
-		// `checked: true`. The caller's own criteria are authoritative here.
-		rec.file.criteria = input.criteria ?? [];
 		this.index.set(doc.id, rec);
 		this.seen.set(doc.id, doc.hash);
-		return rec;
+		// A hierarchy board lists the child on its parent: that file changed too.
+		if (input.parentId) await this.reread(input.parentId);
+		return { record: rec, replayed: false };
 	}
 
 	async update(
@@ -611,7 +724,6 @@ export class TaskIndex {
 		opts: { baseRev?: number; status?: TaskStatus } = {},
 	): Promise<{ record: TaskRecord; fields: string[] }> {
 		let fields: string[] = [];
-		let criteria: TaskCriterion[] = [];
 		let result: BoardDocument | null;
 		try {
 			result = await this.board.transact("task", id, async (current) => {
@@ -631,7 +743,6 @@ export class TaskIndex {
 				}
 				const draft: TaskFile = structuredClone(rec.file);
 				fields = await mutate(draft, rec);
-				criteria = draft.criteria;
 				// `draft.dod` is a compatibility alias of `draft.frontmatter.verification`
 				// for callers still written against the old TaskFile shape (where `dod`
 				// was the only slot, since frontmatter had nowhere to put it) - keep
@@ -645,12 +756,18 @@ export class TaskIndex {
 				) {
 					await this.assertNoDependencyCycle(id, draft.frontmatter.depends_on);
 				}
-				const patchFields = dematerializeTaskFields(draft.frontmatter);
-				if (opts.status !== undefined) patchFields.status = opts.status;
-				return {
-					fields: patchFields,
-					body: reassembleBody(draft.body, draft.criteria),
-				};
+				const patchFields = dematerializeTaskFields(
+					draft.frontmatter,
+					this.statusMap,
+				);
+				patchFields[ACCEPTANCE_FIELD] = acceptanceOf(
+					draft.criteria,
+					rec.file.criteria,
+				);
+				if (opts.status !== undefined) {
+					patchFields.status = this.statusMap.toBoard(opts.status);
+				}
+				return { fields: patchFields, body: draft.body.trim() };
 			});
 		} catch (e) {
 			translateMalformed(e, id);
@@ -663,12 +780,9 @@ export class TaskIndex {
 		const statusChanged =
 			opts.status !== undefined && opts.status !== this.index.get(id)?.status;
 		const rec = await this.toRecord(result, { skipBumpCheck: true });
-		// Same reasoning as `create()`: the draft's criteria are authoritative,
-		// the canonical render never re-encodes a checkbox.
-		rec.file.criteria = criteria;
 		if (statusChanged || opts.status !== undefined) {
-			await writeLease(this.root, id, {
-				...(await readLease(this.root, id)),
+			await writeLease(this.state, id, {
+				...(await readLease(this.state, id)),
 				statusChangedAt: Date.now(),
 			});
 			rec.state.statusChangedAt = Date.now();
@@ -682,26 +796,347 @@ export class TaskIndex {
 		id: string,
 		to: TaskStatus,
 		reason?: string | null,
+		editedBy?: string,
 	): Promise<TaskRecord | undefined> {
 		const wantReason = to === "blocked" ? (reason ?? null) : null;
+		const stamp =
+			editedBy && this.declaresField("edited_by") ? editedBy : undefined;
 		const result = await this.update(
 			id,
 			(draft) => {
-				if (draft.frontmatter.blocked_reason === wantReason) return [];
-				draft.frontmatter.blocked_reason = wantReason;
-				return ["blocked_reason"];
+				const fields: string[] = [];
+				if (draft.frontmatter.blocked_reason !== wantReason) {
+					draft.frontmatter.blocked_reason = wantReason;
+					fields.push("blocked_reason");
+				}
+				if (stamp && draft.frontmatter.edited_by !== stamp) {
+					draft.frontmatter.edited_by = stamp;
+					fields.push("edited_by");
+				}
+				return fields;
 			},
 			{ status: to },
 		);
 		return result.record;
 	}
 
+	// --- hierarchy, provenance, live ownership --------------------------------
+
+	/** Whether the task type declares `name` (provenance fields on an old board.yaml may not). */
+	declaresField(name: string): boolean {
+		return name in (this.config.types.task?.fields ?? {});
+	}
+
+	/** The board's hierarchy block, when the task type takes part in it. */
+	private hierarchy() {
+		const h = this.config.hierarchy;
+		return h && h.parent in (this.config.types.task?.fields ?? {}) ? h : null;
+	}
+
+	/** The task with this `created_by`, read from disk (never the cache). */
+	async findByCreatedBy(key: string): Promise<TaskRecord | null> {
+		if (!this.declaresField("created_by")) return null;
+		const [doc] = await this.board.listDocuments("task", { created_by: key });
+		return doc ? this.toRecord(doc) : null;
+	}
+
+	/** Every task whose `created_by` starts with `prefix`, from disk. */
+	async findCreatedByPrefix(prefix: string): Promise<TaskRecord[]> {
+		if (!this.declaresField("created_by")) return [];
+		const out: TaskRecord[] = [];
+		for (const doc of await this.board.listDocuments("task")) {
+			const by = doc.fields.created_by;
+			if (typeof by === "string" && by.startsWith(prefix)) {
+				out.push(await this.toRecord(doc));
+			}
+		}
+		return out;
+	}
+
+	/**
+	 * Depth of the chain above `parentId` (the parent itself counts) plus the
+	 * height of `selfId`'s subtree: board-core's `maxDepth` measure, computed on
+	 * the index so a validator can answer without a write.
+	 */
+	private chainDepth(parentId: string | null, selfId: string | null): number {
+		let up = 0;
+		const seen = new Set<string>();
+		for (
+			let cur: string | null = parentId;
+			cur && !seen.has(cur);
+			cur = this.index.get(cur)?.file.frontmatter.parent ?? null
+		) {
+			seen.add(cur);
+			up++;
+		}
+		const height = (id: string, trail: Set<string>): number => {
+			if (trail.has(id)) return 0;
+			trail.add(id);
+			let best = 0;
+			for (const r of this.index.values()) {
+				if (r.file.frontmatter.parent === id) {
+					best = Math.max(best, 1 + height(r.id, trail));
+				}
+			}
+			return best;
+		};
+		return up + (selfId ? height(selfId, new Set()) : 0);
+	}
+
+	/**
+	 * Would `child` (an existing task, or a hypothetical one named by its board
+	 * fields) be allowed under `parentId`? The same rules the store enforces on
+	 * the write, answered without one: existence, no cycle, the hierarchy
+	 * block's type rules and `maxDepth`.
+	 */
+	hierarchyProblem(
+		child: { id?: string; fields: Record<string, unknown> },
+		parentId: string,
+		/** Board fields to judge the parent by instead of its current ones (a split turning it into an epic). */
+		opts: { parentFields?: Record<string, unknown> } = {},
+	): HierarchyProblem | null {
+		const parent = this.index.get(parentId);
+		if (!parent) {
+			return {
+				code: "parent_not_found",
+				message: `parent '${parentId}' does not exist`,
+			};
+		}
+		if (child.id) {
+			if (parentId === child.id) {
+				return {
+					code: "hierarchy_cycle",
+					message: "a task cannot be its own parent",
+				};
+			}
+			const seen = new Set<string>();
+			for (
+				let cur: string | null = parent.file.frontmatter.parent;
+				cur && !seen.has(cur);
+				cur = this.index.get(cur)?.file.frontmatter.parent ?? null
+			) {
+				if (cur === child.id) {
+					return {
+						code: "hierarchy_cycle",
+						message: `'${parentId}' is already under '${child.id}'; that would make a cycle`,
+					};
+				}
+				seen.add(cur);
+			}
+		}
+		const h = this.hierarchy();
+		if (!h) return null;
+		const rawOf = (rec: TaskRecord) =>
+			dematerializeTaskFields(rec.file.frontmatter, this.statusMap);
+		if (h.rules) {
+			const problem = parentRuleProblem(
+				h.rules,
+				{ type: "task", fields: child.fields },
+				{ type: "task", fields: opts.parentFields ?? rawOf(parent) },
+			);
+			if (problem) return { code: "parent_type_not_allowed", message: problem };
+		}
+		if (h.maxDepth !== undefined) {
+			const depth = this.chainDepth(parentId, child.id ?? null);
+			if (depth > h.maxDepth) {
+				return {
+					code: "max_depth",
+					message: `parent chain would be ${depth} deep (maxDepth is ${h.maxDepth})`,
+				};
+			}
+		}
+		return null;
+	}
+
+	/** The hierarchy's type rules alone, for two tasks that may not exist yet. */
+	rulesProblem(
+		child: Record<string, unknown>,
+		parent: Record<string, unknown>,
+	): HierarchyProblem | null {
+		const rules = this.hierarchy()?.rules;
+		if (!rules) return null;
+		const problem = parentRuleProblem(
+			rules,
+			{ type: "task", fields: child },
+			{ type: "task", fields: parent },
+		);
+		return problem
+			? { code: "parent_type_not_allowed", message: problem }
+			: null;
+	}
+
+	/** The board's `maxDepth`, when its hierarchy declares one. */
+	get maxDepth(): number | undefined {
+		return this.hierarchy()?.maxDepth;
+	}
+
+	/** Nodes on the chain from `id` up, `id` included (a parent's contribution to its child's depth). */
+	depthOf(id: string | null): number {
+		return this.chainDepth(id, null);
+	}
+
+	/** A task's fields as the board holds them (the shape hierarchy rules match on). */
+	boardFields(id: string): Record<string, unknown> | null {
+		const rec = this.index.get(id);
+		return rec
+			? dematerializeTaskFields(rec.file.frontmatter, this.statusMap)
+			: null;
+	}
+
+	/** The board value a task of this canonical status would be written with. */
+	boardFieldsFor(fm: {
+		type: string;
+		priority: string;
+		status: TaskStatus;
+	}): Record<string, unknown> {
+		return {
+			type: fm.type,
+			priority: fm.priority,
+			status: this.boardStatusFor(fm.status) ?? fm.status,
+		};
+	}
+
+	/**
+	 * Move a task under another parent (or to the top). Through the board's own
+	 * hierarchy write when the board declares one (rules, depth, `children`
+	 * kept in sync), a plain field write otherwise. `baseRev` is the caller's
+	 * view of the task, checked against the effective rev.
+	 */
+	async setParent(
+		id: string,
+		parentId: string | null,
+		opts: { baseRev?: number; editedBy?: string } = {},
+	): Promise<{ record: TaskRecord; changed: boolean }> {
+		return this.boardLock.with("::board", async () => {
+			const rec = await this.reread(id);
+			if (!rec) throw new Error(`unknown task ${id}`);
+			const rev = rec.file.frontmatter.rev;
+			if (opts.baseRev !== undefined && opts.baseRev !== rev) {
+				throw new TaskConflict(id, rev);
+			}
+			if (rec.file.frontmatter.parent === parentId) {
+				return { record: rec, changed: false };
+			}
+			if (parentId) {
+				const problem = this.hierarchyProblem(
+					{
+						id,
+						fields: dematerializeTaskFields(
+							rec.file.frontmatter,
+							this.statusMap,
+						),
+					},
+					parentId,
+				);
+				if (problem) {
+					throw new HierarchyError(
+						problem.code === "max_depth"
+							? "max-depth"
+							: problem.code === "hierarchy_cycle"
+								? "cycle"
+								: problem.code === "parent_not_found"
+									? "parent-not-found"
+									: "parent-type-not-allowed",
+						"task",
+						id,
+						problem.message,
+					);
+				}
+			}
+			const edited =
+				opts.editedBy && this.declaresField("edited_by")
+					? { edited_by: opts.editedBy }
+					: {};
+			let doc: BoardDocument;
+			try {
+				const h = this.hierarchy();
+				doc = await this.board.updateDocument("task", id, {
+					fields: { [h?.parent ?? "parent"]: parentId, ...edited },
+				});
+			} catch (e) {
+				translateMalformed(e, id);
+			}
+			const next = await this.toRecord(doc, { skipBumpCheck: true });
+			this.index.set(id, next);
+			this.seen.set(id, doc.hash);
+			// A hierarchy board keeps `children` on both parents: they changed too.
+			for (const pid of [rec.file.frontmatter.parent, parentId]) {
+				if (pid) await this.reread(pid);
+			}
+			return { record: next, changed: true };
+		});
+	}
+
+	/**
+	 * Other tasks that hold their files now (status `in_progress` or a live
+	 * claim) and whose `owns` overlaps `owns`. Reads the claim sidecars from
+	 * disk: call it inside `withClaimLock` to make the answer binding.
+	 */
+	async liveOwnsOverlaps(
+		id: string,
+		owns: readonly string[],
+	): Promise<{ id: string; patterns: [string, string][] }[]> {
+		if (owns.length === 0) return [];
+		const out: { id: string; patterns: [string, string][] }[] = [];
+		for (const doc of await this.board.listDocuments("task")) {
+			if (doc.id === id) continue;
+			const theirs = (doc.fields.owns as string[] | undefined) ?? [];
+			const patterns = overlappingPatterns(owns, theirs);
+			if (patterns.length === 0) continue;
+			const lease = await readLease(this.state, doc.id);
+			const leaseLive =
+				lease.claimedByGroupId !== null &&
+				(lease.leaseExpiresAt === null || lease.leaseExpiresAt > Date.now());
+			const active = this.readStatus(doc.fields) === "in_progress" || leaseLive;
+			if (active) out.push({ id: doc.id, patterns });
+		}
+		return out;
+	}
+
+	/** The canonical status roles this board can write (the others have no column). */
+	statusRolesAvailable(): TaskStatus[] {
+		const roles: TaskStatus[] = [
+			"draft",
+			"backlog",
+			"ready",
+			"in_progress",
+			"blocked",
+			"review",
+			"done",
+			"archived",
+		];
+		return roles.filter((r) => {
+			try {
+				this.statusMap.toBoard(r);
+				return true;
+			} catch {
+				return false;
+			}
+		});
+	}
+
+	/** The board's own word for a canonical status role (for a refusal's fix). */
+	boardStatusFor(role: TaskStatus): string | null {
+		try {
+			return this.statusMap.toBoard(role);
+		} catch {
+			return null;
+		}
+	}
+
 	// --- claim / release --------------------------------------------------
+
+	/** Run `fn` under the lock `claim()` holds, so no claim lands meanwhile. */
+	withClaimLock<T>(fn: () => Promise<T>): Promise<T> {
+		return withClaimLock(this.claimConfig, fn);
+	}
 
 	async claim(
 		id: string,
 		runId: string,
 		leaseMs: number,
+		fromStatus: TaskStatus = "ready",
+		leadRunId?: string,
 	): Promise<TaskRecord | null> {
 		// `claimTask` finds its candidate via `listDocuments`, which silently
 		// skips a malformed entry (one bad file must not hide the others) — that
@@ -717,8 +1152,16 @@ export class TaskIndex {
 			id,
 			runId,
 			leaseMs,
-			"ready",
-			this.claimConfig,
+			// The claim lock compares and writes board values, so both the
+			// status it comes FROM and the two it knows how to write are
+			// translated here — and nowhere else.
+			this.statusMap.toBoard(fromStatus),
+			{
+				...this.claimConfig,
+				doneStatus: this.statusMap.toBoard("done"),
+				activeStatus: this.statusMap.toBoard("in_progress"),
+			},
+			leadRunId ? { leadRunId } : {},
 		);
 		if (!doc) return null;
 		const rec = await this.toRecord(doc);
@@ -734,21 +1177,22 @@ export class TaskIndex {
 		leaseMs: number,
 	): Promise<{ record: TaskRecord; alreadyOwned: boolean } | null> {
 		const doc = await this.board.readDocument("task", id);
-		if (doc?.fields.status !== "draft") return null;
-		const lease = await readLease(this.root, id);
+		if (this.readStatus(doc?.fields) !== "draft") return null;
+		const lease = await readLease(this.state, id);
 		const now = Date.now();
-		if (lease.claimedByRunId === runId) {
-			await writeLease(this.root, id, {
+		if (lease.claimedByGroupId === runId) {
+			await writeLease(this.state, id, {
 				...lease,
 				leaseExpiresAt: now + leaseMs,
 			});
 			const rec = await this.reread(id);
 			return rec ? { record: rec, alreadyOwned: true } : null;
 		}
-		if (lease.claimedByRunId !== null) return null;
-		await writeLease(this.root, id, {
+		if (lease.claimedByGroupId !== null) return null;
+		await writeLease(this.state, id, {
 			...lease,
-			claimedByRunId: runId,
+			claimedByGroupId: runId,
+			leadRunId: null,
 			claimedAt: now,
 			leaseExpiresAt: now + leaseMs,
 		});
@@ -774,19 +1218,20 @@ export class TaskIndex {
 		from: TaskStatus;
 		releasedRunId: string | null;
 	} | null> {
-		const lease = await readLease(this.root, id);
-		const held = lease.claimedByRunId;
+		const lease = await readLease(this.state, id);
+		const held = lease.claimedByGroupId;
 		if (held !== null && held !== expectedRunId) return null;
 		const current = await this.board.readDocument("task", id);
 		if (!current) return null;
-		const from = current.fields.status as TaskStatus;
+		const from = this.statusMap.toCanonical(current.fields.status as string);
 		if (to === "done" || to === "review") {
-			await patchRunState(this.root, id, { resumeCount: 0 });
+			await patchRunState(this.state, id, { resumeCount: 0 });
 		}
 		const record = await this.setStatus(id, to, reason);
 		if (!record) return null;
-		await writeLease(this.root, id, {
-			claimedByRunId: null,
+		await writeLease(this.state, id, {
+			claimedByGroupId: null,
+			leadRunId: null,
 			claimedAt: null,
 			leaseExpiresAt: null,
 			statusChangedAt: Date.now(),
@@ -813,7 +1258,7 @@ export class TaskIndex {
 				return ["reopen_when", "blocked_reason"];
 			});
 		}
-		await patchRunState(this.root, rec.id, { reopenIntent: undefined });
+		await patchRunState(this.state, rec.id, { reopenIntent: undefined });
 	}
 
 	async reopen(
@@ -835,20 +1280,21 @@ export class TaskIndex {
 		if (
 			conditions.some(
 				(c) =>
-					"task_done" in c && byId.get(c.task_done)?.fields.status !== "done",
+					"task_done" in c &&
+					this.readStatus(byId.get(c.task_done)?.fields) !== "done",
 			)
 		) {
 			return null;
 		}
 		if (
 			rec.file.frontmatter.depends_on.some(
-				(d) => byId.get(d)?.fields.status !== "done",
+				(d) => this.readStatus(byId.get(d)?.fields) !== "done",
 			)
 		) {
 			return null;
 		}
 		const from = rec.status;
-		await patchRunState(this.root, id, {
+		await patchRunState(this.state, id, {
 			stallCount: 0,
 			attemptCount: 0,
 			resumeCount: 0,
@@ -859,12 +1305,76 @@ export class TaskIndex {
 		return { from };
 	}
 
+	// --- claim group migration -----------------------------------------------
+
+	/** Rename every legacy sidecar's holder key under the claim lock. */
+	async migrateClaimSidecars(): Promise<ClaimGroupsReport> {
+		return this.withClaimLock(() => rewriteClaimSidecars(this.state));
+	}
+
+	// --- acceptance migration ------------------------------------------------
+
+	/**
+	 * Move each task's `## Acceptance Criteria` body list into its
+	 * `acceptance` field (see `acceptance.ts`), every task re-read and
+	 * rewritten under its own document lock and the board lock. Refuses while
+	 * the circuit breaker distrusts the board (returns null): rewriting a board
+	 * that may be a stale checkout would make it permanent. A task a board rule
+	 * refuses keeps its body and is reported as skipped.
+	 */
+	async migrateBodyCriteria(): Promise<MigrationReport | null> {
+		return this.boardLock.with("::board", async () => {
+			if (this.suspicion) return null;
+			const report: MigrationReport = { migrated: [], skipped: [] };
+			for (const doc of await this.board.listDocuments("task")) {
+				const first = planBodyMigration(doc.body, criteriaOf(doc.fields)).kind;
+				if (first === "none") continue;
+				let skipped: string | null = null;
+				let written: BoardDocument | null;
+				try {
+					written = await this.board.transact("task", doc.id, async (cur) => {
+						const plan = planBodyMigration(cur.body, criteriaOf(cur.fields));
+						if (plan.kind === "skip") skipped = plan.reason;
+						if (plan.kind !== "move") return null;
+						return {
+							fields: { [ACCEPTANCE_FIELD]: toChecklist(plan.items) },
+							body: plan.body,
+						};
+					});
+				} catch (e) {
+					if (e instanceof RuleViolationError) {
+						report.skipped.push({ id: doc.id, reason: e.message });
+						continue;
+					}
+					if (e instanceof MalformedDocumentError) {
+						report.skipped.push({ id: doc.id, reason: e.reason });
+						continue;
+					}
+					throw e;
+				}
+				if (skipped !== null) {
+					report.skipped.push({ id: doc.id, reason: skipped });
+				}
+				if (!written) continue;
+				const rec = await this.toRecord(written, { skipBumpCheck: true });
+				this.index.set(doc.id, rec);
+				this.seen.set(doc.id, written.hash);
+				report.migrated.push(doc.id);
+			}
+			return report;
+		});
+	}
+
 	// --- directory / spec / attachments -------------------------------------
 
 	async withTaskDir<T>(
 		id: string,
 		fn: (dir: string) => Promise<T>,
 	): Promise<T | null> {
+		// On a flat board `dirname()` of the task's path is the type's OWN
+		// directory, shared by every task: never hand that out as "the task's
+		// directory" to write in.
+		if (this.flatLayout) throw flatBoardError();
 		const rec = this.index.get(id) ?? (await this.reread(id));
 		return rec ? fn(dirname(rec.path)) : null;
 	}
@@ -903,7 +1413,11 @@ export class TaskIndex {
 	private async wipeLocked(): Promise<string[]> {
 		for (const issue of await this.board.validate()) {
 			if (issue.type !== "task") continue;
-			const name = basename(dirname(issue.path));
+			// A flat task's file is the document itself; a directory-layout
+			// task's id is the name of the directory holding it.
+			const name = this.flatLayout
+				? basename(issue.path, ".md")
+				: basename(dirname(issue.path));
 			const id = idFromTaskDirName(this.taskKey, name) ?? name;
 			throw new MalformedTaskFileError(id, issue.path, issue.message);
 		}
@@ -921,10 +1435,10 @@ export class TaskIndex {
 	}
 
 	private async removeSidecars(id: string): Promise<void> {
-		await rm(join(this.root, "state", "tasks", `${id}.json`), {
+		await rm(join(this.state, "state", "tasks", `${id}.json`), {
 			force: true,
 		}).catch(() => {});
-		await rm(join(this.root, "state", "tasks", `${id}.run.json`), {
+		await rm(join(this.state, "state", "tasks", `${id}.run.json`), {
 			force: true,
 		}).catch(() => {});
 	}
@@ -939,7 +1453,8 @@ export class TaskIndex {
 		if (!rec) return undefined;
 		const delta = typeof patch === "function" ? patch(rec.state) : patch;
 		const leaseKeys = new Set([
-			"claimedByRunId",
+			"claimedByGroupId",
+			"leadRunId",
 			"claimedAt",
 			"leaseExpiresAt",
 			"statusChangedAt",
@@ -951,15 +1466,15 @@ export class TaskIndex {
 			if (leaseKeys.has(k)) (leaseDelta as Record<string, unknown>)[k] = v;
 			else (runDelta as Record<string, unknown>)[k] = v;
 		}
-		let lease = await readLease(this.root, id);
+		let lease = await readLease(this.state, id);
 		if (Object.keys(leaseDelta).length > 0) {
 			lease = { ...lease, ...leaseDelta };
-			await writeLease(this.root, id, lease);
+			await writeLease(this.state, id, lease);
 		}
-		let runState = await readRunState(this.root, id);
+		let runState = await readRunState(this.state, id);
 		if (Object.keys(runDelta).length > 0) {
 			runState = { ...runState, ...runDelta };
-			await writeRunState(this.root, id, runState);
+			await writeRunState(this.state, id, runState);
 		}
 		const updated: TaskRecord = { ...rec, state: { ...runState, ...lease } };
 		this.index.set(id, updated);

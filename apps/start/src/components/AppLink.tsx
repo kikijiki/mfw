@@ -3,9 +3,10 @@ import type { AnchorHTMLAttributes, ReactNode } from "react";
 import { cn } from "~/lib/utils";
 import { useGo } from "../lib/nav";
 import { withBase } from "../routes";
+import { Tip } from "./ui/tooltip";
 
 /**
- * An in-app link. Renders a real `<a href>` (middle-click, ⌘-click and copy
+ * An in-app link. Renders a real `<a href>` (middle-click, modifier-click and copy
  * address work); a plain left click is handled by the router.
  */
 export interface AppLinkProps
@@ -15,6 +16,8 @@ export interface AppLinkProps
 	replace?: boolean;
 	/** Overrides where an unmodified left click navigates; `href` stays `to`. Used to open a task through a masked route that keeps the board mounted. */
 	navigate?: () => void;
+	/** Show `title` only while the link text is cut off (a truncated name). */
+	clipped?: boolean;
 }
 
 export function AppLink({
@@ -24,10 +27,12 @@ export function AppLink({
 	replace,
 	navigate,
 	onClick,
+	title,
+	clipped,
 	...rest
 }: AppLinkProps) {
 	const go = useGo();
-	return (
+	const link = (
 		<a
 			{...rest}
 			href={withBase(to)}
@@ -45,5 +50,10 @@ export function AppLink({
 		>
 			{children}
 		</a>
+	);
+	return (
+		<Tip label={title} clipped={clipped ?? false}>
+			{link}
+		</Tip>
 	);
 }

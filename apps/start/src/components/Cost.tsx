@@ -1,5 +1,6 @@
 import { cn } from "~/lib/utils";
 import { formatCost, formatDuration, formatTokens } from "../lib/format";
+import { Tip } from "./ui/tooltip";
 
 /**
  * Money, tokens and durations in tabular numerals.
@@ -19,13 +20,15 @@ export function Cost({
 	className?: string;
 	title?: string;
 }) {
+	const shown = formatCost(usd);
+	// The exact figure is worth a tip only when the display rounded it.
+	const exact = usd == null || `$${usd}` === shown ? undefined : `$${usd}`;
 	return (
-		<span
-			className={cn("mfw-num whitespace-nowrap", className)}
-			title={title ?? (usd == null ? undefined : `$${usd}`)}
-		>
-			{formatCost(usd)}
-		</span>
+		<Tip label={title ?? exact}>
+			<span className={cn("mfw-num whitespace-nowrap", className)}>
+				{shown}
+			</span>
+		</Tip>
 	);
 }
 
@@ -36,15 +39,18 @@ export function Tokens({
 	count: number | null | undefined;
 	className?: string;
 }) {
+	const shown = formatTokens(count);
+	// The exact count is worth a tip only when the display abbreviated it.
+	const exact =
+		count == null || String(count) === shown
+			? undefined
+			: `${count.toLocaleString("en-US")} tokens`;
 	return (
-		<span
-			className={cn("mfw-num whitespace-nowrap", className)}
-			title={
-				count == null ? undefined : `${count.toLocaleString("en-US")} tokens`
-			}
-		>
-			{formatTokens(count)}
-		</span>
+		<Tip label={exact}>
+			<span className={cn("mfw-num whitespace-nowrap", className)}>
+				{shown}
+			</span>
+		</Tip>
 	);
 }
 
@@ -78,8 +84,8 @@ export function Mono({
 			? `${value.slice(0, truncate)}…`
 			: value;
 	return (
-		<span className={cn("mfw-num", className)} title={value}>
-			{shown}
-		</span>
+		<Tip label={shown === value ? undefined : value}>
+			<span className={cn("mfw-num", className)}>{shown}</span>
+		</Tip>
 	);
 }

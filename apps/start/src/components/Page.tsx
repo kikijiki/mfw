@@ -1,6 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 
 import { cn } from "~/lib/utils";
+import { Tip } from "./ui/tooltip";
 
 /** The page frame every screen composes from, so no screen writes color, radius or padding literals. */
 
@@ -56,7 +57,7 @@ export function PageHeader({
 				background: "var(--mfw-bg)",
 			}}
 		>
-			<div className="flex min-w-0 flex-1 flex-col gap-1">
+			<div className="flex min-w-[min(100%,16rem)] flex-1 flex-col gap-1">
 				{back ? <div className="flex items-center gap-2">{back}</div> : null}
 				{title ? (
 					<h1
@@ -98,6 +99,7 @@ export function PageHeader({
  * border instead of the Scroller scrolling.
  */
 export function Panel({
+	id,
 	title,
 	actions,
 	children,
@@ -105,6 +107,8 @@ export function Panel({
 	className,
 	style,
 }: {
+	/** An anchor: the settings section nav scrolls to it. */
+	id?: string;
 	title?: ReactNode;
 	actions?: ReactNode;
 	children: ReactNode;
@@ -114,7 +118,12 @@ export function Panel({
 }) {
 	return (
 		<section
-			className={cn("flex min-h-0 min-w-0 shrink-0 flex-col border", className)}
+			id={id}
+			className={cn(
+				"flex min-h-0 min-w-0 shrink-0 flex-col border",
+				id && "scroll-mt-3",
+				className,
+			)}
 			style={{
 				borderColor: "var(--mfw-border)",
 				borderRadius: "var(--mfw-radius-md)",
@@ -190,22 +199,23 @@ export function Chip({
 			? "--mfw-fg-muted"
 			: `--mfw-${tone === "accent" ? "accent" : tone}`;
 	return (
-		<span
-			title={title}
-			className={cn(
-				"inline-flex h-5 shrink-0 items-center gap-1 border px-1.5 whitespace-nowrap",
-				className,
-			)}
-			style={{
-				color: `var(${token})`,
-				background: `color-mix(in oklch, var(${token}) 10%, transparent)`,
-				borderColor: `color-mix(in oklch, var(${token}) 28%, transparent)`,
-				borderRadius: "var(--mfw-radius-sm)",
-				fontSize: "var(--mfw-text-2xs)",
-			}}
-		>
-			{children}
-		</span>
+		<Tip label={title}>
+			<span
+				className={cn(
+					"inline-flex h-5 shrink-0 items-center gap-1 border px-1.5 whitespace-nowrap",
+					className,
+				)}
+				style={{
+					color: `var(${token})`,
+					background: `color-mix(in oklch, var(${token}) 10%, transparent)`,
+					borderColor: `color-mix(in oklch, var(${token}) 28%, transparent)`,
+					borderRadius: "var(--mfw-radius-sm)",
+					fontSize: "var(--mfw-text-2xs)",
+				}}
+			>
+				{children}
+			</span>
+		</Tip>
 	);
 }
 

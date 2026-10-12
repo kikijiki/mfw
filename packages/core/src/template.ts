@@ -1,5 +1,5 @@
 /**
- * Task templates (`.mfw/templates/<type>.md`, falling back to `task.md`).
+ * Task templates (`templates/<type>.md` in the board folder, falling back to `task.md`).
  *
  * A template is plain markdown: its `##` headings are the sections a task of
  * that type must fill in, and the text under each heading is guidance shown

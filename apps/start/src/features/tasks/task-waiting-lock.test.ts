@@ -3,7 +3,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 describe("task waiting for clarification", () => {
-	const source = readFileSync(join(import.meta.dir, "TaskPage.tsx"), "utf8");
+	// The editor lives in TaskDefinition; the status select stays in TaskPage.
+	const definition = readFileSync(
+		join(import.meta.dir, "TaskDefinition.tsx"),
+		"utf8",
+	);
+	const page = readFileSync(join(import.meta.dir, "TaskPage.tsx"), "utf8");
+	const source = definition;
 
 	test("locks content, status, deletion, keyboard save, and destination edits", () => {
 		expect(source).toContain('task?.draftPhase === "waiting_for_answers"');
@@ -21,6 +27,6 @@ describe("task waiting for clarification", () => {
 	});
 
 	test("does not offer In progress as a manual destination", () => {
-		expect(source).toContain('status !== "in_progress" &&');
+		expect(page).toContain('status !== "in_progress" &&');
 	});
 });

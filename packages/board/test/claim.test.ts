@@ -73,7 +73,7 @@ describe("claimTask", () => {
 		const after = await store.readDocument("task", doc.id);
 		expect(after?.fields.status).toBe("in_progress");
 		const lease = await readLease(root, doc.id);
-		expect(lease.claimedByRunId).toMatch(/^run-\d$/);
+		expect(lease.claimedByGroupId).toMatch(/^run-\d$/);
 	});
 
 	test("a task that is not ready cannot be claimed", async () => {
@@ -181,7 +181,7 @@ describe("releaseClaim", () => {
 			claimConfig(root),
 		);
 		expect(released?.fields.status).toBe("done");
-		expect((await readLease(root, doc.id)).claimedByRunId).toBeNull();
+		expect((await readLease(root, doc.id)).claimedByGroupId).toBeNull();
 	});
 
 	test("refuses to release a claim held by a different run", async () => {
@@ -225,7 +225,7 @@ describe("bind-only claims (start: false)", () => {
 			"ready",
 		);
 		const lease = await readLease(root, doc.id);
-		expect(lease.claimedByRunId).toBe("run-1");
+		expect(lease.claimedByGroupId).toBe("run-1");
 		expect(lease.worktree).toBe("/wt/a");
 		expect(lease.leaseExpiresAt).not.toBeNull();
 	});
@@ -243,7 +243,7 @@ describe("bind-only claims (start: false)", () => {
 			bind,
 		);
 		expect(claimed?.fields.status).toBe("in_progress");
-		expect((await readLease(root, doc.id)).claimedByRunId).toBe("run-1");
+		expect((await readLease(root, doc.id)).claimedByGroupId).toBe("run-1");
 	});
 
 	test("refuses unmet dependencies", async () => {
@@ -274,7 +274,7 @@ describe("bind-only claims (start: false)", () => {
 		expect(
 			await claimTask(store, doc.id, "run-2", 60_000, "ready", cfg, bind),
 		).toBeNull();
-		expect((await readLease(root, doc.id)).claimedByRunId).toBe("run-1");
+		expect((await readLease(root, doc.id)).claimedByGroupId).toBe("run-1");
 	});
 
 	test("refuses owns overlapping a claimed-but-not-started task", async () => {
@@ -310,7 +310,7 @@ describe("bind-only claims (start: false)", () => {
 		const released = await releaseClaim(store, doc.id, "run-1", null, cfg);
 		expect(released?.fields.status).toBe("ready");
 		const lease = await readLease(root, doc.id);
-		expect(lease.claimedByRunId).toBeNull();
+		expect(lease.claimedByGroupId).toBeNull();
 		expect(lease.worktree).toBeNull();
 	});
 });
@@ -340,14 +340,14 @@ describe("claim defaults and sidecar compat", () => {
 		await writeFile(
 			join(root, "state", "tasks", "MFW-1.json"),
 			JSON.stringify({
-				claimedByRunId: "run-9",
+				claimedByGroupId: "run-9",
 				claimedAt: 1,
 				leaseExpiresAt: 2,
 				statusChangedAt: 3,
 			}),
 		);
 		const lease = await readLease(root, "MFW-1");
-		expect(lease.claimedByRunId).toBe("run-9");
+		expect(lease.claimedByGroupId).toBe("run-9");
 		expect(lease.worktree).toBeNull();
 	});
 });
@@ -453,9 +453,9 @@ describe("claims follow the board's workflow readiness", () => {
 	test("clearLease drops a binding and is a no-op without one", async () => {
 		const root = await freshRoot();
 		await clearLease(root, "X-1");
-		expect((await readLease(root, "X-1")).claimedByRunId).toBeNull();
+		expect((await readLease(root, "X-1")).claimedByGroupId).toBeNull();
 		await writeLease(root, "X-1", {
-			claimedByRunId: "r",
+			claimedByGroupId: "r",
 			claimedAt: 1,
 			leaseExpiresAt: 2,
 			statusChangedAt: 1,
@@ -463,7 +463,7 @@ describe("claims follow the board's workflow readiness", () => {
 		});
 		await clearLease(root, "X-1");
 		const l = await readLease(root, "X-1");
-		expect(l.claimedByRunId).toBeNull();
+		expect(l.claimedByGroupId).toBeNull();
 		expect(l.leaseExpiresAt).toBeNull();
 		expect(l.worktree).toBeNull();
 	});

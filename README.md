@@ -18,6 +18,10 @@ mfw is three things that fit together. You can use the first on its own.
               └─────────┴──► Board: plain task files in a folder  ◄── mfwb (CLI)
 ```
 
+![The board: every status a lane, agents and the brain's decisions on the cards](docs/screenshots/board-dark-1440x900.png)
+
+More screenshots [below, in the web UI section](#3-the-web-ui).
+
 ## 1. The board tool (`mfwb`)
 
 A **board** is a folder of plain text files (markdown): one file per task, plus
@@ -84,9 +88,19 @@ The web UI runs on your machine and shows:
   steer or stop an agent mid-task;
 - the **review queue** for work waiting on a human, and an **inbox** of things that
   need your attention;
+- **docs**: the project's decisions, specs and journals from the board, plus any
+  documentation directories you add (or accept from the suggestions), with
+  search, rendered Mermaid diagrams and SVG/PNG images, read-only for plain files;
 - **runs**, **resources** and **triggers**, and per-project **settings** such as the
   scheduler switch and how much help the model may give;
 - a layout that works on a phone as well as a desktop.
+
+| | |
+| --- | --- |
+| <a href="docs/screenshots/home-dark-1440x900.png"><img src="docs/screenshots/home-dark-1440x900.png" alt="Home: what needs you, and agents live across projects"></a><br>Home: what needs you, and agents live across projects | <a href="docs/screenshots/board-inspector-dark-1440x900.png"><img src="docs/screenshots/board-inspector-dark-1440x900.png" alt="A task open in the inspector next to the board"></a><br>A task open in the inspector next to the board |
+| <a href="docs/screenshots/flow-dark-1440x900.png"><img src="docs/screenshots/flow-dark-1440x900.png" alt="Flow: the task tree and run timeline, brain on top"></a><br>Flow: the task tree and run timeline, brain on top | <a href="docs/screenshots/fleet-dark-1440x900.png"><img src="docs/screenshots/fleet-dark-1440x900.png" alt="Fleet: hosts, subscriptions, harnesses and budgets"></a><br>Fleet: hosts, subscriptions, harnesses and budgets |
+| <a href="docs/screenshots/brain-dark-1440x900.png"><img src="docs/screenshots/brain-dark-1440x900.png" alt="The brain: its decisions, plan and budget"></a><br>The brain: its decisions, plan and budget | <a href="docs/screenshots/docs-dark-1440x900.png"><img src="docs/screenshots/docs-dark-1440x900.png" alt="Docs: decisions, specs and journals"></a><br>Docs: decisions, specs and journals |
+| <a href="docs/screenshots/repo-dark-1440x900.png"><img src="docs/screenshots/repo-dark-1440x900.png" alt="Repo: files with the README rendered, branches, commits"></a><br>Repo: files with the README rendered, branches, commits | <a href="docs/screenshots/settings-dark-1440x900.png"><img src="docs/screenshots/settings-dark-1440x900.png" alt="Project settings"></a><br>Project settings |
 
 ### For agents: the MCP server
 
@@ -161,6 +175,17 @@ Provider keys, if you use any, are stored in a private file
 (`~/.local/share/mfw/credentials.json`, readable only by you), never in the
 database. mfw never edits your `.gitignore`.
 
+### Acceptance criteria on older boards
+
+Acceptance criteria are the task type's `acceptance` checklist field. When mfw
+attaches a board created before that field existed, it adds the field to
+`board.yaml` and moves each task's `## Acceptance Criteria` list into it, in one
+board commit. To hand the board back to an older mfw, stop the daemon and run:
+
+```sh
+bun run tools/board-acceptance.ts --revert /absolute/project/root
+```
+
 ### Advanced: automatic reopen conditions
 
 A parked task can declare `reopen_when` conditions. `task_done` predicates are
@@ -187,8 +212,8 @@ required template sections before moving the task to ready.
 
 ## How it is built
 
-[`ARCHITECTURE.md`](./ARCHITECTURE.md) explains the design in detail. The short
-version: one app (a [TanStack Start](https://tanstack.com/start) server) runs the
+The architecture notes live in the backstage knowledge repository under
+`projects/mfw/architecture.md`. The short version: one app (a [TanStack Start](https://tanstack.com/start) server) runs the
 daemon in-process, serves the web UI and a typed API, and keeps run bookkeeping in
 a local SQLite database. The board itself is always just files.
 

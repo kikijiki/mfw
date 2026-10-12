@@ -7,6 +7,7 @@ import { cn } from "~/lib/utils";
 import { formatRelative } from "../lib/format";
 import { useLive } from "../lib/live";
 import { humanizeError } from "../lib/toast";
+import { TipSpan } from "./ui/tooltip";
 
 /**
  * Panel-scoped error state: a failed panel renders its own error and leaves
@@ -119,19 +120,21 @@ export function DaemonUnreachableBanner({
 	);
 }
 
-/** Slim, non-blocking overlay for a connection that dropped seconds ago. */
+/** Small opaque pill, top centre, for a connection that dropped seconds ago; it never blocks input. */
 export function ReconnectingOverlay({ className }: { className?: string }) {
 	return (
 		<Alert
 			role="status"
 			aria-live="polite"
 			className={cn(
-				"pointer-events-none absolute inset-x-0 top-0 z-30 flex items-center gap-2 rounded-none border-0 px-3 py-1",
+				"pointer-events-none absolute top-2 left-1/2 z-50 flex w-auto -translate-x-1/2 items-center gap-2 rounded-md border px-3 py-1.5 shadow-lg",
 				className,
 			)}
 			style={{
-				background: "color-mix(in oklch, var(--mfw-warn) 14%, transparent)",
-				color: "var(--mfw-fg-muted)",
+				background:
+					"color-mix(in oklch, var(--mfw-warn) 16%, var(--mfw-bg-raised))",
+				borderColor: "var(--mfw-warn)",
+				color: "var(--mfw-fg)",
 				fontSize: "var(--mfw-text-xs)",
 			}}
 		>
@@ -156,11 +159,11 @@ export function StaleWhenOffline({
 	const { status } = useLive();
 	if (status !== "offline") return <>{children}</>;
 	return (
-		<span
-			title={label}
+		<TipSpan
+			tip={label}
 			style={{ color: "var(--mfw-fg-faint)", textDecoration: "line-through" }}
 		>
 			{children}
-		</span>
+		</TipSpan>
 	);
 }

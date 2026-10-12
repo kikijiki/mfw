@@ -130,7 +130,7 @@ describe("transition verbs", () => {
 			const lease = JSON.parse(
 				await readFile(join(dir, "state", "tasks", "TK-001.json"), "utf8"),
 			);
-			expect(lease.claimedByRunId).toBe(released ? null : "r1");
+			expect(lease.claimedByGroupId).toBe(released ? null : "r1");
 		}
 	});
 

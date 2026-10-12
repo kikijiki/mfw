@@ -30,7 +30,8 @@ try {
 	const svc = new TaskService({
 		handle,
 		bus: new EventBus(),
-		mfwDir,
+		boardDir: mfwDir,
+		stateDir: mfwDir,
 		config,
 		taskKey: "MFW",
 		log: silentLogger(),

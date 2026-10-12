@@ -1,8 +1,9 @@
 import { cva, type VariantProps } from "class-variance-authority";
 import { Slot } from "radix-ui";
-import type * as React from "react";
+import * as React from "react";
 
 import { cn } from "@/lib/utils";
+import { Tip } from "./tooltip";
 
 const buttonVariants = cva(
 	"group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
@@ -41,27 +42,59 @@ const buttonVariants = cva(
 	},
 );
 
+/** True when `node` renders any visible text (so the button names itself). */
+function hasText(node: React.ReactNode): boolean {
+	if (typeof node === "string") return node.trim() !== "";
+	if (typeof node === "number") return true;
+	if (Array.isArray(node)) return node.some(hasText);
+	if (React.isValidElement<{ children?: React.ReactNode }>(node))
+		return hasText(node.props.children);
+	return false;
+}
+
+/**
+ * `title` is not passed to the DOM (the native tooltip clips and is absent on
+ * touch): it becomes the shared tooltip and, on an icon-only button without an
+ * `aria-label`, the accessible name. A disabled button gets the tip on a
+ * wrapper, since a disabled control receives no pointer events.
+ */
 function Button({
 	className,
 	variant = "default",
 	size = "default",
 	asChild = false,
+	title,
 	...props
-}: React.ComponentProps<"button"> &
+}: Omit<React.ComponentProps<"button">, "title"> &
 	VariantProps<typeof buttonVariants> & {
 		asChild?: boolean;
+		title?: string | undefined;
 	}) {
 	const Comp = asChild ? Slot.Root : "button";
+	const name =
+		title && props["aria-label"] === undefined && !hasText(props.children)
+			? { "aria-label": title }
+			: {};
 
-	return (
+	const el = (
 		<Comp
 			data-slot="button"
 			data-variant={variant}
 			data-size={size}
 			className={cn(buttonVariants({ variant, size, className }))}
+			{...name}
 			{...props}
 		/>
 	);
+	if (!title) return el;
+	if (props.disabled && !asChild) {
+		return (
+			<Tip label={title}>
+				<span className="inline-flex">{el}</span>
+			</Tip>
+		);
+	}
+	return <Tip label={title}>{el}</Tip>;
 }
 
 export { Button, buttonVariants };

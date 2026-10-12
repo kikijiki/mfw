@@ -96,7 +96,6 @@ export function LiveMetricChart({
 				className="h-24 w-full overflow-visible border-y"
 				style={{ borderColor: "var(--mfw-border)" }}
 			>
-				<title>{label}</title>
 				<line x1="0" y1="4" x2="100" y2="4" stroke="var(--mfw-border)" />
 				<line x1="0" y1="18" x2="100" y2="18" stroke="var(--mfw-border)" />
 				<line x1="0" y1="32" x2="100" y2="32" stroke="var(--mfw-border)" />

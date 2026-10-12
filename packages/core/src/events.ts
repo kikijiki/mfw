@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RUN_ACTIVITIES } from "./activity.ts";
 
 /**
  * Audit event taxonomy v2.
@@ -162,6 +163,41 @@ export type HostHoldEventDiagnostic = z.infer<
 	typeof HostHoldEventDiagnosticSchema
 >;
 
+/** How a run's finalize ended, a closed enum the brain decides from (`run.settled`). */
+export const SETTLE_CLASSES = [
+	"verified",
+	"verify_failed",
+	"review_fix",
+	"review_reject",
+	"scope_violation",
+	"scope_outside",
+	"question",
+	"background_work",
+	"interrupted",
+	"watchdog_killed",
+	"rate_limited",
+	"stopped",
+	"infra_failure",
+	"report_blocked",
+	"report_replan",
+	"report_drop",
+	"plan_output",
+	"merge_parked",
+] as const;
+export type SettleClass = (typeof SETTLE_CLASSES)[number];
+
+/** Why the brain was woken (`brain.turn_started`). */
+export const WAKE_CLASSES = [
+	"settled",
+	"attention",
+	"frontier",
+	"capacity",
+	"merge",
+	"human",
+	"heartbeat",
+] as const;
+export type WakeClass = (typeof WAKE_CLASSES)[number];
+
 export const EventSchema = z.discriminatedUnion("type", [
 	// --- task lifecycle ---
 	z.object({
@@ -178,6 +214,8 @@ export const EventSchema = z.discriminatedUnion("type", [
 				"file",
 			]),
 			title: z.string(),
+			/** `brain:<actionId>#<n>` when the brain wrote the task (it must not wake itself). */
+			createdBy: z.string().optional(),
 		}),
 	}),
 	z.object({
@@ -289,6 +327,13 @@ export const EventSchema = z.discriminatedUnion("type", [
 			code: z.string().optional(),
 			snapshotGeneration: z.string().optional(),
 			diagnostics: z.array(HostHoldEventDiagnosticSchema).optional(),
+			/** The exact remedy (daemon `refusal-fix.ts`); absent on old events. */
+			fix: z
+				.object({
+					kind: z.enum(["setting", "command", "ui"]),
+					text: z.string().min(1),
+				})
+				.optional(),
 		}),
 	}),
 	z.object({
@@ -316,16 +361,24 @@ export const EventSchema = z.discriminatedUnion("type", [
 	z.object({
 		type: z.literal("run.started"),
 		runId: z.string(),
+		taskId: z.string().optional(),
 		payload: z.object({
 			kind: z.string(),
 			taskId: z.string().optional(),
 			model: z.string(),
 			branch: z.string().optional(),
+			/** Typed lineage (see `runs.relation`): enough to insert a tree node from the event alone. */
+			parentRunId: z.string().optional(),
+			relation: z.string().optional(),
+			label: z.string().optional(),
+			groupId: z.string().optional(),
+			role: z.string().optional(),
 		}),
 	}),
 	z.object({
 		type: z.literal("run.state_changed"),
 		runId: z.string(),
+		taskId: z.string().optional(),
 		payload: z.object({
 			from: z.string(),
 			to: z.string(),
@@ -334,9 +387,107 @@ export const EventSchema = z.discriminatedUnion("type", [
 			note: z.string().optional(),
 		}),
 	}),
+	/**
+	 * The run's activity (see `activity.ts`) changed: working, waiting on an
+	 * approval or an answer, stalled, idle, ended. Only on change, so a busy
+	 * run writes a handful, not one per supervisor pass.
+	 */
+	z.object({
+		type: z.literal("run.activity_changed"),
+		runId: z.string(),
+		taskId: z.string().optional(),
+		payload: z.object({
+			from: z.enum(RUN_ACTIVITIES).nullable(),
+			to: z.enum(RUN_ACTIVITIES),
+			question: z.string().optional(),
+			stallCause: z.enum(["background", "silent"]).optional(),
+			pendingApprovals: z.number().int().nonnegative().optional(),
+		}),
+	}),
+	/**
+	 * A live run's running token and cost totals, sampled from its transcript
+	 * at most once every 30 s. Display only (the agent chip's `$`); the spend
+	 * ledger stays the source for budgets and the final `usage` is unchanged.
+	 */
+	z.object({
+		type: z.literal("run.usage_sampled"),
+		runId: z.string(),
+		taskId: z.string().optional(),
+		payload: z.object({
+			tokensIn: z.number().nonnegative(),
+			tokensOut: z.number().nonnegative(),
+			costUsd: z.number().nonnegative().optional(),
+		}),
+	}),
+	/**
+	 * A run's subagents changed shape: one started, or one finished (`run_subagents`).
+	 * Tool counts alone do not announce. Lets the Flow tree and the transcript
+	 * refetch the `sub:` nodes; `running` is how many are still going.
+	 */
+	z.object({
+		type: z.literal("run.subagents_changed"),
+		runId: z.string(),
+		taskId: z.string().optional(),
+		payload: z.object({
+			total: z.number().int().nonnegative(),
+			running: z.number().int().nonnegative(),
+		}),
+	}),
+	/**
+	 * The scope watchdog's level for a live run changed (ok, warn, violation):
+	 * how many files it changed, how many fall outside its task's `owns`, how
+	 * many another claimed task owns. Only on a level change.
+	 */
+	z.object({
+		type: z.literal("run.scope_changed"),
+		runId: z.string(),
+		taskId: z.string().optional(),
+		payload: z.object({
+			from: z.enum(["ok", "warn", "violation"]).nullable(),
+			level: z.enum(["ok", "warn", "violation"]),
+			files: z.number().int().nonnegative(),
+			outside: z.number().int().nonnegative(),
+			foreign: z.number().int().nonnegative(),
+		}),
+	}),
+	z.object({
+		// A run's worktree or branch was saved to a `wip/` branch before being
+		// discarded (by a human discard, or a close with `discard`).
+		type: z.literal("run.wip_archived"),
+		runId: z.string(),
+		taskId: z.string().optional(),
+		payload: z.object({
+			ref: z.string().nullable(),
+			sha: z.string().nullable(),
+			actor: z.string(),
+			reason: z.string(),
+		}),
+	}),
+	/**
+	 * A judgment call was recorded (`phase: "inserted"`, status running) or
+	 * settled (`phase: "settled"`, with its terminal status and action). Exactly
+	 * one event per insert and per settle, in the row's own transaction.
+	 */
+	z.object({
+		type: z.literal("decision.recorded"),
+		taskId: z.string().optional(),
+		runId: z.string().optional(), // the subject run, when there is one
+		payload: z.object({
+			id: z.number().int(),
+			role: z.string(),
+			phase: z.enum(["inserted", "settled"]),
+			status: z.string(),
+			kind: z.string().nullable().optional(),
+			action: z.string().nullable().optional(),
+			taskId: z.string().nullable().optional(),
+			subjectRunId: z.string().nullable().optional(),
+			effects: z.array(z.string()).optional(),
+		}),
+	}),
 	z.object({
 		type: z.literal("run.finalize_step"),
 		runId: z.string(),
+		taskId: z.string().optional(),
 		payload: z.object({
 			step: z.string(),
 			ok: z.boolean(),
@@ -563,6 +714,8 @@ export const EventSchema = z.discriminatedUnion("type", [
 		payload: z.object({
 			answered: z.boolean(),
 			continuationRunId: z.string().optional(),
+			/** Who answered; the brain's own answer does not wake it. */
+			by: z.enum(["brain", "human"]).optional(),
 		}),
 	}),
 
@@ -630,6 +783,139 @@ export const EventSchema = z.discriminatedUnion("type", [
 			sessionId: z.string(),
 			resolution: z.enum(["fixed", "retried", "dismissed"]),
 			reason: z.string().optional(),
+		}),
+	}),
+
+	// --- brain-led orchestration (schemas only; emitters arrive with the brain) ---
+	/** Finalize ended in `settle`: the closed class of how a run ended, plus the facts the brain needs. */
+	z.object({
+		type: z.literal("run.settled"),
+		runId: z.string(),
+		taskId: z.string().optional(),
+		payload: z.object({
+			groupId: z.string().nullable().optional(),
+			class: z.enum(SETTLE_CLASSES),
+			facts: z.record(z.string(), z.unknown()),
+		}),
+	}),
+	z.object({
+		type: z.literal("brain.turn_started"),
+		runId: z.string(),
+		payload: z.object({
+			sessionId: z.string(),
+			seq: z.number().int().nonnegative(),
+			generation: z.number().int().nonnegative(),
+			wakeClass: z.enum(WAKE_CLASSES),
+			eventsFrom: z.number().int().nonnegative(),
+			eventsTo: z.number().int().nonnegative(),
+			resumed: z.boolean(),
+		}),
+	}),
+	z.object({
+		type: z.literal("brain.turn_ended"),
+		runId: z.string(),
+		payload: z.object({
+			sessionId: z.string(),
+			status: z.enum(["ok", "failed", "timeout", "aborted"]),
+			actionsCount: z.number().int().nonnegative(),
+			error: z.string().optional(),
+		}),
+	}),
+	/** One act-tool call of a brain turn, with the id of its `brain_actions` and `decisions` rows. */
+	z.object({
+		type: z.literal("brain.action"),
+		runId: z.string().optional(),
+		taskId: z.string().optional(),
+		payload: z.object({
+			actionId: z.string(),
+			tool: z.string(),
+			status: z.enum(["accepted", "applied", "rejected", "failed", "proposed"]),
+			decisionId: z.number().int().optional(),
+			sessionId: z.string().optional(),
+			/** Set when the executor, not the validator, failed the action. */
+			error: z.string().optional(),
+		}),
+	}),
+	/** An attempt group changed state: opened a selection, picked a winner, merged or was abandoned. */
+	z.object({
+		type: z.literal("run.group_changed"),
+		taskId: z.string(),
+		payload: z.object({
+			groupId: z.string(),
+			status: z.enum(["open", "selecting", "merged", "abandoned"]),
+			winnerRunId: z.string().nullable().optional(),
+			reason: z.string().optional(),
+		}),
+	}),
+	z.object({
+		type: z.literal("brain.rollover"),
+		payload: z.object({
+			sessionId: z.string(),
+			reason: z.string(),
+			fromGeneration: z.number().int().nonnegative(),
+			toGeneration: z.number().int().nonnegative(),
+			fromNativeSessionId: z.string().nullable().optional(),
+			toNativeSessionId: z.string().nullable().optional(),
+		}),
+	}),
+	/** A budget key crossed its `warnAt` fraction; wakes the brain so it can economise. */
+	z.object({
+		type: z.literal("budget.threshold"),
+		payload: z.object({
+			key: z.string(),
+			kind: z.enum(["agent", "resource", "brain"]),
+			unit: z.enum(["usd", "tokens", "slot_hours"]),
+			used: z.number().nonnegative(),
+			limit: z.number().nonnegative(),
+			fraction: z.number().nonnegative(),
+			windowResetsAt: z.number().int().nullable().optional(),
+		}),
+	}),
+	z.object({
+		type: z.literal("budget.exhausted"),
+		payload: z.object({
+			key: z.string(),
+			kind: z.enum(["agent", "resource", "brain"]),
+			unit: z.enum(["usd", "tokens", "slot_hours"]),
+			used: z.number().nonnegative(),
+			limit: z.number().nonnegative(),
+			windowResetsAt: z.number().int().nullable().optional(),
+		}),
+	}),
+	z.object({
+		type: z.literal("budget.restored"),
+		payload: z.object({
+			key: z.string(),
+			kind: z.enum(["agent", "resource", "brain"]),
+			reason: z.enum(["window_reset", "limit_raised"]),
+		}),
+	}),
+	/** A human reversed a brain decision; `decisionId` is the override row, `overriddenDecisionId` the original. */
+	z.object({
+		type: z.literal("human.override"),
+		taskId: z.string().optional(),
+		runId: z.string().optional(),
+		payload: z.object({
+			decisionId: z.number().int(),
+			overriddenDecisionId: z.number().int(),
+			reason: z.string().optional(),
+			/** The brain tool whose decision was reversed (`set_status`, `spawn`, ...). */
+			tool: z.string().optional(),
+			/** The inverse operation that was applied, one line. */
+			inverse: z.string().optional(),
+		}),
+	}),
+	/** A person wrote to the brain. `about` is a node ref (`task:T-1`, `run:<id>`, `decision:<n>`) when the note concerns one thing. */
+	z.object({
+		type: z.literal("human.brain_message"),
+		taskId: z.string().optional(),
+		runId: z.string().optional(),
+		payload: z.object({
+			sessionId: z.string().optional(),
+			text: z.string(),
+			about: z.string().optional(),
+			/** The `decisions` row holding the message (the durable copy). */
+			decisionId: z.number().int().optional(),
 		}),
 	}),
 ]);

@@ -25,6 +25,7 @@ import {
 	slugify,
 } from "./ids.ts";
 import { KeyedLock } from "./lock.ts";
+import { newViolations, type RuleViolation } from "./rules.ts";
 
 /**
  * The generic board engine: reads/writes documents as declared by
@@ -96,6 +97,20 @@ export class MalformedDocumentError extends Error {
 	) {
 		super(`${type} at ${path} is malformed: ${reason}`);
 		this.name = "MalformedDocumentError";
+	}
+}
+
+/** A write that would introduce a violation of an `error` rule; nothing was written. */
+export class RuleViolationError extends Error {
+	constructor(
+		readonly type: string,
+		readonly id: string,
+		readonly violations: readonly RuleViolation[],
+	) {
+		super(
+			`${type} ${id}: refused by rule${new Set(violations.map((v) => v.rule)).size === 1 ? "" : "s"} ${[...new Set(violations.map((v) => v.rule))].join(", ")}:\n${violations.map((v) => `  ${v.rule}: ${v.message}`).join("\n")}`,
+		);
+		this.name = "RuleViolationError";
 	}
 }
 
@@ -194,14 +209,65 @@ async function safeRead(path: string): Promise<string | null> {
 
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
+/** Options of a `BoardStore`. */
+export interface BoardStoreOptions {
+	/** Where the store keeps its locks and id counters (`locks/`, `state/`).
+	 * Default `<root>/.board`; a daemon passes its own directory so nothing but
+	 * board files appears in the board folder. */
+	stateDir?: string;
+	/** Rule ids whose new violations a write may introduce anyway (the caller
+	 * asked for it explicitly); advisory rules never gate a write. */
+	overrideRules?: readonly string[];
+	/** Called for each violation a write introduced under an override. */
+	onOverride?: (info: {
+		type: string;
+		id: string;
+		violation: RuleViolation;
+	}) => void;
+}
+
 export class BoardStore {
 	private readonly lock: KeyedLock;
+	private readonly stateDir: string;
+	private readonly overrides: ReadonlySet<string>;
 
 	constructor(
 		private readonly root: string,
 		private readonly config: BoardConfig,
+		private readonly options: BoardStoreOptions = {},
 	) {
-		this.lock = new KeyedLock(join(root, ".board", "locks"));
+		this.stateDir = options.stateDir ?? join(root, ".board");
+		this.lock = new KeyedLock(join(this.stateDir, "locks"));
+		this.overrides = new Set(options.overrideRules ?? []);
+	}
+
+	/**
+	 * The write gate for `error` rules: refuse a write whose post-state holds a
+	 * violation the pre-state did not (so documents that already violate a rule
+	 * stay editable, and an untouched row never blocks anything). Runs inside
+	 * the document's lock, on the fields about to be written.
+	 */
+	private refuseRuleViolations(
+		typeName: string,
+		type: TypeSpec,
+		id: string,
+		before: Record<string, unknown>,
+		after: Record<string, unknown>,
+	): void {
+		if (!type.rules?.length) return;
+		const fresh = newViolations(type, before, after).filter(
+			(v) => v.severity === "error",
+		);
+		const blocking: RuleViolation[] = [];
+		for (const v of fresh) {
+			if (this.overrides.has(v.rule)) {
+				this.options.onOverride?.({ type: typeName, id, violation: v });
+			} else {
+				blocking.push(v);
+			}
+		}
+		if (blocking.length > 0)
+			throw new RuleViolationError(typeName, id, blocking);
 	}
 
 	private typeOf(typeName: string): TypeSpec {
@@ -433,12 +499,7 @@ export class BoardStore {
 					if (num !== null && num > max) max = num;
 				}
 			}
-			const counterPath = join(
-				this.root,
-				".board",
-				"state",
-				`${counterKey}.json`,
-			);
+			const counterPath = join(this.stateDir, "state", `${counterKey}.json`);
 			let stored = 0;
 			const raw = await safeRead(counterPath);
 			if (raw !== null) {
@@ -453,7 +514,7 @@ export class BoardStore {
 			// need +1. Mixing the two under one `+1` double-increments whichever
 			// one came from the counter file.
 			const num = Math.max(stored || 1, max + 1);
-			await mkdir(join(this.root, ".board", "state"), { recursive: true });
+			await mkdir(join(this.stateDir, "state"), { recursive: true });
 			await writeFileAtomic(
 				counterPath,
 				`${JSON.stringify({ next: num + 1 })}\n`,
@@ -565,6 +626,7 @@ export class BoardStore {
 		const result = materializeFields(typeName, type, input.fields);
 		if (!result.ok) throw new InvalidFieldsError(typeName, result.errors);
 		await this.refuseCycles(typeName, type, id, result.fields);
+		this.refuseRuleViolations(typeName, type, id, {}, result.fields);
 		await check?.(result.fields);
 		const slug = type.slugFrom
 			? slugify(String(input.fields[type.slugFrom] ?? ""))
@@ -770,6 +832,13 @@ export class BoardStore {
 		});
 		if (!result.ok) throw new InvalidFieldsError(typeName, result.errors);
 		await this.refuseCycles(typeName, type, current.id, result.fields);
+		this.refuseRuleViolations(
+			typeName,
+			type,
+			current.id,
+			current.fields,
+			result.fields,
+		);
 		await this.refuseRuleBreaks(
 			typeName,
 			type,

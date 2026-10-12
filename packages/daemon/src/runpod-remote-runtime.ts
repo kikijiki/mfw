@@ -1,6 +1,7 @@
 /**
- * Bundled and uploaded by RunPodExecutionTarget. This is a small argv-only
- * remote runtime, not a provider-specific image setup script.
+ * Bundled and uploaded by the RunPod and SSH execution targets. This is a
+ * small argv-only remote runtime, not a provider-specific image setup script
+ * (the file name predates the SSH target).
  */
 import {
 	appendFile,
@@ -28,6 +29,10 @@ interface RuntimeConfig {
 	driverScript: string;
 	secretNames: string[];
 	driver: Record<string, unknown>;
+	/** Absolute bun on the box; default `bun` from PATH (RunPod images). */
+	bunPath?: string;
+	/** Sandbox argv prefix (bwrap … --) built by the daemon; absent = none. */
+	sandboxArgv?: string[];
 }
 
 async function copyRedacted(
@@ -158,7 +163,13 @@ async function run(configPath: string): Promise<void> {
 	});
 	try {
 		const child = Bun.spawn(
-			["bun", "run", config.driverScript, config.runDir],
+			[
+				...(config.sandboxArgv ?? []),
+				config.bunPath ?? "bun",
+				"run",
+				config.driverScript,
+				config.runDir,
+			],
 			{
 				cwd: config.executionPath,
 				env: process.env,

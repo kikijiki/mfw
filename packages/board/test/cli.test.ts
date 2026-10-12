@@ -68,31 +68,30 @@ describe("board discovery", () => {
 		expect(r.stdout).toBe("TK-1\ttask");
 	});
 
-	test(".mfw/board.yaml layout", async () => {
+	test("a board left in .mfw/ is not found, and the error names it", async () => {
 		const d = await tmp();
 		await put(join(d, ".mfw", "board.yaml"), TASK_BOARD);
-		const c = await mfwb(d, ["create", "title=a"]);
+		const r = await mfwb(d, ["list"]);
+		expect(r.code).toBe(3);
+		expect(r.stderr).toContain("no board found");
+		expect(r.stderr).toContain(join(d, ".mfw", "board.yaml"));
+		// ...but it can still be pointed at explicitly.
+		const c = await mfwb(d, [
+			"--config",
+			join(d, ".mfw", "board.yaml"),
+			"create",
+			"title=a",
+		]);
 		expect(c.code).toBe(0);
 		expect(await Bun.file(join(d, ".mfw", "tasks", "TK-1.md")).exists()).toBe(
 			true,
 		);
 	});
 
-	test("both present in one directory is ambiguous", async () => {
-		const d = await tmp();
-		await put(join(d, "board.yaml"), TASK_BOARD);
-		await put(join(d, ".mfw", "board.yaml"), TASK_BOARD);
-		const r = await mfwb(d, ["list"]);
-		expect(r.code).toBe(3);
-		expect(r.stderr).toContain("ambiguous");
-		expect(r.stderr).toContain(join(d, "board.yaml"));
-		expect(r.stderr).toContain(join(d, ".mfw", "board.yaml"));
-	});
-
 	test("nearest board wins", async () => {
 		const d = await tmp();
 		await put(join(d, "board.yaml"), TASK_BOARD);
-		await put(join(d, "inner", ".mfw", "board.yaml"), TASK_BOARD);
+		await put(join(d, "inner", "board.yaml"), TASK_BOARD);
 		await mfwb(d, ["create", "title=outer"]);
 		await mkdir(join(d, "inner", "sub"), { recursive: true });
 		const r = await mfwb(join(d, "inner", "sub"), ["list"]);
@@ -141,7 +140,6 @@ describe("board discovery", () => {
 		expect(r.code).toBe(3);
 		expect(r.stderr).toContain("no board found");
 		expect(r.stderr).toContain("board.yaml");
-		expect(r.stderr).toContain(".mfw/board.yaml");
 	});
 
 	test("missing --config file errors", async () => {
@@ -251,19 +249,19 @@ describe("generic commands", () => {
 		expect(j[0].fields.title).toBe("b");
 	});
 
-	test("validate exit codes", async () => {
+	test("check exit codes", async () => {
 		const d = await tmp();
 		await put(join(d, "board.yaml"), TASK_BOARD);
 		await mfwb(d, ["create", "title=a"]);
-		const ok = await mfwb(d, ["validate"]);
+		const ok = await mfwb(d, ["check"]);
 		expect(ok.code).toBe(0);
 		expect(ok.stdout).toBe("ok");
 		await put(
 			join(d, "tasks", "TK-9.md"),
 			"---\nmfw: 1\nid: TK-9\nrev: 1\ntitle: bad\nstatus: nonsense\n---\n",
 		);
-		const bad = await mfwb(d, ["validate"]);
-		expect(bad.code).toBe(10);
+		const bad = await mfwb(d, ["check"]);
+		expect(bad.code).toBe(1);
 		expect(bad.stdout).toContain("TK-9");
 	});
 

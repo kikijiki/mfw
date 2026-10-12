@@ -1,5 +1,8 @@
 import type { ProjectDbHandle } from "@mfw/db/client";
 import {
+	brainActions,
+	brainSessions,
+	brainTurns,
 	clarifications,
 	engineKv,
 	inboxDismissals,
@@ -7,7 +10,9 @@ import {
 	runSteps,
 	runs,
 } from "@mfw/db/schema";
-import { and, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, ne } from "drizzle-orm";
+import { readAwaiting } from "./brain-runtime/awaiting.ts";
+import { TASK_QUESTION_KIND } from "./clarify.ts";
 import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
 import type { TaskRow, TaskService } from "./task-service.ts";
 
@@ -31,7 +36,16 @@ export type InboxKind =
 	| "admission"
 	| "draft_failed"
 	| "ownership_conflict"
-	| "followups";
+	| "followups"
+	| "needs_answer"
+	| "approval_pending"
+	| "stalled"
+	/** A resource budget is exhausted: tasks that depend on it are held (`budgets.ts`). */
+	| "budget"
+	/** The brain's circuit is open (repeated failed turns); a person resets it. */
+	| "brain_stuck"
+	/** The brain asked for a person (`notify_human`, any kind but `fyi`). */
+	| "brain_notice";
 
 export type InboxSeverity = "critical" | "attention" | "info";
 
@@ -49,7 +63,41 @@ export interface InboxItem {
 	defId?: string;
 	/** `merge_parked` only: the merge job id its retry/abandon/sendToReady actions key off. */
 	mergeJobId?: number;
+	/** The exact remedy, for kinds that are a refusal (`admission`). */
+	fix?: string;
+	/**
+	 * The node to select for this item: `run:<id>` when the item is about a
+	 * live or failed run, else `task:<id>`, else `merge:<jobId>`; `brain` (the
+	 * project's root node) for project-level items such as `main_red`.
+	 */
+	ref: string;
+	/** How to answer in place, for items a person can answer or approve. */
+	answer?: InboxAnswer;
+	/** `approval_pending`: the pending tool approval the answer resolves. */
+	requestId?: string;
 	ts: number;
+}
+
+export type InboxAnswer =
+	| { mode: "text" }
+	| { mode: "options"; options: string[] }
+	| { mode: "approve"; requestId?: string };
+
+/** Items keyed on the run rather than the task: answering or inspecting them is a run-level act. */
+const RUN_KINDS: ReadonlySet<InboxKind> = new Set([
+	"needs_answer",
+	"clarify",
+	"approval_pending",
+	"stalled",
+	"failed_run",
+]);
+
+function refOf(item: Omit<InboxItem, "ref">): string {
+	if (RUN_KINDS.has(item.kind) && item.runId) return `run:${item.runId}`;
+	if (item.taskId) return `task:${item.taskId}`;
+	if (item.mergeJobId !== undefined) return `merge:${item.mergeJobId}`;
+	if (item.runId) return `run:${item.runId}`;
+	return "brain";
 }
 
 /**
@@ -87,7 +135,22 @@ const SEVERITY: Record<InboxKind, InboxSeverity> = {
 	ownership_conflict: "attention",
 	// Parked in backlog on purpose; nothing runs until someone triages them.
 	followups: "info",
+	// A task run stopped to ask; its task waits blocked until answered.
+	needs_answer: "attention",
+	// A live run is paused on a tool approval only a person can give.
+	approval_pending: "attention",
+	// A live run went quiet, or ended its turn on background work.
+	stalled: "attention",
+	// Only a person can raise the limit; the rest of the board keeps running.
+	budget: "attention",
+	// The brain cannot proceed on its own; dispatch continues on the fixed pipeline.
+	brain_stuck: "critical",
+	// Only a person can supply what the brain asked for.
+	brain_notice: "attention",
 };
+
+/** How long an un-dismissed `notify_human` stays in the queue. */
+const BRAIN_NOTICE_DAYS = 7;
 
 const RANK: Record<InboxSeverity, number> = {
 	critical: 0,
@@ -117,6 +180,21 @@ export class InboxService {
 			mergeQueue?: {
 				activeByTask(): Promise<{ taskId: string }[]>;
 			};
+			/** Exhausted budgets (agent, resource, brain), one item per (key, window). */
+			budgets?: {
+				exhaustedForInbox(): Promise<
+					{
+						id: string;
+						key: string;
+						kind: "resource" | "brain";
+						used: number;
+						limit: number;
+						unit: "usd" | "tokens" | "slot_hours";
+						resetsAt: number;
+						ts: number;
+					}[]
+				>;
+			};
 			admission?: {
 				issues(): Promise<
 					{
@@ -124,6 +202,7 @@ export class InboxService {
 						taskId: string;
 						runId: string;
 						holdReason: string | null;
+						fix?: { text: string };
 						updatedAt: Date;
 					}[]
 				>;
@@ -166,9 +245,14 @@ export class InboxService {
 	}
 
 	private async collect(): Promise<InboxItem[]> {
+		const items = await this.collectItems();
+		return items.map((item) => ({ ...item, ref: refOf(item) }));
+	}
+
+	private async collectItems(): Promise<Omit<InboxItem, "ref">[]> {
 		const db = this.deps.handle.db;
 		const project = this.deps.project;
-		const items: InboxItem[] = [];
+		const items: Omit<InboxItem, "ref">[] = [];
 		for (const issue of (await this.deps.admission?.issues()) ?? []) {
 			items.push({
 				id: `admission:${issue.id}`,
@@ -177,9 +261,33 @@ export class InboxService {
 				severity: "attention",
 				title: "task admission needs attention",
 				detail: issue.holdReason ?? "host admission is unavailable",
+				...(issue.fix ? { fix: issue.fix.text } : {}),
 				taskId: issue.taskId,
 				runId: issue.runId,
 				ts: issue.updatedAt.getTime(),
+			});
+		}
+
+		for (const b of (await this.deps.budgets?.exhaustedForInbox()) ?? []) {
+			const amount = (n: number) =>
+				b.unit === "usd"
+					? `$${n.toFixed(2)}`
+					: b.unit === "slot_hours"
+						? `${n.toFixed(1)} slot-hours`
+						: `${Math.round(n)} tokens`;
+			items.push({
+				id: b.id,
+				project,
+				kind: "budget",
+				severity: "attention",
+				title: `budget exhausted: ${b.key}`,
+				detail: `${amount(b.used)} of ${amount(b.limit)} spent; ${
+					b.kind === "brain"
+						? "the project brain is paused (no turns)"
+						: `tasks that depend on ${b.key} are held`
+				} until ${new Date(b.resetsAt).toISOString()} or the limit is raised`,
+				fix: "Raise the budget in Settings → Budgets, or wait for the window to reset.",
+				ts: b.ts,
 			});
 		}
 
@@ -269,12 +377,58 @@ export class InboxService {
 		}
 
 		const openClarify = await db
-			.select({ clarification: clarifications, taskId: runs.taskId })
+			.select({
+				clarification: clarifications,
+				taskId: runs.taskId,
+				activityDetail: runs.activityDetail,
+			})
 			.from(clarifications)
 			.leftJoin(runs, eq(runs.id, clarifications.runId))
 			.where(isNull(clarifications.resolvedAt));
-		for (const { clarification: c, taskId } of openClarify) {
+		const questionTasks = new Set<string>();
+		// A worker's question is the brain's first (`answer_question`); a person
+		// sees it once the brain escalated it, or when no brain is there to ask.
+		const awaiting = await readAwaiting(this.deps.handle);
+		const [session] = await db
+			.select({ status: brainSessions.status })
+			.from(brainSessions)
+			.where(ne(brainSessions.status, "retired"));
+		const brainDecides = !!session && session.status !== "failed";
+		for (const { clarification: c, taskId, activityDetail } of openClarify) {
 			const unanswered = c.items.filter((i) => i.answer === null).length;
+			if (c.kind === TASK_QUESTION_KIND) {
+				if (taskId) questionTasks.add(taskId);
+				if (
+					brainDecides &&
+					taskId &&
+					awaiting[taskId]?.runId === c.runId &&
+					awaiting[taskId]?.class === "question"
+				) {
+					continue;
+				}
+				// The options the agent offered live on its activity detail.
+				const offered = (activityDetail as { options?: unknown } | null)
+					?.options;
+				const options = Array.isArray(offered)
+					? offered.filter((o): o is string => typeof o === "string")
+					: [];
+				items.push({
+					id: `needs_answer:${c.runId}`,
+					project,
+					kind: "needs_answer",
+					severity: SEVERITY.needs_answer,
+					title: "an agent is waiting for your answer",
+					detail: c.items[0]?.question ?? "",
+					answer:
+						options.length > 0
+							? { mode: "options", options }
+							: { mode: "text" },
+					...(taskId ? { taskId } : {}),
+					runId: c.runId,
+					ts: c.createdAt.getTime(),
+				});
+				continue;
+			}
 			items.push({
 				id: `clarify:${c.runId}`,
 				project,
@@ -285,6 +439,7 @@ export class InboxService {
 						? `${unanswered} question${unanswered === 1 ? "" : "s"} blocking planning`
 						: "Answers saved; continuation needs retry",
 				detail: c.goal ?? c.kind,
+				answer: { mode: "text" },
 				...(taskId ? { taskId } : {}),
 				runId: c.runId,
 				ts: c.createdAt.getTime(),
@@ -354,6 +509,8 @@ export class InboxService {
 		for (const t of attention) {
 			// Already in the merge queue's hands until it lands or parks.
 			if (t.status === "review" && activeMergeTasks.has(t.id)) continue;
+			// Blocked on its own run's question: the needs_answer item says so.
+			if (t.status === "blocked" && questionTasks.has(t.id)) continue;
 			const kind: InboxKind = t.status === "review" ? "review" : "blocked";
 			items.push({
 				id: `${kind}:${t.id}`,
@@ -443,6 +600,60 @@ export class InboxService {
 			});
 		}
 
+		// Live runs whose activity needs a person. Keyed by run and activity so
+		// a dismissal covers this episode only.
+		const waiting = await db
+			.select()
+			.from(runs)
+			.where(
+				and(
+					inArray(runs.state, ["starting", "running"]),
+					inArray(runs.activity, ["awaiting_approval", "stalled"]),
+				),
+			);
+		for (const r of waiting) {
+			const detail = (r.activityDetail ?? {}) as {
+				pendingApprovals?: string[];
+				approvalSummary?: string;
+				stallCause?: string;
+				lastEventAt?: string | null;
+			};
+			const approval = r.activity === "awaiting_approval";
+			const kind: InboxKind = approval ? "approval_pending" : "stalled";
+			// The newest pending approval is the one `approvalSummary` describes.
+			const requestId = approval ? detail.pendingApprovals?.at(-1) : undefined;
+			items.push({
+				id: `${kind}:${r.id}`,
+				project,
+				kind,
+				severity: SEVERITY[kind],
+				title: approval
+					? `approval needed: ${r.label}`
+					: detail.stallCause === "background"
+						? `turn ended on background work: ${r.label}`
+						: `run has gone quiet: ${r.label}`,
+				detail: approval
+					? (detail.approvalSummary ?? "a tool call is waiting for approval")
+					: detail.stallCause === "background"
+						? "its background jobs die when the session closes; it will be resumed"
+						: "no transcript output for a while; the idle watchdog stops it if this goes on",
+				...(approval
+					? {
+							answer: {
+								mode: "approve" as const,
+								...(requestId ? { requestId } : {}),
+							},
+							...(requestId ? { requestId } : {}),
+						}
+					: {}),
+				...(r.taskId ? { taskId: r.taskId } : {}),
+				runId: r.id,
+				ts: detail.lastEventAt
+					? Date.parse(detail.lastEventAt) || r.startedAt.getTime()
+					: r.startedAt.getTime(),
+			});
+		}
+
 		// A failed run with a task is already routed by the finalize machine
 		// (retry, repair, archive, or a review/blocked item), so listing it too
 		// would add stale rows. Failed cleanup is the exception: the task must
@@ -486,7 +697,76 @@ export class InboxService {
 			});
 		}
 
+		items.push(...(await this.brainItems()));
 		return items;
+	}
+
+	/**
+	 * What the brain needs from a person: an open circuit, and its
+	 * `notify_human` calls (not `fyi`: those live in the audit trail). A
+	 * `proposed` notice counts too: in shadow mode nothing else would deliver
+	 * it, and the owner must see what the brain asked for.
+	 */
+	private async brainItems(): Promise<Omit<InboxItem, "ref">[]> {
+		const db = this.deps.handle.db;
+		const project = this.deps.project;
+		const out: Omit<InboxItem, "ref">[] = [];
+		const [failed] = await db
+			.select()
+			.from(brainSessions)
+			.where(eq(brainSessions.status, "failed"));
+		if (failed) {
+			const [lastTurn] = await db
+				.select()
+				.from(brainTurns)
+				.where(eq(brainTurns.sessionId, failed.id))
+				.orderBy(desc(brainTurns.seq))
+				.limit(1);
+			const waiting = Object.keys(await readAwaiting(this.deps.handle)).length;
+			out.push({
+				id: `brain_stuck:${failed.id}`,
+				project,
+				kind: "brain_stuck",
+				severity: SEVERITY.brain_stuck,
+				title: "the project brain is stuck",
+				detail: `${failed.consecutiveFailures} failed turns in a row${
+					lastTurn?.error ? `: ${lastTurn.error}` : ""
+				}. Retry it from the brain inspector. ${waiting} task${waiting === 1 ? "" : "s"} wait${waiting === 1 ? "s" : ""} on it (awaiting_brain); verified work keeps merging.`,
+				ts: (lastTurn?.endedAt ?? failed.createdAt).getTime(),
+			});
+		}
+		const since = new Date(Date.now() - BRAIN_NOTICE_DAYS * 86_400_000);
+		const notices = await db
+			.select()
+			.from(brainActions)
+			.where(
+				and(
+					eq(brainActions.tool, "notify_human"),
+					gte(brainActions.createdAt, since),
+				),
+			);
+		for (const n of notices) {
+			if (n.status === "rejected" || n.status === "failed") continue;
+			const args = n.args as {
+				kind?: string;
+				title?: string;
+				body?: string;
+				options?: string[];
+				blocking?: string[];
+			};
+			if (args.kind === "fyi") continue;
+			out.push({
+				id: `brain_notice:${n.id}`,
+				project,
+				kind: "brain_notice",
+				severity: SEVERITY.brain_notice,
+				title: `brain: ${args.title ?? "needs you"}`,
+				detail: args.body ?? "",
+				...(args.blocking?.[0] ? { taskId: args.blocking[0] } : {}),
+				ts: n.createdAt.getTime(),
+			});
+		}
+		return out;
 	}
 
 	/**

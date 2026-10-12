@@ -1,32 +1,60 @@
 import { describe, expect, test } from "bun:test";
 
-import { afterReviewDecisionHref } from "./navigation";
+import { nextAfterDecision, reviewQueue, stepReview } from "./navigation";
 
-describe("review decision navigation", () => {
-	const queue = [
-		{ project: "mfw", taskId: "MFW-70" },
-		{ project: "other", taskId: "OTHER-1" },
-		{ project: "mfw", taskId: "MFW-71" },
-	];
+const item = (project: string, taskId: string, kind = "review") => ({
+	kind,
+	project,
+	taskId,
+});
 
-	test("a project inbox stays in that project", () => {
-		expect(
-			afterReviewDecisionHref("mfw", "MFW-70", "project-inbox", queue),
-		).toBe("/p/mfw/review/MFW-71?from=project-inbox");
-	});
-
-	test("an exhausted project queue returns to its project inbox", () => {
-		expect(
-			afterReviewDecisionHref("mfw", "MFW-70", "project-inbox", [
-				{ project: "mfw", taskId: "MFW-70" },
-				{ project: "other", taskId: "OTHER-1" },
-			]),
-		).toBe("/p/mfw/inbox");
-	});
-
-	test("the fleet inbox keeps walking the fleet queue", () => {
-		expect(afterReviewDecisionHref("mfw", "MFW-70", "inbox", queue)).toBe(
-			"/p/other/review/OTHER-1?from=inbox",
+describe("review queue", () => {
+	test("is this project's review items from the inbox, in order, once each", () => {
+		const queue = reviewQueue(
+			[
+				item("mfw", "MFW-70"),
+				item("other", "OTHER-1"),
+				item("mfw", "MFW-71", "needs_answer"),
+				item("mfw", "MFW-72"),
+				item("mfw", "MFW-70"),
+			],
+			"mfw",
 		);
+		expect(queue.map((q) => q.taskId)).toEqual(["MFW-70", "MFW-72"]);
+		expect(reviewQueue(undefined, "mfw")).toEqual([]);
+	});
+});
+
+describe("walking with [ and ]", () => {
+	const queue = [{ taskId: "A" }, { taskId: "B" }, { taskId: "C" }];
+
+	test("steps and wraps", () => {
+		expect(stepReview(queue, "A", 1)?.taskId).toBe("B");
+		expect(stepReview(queue, "C", 1)?.taskId).toBe("A");
+		expect(stepReview(queue, "A", -1)?.taskId).toBe("C");
+	});
+
+	test("from a task that is not in the queue, enters it at the near end", () => {
+		expect(stepReview(queue, "Z", 1)?.taskId).toBe("A");
+		expect(stepReview(queue, "Z", -1)?.taskId).toBe("C");
+	});
+
+	test("with nowhere else to go, stays", () => {
+		expect(stepReview([{ taskId: "A" }], "A", 1)).toBeNull();
+		expect(stepReview([], "A", 1)).toBeNull();
+	});
+});
+
+describe("after a decision", () => {
+	const queue = [{ taskId: "A" }, { taskId: "B" }, { taskId: "C" }];
+
+	test("moves to the next waiting task, wrapping, never the one just decided", () => {
+		expect(nextAfterDecision(queue, "A")?.taskId).toBe("B");
+		expect(nextAfterDecision(queue, "C")?.taskId).toBe("A");
+	});
+
+	test("an exhausted queue has no next", () => {
+		expect(nextAfterDecision([{ taskId: "A" }], "A")).toBeNull();
+		expect(nextAfterDecision([], "A")).toBeNull();
 	});
 });

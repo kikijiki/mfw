@@ -24,6 +24,12 @@ worktrees/
 # packages/board/skill/SKILL.md, the one source of truth
 .claude/skills/mfwb/
 
+# scratch output of throwaway runs (screenshots now run under /tmp)
+/tmp/
+
+# skills installed for other agent CLIs by `mfwb skill install` (generated)
+/.agents/
+
 # editor / os
 .DS_Store
 *.log

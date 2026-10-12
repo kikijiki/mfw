@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
 import { EventBus, type StoredEvent } from "@mfw/db/eventlog";
-import { decisions, runSteps } from "@mfw/db/schema";
+import { decisions, reviewVerdicts, runSteps } from "@mfw/db/schema";
 import { GitDiffSource } from "../src/brain.ts";
 import { git } from "../src/git.ts";
 import { buildDigest } from "../src/history.ts";
@@ -88,12 +88,10 @@ describe("ReviewService bundle", () => {
 			);
 			await git(["add", "-A"], f.root);
 			await git(["commit", "-q", "-m", "scope paths"], f.root);
-			const facts = await new GitDiffSource().collect(
-				{ worktreePath: f.root, baseSha } as Parameters<
-					GitDiffSource["collect"]
-				>[0],
-				"critic",
-			);
+			const facts = await new GitDiffSource().collect({
+				worktreePath: f.root,
+				baseSha,
+			} as Parameters<GitDiffSource["collect"]>[0]);
 			expect(facts.files).toContain("keep.txt");
 			expect(facts.files).toContain("owned/moved.txt");
 			for (const name of rawNames) expect(facts.files).toContain(name);
@@ -206,6 +204,80 @@ describe("ReviewService bundle", () => {
 		await f.tasks.release(t.id, null, "ready", "scheduler", "retry");
 		await f.tasks.release(t.id, null, "review", "scheduler", "review gate");
 		expect((await f.review.bundle(t.id)).reviewCause).toBe("human_required");
+
+		await f.tasks.release(t.id, null, "ready", "scheduler", "retry");
+		await f.tasks.release(
+			t.id,
+			null,
+			"review",
+			"scheduler",
+			"scope gate → review: files changed outside the task's owns",
+		);
+		expect((await f.review.bundle(t.id)).reviewCause).toBe("scope_outside");
+		await f.cleanup();
+	});
+
+	test("verdict history: every verdict in order, the round count, and the latest per task", async () => {
+		const f = await fixture();
+		const t = await f.tasks.create({ title: "reviewed twice" });
+		await f.tasks.bumpReviewRound(t.id);
+		const at = Date.now();
+		const row = (id: string, verdict: "fix" | "merge", round: number) => ({
+			id,
+			taskId: t.id,
+			subjectRunId: `run-${id}`,
+			mode: "critic" as const,
+			reviewerHarness: "claude-cli",
+			reviewerModel: "opus",
+			round,
+			verdict,
+			findings: [{ file: "a.ts", line: 2, severity: "blocker", change: "x" }],
+			independent: true,
+			createdAt: new Date(at + round),
+		});
+		// Inserted out of order: history sorts by time.
+		await f.handle.db
+			.insert(reviewVerdicts)
+			.values([row("b", "merge", 2), row("a", "fix", 1)]);
+		const h = await f.review.verdicts(t.id);
+		expect(h.round).toBe(1);
+		expect(h.maxRounds).toBe(2);
+		expect(h.verdicts.map((v) => [v.verdict, v.round])).toEqual([
+			["fix", 1],
+			["merge", 2],
+		]);
+		expect(h.verdicts[0]?.findings[0]).toMatchObject({ file: "a.ts", line: 2 });
+		expect(await f.review.latestVerdicts()).toEqual({
+			[t.id]: { verdict: "merge", round: 2 },
+		});
+		await f.cleanup();
+	});
+
+	test("review causes from the release reason: rounds exhausted, not independent, checkout modified", async () => {
+		const f = await fixture();
+		const t = await f.tasks.create({ title: "stopped for a human" });
+		for (const cause of [
+			"review_rounds_exhausted",
+			"reviewer_not_independent",
+			"reviewer_modified_checkout",
+		] as const) {
+			await f.tasks.release(
+				t.id,
+				null,
+				"review",
+				"scheduler",
+				`critic gate → review: ${cause}`,
+			);
+			const b = await f.review.bundle(t.id);
+			// No branch: the empty bundle path still answers nothing about cause;
+			// the cause lookup itself is exercised through the private reader.
+			expect(b.reviewCause).toBeNull();
+			const reader = f.review as unknown as {
+				reviewCauseFor(id: string, a: null): Promise<string | null>;
+			};
+			expect(await reader.reviewCauseFor(t.id, null)).toBe(cause);
+			await f.tasks.release(t.id, null, "ready", "scheduler", "retry");
+		}
 		await f.cleanup();
 	});
 
@@ -279,6 +351,11 @@ describe("ReviewService bundle", () => {
 			implementerModel: "sonnet",
 			reviewerModel: "opus",
 			sameModel: false,
+			// A decision from before verdicts: no verdict, mode, round or independence.
+			verdict: null,
+			mode: null,
+			round: null,
+			independent: null,
 		});
 		await f.cleanup();
 	});
@@ -655,5 +732,56 @@ describe("HISTORY digest", () => {
 		]);
 		expect(d.needsAttention).toBe(false);
 		expect(d.summary).toContain("completed");
+	});
+});
+
+describe("HISTORY digest histogram", () => {
+	const MIN = 60_000;
+	const T0 = 1_700_000_000_000;
+	const ev = (seq: number, ts: number, type = "task.created") =>
+		({
+			seq,
+			type,
+			ts,
+			payload: { source: "human", title: "t" },
+			taskId: `T-${seq}`,
+		}) as unknown as StoredEvent;
+
+	test("counts non-routine events per bucket over the window; bucket i maps to from + i * bucketMs", () => {
+		const events = [
+			ev(1, T0),
+			ev(2, T0 + 1 * MIN),
+			ev(3, T0 + 100 * MIN),
+			ev(4, T0 + 100 * MIN, "run.finalize_step"), // noise: not counted
+			ev(5, T0 + 100 * MIN, "run.usage_sampled"), // heartbeat: not counted
+		];
+		const d = buildDigest("demo", 0, events, undefined, { buckets: 10 });
+		const h = d.histogram;
+		expect(h).not.toBeNull();
+		if (!h) return;
+		expect(h.from).toBe(T0);
+		expect(h.to).toBe(T0 + 100 * MIN);
+		expect(h.bucketMs).toBe(10 * MIN);
+		expect(h.counts.reduce((a, b) => a + b, 0)).toBe(3);
+		expect(h.counts[0]).toBe(2);
+		expect(h.counts[h.counts.length - 1]).toBe(1);
+		// The event at 100m lands in the bucket whose start is from + i * bucketMs.
+		const i = h.counts.length - 1;
+		expect(h.from + i * h.bucketMs).toBeLessThanOrEqual(T0 + 100 * MIN);
+	});
+
+	test("now extends the window so the quiet tail shows", () => {
+		const d = buildDigest("demo", 0, [ev(1, T0)], undefined, {
+			now: T0 + 60 * MIN,
+		});
+		expect(d.histogram?.to).toBe(T0 + 60 * MIN);
+		expect(d.histogram?.counts.length).toBeGreaterThan(1);
+		expect(d.histogram?.counts[0]).toBe(1);
+	});
+
+	test("nothing countable means no histogram, and the summary is untouched", () => {
+		const d = buildDigest("demo", 0, [ev(1, T0, "run.usage_sampled")]);
+		expect(d.histogram).toBeNull();
+		expect(d.summary).toBe("Nothing happened.");
 	});
 });

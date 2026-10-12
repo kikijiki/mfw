@@ -108,7 +108,7 @@ describe("checklist field kind", () => {
 
 	test("update re-ids new items without disturbing existing ones", async () => {
 		const s = await setup();
-		await run(s, { op: "check-add", field: "acceptance", text: "a" });
+		await run(s, { op: "checklist-add", field: "acceptance", text: "a" });
 		const d = await s.store.updateDocument("task", s.id, {
 			fields: {
 				acceptance: [{ id: "c1", text: "a", done: true }, { text: "new" }],
@@ -141,8 +141,8 @@ describe("checklist field kind", () => {
 
 	test("renders as a block list of mappings and round-trips", async () => {
 		const s = await setup();
-		await run(s, { op: "check-add", field: "acceptance", text: "first" });
-		await run(s, { op: "check-add", field: "acceptance", text: "second" });
+		await run(s, { op: "checklist-add", field: "acceptance", text: "first" });
+		await run(s, { op: "checklist-add", field: "acceptance", text: "second" });
 		const doc = await s.store.readDocument("task", s.id);
 		const raw = await readFile(doc?.path as string, "utf8");
 		expect(raw).toContain(
@@ -229,26 +229,26 @@ describe("checklist ops", () => {
 	test("add / toggle / set / edit / remove with id and prefix selectors", async () => {
 		const s = await setup();
 		const a = await applyFieldOpDetailed(s.store, config, "task", s.id, {
-			op: "check-add",
+			op: "checklist-add",
 			field: "acceptance",
 			text: "write tests",
 		});
 		expect(a.itemId).toBe("c1");
-		await run(s, { op: "check-add", field: "acceptance", text: "ship it" });
+		await run(s, { op: "checklist-add", field: "acceptance", text: "ship it" });
 		let d = await run(s, {
-			op: "check-toggle",
+			op: "checklist-toggle",
 			field: "acceptance",
 			selector: "c1",
 		});
 		expect((d.fields.acceptance as { done: boolean }[])[0]?.done).toBe(true);
 		d = await run(s, {
-			op: "check-set",
+			op: "checklist-set",
 			field: "acceptance",
 			selector: "ship",
 			done: true,
 		});
 		d = await run(s, {
-			op: "check-set",
+			op: "checklist-set",
 			field: "acceptance",
 			selector: "c1",
 			done: true,
@@ -258,13 +258,13 @@ describe("checklist ops", () => {
 			{ id: "c2", text: "ship it", done: true },
 		]);
 		d = await run(s, {
-			op: "check-edit",
+			op: "checklist-edit",
 			field: "acceptance",
 			selector: "c2",
 			text: "release",
 		});
 		d = await run(s, {
-			op: "check-remove",
+			op: "checklist-remove",
 			field: "acceptance",
 			selector: "write",
 		});
@@ -272,7 +272,7 @@ describe("checklist ops", () => {
 			{ id: "c2", text: "release", done: true },
 		]);
 		const added = await applyFieldOpDetailed(s.store, config, "task", s.id, {
-			op: "check-add",
+			op: "checklist-add",
 			field: "acceptance",
 			text: "again",
 		});
@@ -307,28 +307,30 @@ describe("checklist ops", () => {
 	test("kind checks", async () => {
 		const s = await setup();
 		expect(
-			await code(run(s, { op: "check-add", field: "labels", text: "x" })),
+			await code(run(s, { op: "checklist-add", field: "labels", text: "x" })),
 		).toBe("wrong-kind");
 		expect(
 			await code(run(s, { op: "append", field: "acceptance", values: ["x"] })),
 		).toBe("wrong-kind");
 		expect(
-			await code(run(s, { op: "check-add", field: "acceptance", text: " " })),
+			await code(
+				run(s, { op: "checklist-add", field: "acceptance", text: " " }),
+			),
 		).toBe("bad-value");
 	});
 
 	test("concurrent toggles of one item cancel out; concurrent adds both land", async () => {
 		const s = await setup();
-		await run(s, { op: "check-add", field: "acceptance", text: "x" });
+		await run(s, { op: "checklist-add", field: "acceptance", text: "x" });
 		await Promise.all([
-			run(s, { op: "check-toggle", field: "acceptance", selector: "c1" }),
-			run(s, { op: "check-toggle", field: "acceptance", selector: "c1" }),
+			run(s, { op: "checklist-toggle", field: "acceptance", selector: "c1" }),
+			run(s, { op: "checklist-toggle", field: "acceptance", selector: "c1" }),
 		]);
 		let d = await s.store.readDocument("task", s.id);
 		expect((d?.fields.acceptance as { done: boolean }[])[0]?.done).toBe(false);
 		await Promise.all([
-			run(s, { op: "check-add", field: "acceptance", text: "p" }),
-			run(s, { op: "check-add", field: "acceptance", text: "q" }),
+			run(s, { op: "checklist-add", field: "acceptance", text: "p" }),
+			run(s, { op: "checklist-add", field: "acceptance", text: "q" }),
 		]);
 		d = await s.store.readDocument("task", s.id);
 		const ids = (d?.fields.acceptance as { id: string }[]).map((i) => i.id);

@@ -138,6 +138,28 @@ describe("parseBoardConfig: split ids are gone", () => {
 	});
 });
 
+describe("parseBoardConfig: x- extension keys", () => {
+	test("a top-level x- key is accepted and exposed verbatim", () => {
+		const statusMap = { ready: ["planned"], in_progress: ["doing"] };
+		const cfg = parseBoardConfig({
+			...TK_CONFIG,
+			"x-mfw-daemon": { statusMap },
+		});
+		expect(cfg.extensions).toEqual({
+			"x-mfw-daemon": { statusMap },
+		});
+		// Nothing else changed: extensions are not merged into the schema's own keys.
+		expect(cfg.mfw).toBe(1);
+		expect(parseBoardConfig(TK_CONFIG).extensions).toBeUndefined();
+	});
+
+	test("an unknown top-level key that is not x- is still rejected", () => {
+		expect(() => parseBoardConfig({ ...TK_CONFIG, nonsense: "nope" })).toThrow(
+			BoardConfigError,
+		);
+	});
+});
+
 const typeOf = (extra: Record<string, unknown>) => ({
 	layout: "flat",
 	dir: "x",

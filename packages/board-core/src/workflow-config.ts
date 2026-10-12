@@ -19,7 +19,6 @@ export const RESERVED_VERBS: ReadonlySet<string> = new Set([
 	"show",
 	"create",
 	"update",
-	"validate",
 	"claim",
 	"release",
 	"ready",
@@ -41,6 +40,7 @@ export const RESERVED_VERBS: ReadonlySet<string> = new Set([
 	"toggle",
 	"unset",
 	"check",
+	"checklist",
 	"note",
 	"row",
 ]);

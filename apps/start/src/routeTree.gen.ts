@@ -10,28 +10,29 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
-import { Route as RunpodRouteImport } from './routes/runpod'
-import { Route as ResourcesRouteImport } from './routes/resources'
-import { Route as OpenrouterRouteImport } from './routes/openrouter'
-import { Route as NowRouteImport } from './routes/now'
-import { Route as InboxRouteImport } from './routes/inbox'
-import { Route as HistoryRouteImport } from './routes/history'
+import { Route as SplatRouteImport } from './routes/$'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as FleetIndexRouteImport } from './routes/fleet.index'
 import { Route as PProjectRouteImport } from './routes/p.$project'
+import { Route as FleetRunpodRouteImport } from './routes/fleet.runpod'
+import { Route as FleetResourcesRouteImport } from './routes/fleet.resources'
+import { Route as FleetOpenrouterRouteImport } from './routes/fleet.openrouter'
 import { Route as PProjectIndexRouteImport } from './routes/p.$project.index'
 import { Route as PProjectTriggersRouteImport } from './routes/p.$project.triggers'
 import { Route as PProjectSettingsRouteImport } from './routes/p.$project.settings'
-import { Route as PProjectInboxRouteImport } from './routes/p.$project.inbox'
+import { Route as PProjectFlowRouteImport } from './routes/p.$project.flow'
 import { Route as PProjectFilesRouteImport } from './routes/p.$project.files'
 import { Route as PProjectBoardRouteImport } from './routes/p.$project.board'
 import { Route as PProjectAdrsRouteImport } from './routes/p.$project.adrs'
 import { Route as ApiTrpcSplatRouteImport } from './routes/api/trpc.$'
-import { Route as PProjectRunsIndexRouteImport } from './routes/p.$project.runs.index'
-import { Route as PProjectReviewIndexRouteImport } from './routes/p.$project.review.index'
 import { Route as PProjectTasksTaskIdRouteImport } from './routes/p.$project.tasks.$taskId'
 import { Route as PProjectRunsRunIdRouteImport } from './routes/p.$project.runs.$runId'
 import { Route as PProjectReviewTaskIdRouteImport } from './routes/p.$project.review.$taskId'
-import { Route as PProjectBoardTasksTaskIdRouteImport } from './routes/p.$project.board.tasks.$taskId'
+import { Route as PProjectRepoSplatRouteImport } from './routes/p.$project.repo.$'
+import { Route as PProjectNRefRouteImport } from './routes/p.$project.n.$ref'
+import { Route as PProjectDocsSplatRouteImport } from './routes/p.$project.docs.$'
+import { Route as ApiFilesProjectSplatRouteImport } from './routes/api/files.$project.$'
+import { Route as ApiDocsProjectSourceIdSplatRouteImport } from './routes/api/docs.$project.$sourceId.$'
 import { Route as ApiAttachmentsProjectTaskIdNameRouteImport } from './routes/api/attachments.$project.$taskId.$name'
 
 const SettingsRoute = SettingsRouteImport.update({
@@ -39,34 +40,9 @@ const SettingsRoute = SettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
-const RunpodRoute = RunpodRouteImport.update({
-  id: '/runpod',
-  path: '/runpod',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ResourcesRoute = ResourcesRouteImport.update({
-  id: '/resources',
-  path: '/resources',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const OpenrouterRoute = OpenrouterRouteImport.update({
-  id: '/openrouter',
-  path: '/openrouter',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const NowRoute = NowRouteImport.update({
-  id: '/now',
-  path: '/now',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const InboxRoute = InboxRouteImport.update({
-  id: '/inbox',
-  path: '/inbox',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const HistoryRoute = HistoryRouteImport.update({
-  id: '/history',
-  path: '/history',
+const SplatRoute = SplatRouteImport.update({
+  id: '/$',
+  path: '/$',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -74,9 +50,29 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const FleetIndexRoute = FleetIndexRouteImport.update({
+  id: '/fleet/',
+  path: '/fleet/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const PProjectRoute = PProjectRouteImport.update({
   id: '/p/$project',
   path: '/p/$project',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const FleetRunpodRoute = FleetRunpodRouteImport.update({
+  id: '/fleet/runpod',
+  path: '/fleet/runpod',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const FleetResourcesRoute = FleetResourcesRouteImport.update({
+  id: '/fleet/resources',
+  path: '/fleet/resources',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const FleetOpenrouterRoute = FleetOpenrouterRouteImport.update({
+  id: '/fleet/openrouter',
+  path: '/fleet/openrouter',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PProjectIndexRoute = PProjectIndexRouteImport.update({
@@ -94,9 +90,9 @@ const PProjectSettingsRoute = PProjectSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => PProjectRoute,
 } as any)
-const PProjectInboxRoute = PProjectInboxRouteImport.update({
-  id: '/inbox',
-  path: '/inbox',
+const PProjectFlowRoute = PProjectFlowRouteImport.update({
+  id: '/flow',
+  path: '/flow',
   getParentRoute: () => PProjectRoute,
 } as any)
 const PProjectFilesRoute = PProjectFilesRouteImport.update({
@@ -119,16 +115,6 @@ const ApiTrpcSplatRoute = ApiTrpcSplatRouteImport.update({
   path: '/api/trpc/$',
   getParentRoute: () => rootRouteImport,
 } as any)
-const PProjectRunsIndexRoute = PProjectRunsIndexRouteImport.update({
-  id: '/runs/',
-  path: '/runs/',
-  getParentRoute: () => PProjectRoute,
-} as any)
-const PProjectReviewIndexRoute = PProjectReviewIndexRouteImport.update({
-  id: '/review/',
-  path: '/review/',
-  getParentRoute: () => PProjectRoute,
-} as any)
 const PProjectTasksTaskIdRoute = PProjectTasksTaskIdRouteImport.update({
   id: '/tasks/$taskId',
   path: '/tasks/$taskId',
@@ -144,11 +130,31 @@ const PProjectReviewTaskIdRoute = PProjectReviewTaskIdRouteImport.update({
   path: '/review/$taskId',
   getParentRoute: () => PProjectRoute,
 } as any)
-const PProjectBoardTasksTaskIdRoute =
-  PProjectBoardTasksTaskIdRouteImport.update({
-    id: '/tasks/$taskId',
-    path: '/tasks/$taskId',
-    getParentRoute: () => PProjectBoardRoute,
+const PProjectRepoSplatRoute = PProjectRepoSplatRouteImport.update({
+  id: '/repo/$',
+  path: '/repo/$',
+  getParentRoute: () => PProjectRoute,
+} as any)
+const PProjectNRefRoute = PProjectNRefRouteImport.update({
+  id: '/n/$ref',
+  path: '/n/$ref',
+  getParentRoute: () => PProjectRoute,
+} as any)
+const PProjectDocsSplatRoute = PProjectDocsSplatRouteImport.update({
+  id: '/docs/$',
+  path: '/docs/$',
+  getParentRoute: () => PProjectRoute,
+} as any)
+const ApiFilesProjectSplatRoute = ApiFilesProjectSplatRouteImport.update({
+  id: '/api/files/$project/$',
+  path: '/api/files/$project/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDocsProjectSourceIdSplatRoute =
+  ApiDocsProjectSourceIdSplatRouteImport.update({
+    id: '/api/docs/$project/$sourceId/$',
+    path: '/api/docs/$project/$sourceId/$',
+    getParentRoute: () => rootRouteImport,
   } as any)
 const ApiAttachmentsProjectTaskIdNameRoute =
   ApiAttachmentsProjectTaskIdNameRouteImport.update({
@@ -159,174 +165,181 @@ const ApiAttachmentsProjectTaskIdNameRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/history': typeof HistoryRoute
-  '/inbox': typeof InboxRoute
-  '/now': typeof NowRoute
-  '/openrouter': typeof OpenrouterRoute
-  '/resources': typeof ResourcesRoute
-  '/runpod': typeof RunpodRoute
+  '/$': typeof SplatRoute
   '/settings': typeof SettingsRoute
+  '/fleet/openrouter': typeof FleetOpenrouterRoute
+  '/fleet/resources': typeof FleetResourcesRoute
+  '/fleet/runpod': typeof FleetRunpodRoute
   '/p/$project': typeof PProjectRouteWithChildren
+  '/fleet/': typeof FleetIndexRoute
   '/api/trpc/$': typeof ApiTrpcSplatRoute
   '/p/$project/adrs': typeof PProjectAdrsRoute
-  '/p/$project/board': typeof PProjectBoardRouteWithChildren
+  '/p/$project/board': typeof PProjectBoardRoute
   '/p/$project/files': typeof PProjectFilesRoute
-  '/p/$project/inbox': typeof PProjectInboxRoute
+  '/p/$project/flow': typeof PProjectFlowRoute
   '/p/$project/settings': typeof PProjectSettingsRoute
   '/p/$project/triggers': typeof PProjectTriggersRoute
   '/p/$project/': typeof PProjectIndexRoute
+  '/api/files/$project/$': typeof ApiFilesProjectSplatRoute
+  '/p/$project/docs/$': typeof PProjectDocsSplatRoute
+  '/p/$project/n/$ref': typeof PProjectNRefRoute
+  '/p/$project/repo/$': typeof PProjectRepoSplatRoute
   '/p/$project/review/$taskId': typeof PProjectReviewTaskIdRoute
   '/p/$project/runs/$runId': typeof PProjectRunsRunIdRoute
   '/p/$project/tasks/$taskId': typeof PProjectTasksTaskIdRoute
-  '/p/$project/review/': typeof PProjectReviewIndexRoute
-  '/p/$project/runs/': typeof PProjectRunsIndexRoute
   '/api/attachments/$project/$taskId/$name': typeof ApiAttachmentsProjectTaskIdNameRoute
-  '/p/$project/board/tasks/$taskId': typeof PProjectBoardTasksTaskIdRoute
+  '/api/docs/$project/$sourceId/$': typeof ApiDocsProjectSourceIdSplatRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/history': typeof HistoryRoute
-  '/inbox': typeof InboxRoute
-  '/now': typeof NowRoute
-  '/openrouter': typeof OpenrouterRoute
-  '/resources': typeof ResourcesRoute
-  '/runpod': typeof RunpodRoute
+  '/$': typeof SplatRoute
   '/settings': typeof SettingsRoute
+  '/fleet/openrouter': typeof FleetOpenrouterRoute
+  '/fleet/resources': typeof FleetResourcesRoute
+  '/fleet/runpod': typeof FleetRunpodRoute
+  '/fleet': typeof FleetIndexRoute
   '/api/trpc/$': typeof ApiTrpcSplatRoute
   '/p/$project/adrs': typeof PProjectAdrsRoute
-  '/p/$project/board': typeof PProjectBoardRouteWithChildren
+  '/p/$project/board': typeof PProjectBoardRoute
   '/p/$project/files': typeof PProjectFilesRoute
-  '/p/$project/inbox': typeof PProjectInboxRoute
+  '/p/$project/flow': typeof PProjectFlowRoute
   '/p/$project/settings': typeof PProjectSettingsRoute
   '/p/$project/triggers': typeof PProjectTriggersRoute
   '/p/$project': typeof PProjectIndexRoute
+  '/api/files/$project/$': typeof ApiFilesProjectSplatRoute
+  '/p/$project/docs/$': typeof PProjectDocsSplatRoute
+  '/p/$project/n/$ref': typeof PProjectNRefRoute
+  '/p/$project/repo/$': typeof PProjectRepoSplatRoute
   '/p/$project/review/$taskId': typeof PProjectReviewTaskIdRoute
   '/p/$project/runs/$runId': typeof PProjectRunsRunIdRoute
   '/p/$project/tasks/$taskId': typeof PProjectTasksTaskIdRoute
-  '/p/$project/review': typeof PProjectReviewIndexRoute
-  '/p/$project/runs': typeof PProjectRunsIndexRoute
   '/api/attachments/$project/$taskId/$name': typeof ApiAttachmentsProjectTaskIdNameRoute
-  '/p/$project/board/tasks/$taskId': typeof PProjectBoardTasksTaskIdRoute
+  '/api/docs/$project/$sourceId/$': typeof ApiDocsProjectSourceIdSplatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/history': typeof HistoryRoute
-  '/inbox': typeof InboxRoute
-  '/now': typeof NowRoute
-  '/openrouter': typeof OpenrouterRoute
-  '/resources': typeof ResourcesRoute
-  '/runpod': typeof RunpodRoute
+  '/$': typeof SplatRoute
   '/settings': typeof SettingsRoute
+  '/fleet/openrouter': typeof FleetOpenrouterRoute
+  '/fleet/resources': typeof FleetResourcesRoute
+  '/fleet/runpod': typeof FleetRunpodRoute
   '/p/$project': typeof PProjectRouteWithChildren
+  '/fleet/': typeof FleetIndexRoute
   '/api/trpc/$': typeof ApiTrpcSplatRoute
   '/p/$project/adrs': typeof PProjectAdrsRoute
-  '/p/$project/board': typeof PProjectBoardRouteWithChildren
+  '/p/$project/board': typeof PProjectBoardRoute
   '/p/$project/files': typeof PProjectFilesRoute
-  '/p/$project/inbox': typeof PProjectInboxRoute
+  '/p/$project/flow': typeof PProjectFlowRoute
   '/p/$project/settings': typeof PProjectSettingsRoute
   '/p/$project/triggers': typeof PProjectTriggersRoute
   '/p/$project/': typeof PProjectIndexRoute
+  '/api/files/$project/$': typeof ApiFilesProjectSplatRoute
+  '/p/$project/docs/$': typeof PProjectDocsSplatRoute
+  '/p/$project/n/$ref': typeof PProjectNRefRoute
+  '/p/$project/repo/$': typeof PProjectRepoSplatRoute
   '/p/$project/review/$taskId': typeof PProjectReviewTaskIdRoute
   '/p/$project/runs/$runId': typeof PProjectRunsRunIdRoute
   '/p/$project/tasks/$taskId': typeof PProjectTasksTaskIdRoute
-  '/p/$project/review/': typeof PProjectReviewIndexRoute
-  '/p/$project/runs/': typeof PProjectRunsIndexRoute
   '/api/attachments/$project/$taskId/$name': typeof ApiAttachmentsProjectTaskIdNameRoute
-  '/p/$project/board/tasks/$taskId': typeof PProjectBoardTasksTaskIdRoute
+  '/api/docs/$project/$sourceId/$': typeof ApiDocsProjectSourceIdSplatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/history'
-    | '/inbox'
-    | '/now'
-    | '/openrouter'
-    | '/resources'
-    | '/runpod'
+    | '/$'
     | '/settings'
+    | '/fleet/openrouter'
+    | '/fleet/resources'
+    | '/fleet/runpod'
     | '/p/$project'
+    | '/fleet/'
     | '/api/trpc/$'
     | '/p/$project/adrs'
     | '/p/$project/board'
     | '/p/$project/files'
-    | '/p/$project/inbox'
+    | '/p/$project/flow'
     | '/p/$project/settings'
     | '/p/$project/triggers'
     | '/p/$project/'
+    | '/api/files/$project/$'
+    | '/p/$project/docs/$'
+    | '/p/$project/n/$ref'
+    | '/p/$project/repo/$'
     | '/p/$project/review/$taskId'
     | '/p/$project/runs/$runId'
     | '/p/$project/tasks/$taskId'
-    | '/p/$project/review/'
-    | '/p/$project/runs/'
     | '/api/attachments/$project/$taskId/$name'
-    | '/p/$project/board/tasks/$taskId'
+    | '/api/docs/$project/$sourceId/$'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/history'
-    | '/inbox'
-    | '/now'
-    | '/openrouter'
-    | '/resources'
-    | '/runpod'
+    | '/$'
     | '/settings'
+    | '/fleet/openrouter'
+    | '/fleet/resources'
+    | '/fleet/runpod'
+    | '/fleet'
     | '/api/trpc/$'
     | '/p/$project/adrs'
     | '/p/$project/board'
     | '/p/$project/files'
-    | '/p/$project/inbox'
+    | '/p/$project/flow'
     | '/p/$project/settings'
     | '/p/$project/triggers'
     | '/p/$project'
+    | '/api/files/$project/$'
+    | '/p/$project/docs/$'
+    | '/p/$project/n/$ref'
+    | '/p/$project/repo/$'
     | '/p/$project/review/$taskId'
     | '/p/$project/runs/$runId'
     | '/p/$project/tasks/$taskId'
-    | '/p/$project/review'
-    | '/p/$project/runs'
     | '/api/attachments/$project/$taskId/$name'
-    | '/p/$project/board/tasks/$taskId'
+    | '/api/docs/$project/$sourceId/$'
   id:
     | '__root__'
     | '/'
-    | '/history'
-    | '/inbox'
-    | '/now'
-    | '/openrouter'
-    | '/resources'
-    | '/runpod'
+    | '/$'
     | '/settings'
+    | '/fleet/openrouter'
+    | '/fleet/resources'
+    | '/fleet/runpod'
     | '/p/$project'
+    | '/fleet/'
     | '/api/trpc/$'
     | '/p/$project/adrs'
     | '/p/$project/board'
     | '/p/$project/files'
-    | '/p/$project/inbox'
+    | '/p/$project/flow'
     | '/p/$project/settings'
     | '/p/$project/triggers'
     | '/p/$project/'
+    | '/api/files/$project/$'
+    | '/p/$project/docs/$'
+    | '/p/$project/n/$ref'
+    | '/p/$project/repo/$'
     | '/p/$project/review/$taskId'
     | '/p/$project/runs/$runId'
     | '/p/$project/tasks/$taskId'
-    | '/p/$project/review/'
-    | '/p/$project/runs/'
     | '/api/attachments/$project/$taskId/$name'
-    | '/p/$project/board/tasks/$taskId'
+    | '/api/docs/$project/$sourceId/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  HistoryRoute: typeof HistoryRoute
-  InboxRoute: typeof InboxRoute
-  NowRoute: typeof NowRoute
-  OpenrouterRoute: typeof OpenrouterRoute
-  ResourcesRoute: typeof ResourcesRoute
-  RunpodRoute: typeof RunpodRoute
+  SplatRoute: typeof SplatRoute
   SettingsRoute: typeof SettingsRoute
+  FleetOpenrouterRoute: typeof FleetOpenrouterRoute
+  FleetResourcesRoute: typeof FleetResourcesRoute
+  FleetRunpodRoute: typeof FleetRunpodRoute
   PProjectRoute: typeof PProjectRouteWithChildren
+  FleetIndexRoute: typeof FleetIndexRoute
   ApiTrpcSplatRoute: typeof ApiTrpcSplatRoute
+  ApiFilesProjectSplatRoute: typeof ApiFilesProjectSplatRoute
   ApiAttachmentsProjectTaskIdNameRoute: typeof ApiAttachmentsProjectTaskIdNameRoute
+  ApiDocsProjectSourceIdSplatRoute: typeof ApiDocsProjectSourceIdSplatRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -338,46 +351,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/runpod': {
-      id: '/runpod'
-      path: '/runpod'
-      fullPath: '/runpod'
-      preLoaderRoute: typeof RunpodRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/resources': {
-      id: '/resources'
-      path: '/resources'
-      fullPath: '/resources'
-      preLoaderRoute: typeof ResourcesRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/openrouter': {
-      id: '/openrouter'
-      path: '/openrouter'
-      fullPath: '/openrouter'
-      preLoaderRoute: typeof OpenrouterRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/now': {
-      id: '/now'
-      path: '/now'
-      fullPath: '/now'
-      preLoaderRoute: typeof NowRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/inbox': {
-      id: '/inbox'
-      path: '/inbox'
-      fullPath: '/inbox'
-      preLoaderRoute: typeof InboxRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/history': {
-      id: '/history'
-      path: '/history'
-      fullPath: '/history'
-      preLoaderRoute: typeof HistoryRouteImport
+    '/$': {
+      id: '/$'
+      path: '/$'
+      fullPath: '/$'
+      preLoaderRoute: typeof SplatRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -387,11 +365,39 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/fleet/': {
+      id: '/fleet/'
+      path: '/fleet'
+      fullPath: '/fleet/'
+      preLoaderRoute: typeof FleetIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/p/$project': {
       id: '/p/$project'
       path: '/p/$project'
       fullPath: '/p/$project'
       preLoaderRoute: typeof PProjectRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/fleet/runpod': {
+      id: '/fleet/runpod'
+      path: '/fleet/runpod'
+      fullPath: '/fleet/runpod'
+      preLoaderRoute: typeof FleetRunpodRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/fleet/resources': {
+      id: '/fleet/resources'
+      path: '/fleet/resources'
+      fullPath: '/fleet/resources'
+      preLoaderRoute: typeof FleetResourcesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/fleet/openrouter': {
+      id: '/fleet/openrouter'
+      path: '/fleet/openrouter'
+      fullPath: '/fleet/openrouter'
+      preLoaderRoute: typeof FleetOpenrouterRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/p/$project/': {
@@ -415,11 +421,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PProjectSettingsRouteImport
       parentRoute: typeof PProjectRoute
     }
-    '/p/$project/inbox': {
-      id: '/p/$project/inbox'
-      path: '/inbox'
-      fullPath: '/p/$project/inbox'
-      preLoaderRoute: typeof PProjectInboxRouteImport
+    '/p/$project/flow': {
+      id: '/p/$project/flow'
+      path: '/flow'
+      fullPath: '/p/$project/flow'
+      preLoaderRoute: typeof PProjectFlowRouteImport
       parentRoute: typeof PProjectRoute
     }
     '/p/$project/files': {
@@ -450,20 +456,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiTrpcSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/p/$project/runs/': {
-      id: '/p/$project/runs/'
-      path: '/runs'
-      fullPath: '/p/$project/runs/'
-      preLoaderRoute: typeof PProjectRunsIndexRouteImport
-      parentRoute: typeof PProjectRoute
-    }
-    '/p/$project/review/': {
-      id: '/p/$project/review/'
-      path: '/review'
-      fullPath: '/p/$project/review/'
-      preLoaderRoute: typeof PProjectReviewIndexRouteImport
-      parentRoute: typeof PProjectRoute
-    }
     '/p/$project/tasks/$taskId': {
       id: '/p/$project/tasks/$taskId'
       path: '/tasks/$taskId'
@@ -485,12 +477,40 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PProjectReviewTaskIdRouteImport
       parentRoute: typeof PProjectRoute
     }
-    '/p/$project/board/tasks/$taskId': {
-      id: '/p/$project/board/tasks/$taskId'
-      path: '/tasks/$taskId'
-      fullPath: '/p/$project/board/tasks/$taskId'
-      preLoaderRoute: typeof PProjectBoardTasksTaskIdRouteImport
-      parentRoute: typeof PProjectBoardRoute
+    '/p/$project/repo/$': {
+      id: '/p/$project/repo/$'
+      path: '/repo/$'
+      fullPath: '/p/$project/repo/$'
+      preLoaderRoute: typeof PProjectRepoSplatRouteImport
+      parentRoute: typeof PProjectRoute
+    }
+    '/p/$project/n/$ref': {
+      id: '/p/$project/n/$ref'
+      path: '/n/$ref'
+      fullPath: '/p/$project/n/$ref'
+      preLoaderRoute: typeof PProjectNRefRouteImport
+      parentRoute: typeof PProjectRoute
+    }
+    '/p/$project/docs/$': {
+      id: '/p/$project/docs/$'
+      path: '/docs/$'
+      fullPath: '/p/$project/docs/$'
+      preLoaderRoute: typeof PProjectDocsSplatRouteImport
+      parentRoute: typeof PProjectRoute
+    }
+    '/api/files/$project/$': {
+      id: '/api/files/$project/$'
+      path: '/api/files/$project/$'
+      fullPath: '/api/files/$project/$'
+      preLoaderRoute: typeof ApiFilesProjectSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/docs/$project/$sourceId/$': {
+      id: '/api/docs/$project/$sourceId/$'
+      path: '/api/docs/$project/$sourceId/$'
+      fullPath: '/api/docs/$project/$sourceId/$'
+      preLoaderRoute: typeof ApiDocsProjectSourceIdSplatRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/api/attachments/$project/$taskId/$name': {
       id: '/api/attachments/$project/$taskId/$name'
@@ -502,46 +522,36 @@ declare module '@tanstack/react-router' {
   }
 }
 
-interface PProjectBoardRouteChildren {
-  PProjectBoardTasksTaskIdRoute: typeof PProjectBoardTasksTaskIdRoute
-}
-
-const PProjectBoardRouteChildren: PProjectBoardRouteChildren = {
-  PProjectBoardTasksTaskIdRoute: PProjectBoardTasksTaskIdRoute,
-}
-
-const PProjectBoardRouteWithChildren = PProjectBoardRoute._addFileChildren(
-  PProjectBoardRouteChildren,
-)
-
 interface PProjectRouteChildren {
   PProjectAdrsRoute: typeof PProjectAdrsRoute
-  PProjectBoardRoute: typeof PProjectBoardRouteWithChildren
+  PProjectBoardRoute: typeof PProjectBoardRoute
   PProjectFilesRoute: typeof PProjectFilesRoute
-  PProjectInboxRoute: typeof PProjectInboxRoute
+  PProjectFlowRoute: typeof PProjectFlowRoute
   PProjectSettingsRoute: typeof PProjectSettingsRoute
   PProjectTriggersRoute: typeof PProjectTriggersRoute
   PProjectIndexRoute: typeof PProjectIndexRoute
+  PProjectDocsSplatRoute: typeof PProjectDocsSplatRoute
+  PProjectNRefRoute: typeof PProjectNRefRoute
+  PProjectRepoSplatRoute: typeof PProjectRepoSplatRoute
   PProjectReviewTaskIdRoute: typeof PProjectReviewTaskIdRoute
   PProjectRunsRunIdRoute: typeof PProjectRunsRunIdRoute
   PProjectTasksTaskIdRoute: typeof PProjectTasksTaskIdRoute
-  PProjectReviewIndexRoute: typeof PProjectReviewIndexRoute
-  PProjectRunsIndexRoute: typeof PProjectRunsIndexRoute
 }
 
 const PProjectRouteChildren: PProjectRouteChildren = {
   PProjectAdrsRoute: PProjectAdrsRoute,
-  PProjectBoardRoute: PProjectBoardRouteWithChildren,
+  PProjectBoardRoute: PProjectBoardRoute,
   PProjectFilesRoute: PProjectFilesRoute,
-  PProjectInboxRoute: PProjectInboxRoute,
+  PProjectFlowRoute: PProjectFlowRoute,
   PProjectSettingsRoute: PProjectSettingsRoute,
   PProjectTriggersRoute: PProjectTriggersRoute,
   PProjectIndexRoute: PProjectIndexRoute,
+  PProjectDocsSplatRoute: PProjectDocsSplatRoute,
+  PProjectNRefRoute: PProjectNRefRoute,
+  PProjectRepoSplatRoute: PProjectRepoSplatRoute,
   PProjectReviewTaskIdRoute: PProjectReviewTaskIdRoute,
   PProjectRunsRunIdRoute: PProjectRunsRunIdRoute,
   PProjectTasksTaskIdRoute: PProjectTasksTaskIdRoute,
-  PProjectReviewIndexRoute: PProjectReviewIndexRoute,
-  PProjectRunsIndexRoute: PProjectRunsIndexRoute,
 }
 
 const PProjectRouteWithChildren = PProjectRoute._addFileChildren(
@@ -550,16 +560,17 @@ const PProjectRouteWithChildren = PProjectRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  HistoryRoute: HistoryRoute,
-  InboxRoute: InboxRoute,
-  NowRoute: NowRoute,
-  OpenrouterRoute: OpenrouterRoute,
-  ResourcesRoute: ResourcesRoute,
-  RunpodRoute: RunpodRoute,
+  SplatRoute: SplatRoute,
   SettingsRoute: SettingsRoute,
+  FleetOpenrouterRoute: FleetOpenrouterRoute,
+  FleetResourcesRoute: FleetResourcesRoute,
+  FleetRunpodRoute: FleetRunpodRoute,
   PProjectRoute: PProjectRouteWithChildren,
+  FleetIndexRoute: FleetIndexRoute,
   ApiTrpcSplatRoute: ApiTrpcSplatRoute,
+  ApiFilesProjectSplatRoute: ApiFilesProjectSplatRoute,
   ApiAttachmentsProjectTaskIdNameRoute: ApiAttachmentsProjectTaskIdNameRoute,
+  ApiDocsProjectSourceIdSplatRoute: ApiDocsProjectSourceIdSplatRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

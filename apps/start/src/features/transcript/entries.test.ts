@@ -49,7 +49,7 @@ describe("the run log", () => {
 
 	test("the entry renders that timestamp", () => {
 		const src = readFileSync(join(import.meta.dir, "entries.tsx"), "utf8");
-		expect(src).toContain("<time");
+		expect(src).toMatch(/<(Tip)?[Tt]ime\b/);
 		expect(src).toContain("dateTime={item.ts}");
 		expect(src).toContain("{clock(item.ts)}");
 	});

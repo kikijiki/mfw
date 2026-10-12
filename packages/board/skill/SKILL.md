@@ -1,6 +1,6 @@
 ---
 name: mfwb
-description: "Operate a markdown board (tasks, specs, ADRs, any config-defined document types) from the terminal with mfwb, no daemon required. Use when the user asks to list, show, create, update or validate documents, find what is ready to work on, start/finish/defer a task (config-declared transitions), edit list fields or checklists, manage parent/child hierarchy, claim a task for a worktree, or install this skill. Do not edit board files by hand with Read/Edit/Write - mfwb goes through the real lock + validation path those tools skip."
+description: "Operate a markdown board (tasks, specs, ADRs, any config-defined document types) from the terminal with mfwb, no daemon required. Use when the user asks to list, show, create, update or check documents, find what is ready to work on, start/finish/defer a task (config-declared transitions), edit list fields or checklists, manage parent/child hierarchy, claim a task for a worktree, or install this skill. Do not edit board files by hand with Read/Edit/Write - mfwb goes through the real lock + validation path those tools skip."
 ---
 
 # mfwb: the board CLI
@@ -12,12 +12,12 @@ project, since both go through the same per-document and named locks.
 
 Typical flow on a board with workflow config: `mfwb ready` (what can start) ->
 optionally `mfwb claim <id>` (bind it to your worktree) -> `mfwb start <id>` ->
-`mfwb note` / `mfwb check` as you work -> `mfwb done <id> "<outcome>"`.
+`mfwb note` / `mfwb checklist` as you work -> `mfwb done <id> "<outcome>"`.
 
 ## Are you inside an agent run's worktree right now?
 
 **If you are an agent executing a task dispatched by mfw itself, stop - this
-skill is not for you.** `.mfw/tasks/` and `.mfw/adrs/` are deliberately not in
+skill is not for you.** The board (`board.yaml`, `tasks/`, `adrs/`) is deliberately not in
 your sparse-checked-out worktree, `mfwb` will fail to even find a board
 there, and if it somehow succeeded, mfw discards board edits made from a task
 branch before merging (see your `.mfw/AGENTS.md`). Report via `MFW_REPORT.json`
@@ -27,11 +27,10 @@ checkout (or a separate docs checkout), operating the board directly.
 ## Finding the board
 
 Gitignore-style: starting at `$PWD` and then each parent up to `/`, `mfwb`
-checks for `board.yaml`, then `.mfw/board.yaml`; the first directory with a hit
-wins (the nearest board, so nested boards work). If **both** exist in the same
-directory it fails with an `ambiguous board` error naming both. The board
-root (where locks and state live) is the directory containing the
-`board.yaml` found - `.mfw` for the `.mfw/board.yaml` layout.
+checks for `board.yaml`; the first directory with a hit wins (the nearest
+board, so nested boards work). The board root (where locks and state live) is
+the directory containing the `board.yaml` found. A board still in the old
+`.mfw/board.yaml` layout is not found; attaching its project in mfw moves it.
 
 Overrides, strongest first: `--config <path-to-board.yaml>` (before or after
 the command name), then the `MFW_BOARD=<path-to-board.yaml>` env var, then the
@@ -61,18 +60,19 @@ release <id> --run <runId>
 reparent [--type <type>] [--json] <id> <parentId|->
 repair [--json]
 ready [--type <type>] [--under <id>] [--json] [--unblocks] [field=a|b ...]
-ready --check [--under <id>] [--json]
 levels [--under <id>] [--format md|tsv|json]
 view board [--type <type>] [--under <id>] [--format md|tsv|json]
 graph [--under <id>] [--format mermaid|dot|json] [--all]
 plan [--under <id>] [--max <n>] [--json]
 conflicts [--type <type>] [--json]
-validate [--json]
+check [<id>] [--rule a,b] [--under <id>] [--board-only] [--root name=path] [--strict] [--json]
+check --list [--json]
 skill install [--global] [--here] [--target <list>] [--dry-run]
 skill status [--global] [--target <list>]
 ```
 
-Global flags: `--config <board.yaml>`, `--json` (list/show/validate/reparent: machine-readable output).
+Global flags: `--config <board.yaml>`, `--json` (list/show/check/reparent: machine-readable output),
+`--override <rule[,rule]>` (writes: allow new violations of those error rules).
 
 Commands that act on an existing document (`show`, `update`, `reparent`, the
 field ops, transition verbs) find its type from the id, so no `--type` is
@@ -97,7 +97,7 @@ Field names and values come from the board's
 - `type: json` field: a raw JSON string, quote it for the shell:
   `verification='{"verifier":"deterministic","checks":[{"files_exist":["src/x.ts"]}]}'`
 - `ref` field: the referenced document's id as a plain string: `parent=MFW-5`
-- Writes that would close a cycle through an `acyclic` field (`depends_on` ...) are refused with `would create a cycle: A → B → A` (exit 1); `validate` still reports cycles that came in by hand edits.
+- Writes that would close a cycle through an `acyclic` field (`depends_on` ...) are refused with `would create a cycle: A → B → A` (exit 1); `check` still reports cycles that came in by hand edits.
 
 ### Examples
 
@@ -121,9 +121,11 @@ mfwb update MFW-42 --base-rev 3 priority=critical
 mfwb create --type adr --body "## Decision
 ..." title="use X for Y" status=accepted
 
-# sanity-check the whole board (dangling refs, cycles, duplicate ids, schema, hierarchy)
-mfwb validate
-mfwb validate --json   # {ok, issues: [{kind, type, id, path, message}]}
+# check the whole board: schema, ids, references, hierarchy, cycles, readiness, file scopes
+mfwb check
+mfwb check TK-12                 # only issues about (or involving) one document
+mfwb check --rule unreachable    # only some rules (see `mfwb check --list`)
+mfwb check --json   # {ok, issues: [{rule, severity, type, id, path, message, related?}]}
 ```
 
 ### Exit codes
@@ -133,16 +135,15 @@ mfwb validate --json   # {ok, issues: [{kind, type, id, path, message}]}
 | 0 | ok |
 | 1 | the command failed (not found, stale `--base-rev`, hierarchy refusal, ...) |
 | 2 | usage error |
-| 3 | board/config error (no board found, ambiguous board, unreadable/invalid `board.yaml`) |
-| 10 | `validate`: document issue (malformed frontmatter, bad/missing field values) |
-| 11 | `validate`: id issue (duplicate id, id off its grammar, inherit source missing) |
-| 12 | `validate`: reference issue (dangling or wrong-type ref) |
-| 13 | `validate`: hierarchy issue (parent/children disagree, rule/maxDepth violation, parent cycle, ambiguous id) |
-| 14 | `validate`: cycle (acyclic-field cycle, or a dependency cycle through `depends_on` + hierarchy children) |
+| 3 | board/config error (no board found, unreadable/invalid `board.yaml`) |
 
-When `validate` finds several classes, it exits with the numerically lowest
-code present; `--json` always lists every issue with its `kind`
-(`document|id|reference|hierarchy|cycle`).
+`check` exits 1 when an `error` issue exists (an `advisory` issue only prints,
+unless `--strict`), and 3 when a check cannot run at all (an unreadable file it
+needs). `--json` lists every issue with its `rule` and `severity`. Rules:
+`document`, `id`, `reference`, `hierarchy`, `cycle`, `owns-glob`, `exemptions`
+(always errors), `unreachable` and `conflicts` (error unless the board's
+`builtins:` section sets `advisory` or `off`), `inert-exemption` (advisory).
+Rules that do not apply (no `statusClasses`, no `ownership`) are skipped.
 
 ### Hierarchy (parents and children)
 
@@ -186,13 +187,13 @@ children's own `parent` fields, so a list desynced by a hand edit heals itself.
 After editing parents by hand (or adopting a hierarchy over existing documents),
 run `mfwb repair` once: it rebuilds every parent's `children` from the `parent`
 fields (existing order kept, stale ids dropped, missing ones appended in id
-order) and prints each parent it changed; `validate` then reports anything
+order) and prints each parent it changed; `check` then reports anything
 repair cannot fix (dangling or disallowed parents, cycles).
 Deleting is not a CLI command.
 
 A parent is ready only when all its children **and** its `depends_on` are
 terminal. A child that `depends_on` its own parent is a dependency cycle
-(`validate` exit 14).
+(`check` rule `cycle`).
 
 ### `skill install` - get this document into your agent tools
 
@@ -291,14 +292,13 @@ not mean done.
 
 ```sh
 mfwb ready [--type t] [--under id] [--json] [--unblocks] [field=a|b ...]   # "<id> <status> deps: <a,b|-> [unblocks: n] | <ready.columns values>"
-mfwb ready --check [--under id] [--json]      # exit 1 + "blocked <id>: unresolved dependencies ..." on stderr
 mfwb levels [--under id] [--format md|tsv|json]   # id, level, status, title; level = longest dependency chain
 mfwb view board [--type t] [--under id] [--format md|tsv|json]   # counts per type/status (+class)
 ```
 
 `ready --unblocks` adds how many open documents transitively wait on each ready
 one; `--json` rows always carry `unblocks`, `chain` (the longest chain behind it)
-and every field. `ready` and `ready --check` exit 2 if no type declares `statusClasses`.
+and every field. `ready` exits 2 if no type declares `statusClasses`; `mfwb check` reports a live document that can never become ready (rule `unreachable`).
 `--under` needs a `hierarchy` section. Unknown view names exit 2 and list the valid ones.
 
 ### `graph` / `plan` / `conflicts` - decide what to schedule
@@ -334,8 +334,8 @@ types:
 ```
 
 `conflicts` lists pairs of live documents whose scopes overlap while neither
-depends (transitively) on the other, and exits 1 if any. `validate` rejects
-unusable globs (absolute, `..`). The exemptions file (YAML, relative to the board
+depends (transitively) on the other; `check` fails on them (rule `conflicts`).
+`check` also rejects unusable globs (absolute, `..`). The exemptions file (YAML, relative to the board
 root) lets two documents share files on purpose:
 
 ```yaml
@@ -376,9 +376,9 @@ hold `{id, text, done}` items in frontmatter; ids (`c1`, `c2`, ...) are assigned
 by the tool. Create with `acceptance=a,b,c` or `acceptance='[{"text":"x","done":true}]'`.
 
 ```sh
-mfwb check <id> <field> add <text>        # prints "added c3"
-mfwb check <id> <field> toggle|done|undone|remove <selector>
-mfwb check <id> <field> edit <selector> <new text>
+mfwb checklist <id> <field> add <text>        # prints "added c3"
+mfwb checklist <id> <field> toggle|done|undone|remove <selector>
+mfwb checklist <id> <field> edit <selector> <new text>
 ```
 
 A `<selector>` is an item id (`c3`) or a text prefix matching exactly one item;
@@ -405,8 +405,26 @@ Everything project-specific lives in the board's `board.yaml` (`mfw: 1` plus
   (`{from: [...], to: x, arg?: field, date?: field, clear?: [fields]}`; `date` stamps today unless `--date` is given),
   `commit: {prefix}`.
 - **ownership (per type):** `ownership: {field: owns, exemptions?: file}`; the
-  field must be a string list. Used by `plan`, `conflicts`, `validate`.
+  field must be a string list. Used by `plan`, `conflicts`, `check`.
 - **hierarchy (top level):** the `hierarchy:` section above.
+- **rules (per type):** `rules: [{id, field, when?, forbid? | must_match? | must_not_match?, key?, flags?, strip?, unless?, severity?, message?}]`.
+  `forbid: {result: pending}` flags rows of a `json` list / checklist items holding that value;
+  `must_match`/`must_not_match` test a text (`key` names the row key). `when` limits it to documents
+  whose fields hold those values. `severity: error` (default) also **refuses writes** that would add a
+  violation (the refusal lists the item ids); `advisory` only shows in `mfwb check`. A document that
+  already violates stays editable. Let a write through on purpose with `--override <rule>` (any write).
+- **roots / refs (top level):** `roots: {code: ../../repo}` names directories outside the board;
+  `refs: [{id, root, paths: [globs], pattern: 'held for (?<id>TK-\d+)', to: task, status?: [values],
+  severity?, flags?, max_bytes?}]` makes every match in those files name an existing `to` document
+  in an allowed status (issue at `file:line`). `check --board-only` skips them; `--root code=<path>`
+  or `MFWB_ROOT_CODE` repoints a root (worktrees); a missing root exits 3.
+- **coverage (top level):** `coverage: [{id, source: table.tsv, id_column, open_when?: {column, equals},
+  alias_column?, alias_none?, waivers?: {file, id_column}, closed_by: {type, field, status?, exactly?},
+  referenced_by?: {type, field, status?}, root?, severity?}]`: every open row of the TSV must be named by
+  exactly one document's `closed_by.field` (aliases resolve to the absorbing row) or be waived. Issues:
+  uncovered row (at its table line), unknown id on a document, stale waiver (advisory).
+- **builtins (top level):** `builtins: {unreachable: error|advisory|off, conflicts: error|advisory|off}`;
+  the severity `check` gives those two rules (default `error`).
 
 ## What this does NOT do
 

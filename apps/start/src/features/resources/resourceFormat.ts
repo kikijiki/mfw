@@ -96,3 +96,20 @@ export const LIVE_LEASE_STATES = new Set([
 	"uncertain",
 	"releasing",
 ]);
+
+/**
+ * The probe's own sentence for why a health row is not ok, from the stored
+ * diagnostics (`detail.diagnostics[].message`). Null when it said nothing.
+ */
+export function probeCause(
+	detail: Record<string, unknown> | null | undefined,
+): string | null {
+	const diagnostics = detail?.diagnostics;
+	if (!Array.isArray(diagnostics)) return null;
+	for (const item of diagnostics) {
+		if (item === null || typeof item !== "object") continue;
+		const message = (item as Record<string, unknown>).message;
+		if (typeof message === "string" && message.trim()) return message;
+	}
+	return null;
+}

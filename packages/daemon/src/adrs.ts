@@ -13,8 +13,8 @@ import { ensureBoardConfig } from "./default-board-config.ts";
 import type { Logger } from "./log.ts";
 
 /**
- * ADRs live in `.mfw/adrs/<KEY>-ADR-<n>-<slug>.md`, declared as the "adr" type
- * in `.mfw/board.yaml`; `@mfw/board-core`'s `BoardStore` owns the file I/O,
+ * ADRs live in `<board folder>/adrs/<KEY>-ADR-<n>-<slug>.md`, declared as the
+ * "adr" type in `<board folder>/board.yaml`; `@mfw/board-core`'s `BoardStore` owns the file I/O,
  * id allocation and locking. This class adds the one thing the generic engine
  * deliberately does not know about: ADR-specific workflow rules.
  *
@@ -114,7 +114,10 @@ export class AdrService {
 
 	constructor(
 		private readonly deps: {
-			mfwDir: string;
+			/** The board folder. */
+			boardDir: string;
+			/** The daemon's directory: the store's locks and id counters. */
+			stateDir: string;
 			taskKey: string;
 			log: Logger;
 			now?: () => Date;
@@ -125,9 +128,17 @@ export class AdrService {
 	 * `BoardStore` for the life of this service. */
 	private boardStore(): Promise<BoardStore> {
 		if (!this.storePromise) {
-			this.storePromise = ensureBoardConfig(this.deps.mfwDir, this.deps.taskKey)
-				.then(() => loadBoardConfig(join(this.deps.mfwDir, "board.yaml")))
-				.then((config) => new BoardStore(this.deps.mfwDir, config));
+			this.storePromise = ensureBoardConfig(
+				this.deps.boardDir,
+				this.deps.taskKey,
+			)
+				.then(() => loadBoardConfig(join(this.deps.boardDir, "board.yaml")))
+				.then(
+					(config) =>
+						new BoardStore(this.deps.boardDir, config, {
+							stateDir: join(this.deps.stateDir, ".board"),
+						}),
+				);
 		}
 		return this.storePromise;
 	}

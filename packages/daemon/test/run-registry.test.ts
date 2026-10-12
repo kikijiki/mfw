@@ -10,7 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
-import { EventBus, type StoredEvent } from "@mfw/db/eventlog";
+import { EventBus, listEvents, type StoredEvent } from "@mfw/db/eventlog";
 import { ulid } from "@mfw/db/ids";
 import { events } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
@@ -91,7 +91,11 @@ describe("RunRegistry.create", () => {
 			kind: "task",
 			model: "sonnet",
 			branch: "mfw/task/MFW-1/x",
+			relation: "fresh",
+			label: "MFW-1 demo run",
 		});
+		expect(row.relation).toBe("fresh");
+		expect(row.chainRootId).toBe(row.id);
 		expect(f.published.map((e) => e.type)).toEqual(["run.started"]);
 
 		expect(await f.registry.get(row.id)).toEqual(row);
@@ -133,6 +137,43 @@ describe("RunRegistry.create", () => {
 			...NO_CAPABILITIES,
 			steer: true,
 			verified: true,
+		});
+		await cleanup(f);
+	});
+
+	test("chain-extending children join the parent's chain; others root their own", async () => {
+		const f = await fresh();
+		const root = await f.registry.create(spec({ taskId: "MFW-1" }));
+		const repair = await f.registry.create(
+			spec({
+				taskId: "MFW-1",
+				parentRunId: root.id,
+				label: "MFW-1#repair",
+			}),
+		);
+		const resume = await f.registry.create(
+			spec({
+				taskId: "MFW-1",
+				parentRunId: repair.id,
+				label: "MFW-1#resume",
+			}),
+		);
+		const judge = await f.registry.create(
+			spec({ kind: "brain", parentRunId: root.id, label: "critic:x" }),
+		);
+		expect(repair.relation).toBe("repair");
+		expect(repair.chainRootId).toBe(root.id);
+		expect(resume.chainRootId).toBe(root.id);
+		expect(judge.relation).toBe("judge");
+		expect(judge.chainRootId).toBe(judge.id);
+		const started = f.published.find(
+			(e) => e.type === "run.started" && e.runId === resume.id,
+		);
+		expect(started?.payload).toMatchObject({
+			taskId: "MFW-1",
+			parentRunId: repair.id,
+			relation: "resume",
+			label: "MFW-1#resume",
 		});
 		await cleanup(f);
 	});
@@ -180,6 +221,15 @@ describe("RunRegistry.transition", () => {
 			to: "running",
 		});
 		expect((await f.registry.get(row.id))?.state).toBe("running");
+		await cleanup(f);
+	});
+
+	test("run.state_changed carries the task id so per-task event queries find it", async () => {
+		const f = await fresh();
+		const row = await f.registry.create(spec({ taskId: "MFW-7" }));
+		await f.registry.transition(row.id, "running");
+		const page = await listEvents(f.h.db, { taskId: "MFW-7" });
+		expect(page.events.map((e) => e.type)).toContain("run.state_changed");
 		await cleanup(f);
 	});
 

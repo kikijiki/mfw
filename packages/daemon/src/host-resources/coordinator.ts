@@ -3,6 +3,7 @@ import {
 	HostObservationService,
 	type HostObservationServiceOptions,
 } from "../host-observation-service.ts";
+import { REMOTE_RUN_SESSION_PREFIX } from "./liveness.ts";
 import {
 	type DetectedResourceApplyOptions,
 	type DetectedResourceApplyResult,
@@ -474,6 +475,17 @@ export class HostResourceCoordinator implements HostResourceCoordinatorPort {
 				continue;
 			}
 
+			// A remote run's lease cannot be judged locally. Once this process
+			// activated or adopted it, the project renews it; only a lease from an
+			// earlier process boot goes to project recovery (as uncertain).
+			if (
+				lease.state === "active" &&
+				lease.run?.sessionId?.startsWith(REMOTE_RUN_SESSION_PREFIX) &&
+				lease.ownerProcessBootId === this.store.identity.processBootId
+			) {
+				report.unchanged++;
+				continue;
+			}
 			const evidence = await this.options.liveness.inspect(lease);
 			const status = this.evidenceIsFresh(evidence)
 				? evidence.status

@@ -6,11 +6,15 @@ import { and, desc, eq, isNull } from "drizzle-orm";
 import type { Logger } from "./log.ts";
 
 /**
- * The clarify gate: questions a planner or importer raised, and the answers
- * that unblock them.
+ * The clarify gate: questions a planner, an importer or a task run raised,
+ * and the answers that unblock them.
  *
- * Answers feed back into a fresh plan run via `buildPrompts.plan`. The re-plan
- * is injected (`replan`) so this service does not depend on RunEngine.
+ * Planner answers feed back into a fresh plan run via `buildPrompts.plan`
+ * (`replan`). A task run's question (`kind: "task"`, from its MFW_REPORT) does
+ * not continue anything by itself: answering it resolves the set and wakes the
+ * project brain (`clarify.resolved`), which continues the run with a
+ * `spawn` of `worktree: continue:<runId>` (the answer is in that prompt).
+ * `replan` is injected so this service does not depend on RunEngine.
  */
 
 export interface ClarificationItem {
@@ -53,6 +57,9 @@ export type ReplanFn = (input: {
 	sourceRunId: string;
 	continuationRunId: string;
 }) => Promise<{ runId: string }>;
+
+/** The clarification kind a task run's own question is recorded under. */
+export const TASK_QUESTION_KIND = "task";
 
 export interface ClarifyDeps {
 	handle: ProjectDbHandle;
@@ -125,7 +132,7 @@ export class ClarifyService {
 	async answer(
 		runId: string,
 		answers: AnswerInput[],
-		opts: { continuePlanning?: boolean } = {},
+		opts: { continuePlanning?: boolean; by?: "brain" | "human" } = {},
 	): Promise<AnswerResult> {
 		const current = await this.get(runId);
 		if (!current) throw new NotFoundError(`unknown clarification ${runId}`);
@@ -149,6 +156,8 @@ export class ClarifyService {
 			item.answer = trimmed.length > 0 ? trimmed : null;
 		}
 		const open = items.filter((i) => i.answer === null).length;
+		// A planner's answers continue only when asked; a task run's question is
+		// resolved here and continued by the brain (see the file comment).
 		const continuable = Boolean(this.deps.replan && current.goal);
 		const shouldContinue = Boolean(
 			opts.continuePlanning && continuable && open === 0,
@@ -158,7 +167,7 @@ export class ClarifyService {
 		};
 		// A re-plan needs the original goal. Importer questions have none, so the
 		// flag is ignored there rather than start a run on an empty goal.
-		if (shouldContinue && this.deps.replan && current.goal) {
+		if (shouldContinue) {
 			let continuationRunId = current.continuationRunId;
 			if (continuationRunId) {
 				if (!sameItems(items, current.items)) {
@@ -236,7 +245,10 @@ export class ClarifyService {
 				await this.publish({
 					type: "clarify.resolved",
 					runId,
-					payload: { answered: true },
+					payload: {
+						answered: true,
+						...(opts.by ? { by: opts.by } : {}),
+					},
 				});
 			}
 		}
@@ -247,7 +259,7 @@ export class ClarifyService {
 
 	private async continuePlanning(
 		runId: string,
-		goal: string,
+		goal: string | null,
 		answers: { question: string; answer: string }[],
 		continuationRunId: string,
 	): Promise<AnswerResult["continuation"]> {
@@ -272,20 +284,25 @@ export class ClarifyService {
 
 	private async launchContinuation(
 		runId: string,
-		goal: string,
+		goal: string | null,
 		answers: { question: string; answer: string }[],
 		continuationRunId: string,
 		allowTerminalRetry = true,
 	): Promise<AnswerResult["continuation"]> {
-		if (!this.deps.replan) return { status: "not_requested" };
+		const start =
+			this.deps.replan && goal
+				? (id: string) =>
+						(this.deps.replan as ReplanFn)({
+							goal,
+							answers,
+							sourceRunId: runId,
+							continuationRunId: id,
+						})
+				: null;
+		if (!start) return { status: "not_requested" };
 
 		try {
-			const started = await this.deps.replan({
-				goal,
-				answers,
-				sourceRunId: runId,
-				continuationRunId,
-			});
+			const started = await start(continuationRunId);
 			if (started.runId !== continuationRunId) {
 				throw new Error(
 					`continuation returned ${started.runId}, expected ${continuationRunId}`,

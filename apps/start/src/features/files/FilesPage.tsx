@@ -14,6 +14,7 @@ import type { ComponentType } from "react";
 import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "~/components/ui/button";
+import { TipLi, TipSelect, TipSpan } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
 import { AppLink } from "../../components/AppLink";
 import { Empty } from "../../components/Empty";
@@ -25,10 +26,13 @@ import { useGo, useWideViewport } from "../../lib/nav";
 import type { RouterOutputs } from "../../lib/trpc";
 import { useTRPC } from "../../lib/trpc";
 import { href } from "../../routes";
+import { RefPicker } from "../repo/RefPicker";
 import type { CodeViewProps } from "./CodeView";
 import type { Changes, ChangeTone, GitFile, GitStatus } from "./changes";
 import { columnTone, describe, indexChanges, toneOf } from "./changes";
 import { FileDiffView } from "./FileDiffView";
+import { fileKind, isSvg } from "./fileKinds";
+import { ImageView, MarkdownView } from "./RenderedFile";
 
 /**
  * FILES: the read-only workspace browser. Everything shown is the daemon's answer.
@@ -49,6 +53,12 @@ import { FileDiffView } from "./FileDiffView";
 export interface FilesLocation {
 	/** Run whose worktree is being browsed; absent means the project root. */
 	run?: string;
+	/**
+	 * Browse a branch, tag or commit tree (`repo.tree` / `repo.blob`) instead of
+	 * a checkout. Read from the object database, so it does not depend on what
+	 * is checked out; there is no status or diff in this mode.
+	 */
+	ref?: string;
 	/** Open directory, base-relative. Absent means the base itself. */
 	path?: string;
 	/** Open file, base-relative. */
@@ -71,29 +81,64 @@ export function FilesPage({
 	const [wrap, setWrap] = useState(false);
 	const [diffView, setDiffView] = useState(false);
 
+	const byRef = Boolean(at.ref);
 	const worktrees = useQuery(trpc.files.worktrees.queryOptions({ project }));
-	const listing = useQuery({
+	const refs = useQuery(trpc.repo.refs.queryOptions({ project }));
+	const wsListing = useQuery({
 		...trpc.files.listDir.queryOptions({
 			project,
 			path: at.path,
 			runId: at.run,
 		}),
+		enabled: !byRef,
 		// FORBIDDEN and NOT_FOUND are answers, not outages: no retry.
 		retry: false,
 	});
-	const status = useQuery({
-		...trpc.files.gitStatus.queryOptions({ project, runId: at.run }),
+	const refListing = useQuery({
+		...trpc.repo.tree.queryOptions({
+			project,
+			ref: at.ref ?? "HEAD",
+			path: at.path,
+		}),
+		enabled: byRef,
 		retry: false,
 	});
-	const contents = useQuery({
+	const listing = (byRef ? refListing : wsListing) as {
+		data?: { entries: Entry[]; truncated: boolean };
+		isLoading: boolean;
+		isFetching: boolean;
+		error: unknown;
+		refetch: () => Promise<unknown>;
+	};
+	const status = useQuery({
+		...trpc.files.gitStatus.queryOptions({ project, runId: at.run }),
+		enabled: !byRef,
+		retry: false,
+	});
+	const wsContents = useQuery({
 		...trpc.files.readFile.queryOptions({
 			project,
 			path: at.file ?? "",
 			runId: at.run,
 		}),
-		enabled: Boolean(at.file),
+		enabled: Boolean(at.file) && !byRef,
 		retry: false,
 	});
+	const refContents = useQuery({
+		...trpc.repo.blob.queryOptions({
+			project,
+			ref: at.ref ?? "HEAD",
+			path: at.file ?? "",
+		}),
+		enabled: Boolean(at.file) && byRef,
+		retry: false,
+	});
+	const contents = (byRef ? refContents : wsContents) as {
+		data?: RouterOutputs["files"]["readFile"];
+		isLoading: boolean;
+		error: unknown;
+		refetch: () => Promise<unknown>;
+	};
 
 	const changes = useMemo(
 		() => indexChanges(status.data?.files ?? []),
@@ -110,7 +155,7 @@ export function FilesPage({
 			fromPath: openGit?.from,
 		}),
 		// Fetched only on request.
-		enabled: Boolean(at.file) && diffView && Boolean(openGit),
+		enabled: Boolean(at.file) && diffView && Boolean(openGit) && !byRef,
 		retry: false,
 	});
 
@@ -119,7 +164,13 @@ export function FilesPage({
 	const entries = listing.data?.entries ?? [];
 
 	const linkTo = (next: Partial<FilesLocation>) =>
-		href.files(project, { run: at.run, path: at.path, file: at.file, ...next });
+		href.files(project, {
+			run: at.run,
+			ref: at.ref,
+			path: at.path,
+			file: at.file,
+			...next,
+		});
 
 	return (
 		<Page className="h-full">
@@ -131,14 +182,33 @@ export function FilesPage({
 					background: "var(--mfw-bg-subtle)",
 				}}
 			>
-				<BaseControl
-					bases={bases}
-					value={at.run}
-					branch={status.data?.branch ?? null}
-					onChange={(run) => go(href.files(project, { run }))}
+				{byRef ? null : (
+					<BaseControl
+						bases={bases}
+						value={at.run}
+						branch={status.data?.branch ?? null}
+						onChange={(run) => go(href.files(project, { run }))}
+					/>
+				)}
+				<RefPicker
+					label="Browse a ref"
+					title="Browse any branch, tag or commit tree, not just the checkout."
+					emptyLabel="working copy"
+					value={at.ref}
+					refs={refs.data}
+					onChange={(ref) => go(href.files(project, { ref }))}
 				/>
 				<Breadcrumbs path={here} linkTo={linkTo} />
-				<StatusSummary status={status.data} counts={changes.counts} />
+				{byRef ? (
+					<Chip
+						title="Read from the object database at this ref; the working copy is not involved."
+						tone="info"
+					>
+						snapshot, read only
+					</Chip>
+				) : (
+					<StatusSummary status={status.data} counts={changes.counts} />
+				)}
 				<Button
 					size="icon-sm"
 					variant="ghost"
@@ -252,6 +322,9 @@ export function FilesPage({
 						/>
 					) : contents.data ? (
 						<FileViewer
+							// The Rendered/Source choice belongs to one file at one tree.
+							key={`${at.ref ?? at.run ?? ""}:${contents.data.path}`}
+							source={{ project, ref: at.ref, run: at.run }}
 							data={contents.data}
 							git={changes.file.get(contents.data.path)}
 							wrap={wrap}
@@ -304,24 +377,21 @@ function BaseControl({
 
 	if (bases.length === 0 && !missing) {
 		return (
-			<span
-				className="flex shrink-0 items-center gap-1.5"
-				title={`${branch ? `On ${branch}. ` : ""}${BASE_HELP}`}
-			>
+			<TipSpan className="flex shrink-0 items-center gap-1.5" tip={BASE_HELP}>
 				{icon}
 				<span className="mfw-num" style={{ fontSize: "var(--mfw-text-xs)" }}>
 					{branch ?? "project root"}
 				</span>
-			</span>
+			</TipSpan>
 		);
 	}
 
 	return (
 		<span className="flex shrink-0 items-center gap-1.5">
 			{icon}
-			<select
+			<TipSelect
 				aria-label="Checkout"
-				title={BASE_HELP}
+				tip={BASE_HELP}
 				className="mfw-focus mfw-num min-h-7 max-w-64 border px-1.5"
 				style={{
 					background: "var(--mfw-bg-raised)",
@@ -347,7 +417,7 @@ function BaseControl({
 				{missing ? (
 					<option value={value}>{value}: run files unavailable</option>
 				) : null}
-			</select>
+			</TipSelect>
 		</span>
 	);
 }
@@ -453,15 +523,15 @@ function StatusCell({ git }: { git: GitFile | undefined }) {
 	}
 	const words = describe(git);
 	return (
-		<span
+		<TipSpan
 			role="img"
 			aria-label={words}
-			title={words}
+			tip={words}
 			className="mfw-num w-[2ch] shrink-0"
 		>
 			<StatusChar git={git} column="index" />
 			<StatusChar git={git} column="worktree" />
-		</span>
+		</TipSpan>
 	);
 }
 
@@ -551,10 +621,10 @@ function EntryRow({
 	// kind is unknown here; one leaving the tree would be refused, so say so upfront.
 	if (entry.kind === "symlink" || entry.kind === "other") {
 		return (
-			<li
+			<TipLi
 				className="flex min-h-8 items-center gap-2 border-l-2 py-1 pr-2 pl-1.5"
 				style={{ borderLeftColor: rule, color: "var(--mfw-fg-muted)" }}
-				title={
+				tip={
 					entry.kind === "symlink"
 						? "symlink: shown, never followed"
 						: "not a regular file or directory"
@@ -568,7 +638,7 @@ function EntryRow({
 				) : (
 					<Chip>{entry.kind}</Chip>
 				)}
-			</li>
+			</TipLi>
 		);
 	}
 
@@ -618,6 +688,7 @@ function useCodeView(wanted: boolean): ComponentType<CodeViewProps> | null {
 }
 
 function FileViewer({
+	source,
 	data,
 	git,
 	wrap,
@@ -630,6 +701,7 @@ function FileViewer({
 	onRetryDiff,
 	unified,
 }: {
+	source: { project: string; ref?: string; run?: string };
 	data: RouterOutputs["files"]["readFile"];
 	git: GitFile | undefined;
 	wrap: boolean;
@@ -642,7 +714,18 @@ function FileViewer({
 	onRetryDiff: () => void;
 	unified: boolean;
 }) {
-	const CodeView = useCodeView(!data.binary && data.size > 0);
+	const kind = fileKind(data.path);
+	// A raster image is "binary" to the text reader but is a picture here, with
+	// no text to toggle to. Markdown and SVG read rendered by default; Source
+	// is their text.
+	const picture = kind === "image" && !isSvg(data.path);
+	const hasToggle =
+		kind === "markdown"
+			? !data.binary && data.size > 0
+			: kind === "image" && !picture;
+	const [showSource, setShowSource] = useState(false);
+	const rendered = picture || (hasToggle && !showSource);
+	const CodeView = useCodeView(!data.binary && data.size > 0 && !rendered);
 	// A file with no git row has nothing to diff.
 	const showingDiff = diffView && Boolean(git);
 	return (
@@ -675,7 +758,27 @@ function FileViewer({
 							{showingDiff ? "File" : "Diff"}
 						</Button>
 					) : null}
-					{!showingDiff && !data.binary ? (
+					{!showingDiff && hasToggle ? (
+						<>
+							<Button
+								size="xs"
+								variant="ghost"
+								aria-pressed={rendered}
+								onClick={() => setShowSource(false)}
+							>
+								Rendered
+							</Button>
+							<Button
+								size="xs"
+								variant="ghost"
+								aria-pressed={!rendered}
+								onClick={() => setShowSource(true)}
+							>
+								Source
+							</Button>
+						</>
+					) : null}
+					{!showingDiff && !data.binary && !rendered ? (
 						<Button
 							size="xs"
 							variant="ghost"
@@ -708,7 +811,7 @@ function FileViewer({
 				</div>
 			) : (
 				<>
-					{data.marker ? (
+					{data.marker && !picture ? (
 						<p
 							className="flex shrink-0 items-center gap-2 border-b px-2 py-1"
 							style={{
@@ -724,7 +827,11 @@ function FileViewer({
 						</p>
 					) : null}
 
-					{data.binary ? (
+					{kind === "image" && rendered ? (
+						<ImageView source={source} path={data.path} size={data.size} />
+					) : kind === "markdown" && rendered ? (
+						<MarkdownView source={source} path={data.path} text={data.text} />
+					) : data.binary ? (
 						<Empty
 							icon={Binary}
 							title="Binary file"

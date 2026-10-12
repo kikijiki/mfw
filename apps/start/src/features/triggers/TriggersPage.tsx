@@ -26,6 +26,7 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "~/components/ui/dialog";
+import { TipSpan } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
 import { Mono } from "../../components/Cost";
 import { Empty } from "../../components/Empty";
@@ -329,12 +330,13 @@ function TriggerRow({
 						</Chip>
 						<RelativeTime value={view.lastDelivery.startedAt} />
 						{view.lastDelivery.detail ? (
-							<span
+							<TipSpan
 								className="min-w-0 max-w-100 truncate"
-								title={view.lastDelivery.detail}
+								tip={view.lastDelivery.detail}
+								clipped
 							>
 								{view.lastDelivery.detail}
-							</span>
+							</TipSpan>
 						) : null}
 					</>
 				) : (
@@ -625,13 +627,14 @@ function DeliveryHistory({
 							{d.attempt > 1 ? <span>attempt {d.attempt}</span> : null}
 							<RelativeTime value={d.startedAt} />
 							{d.detail ? (
-								<span
+								<TipSpan
 									className="min-w-0 max-w-80 truncate"
 									style={{ color: "var(--mfw-fg-muted)" }}
-									title={d.detail}
+									tip={d.detail}
+									clipped
 								>
 									{d.detail}
-								</span>
+								</TipSpan>
 							) : null}
 							{d.runId ? <Mono value={d.runId} truncate={8} /> : null}
 							<span className="flex-1" />

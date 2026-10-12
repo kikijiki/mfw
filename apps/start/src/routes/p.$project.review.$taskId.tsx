@@ -1,38 +1,17 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
-import { ReviewPage } from "~/features/review/ReviewPage";
+import { href } from "~/routes";
 
-/** `?file=` deep-links a file; `?from=` preserves the inbox that opened it. */
+/**
+ * Review is the task inspector's Changes tab now. This route only keeps old
+ * links (and notifications that carried one) working: it redirects to the
+ * board with the task selected on that tab.
+ */
 export const Route = createFileRoute("/p/$project/review/$taskId")({
-	validateSearch: (
-		search: Record<string, unknown>,
-	): {
-		file?: string;
-		from?: "inbox" | "project-inbox";
-	} => ({
-		file: typeof search.file === "string" ? search.file : undefined,
-		from:
-			search.from === "inbox" || search.from === "project-inbox"
-				? search.from
-				: undefined,
-	}),
-	component: ReviewRoute,
+	beforeLoad: ({ params }) => {
+		throw redirect({
+			to: href.changes(params.project, params.taskId),
+			replace: true,
+		});
+	},
 });
-
-function ReviewRoute() {
-	const { project, taskId } = Route.useParams();
-	const { file, from } = Route.useSearch();
-	const navigate = Route.useNavigate();
-	return (
-		<ReviewPage
-			key={`${project}:${taskId}`}
-			project={project}
-			taskId={taskId}
-			origin={from}
-			selectedFile={file}
-			onSelectFile={(path) =>
-				navigate({ search: () => ({ file: path, from }) })
-			}
-		/>
-	);
-}

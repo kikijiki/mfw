@@ -237,28 +237,35 @@ describe("ready", () => {
 		const d = await board(TREE, HBOARD);
 		const u = await mfwb(d, ["update", "TK-3", "depends_on=TK-1"]);
 		expect(u.code).toBe(0);
-		const v = await mfwb(d, ["validate"]);
-		expect(v.code).toBe(14);
+		const v = await mfwb(d, ["check", "--rule", "cycle"]);
+		expect(v.code).toBe(1);
 		expect(v.stdout).toContain("dependency cycle");
-		const c = await mfwb(d, ["ready", "--check"]);
+		const c = await mfwb(d, ["check", "--rule", "unreachable"]);
 		expect(c.code).toBe(1);
-		expect(c.stderr).toContain("blocked");
+		expect(c.stdout).toContain("can never become ready");
 	});
 
-	test("--check: parked dependency blocks a live document", async () => {
+	test("check unreachable: a parked dependency blocks a live document", async () => {
 		const d = await board(SEEDS);
-		const r = await mfwb(d, ["ready", "--check"]);
+		const r = await mfwb(d, ["check", "--rule", "unreachable"]);
 		expect(r.code).toBe(1);
-		expect(r.stderr).toBe("blocked TK-6: unresolved dependencies TK-5");
-		const j = await mfwb(d, ["ready", "--check", "--json"]);
+		expect(r.stdout).toBe(
+			"error unreachable task TK-6: can never become ready: unresolved dependencies TK-5",
+		);
+		const j = await mfwb(d, ["check", "--rule", "unreachable", "--json"]);
 		expect(j.code).toBe(1);
-		expect(JSON.parse(j.stdout)).toEqual({
-			blocked: { "TK-6": ["TK-5"] },
-			ok: false,
+		const out = JSON.parse(j.stdout);
+		expect(out.ok).toBe(false);
+		expect(out.issues).toHaveLength(1);
+		expect(out.issues[0]).toMatchObject({
+			rule: "unreachable",
+			severity: "error",
+			id: "TK-6",
+			related: ["TK-5"],
 		});
 	});
 
-	test("--check: dangling dependency is reported", async () => {
+	test("check unreachable: a dangling dependency is reported", async () => {
 		const d = await board([{ title: "a" }, { title: "b" }]);
 		await writeFile(
 			join(d, "tasks", "TK-2.md"),
@@ -267,24 +274,24 @@ describe("ready", () => {
 				"---\ndepends_on: [TK-99]\n",
 			),
 		);
-		const r = await mfwb(d, ["ready", "--check"]);
+		const r = await mfwb(d, ["check", "--rule", "unreachable"]);
 		expect(r.code).toBe(1);
-		expect(r.stderr).toContain("blocked TK-2: unresolved dependencies TK-99");
+		expect(r.stdout).toContain(
+			"TK-2: can never become ready: unresolved dependencies TK-99",
+		);
 	});
 
-	test("--check: healthy board", async () => {
+	test("check unreachable: healthy board", async () => {
 		const d = await board([
 			{ title: "a", status: "done" },
 			{ title: "b", deps: ["TK-1"] },
 			{ title: "c", deps: ["TK-2"] },
 		]);
-		const r = await mfwb(d, ["ready", "--check"]);
+		const r = await mfwb(d, ["check", "--rule", "unreachable"]);
 		expect(r.code).toBe(0);
-		expect(r.stdout).toBe(
-			"Queue liveness: 2 live documents, all remaining reachable",
-		);
-		const j = await mfwb(d, ["ready", "--check", "--json"]);
-		expect(JSON.parse(j.stdout)).toEqual({ blocked: {}, ok: true });
+		expect(r.stdout).toBe("ok");
+		const j = await mfwb(d, ["check", "--rule", "unreachable", "--json"]);
+		expect(JSON.parse(j.stdout)).toEqual({ ok: true, issues: [] });
 	});
 });
 

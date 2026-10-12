@@ -25,14 +25,48 @@ export function validateTestHome(path: string, tempRoot = tmpdir()): string {
 	return home;
 }
 
-export function testArgs(repoRoot: string): string[] {
+/** Test files per `bun test` process; see `testShards`. */
+export const SHARD_FILES = 40;
+
+export function testArgs(
+	repoRoot: string,
+	files?: readonly string[],
+): string[] {
 	return [
 		"test",
 		"--path-ignore-patterns",
 		WORKTREE_IGNORE,
-		join(repoRoot, "packages"),
-		join(repoRoot, "apps"),
+		...(files ?? [join(repoRoot, "packages"), join(repoRoot, "apps")]),
 	];
+}
+
+/**
+ * Splits the suite into several `bun test` processes. One process running
+ * everything (~3500 tests, minutes) has segfaulted in Bun 1.3.13 on CI late in
+ * the run, after every test passed; short-lived processes do not accumulate
+ * whatever it trips over. Files are sorted so shards are stable.
+ */
+export function testShards(
+	files: readonly string[],
+	size = SHARD_FILES,
+): string[][] {
+	const sorted = [...files].sort();
+	const shards: string[][] = [];
+	for (let i = 0; i < sorted.length; i += size)
+		shards.push(sorted.slice(i, i + size));
+	return shards;
+}
+
+async function discoverTests(repoRoot: string): Promise<string[]> {
+	const found: string[] = [];
+	for (const tree of ["packages", "apps"]) {
+		const glob = new Bun.Glob("**/*.test.{ts,tsx}");
+		for await (const rel of glob.scan({ cwd: join(repoRoot, tree) })) {
+			if (/(^|\/)(node_modules|worktrees)\//.test(rel)) continue;
+			found.push(join(repoRoot, tree, rel));
+		}
+	}
+	return found;
 }
 
 export function testEnvironment(
@@ -85,18 +119,25 @@ export async function main(): Promise<number> {
 	for (const { signal, handle } of signalHandlers) process.on(signal, handle);
 
 	try {
-		child = Bun.spawn([process.execPath, ...testArgs(repoRoot)], {
-			cwd: repoRoot,
-			env: testEnvironment(explicitHome, socket),
-			stdin: "inherit",
-			stdout: "inherit",
-			stderr: "inherit",
-			// All ordinary descendants stay in this private process group. The
-			// finally block can therefore reap stragglers without touching another
-			// test invocation or the operator's processes.
-			detached: true,
-		});
-		const exitCode = await child.exited;
+		let exitCode = 0;
+		const shards = testShards(await discoverTests(repoRoot));
+		for (const [i, shard] of shards.entries()) {
+			console.log(`\n== test shard ${i + 1}/${shards.length} ==`);
+			child = Bun.spawn([process.execPath, ...testArgs(repoRoot, shard)], {
+				cwd: repoRoot,
+				env: testEnvironment(explicitHome, socket),
+				stdin: "inherit",
+				stdout: "inherit",
+				stderr: "inherit",
+				// All ordinary descendants stay in this private process group. The
+				// finally block can therefore reap stragglers without touching
+				// another test invocation or the operator's processes.
+				detached: true,
+			});
+			const code = await child.exited;
+			stopProcessGroup(child.pid, "SIGKILL");
+			if (code !== 0 && exitCode === 0) exitCode = code;
+		}
 		return exitCode;
 	} finally {
 		for (const { signal, handle } of signalHandlers)

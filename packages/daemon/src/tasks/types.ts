@@ -8,15 +8,16 @@ import type {
 	VerifierKind,
 } from "@mfw/core/types";
 import { z } from "zod";
+import type { StatusMap } from "../board-status-map.ts";
 
 /**
  * Task frontmatter vocabulary: the types/schemas every daemon file that used
  * to import them from `@mfw/core/taskfile` now imports from here instead.
  *
- * `@mfw/board-core` already validates every field `.mfw/board.yaml` declares
+ * `@mfw/board-core` already validates every field `board.yaml` declares
  * as a scalar/enum/ref against its declared kind — a `BoardDocument.fields`
  * record reaching this module already has the right shape for most fields.
- * Four fields are declared `type: json` in `.mfw/board.yaml` (board-core only
+ * Four fields are declared `type: json` in `board.yaml` (board-core only
  * confirms "valid YAML", not their actual shape): `requires_resources`,
  * `local_staging_resources`, `reopen_when`, `verification`. Two more
  * (`owns`, `workload_secret_grants`) are plain string lists at the board-core
@@ -295,16 +296,30 @@ export interface TaskFrontmatter {
 	capture_id: string | null;
 	owns: string[];
 	model_tier: ModelTier | null;
+	/** Routing pin: a harness or project endpoint id (`routing.ts`). */
+	provider?: string | null;
+	/** Routing pin: an exact model id. */
+	model?: string | null;
 	discovered_from: string | null;
 	discovery_key: string | null;
 	reopen_when: ReopenCondition[];
+	/**
+	 * Provenance: who wrote the task (`brain:<actionId>#<n>`; a person's tasks
+	 * carry none), the brain action that last edited it (`brain:<actionId>`),
+	 * and the task that replaced it in a merge. Optional like the routing pins:
+	 * absent stays absent, so a board whose board.yaml predates them is
+	 * unaffected.
+	 */
+	created_by?: string | null;
+	edited_by?: string | null;
+	superseded_by?: string | null;
 	/** The Definition of Done. A real frontmatter field now, not a fenced body
-	 * block — see `.mfw/board.yaml`'s comment on this field. */
+	 * block — see `board.yaml`'s comment on this field. */
 	verification: VerificationPlan | null;
 }
 
 /** Fields `@mfw/board-core` validates only as "valid YAML" (`type: json` in
- * `.mfw/board.yaml`), plus two string-list fields with extra validation of
+ * `board.yaml`), plus two string-list fields with extra validation of
  * their own — these are the only fields this function does real work on. */
 function reparse<T>(
 	schema: z.ZodType<T>,
@@ -323,22 +338,32 @@ function reparse<T>(
 
 /**
  * Turn a `BoardDocument.fields` record (already structurally validated by
- * `@mfw/board-core` against `.mfw/board.yaml`) into a fully-typed
+ * `@mfw/board-core` against `board.yaml`) into a fully-typed
  * `TaskFrontmatter`, the shape the rest of the daemon reads. The six fields
  * `@mfw/board-core` doesn't deeply validate are re-validated here; anything
  * that fails at this point is genuinely malformed, same severity as any other
  * parse failure.
  */
+/** A routing field's value when it is a usable string, else null (a board
+ * that declares the name differently just cannot pin a route). */
+export function routingFieldValue(value: unknown): string | null {
+	return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
+/** `status` crosses the board boundary here: the board holds its own status
+ * vocabulary, the daemon the canonical eight, and `statusMap` is the only
+ * translation between them. */
 export function materializeTaskFrontmatter(
 	fields: Record<string, unknown>,
 	id: string,
 	rev: number,
+	statusMap: StatusMap,
 ): TaskFrontmatter {
 	return {
 		id,
 		rev,
 		title: fields.title as string,
-		status: fields.status as TaskStatus,
+		status: statusMap.toCanonical(fields.status as string),
 		type: fields.type as TaskType,
 		priority: fields.priority as Priority,
 		size: (fields.size as TaskSize | null) ?? null,
@@ -380,6 +405,23 @@ export function materializeTaskFrontmatter(
 		capture_id: (fields.capture_id as string | null) ?? null,
 		owns: reparse(OwnsSchema, fields.owns ?? [], "owns", id),
 		model_tier: (fields.model_tier as ModelTier | null) ?? null,
+		// Absent stays absent: re-writing `provider: null` would be an unknown
+		// field on a board whose board.yaml predates the routing fields.
+		...(fields.provider !== undefined
+			? { provider: routingFieldValue(fields.provider) }
+			: {}),
+		...(fields.model !== undefined
+			? { model: routingFieldValue(fields.model) }
+			: {}),
+		...(fields.created_by !== undefined
+			? { created_by: routingFieldValue(fields.created_by) }
+			: {}),
+		...(fields.edited_by !== undefined
+			? { edited_by: routingFieldValue(fields.edited_by) }
+			: {}),
+		...(fields.superseded_by !== undefined
+			? { superseded_by: routingFieldValue(fields.superseded_by) }
+			: {}),
 		discovered_from: (fields.discovered_from as string | null) ?? null,
 		discovery_key: (fields.discovery_key as string | null) ?? null,
 		reopen_when: reparse(
@@ -401,12 +443,16 @@ export function materializeTaskFrontmatter(
  * The inverse of `materializeTaskFrontmatter`: flatten a (possibly partial,
  * for a patch/update) `TaskFrontmatter`-shaped object back into the plain
  * `Record<string, unknown>` `BoardStore.updateDocument`/`createDocument`
- * expect. Field names already match `.mfw/board.yaml` 1:1; this exists so the
+ * expect. Field names already match `board.yaml` 1:1; this exists so the
  * boundary is explicit and typed rather than a bare cast, and so the four
  * `type: json` fields round-trip as plain JSON values.
+ *
+ * `status` goes back through `statusMap`: the record carries the canonical
+ * status, the board document its own.
  */
 export function dematerializeTaskFields(
 	fm: Partial<Omit<TaskFrontmatter, "id" | "rev">>,
+	statusMap: StatusMap,
 ): Record<string, unknown> {
 	// Every value here already came out of a zod `.parse()` or a plain literal
 	// (string/number/boolean/null/array/plain object) — nothing needs cloning
@@ -415,6 +461,9 @@ export function dematerializeTaskFields(
 	const out: Record<string, unknown> = {};
 	for (const [key, value] of Object.entries(fm)) {
 		if (value !== undefined) out[key] = value;
+	}
+	if (typeof out.status === "string") {
+		out.status = statusMap.toBoard(out.status as TaskStatus);
 	}
 	return out;
 }

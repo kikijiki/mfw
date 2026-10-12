@@ -81,6 +81,7 @@ export class SessionService {
 		prompt: string,
 		opts: {
 			reuse?: { worktreePath: string; branch: string; baseSha?: string };
+			sessionId?: string;
 		},
 	) => Promise<{ runId: string }>;
 
@@ -165,7 +166,10 @@ export class SessionService {
 				};
 			}
 		}
-		const { runId } = await this.startSession(session.context, { reuse });
+		const { runId } = await this.startSession(session.context, {
+			reuse,
+			sessionId: id,
+		});
 		await this.deps.handle.db
 			.update(sessions)
 			.set({ openedRunId: runId, openedAt: new Date() })

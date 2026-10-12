@@ -64,6 +64,76 @@
       "when": 1787511307410,
       "tag": "0008_faulty_black_tom",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1791711108224,
+      "tag": "0009_outcomes",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1791786782245,
+      "tag": "0010_spend_ledger_native_session",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1791787771328,
+      "tag": "0012_lineage",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1791788065591,
+      "tag": "0013_events_run_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1791788192080,
+      "tag": "0014_run_spans",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1791788489818,
+      "tag": "0015_transcript_summary",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "6",
+      "when": 1791789641377,
+      "tag": "0016_brain-runtime",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1791791181969,
+      "tag": "0017_run_usage_live",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1791791200000,
+      "tag": "0018_run-groups",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1791795371103,
+      "tag": "0019_run_subagents",
+      "breakpoints": true
     }
   ]
 }

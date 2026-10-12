@@ -4,6 +4,7 @@ import {
 	formatHoldReason,
 	isObservationStale,
 	observationFreshness,
+	probeCause,
 } from "./resourceFormat";
 
 describe("host resource presentation", () => {
@@ -61,5 +62,19 @@ describe("host resource presentation", () => {
 		expect(formatHoldReason("future-policy-reason")).toBe(
 			"future policy reason",
 		);
+	});
+});
+
+describe("probeCause", () => {
+	test("returns the first diagnostic message, or null", () => {
+		expect(
+			probeCause({
+				diagnostics: [
+					{ code: "tool-missing", message: "amd-smi is not installed" },
+				],
+			}),
+		).toBe("amd-smi is not installed");
+		expect(probeCause({ diagnostics: [] })).toBeNull();
+		expect(probeCause(undefined)).toBeNull();
 	});
 });

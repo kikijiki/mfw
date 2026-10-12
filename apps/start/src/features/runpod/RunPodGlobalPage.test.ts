@@ -7,7 +7,7 @@ const source = readFileSync(
 	"utf8",
 );
 const route = readFileSync(
-	join(import.meta.dir, "..", "..", "routes", "runpod.tsx"),
+	join(import.meta.dir, "..", "..", "routes", "fleet.runpod.tsx"),
 	"utf8",
 );
 const projectSettings = readFileSync(
@@ -34,7 +34,7 @@ describe("the process-global RunPod operations route", () => {
 	});
 
 	test("is global, live, and defines its account model", () => {
-		expect(route).toContain('createFileRoute("/runpod")');
+		expect(route).toContain('createFileRoute("/fleet/runpod")');
 		expect(route).toContain("component: RunPodGlobalPage");
 		expect(source).toContain("trpc.runpod.get.queryOptions()");
 		expect(source).toContain("refetchInterval: 15_000");

@@ -1334,6 +1334,15 @@ export function parseAmdKfdFallback(
 				),
 				severity: "warning",
 			},
+			{
+				...diag(
+					"tool-missing",
+					"amd-smi is not installed; mfw is reading the kernel KFD interface instead",
+					"amd-smi",
+				),
+				severity: "warning",
+				admissionEffect: "degrade",
+			},
 		],
 	};
 }

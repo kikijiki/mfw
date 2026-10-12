@@ -28,12 +28,14 @@ import { useToast } from "~/lib/toast";
 import type { RouterOutputs } from "~/lib/trpc";
 import { useTRPC } from "~/lib/trpc";
 import { Setting } from "../settings/controls";
+import { HostsPanel } from "./HostsPanel";
 import {
 	formatCapacity,
 	formatHoldReason,
 	isObservationStale,
 	LIVE_LEASE_STATES,
 	observationFreshness,
+	probeCause,
 } from "./resourceFormat";
 
 type Model = RouterOutputs["hostResources"]["read"];
@@ -221,6 +223,7 @@ export function ResourcesPage() {
 							/>
 						) : null}
 						<ResourceCards model={model} />
+						<HostsPanel />
 						<AdvancedPanel open={advancedOpen} onOpenChange={setAdvancedOpen}>
 							<ResourceControlsPanel
 								model={model}
@@ -1212,6 +1215,11 @@ function ObservationsPanel({ model }: { model: Model }) {
 									<span>
 										checked {new Date(health.checkedAt).toLocaleString()}
 									</span>
+									{health.result !== "ok" && probeCause(health.detail) ? (
+										<span style={{ color: "var(--mfw-fg-muted)" }}>
+											{probeCause(health.detail)}
+										</span>
+									) : null}
 									{health.processBootId !== model.processBootId ? (
 										<Chip tone="critical">previous process</Chip>
 									) : null}

@@ -1,3 +1,5 @@
+import { join } from "node:path";
+import { loadBoardConfig } from "@mfw/board-core";
 import type { ProviderConfig } from "./agents/adapter.ts";
 import {
 	catalogueCredentialIds,
@@ -19,20 +21,39 @@ import {
 import {
 	configPath,
 	type DaemonConfig,
+	type DocSourceConfig,
 	effectiveAssistance,
+	effectiveReview,
 	FALLBACK_MERGE_CHECKS,
 	loadConfig,
 	mutateConfig,
 	type NotifyConfigInput,
+	normalizeRoot,
 	PROJECT_DEFAULTS,
 	type RecoveryAssistance,
+	type StoredBrainConfig,
 	type StoredProjectConfig,
+	type WatchdogConfig,
 } from "./config.ts";
 import type { CredentialStore } from "./credentials.ts";
+import { validateDocSources } from "./docs.ts";
+import { assertAppearance } from "./project-appearance.ts";
+import {
+	independenceProblem,
+	ReviewIndependenceError,
+	type ReviewPolicy,
+} from "./review-verdict.ts";
+import {
+	type RoutingConfig,
+	type RoutingSettings,
+	routingSettingsFrom,
+	validateRoutingConfig,
+} from "./routing.ts";
 import type {
 	RunPodPlacementRequest,
 	RunPodProjectPolicy,
 } from "./runpod-policy.ts";
+import type { WatchdogLimits } from "./supervisor.ts";
 import type { ModelTier, VerificationPlan } from "./tasks/types.ts";
 import type { EnvPolicy } from "./verifier.ts";
 
@@ -48,11 +69,18 @@ import type { EnvPolicy } from "./verifier.ts";
  *                  assistance          -> per-decision model policy
  *                  schedulerAutostart  -> starts/stops the dispatch loop now
  *                  selfRepairMainRed   -> Scheduler.setSelfRepairMainRed
+ *                  pushOnMerge         -> MergeQueue.setPushOnMerge
+ *                  watchdog            -> Supervisor.setLimits (and the
+ *                                         finish-time scope check reads it)
+ *                  provider, model, modelTiers, reasoningEffort, routing
+ *                                      -> the routing source the RunEngine and
+ *                                         brain read per run (`routing.ts`); a
+ *                                         run already prepared keeps the route
+ *                                         persisted on its row
  *
- *   NEEDS RESTART  provider, model, modelTiers, reviewModel, reasoningEffort,
- *                  approvalMode, maxRepairs, maxStalls, maxResumes, leaseMs,
- *                  checkPrefix, notify (baked into RunEngine, StepRunner,
- *                  Supervisor, Maintenance and the notifier at `attachProject`)
+ *   NEEDS RESTART  reviewModel, approvalMode, leaseMs, checkPrefix, notify (baked into
+ *                  RunEngine, StepRunner, Supervisor, Maintenance and the
+ *                  notifier at `attachProject`)
  *
  * The write surface is a subset: `name`, `root` and `integrationBranch`
  * identify the project and are read-only (changing a root mid-flight would
@@ -60,23 +88,26 @@ import type { EnvPolicy } from "./verifier.ts";
  */
 
 export interface ProjectSettingsValues {
+	/** Display icon: a curated key or a 1-2 character mark; null = derived from the name. */
+	icon: string | null;
+	/** Display colour swatch key; null = derived from the name. */
+	color: string | null;
 	maxConcurrent: number;
 	schedulerAutostart: boolean;
 	assistance: RecoveryAssistance;
-	/** Which agent CLI runs this project's tasks. */
-	provider: ProviderConfig;
+	/** Which agent CLI runs this project's tasks (`endpoint`: codex-cli via a routing endpoint). */
+	provider: StoredProvider;
 	model: string;
 	/** Model per task `model_tier`; a missing tier falls back to the
 	 *  project model for standard, or the provider tier default then model for light/strong. */
 	modelTiers: Partial<Record<ModelTier, string>> | null;
 	/** Model for the semantic change review (critic); null = the brain's own model. */
 	reviewModel: string | null;
+	/** Review mode, independence, rounds and fallback reviewer models. */
+	review: ReviewPolicy;
 	reasoningEffort: "none" | "low" | "medium" | "high" | "xhigh" | "max";
 	/** Whether provider permission requests are handled automatically or shown. */
 	approvalMode: "autonomous" | "interactive";
-	maxRepairs: number;
-	maxStalls: number;
-	maxResumes: number;
 	leaseMs: number;
 	checkPrefix: string | null;
 	/** What a verification check may read from the ambient environment. */
@@ -94,26 +125,57 @@ export interface ProjectSettingsValues {
 	runpod: RunPodProjectPolicy | null;
 	/** Default remote shape for tasks whose execution_target is runpod. */
 	runpodTarget: RunPodPlacementRequest | null;
+	/** Live-run watchdog: idle/wall/turn limits and the diff-scope policy. */
+	watchdog: WatchdogLimits;
+	/** Endpoints, fallbacks per tier and repair escalation (`routing.ts`). */
+	routing: RoutingConfig | null;
+	/** The project brain; null = off (no `brain.routes`), the fixed pipeline decides everything. */
+	brain: StoredBrainConfig | null;
+	/** Extra documentation directories listed on the Docs page. */
+	docs: DocSourceConfig[];
 }
+
+/** The project provider as stored: the catalogue pairing plus an endpoint id. */
+export type StoredProvider = Omit<ProviderConfig, "endpoint"> & {
+	endpoint?: string;
+};
 
 /**
  * What a caller may say about the provider: an id from the catalogue, plus
- * optional extra env. `type` is not accepted: it is derived from the catalogue
- * entry, so no caller can invent a pairing no adapter implements.
+ * optional extra env and (codex-cli only) a routing endpoint id. `type` is
+ * not accepted: it is derived from the catalogue entry, so no caller can
+ * invent a pairing no adapter implements.
  */
 export interface ProviderSelection {
 	id: string;
 	env?: Record<string, string>;
+	endpoint?: string | null;
+}
+
+/** Where live routing values go once persisted (the RunEngine's routing source). */
+export interface SettingsRouting {
+	set(settings: RoutingSettings): void;
 }
 
 export type ProjectSettingsPatch = Partial<
-	Omit<ProjectSettingsValues, "provider">
-> & { provider?: ProviderSelection };
+	Omit<ProjectSettingsValues, "provider" | "watchdog" | "review">
+> & {
+	provider?: ProviderSelection;
+	/** Merged field by field into the stored value; `null` restores defaults. */
+	watchdog?: WatchdogConfig | null;
+	review?: Partial<ReviewPolicy>;
+	/** Replaces the stored brain config; `null` turns the brain off. */
+	brain?: StoredBrainConfig | null;
+	/** Replaces the list of documentation directories; validated against the repository and board folder. */
+	docs?: DocSourceConfig[];
+};
 
 export interface ProjectSettingsView {
 	project: string;
 	/** Read-only identity. */
 	root: string;
+	/** Where the board lives when it is not in the repository (`<boardRoot>/.mfw`); null = in the repository. */
+	boardRoot: string | null;
 	integrationBranch: string;
 	values: ProjectSettingsValues;
 	/** Keys of `values` that only take effect after a daemon restart. */
@@ -128,22 +190,33 @@ export const LIVE_KEYS = [
 	"assistance",
 	"selfRepairMainRed",
 	"pushOnMerge",
-] as const satisfies readonly (keyof ProjectSettingsValues)[];
-
-export const RESTART_KEYS = [
-	// `provider` is a RunEngine constructor argument (boot.ts `attachProject`),
-	// so a change applies after the next restart. Unlike `root` it is not
-	// identity: worktrees, branches and runs are keyed by run/task ids, and
-	// in-flight runs keep the argv recorded in their own `providerId` column.
+	"watchdog",
+	// Routed per run at prepare and persisted on the row; launch reads the
+	// row, so in-flight and prepared runs never see the change.
 	"provider",
 	"model",
 	"modelTiers",
-	"reviewModel",
 	"reasoningEffort",
+	"routing",
+	// Read by the brain runtime on every tick.
+	"brain",
+	// Read from the stored entry on each Docs request.
+	"docs",
+] as const satisfies readonly (keyof ProjectSettingsValues)[];
+
+/** The live keys that need a routing source (`SettingsRouting`) to be live. */
+const ROUTING_KEYS = [
+	"provider",
+	"model",
+	"modelTiers",
+	"reasoningEffort",
+	"routing",
+] as const satisfies readonly (keyof ProjectSettingsValues)[];
+
+export const RESTART_KEYS = [
+	"reviewModel",
+	"review",
 	"approvalMode",
-	"maxRepairs",
-	"maxStalls",
-	"maxResumes",
 	"leaseMs",
 	"checkPrefix",
 	"envPolicy",
@@ -169,6 +242,11 @@ export interface SettingsBrain {
 	setEnabled(on: boolean): void;
 }
 
+/** Where a live brain config goes once persisted (the brain runtime reads it per tick). */
+export interface SettingsBrainConfig {
+	set(config: StoredBrainConfig | undefined): void;
+}
+
 export interface SettingsAssistance {
 	readonly value: RecoveryAssistance;
 	set(value: RecoveryAssistance): void;
@@ -179,6 +257,11 @@ export interface SettingsAssistance {
 export interface SettingsMergeQueue {
 	readonly pushOnMerge: boolean;
 	setPushOnMerge(on: boolean): void;
+}
+
+/** The supervisor slice settings may touch: the watchdog limits, read every pass. */
+export interface SettingsSupervisor {
+	setLimits(limits: WatchdogLimits): void;
 }
 
 /**
@@ -201,6 +284,12 @@ export class SettingsService {
 			brain: SettingsBrain;
 			assistance: SettingsAssistance;
 			mergeQueue: SettingsMergeQueue;
+			/** Absent only in isolated tests: then `watchdog` is persisted, not applied. */
+			supervisor?: SettingsSupervisor;
+			/** Live routing source; absent = routing changes wait for a restart. */
+			routing?: SettingsRouting;
+			/** Live brain config; absent = a brain change waits for a restart. */
+			brainConfig?: SettingsBrainConfig;
 			/** Loop period for a scheduler started by a settings change. */
 			schedulerIntervalMs?: number;
 			/** Optional only for isolated tests/programmatic composition. */
@@ -222,9 +311,17 @@ export class SettingsService {
 	 */
 	async update(patch: ProjectSettingsPatch): Promise<ProjectSettingsView> {
 		return this.withLifecycle(async () => {
-			const entry = await mutateConfig(this.deps.mfwHome, (config) => {
+			const entry = await mutateConfig(this.deps.mfwHome, async (config) => {
 				const stored = this.entryOf(config);
-				applyPatch(stored, patch);
+				let effectivePatch = patch;
+				if (patch.docs !== undefined) {
+					effectivePatch = {
+						...patch,
+						docs: await this.vetDocs(patch.docs, stored),
+					};
+				}
+				applyPatch(stored, effectivePatch);
+				this.assertIndependentReview(stored, patch);
 				return structuredClone(stored);
 			});
 
@@ -241,6 +338,22 @@ export class SettingsService {
 			if (patch.pushOnMerge !== undefined) {
 				this.deps.mergeQueue.setPushOnMerge(values.pushOnMerge);
 			}
+			if (patch.watchdog !== undefined) {
+				this.deps.supervisor?.setLimits(values.watchdog);
+			}
+			if (
+				this.deps.routing &&
+				(patch.provider !== undefined ||
+					patch.model !== undefined ||
+					patch.modelTiers !== undefined ||
+					patch.reasoningEffort !== undefined ||
+					patch.routing !== undefined)
+			) {
+				this.deps.routing.set(routingSettingsFrom(values));
+			}
+			if (patch.brain !== undefined) {
+				this.deps.brainConfig?.set(values.brain ?? undefined);
+			}
 			if (patch.schedulerAutostart !== undefined) {
 				// Autostart is a boot-time flag, but the loop follows immediately so
 				// the switch does not appear dead until the next restart.
@@ -251,6 +364,62 @@ export class SettingsService {
 				}
 			}
 			return this.view(entry);
+		});
+	}
+
+	/**
+	 * With `review.requireIndependent` on and assisted change review, refuse a
+	 * patch that leaves the reviewer equal to a worker model on the same
+	 * harness. Only patches touching the pairing are checked, so an existing
+	 * equal pair never blocks unrelated changes (runtime still fails closed).
+	 * Throws before the config is written.
+	 */
+	private assertIndependentReview(
+		entry: StoredProjectConfig,
+		patch: ProjectSettingsPatch,
+	): void {
+		const touched = (
+			[
+				"assistance",
+				"provider",
+				"model",
+				"modelTiers",
+				"reviewModel",
+				"review",
+			] as const
+		).some((k) => patch[k] !== undefined);
+		if (!touched) return;
+		const values = this.effective(entry);
+		const problem = independenceProblem({
+			changeReview: values.assistance.changeReview,
+			policy: values.review,
+			model: values.model,
+			reviewModel: values.reviewModel,
+			modelTiers: values.modelTiers,
+			harness: values.provider.id,
+		});
+		if (problem) throw new ReviewIndependenceError(problem);
+	}
+
+	/** Path-safety for `docs`: every source must stay inside the repository or board folder. */
+	private async vetDocs(
+		docs: DocSourceConfig[],
+		entry: StoredProjectConfig,
+	): Promise<DocSourceConfig[]> {
+		const boardDir = entry.boardRoot
+			? normalizeRoot(entry.boardRoot)
+			: this.deps.root;
+		let reservedIds: string[] = [];
+		try {
+			const cfg = await loadBoardConfig(join(boardDir, "board.yaml"));
+			reservedIds = Object.keys(cfg.types);
+		} catch {
+			// no readable board.yaml: only route names are reserved
+		}
+		return validateDocSources(docs, {
+			repoRoot: this.deps.root,
+			boardDir,
+			reservedIds,
 		});
 	}
 
@@ -283,22 +452,24 @@ export class SettingsService {
 	 */
 	private effective(entry: StoredProjectConfig): ProjectSettingsValues {
 		return {
+			icon: entry.icon ?? null,
+			color: entry.color ?? null,
 			maxConcurrent: entry.maxConcurrent ?? this.deps.scheduler.maxConcurrent,
 			schedulerAutostart:
 				entry.schedulerAutostart ?? PROJECT_DEFAULTS.schedulerAutostart,
 			assistance: entry.assistance
 				? effectiveAssistance(entry)
 				: this.deps.assistance.value,
-			provider: entry.provider ?? providerConfigFor(DEFAULT_PROVIDER_ID),
+			provider:
+				entry.provider ??
+				(providerConfigFor(DEFAULT_PROVIDER_ID) as StoredProvider),
 			model: entry.model ?? PROJECT_DEFAULTS.model,
 			modelTiers: entry.modelTiers ?? null,
 			reviewModel: entry.reviewModel ?? null,
+			review: effectiveReview(entry),
 			reasoningEffort:
 				entry.reasoningEffort ?? PROJECT_DEFAULTS.reasoningEffort,
 			approvalMode: entry.approvalMode ?? PROJECT_DEFAULTS.approvalMode,
-			maxRepairs: entry.maxRepairs ?? PROJECT_DEFAULTS.maxRepairs,
-			maxStalls: entry.maxStalls ?? PROJECT_DEFAULTS.maxStalls,
-			maxResumes: entry.maxResumes ?? PROJECT_DEFAULTS.maxResumes,
 			leaseMs: entry.leaseMs ?? PROJECT_DEFAULTS.leaseMs,
 			checkPrefix: entry.checkPrefix ?? null,
 			envPolicy: entry.envPolicy ?? null,
@@ -312,6 +483,10 @@ export class SettingsService {
 			pushOnMerge: entry.pushOnMerge ?? this.deps.mergeQueue.pushOnMerge,
 			runpod: entry.runpod ?? null,
 			runpodTarget: entry.runpodTarget ?? null,
+			watchdog: effectiveWatchdog(entry),
+			routing: entry.routing ?? null,
+			brain: entry.brain ?? null,
+			docs: entry.docs ?? [],
 		};
 	}
 
@@ -319,12 +494,31 @@ export class SettingsService {
 		return {
 			project: this.deps.project,
 			root: this.deps.root,
+			boardRoot: entry.boardRoot ?? null,
 			integrationBranch: this.deps.integrationBranch,
 			values: this.effective(entry),
-			needsRestart: RESTART_KEYS,
+			needsRestart: [
+				...RESTART_KEYS,
+				...(this.deps.routing ? [] : ROUTING_KEYS),
+				...(this.deps.brainConfig ? [] : (["brain"] as const)),
+			],
 			configPath: configPath(this.deps.mfwHome),
 		};
 	}
+}
+
+/** A stored (partial) watchdog over the defaults. */
+export function effectiveWatchdog(entry: {
+	watchdog?: WatchdogConfig;
+}): WatchdogLimits {
+	const d = PROJECT_DEFAULTS.watchdog;
+	const w = entry.watchdog ?? {};
+	return {
+		idleMs: w.idleMs ?? d.idleMs,
+		wallMs: w.wallMs ?? d.wallMs,
+		maxTurns: w.maxTurns ?? d.maxTurns,
+		scope: { ...d.scope, ...w.scope },
+	};
 }
 
 /** Write the safe subset onto a stored entry. `null` clears an optional. */
@@ -332,6 +526,16 @@ function applyPatch(
 	entry: StoredProjectConfig,
 	patch: ProjectSettingsPatch,
 ): void {
+	// Validate before touching the entry so a bad value changes nothing.
+	assertAppearance({ icon: patch.icon, color: patch.color });
+	if (patch.icon !== undefined) {
+		if (patch.icon === null) delete entry.icon;
+		else entry.icon = patch.icon;
+	}
+	if (patch.color !== undefined) {
+		if (patch.color === null) delete entry.color;
+		else entry.color = patch.color;
+	}
 	if (patch.maxConcurrent !== undefined) {
 		entry.maxConcurrent = Math.max(1, Math.floor(patch.maxConcurrent));
 	}
@@ -344,13 +548,34 @@ function applyPatch(
 	if (patch.provider !== undefined) {
 		// Throws for an id with no adapter before the config is saved, so a
 		// project is never persisted pointing at a CLI the daemon cannot launch.
-		entry.provider = providerConfigFor(
-			patch.provider.id,
-			patch.provider.env,
-		) as StoredProjectConfig["provider"];
+		const config = providerConfigFor(patch.provider.id, patch.provider.env);
+		const endpoint = patch.provider.endpoint ?? undefined;
+		entry.provider = {
+			...config,
+			...(endpoint ? { endpoint } : {}),
+		} as StoredProjectConfig["provider"];
 		if (patch.model === undefined) {
-			entry.model = findProvider(patch.provider.id)?.defaultModel;
+			entry.model = endpoint
+				? (patch.routing ?? entry.routing)?.endpoints?.[endpoint]?.model
+				: findProvider(patch.provider.id)?.defaultModel;
 		}
+	}
+	if (patch.routing !== undefined) {
+		if (patch.routing) validateRoutingConfig(patch.routing);
+		entry.routing = patch.routing ?? undefined;
+	}
+	if (patch.provider !== undefined || patch.routing !== undefined) {
+		// Refuse (before anything is saved) a provider whose endpoint the
+		// routing config does not define, or an endpoint on a non-Codex harness.
+		routingSettingsFrom({
+			provider: entry.provider ?? providerConfigFor(DEFAULT_PROVIDER_ID),
+			model: entry.model ?? PROJECT_DEFAULTS.model,
+			routing: entry.routing ?? null,
+		});
+	}
+	if (patch.brain !== undefined) entry.brain = patch.brain ?? undefined;
+	if (patch.docs !== undefined) {
+		entry.docs = patch.docs.length > 0 ? patch.docs : undefined;
 	}
 	if (patch.model !== undefined) entry.model = patch.model;
 	if (patch.modelTiers !== undefined) {
@@ -359,20 +584,14 @@ function applyPatch(
 	if (patch.reviewModel !== undefined) {
 		entry.reviewModel = patch.reviewModel ?? undefined;
 	}
+	if (patch.review !== undefined) {
+		entry.review = { ...entry.review, ...patch.review };
+	}
 	if (patch.reasoningEffort !== undefined) {
 		entry.reasoningEffort = patch.reasoningEffort;
 	}
 	if (patch.approvalMode !== undefined) {
 		entry.approvalMode = patch.approvalMode;
-	}
-	if (patch.maxRepairs !== undefined) {
-		entry.maxRepairs = Math.max(0, Math.floor(patch.maxRepairs));
-	}
-	if (patch.maxStalls !== undefined) {
-		entry.maxStalls = Math.max(1, Math.floor(patch.maxStalls));
-	}
-	if (patch.maxResumes !== undefined) {
-		entry.maxResumes = Math.max(0, Math.floor(patch.maxResumes));
 	}
 	if (patch.leaseMs !== undefined) {
 		entry.leaseMs = Math.max(1000, Math.floor(patch.leaseMs));
@@ -395,6 +614,17 @@ function applyPatch(
 		entry.selfRepairMainRed = patch.selfRepairMainRed;
 	}
 	if (patch.pushOnMerge !== undefined) entry.pushOnMerge = patch.pushOnMerge;
+	if (patch.watchdog !== undefined) {
+		const w = patch.watchdog;
+		entry.watchdog =
+			w === null
+				? undefined
+				: {
+						...entry.watchdog,
+						...w,
+						scope: { ...entry.watchdog?.scope, ...w.scope },
+					};
+	}
 }
 
 /**

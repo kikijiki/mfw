@@ -3,6 +3,7 @@ import { Paperclip, Trash2, TriangleAlert } from "lucide-react";
 import { useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
+import { TipA } from "~/components/ui/tooltip";
 import { ErrorState } from "../../components/ErrorState";
 import { LoadingRows } from "../../components/Loading";
 import { MarkdownField } from "../../components/MarkdownField";
@@ -221,15 +222,16 @@ export function AttachmentsPanel({
 									) : (
 										<Paperclip aria-hidden className="size-4 shrink-0" />
 									)}
-									<a
+									<TipA
 										href={attachmentUrl(project, taskId, file.name)}
 										target="_blank"
 										rel="noreferrer"
 										className="min-w-0 flex-1 truncate underline"
-										title={file.name}
+										tip={file.name}
+										clipped
 									>
 										{file.name}
-									</a>
+									</TipA>
 									<span className="shrink-0" style={faint}>
 										{humanSize(file.size)}
 									</span>

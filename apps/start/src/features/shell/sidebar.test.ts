@@ -5,7 +5,6 @@ import { join } from "node:path";
 const read = (rel: string) =>
 	readFileSync(join(import.meta.dir, "..", "..", rel), "utf8");
 const shell = read("components/AppShell.tsx");
-const buttonStyles = read("components/ui/button.tsx");
 const dispatchControls = read("features/dispatch/DispatchControls.tsx");
 const preference = read("lib/sidebarPreference.ts");
 
@@ -28,7 +27,10 @@ describe("the collapsible desktop navigation rail", () => {
 			'width: expanded ? "var(--mfw-sidebar-w)" : "48px"',
 		);
 		expect(shell).toContain(
-			'className="mfw-v2 flex h-full w-full flex-col overflow-hidden md:flex-row"',
+			'className="mfw-v2 flex h-full w-full flex-col overflow-hidden"',
+		);
+		expect(shell).toContain(
+			'className="flex min-h-0 flex-1 flex-col md:flex-row"',
 		);
 		expect(shell).toContain('className="flex min-h-0 min-w-0 flex-1 flex-col"');
 	});
@@ -49,86 +51,63 @@ describe("the collapsible desktop navigation rail", () => {
 		expect(preference).toContain("writeSidebarPreference(");
 	});
 
-	test("keeps the identity and collapse control in the top header", () => {
+	test("keeps the identity and collapse control in the top header, with no status dot of its own", () => {
 		const header = between(
 			sidebar,
-			"{/* Health belongs to the mfw identity",
-			"{PRIMARY_NAV.map",
+			"{/* Identity and the collapse control.",
+			"<SearchButton",
 		);
-		expect(header).toContain("<HealthDot />");
 		expect(header).toContain('aria-label={expanded ? "Collapse sidebar"');
-		expect(header).not.toContain("<GlobalDispatchButton");
-		expect(header.indexOf("<HealthDot />")).toBeLessThan(
-			header.indexOf('aria-label={expanded ? "Collapse sidebar"'),
+		expect(header).not.toContain("<HealthDot />");
+		// Title, status dot and master switch, collapse: one row.
+		expect(header).toContain("<GlobalDispatchButton");
+		expect(sidebar).toContain(
+			'<GlobalDispatchButton variant="status" compact />',
 		);
+		expect(dispatchControls).toContain("function MfwStatusGroup");
+		expect(dispatchControls).toContain("unreachable");
 	});
 
-	test("renders global dispatch as a full bottom navigation row", () => {
+	test("renders the global mfw control as ONE status group, not a bottom row", () => {
 		const bottom = sidebar.slice(
 			sidebar.lastIndexOf('<div className="flex-1" />'),
 		);
-		const globalControl =
-			'<GlobalDispatchButton variant="navigation" compact={!expanded} />';
-		const navigationVariant = between(
+		expect(bottom).not.toContain("<GlobalDispatchButton");
+		expect(bottom).toContain('label: "Settings"');
+		const group = between(
 			dispatchControls,
-			'{variant === "navigation" ? (',
-			") : (\n\t\t\t\t<Switch",
+			"function MfwStatusGroup",
+			"/** Invalidate every query",
 		);
-
-		expect(bottom).toContain(globalControl);
-		expect(bottom.indexOf(globalControl)).toBeLessThan(
-			bottom.indexOf('label: "Settings"'),
-		);
-		expect(dispatchControls).toContain(
-			'"mfw-focus h-[var(--mfw-row-h)] w-full gap-2 rounded-[var(--mfw-radius-md)] px-2 font-normal"',
-		);
-		expect(dispatchControls).toContain(
-			'compact ? "justify-center px-0" : "justify-start"',
-		);
-		expect(dispatchControls).toContain("aria-label={label}");
-		expect(dispatchControls).toContain("title={label}");
-		expect(dispatchControls).toContain("aria-pressed={playing}");
-		expect(dispatchControls).toContain('{pending ? "Working…" : actionLabel}');
-		expect(navigationVariant).toContain("<Button");
-		expect(navigationVariant).not.toContain("<Switch");
+		// Dot + word + play/stop in the expanded group; one control collapsed.
+		expect(group).toContain("{word}");
+		expect(group).toContain("onClick={onToggle}");
+		expect(group).toContain("if (compact)");
+		expect(group).toContain("aria-pressed={playing}");
+		// Tooltips carry the detail and are not native `title`s.
+		expect(group).toContain("<Tip label={tip}");
+		expect(group).not.toContain("title=");
 	});
 
-	test("makes Add project a full row with a flush, dispatch-sized trailing action", () => {
-		const projectEntry = between(
-			sidebar,
-			"{expanded ? (",
-			"{(projects.data ?? []).map",
-		);
-		expect(projectEntry).toContain(
+	test("Add project is a full row when expanded and a tooltipped icon when collapsed", () => {
+		expect(sidebar).toContain(
 			'className="h-[var(--mfw-row-h)] w-full justify-start gap-0 px-2 pr-0"',
 		);
-		expect(projectEntry).toContain(">\n\t\t\t\t\t\t\tAdd project\n");
-		expect(projectEntry).toContain(
-			'className="flex size-7 items-center justify-center"',
-		);
-		expect(projectEntry).not.toContain('size="icon-xs"');
-		expect(dispatchControls).toContain('size="icon-sm"');
-		expect(buttonStyles).toMatch(/"icon-sm":\s*"size-7/);
+		expect(sidebar).toContain(">\n\t\t\t\tAdd project\n");
+		expect(sidebar).toContain('<Tip label="Add project" side="right">');
+		expect(sidebar).not.toContain('title="Add project"');
 	});
 
-	test("retains all primary, project, settings, health, and dispatch controls", () => {
-		const projects = between(
-			sidebar,
-			"(projects.data ?? []).map",
-			"projects.data?.length === 0",
-		);
+	test("retains all primary, project, settings, and dispatch controls", () => {
+		const entry = read("features/shell/SidebarProject.tsx");
 		expect(sidebar).toContain("{PRIMARY_NAV.map");
 		expect(sidebar).toContain('label: "Settings"');
-		expect(sidebar).toContain("<HealthDot />");
-		expect(sidebar).toContain(
-			'<GlobalDispatchButton variant="navigation" compact={!expanded} />',
-		);
-		expect(projects).toContain("compact={!expanded}");
-		expect(projects).toContain("<fieldset");
-		expect(projects).toMatch(/aria-label=\{`\$\{p\.name\} project`\}/);
-		expect(projects).toMatch(
-			/<NavLink[\s\S]*?\/>\s*<ProjectDispatchButton project=\{p\.name\} variant="icon" \/>/,
-		);
+		expect(sidebar).toContain("(projects.data ?? []).map");
+		expect(sidebar).toContain("expanded={expanded}");
+		// One tile or row per project; the dispatch toggle and the menu live in it.
+		expect(entry).toContain("useProjectDispatch(name)");
+		expect(entry).toContain('data-testid="project-tile"');
+		expect(entry).toContain('data-testid="project-row"');
 		// The project map itself must not be conditional on expanded mode.
 		expect(sidebar).not.toContain(
 			"{expanded\n\t\t\t\t? (projects.data ?? []).map",
@@ -136,21 +115,47 @@ describe("the collapsible desktop navigation rail", () => {
 	});
 
 	test("hides expanded-only copy while preserving names and active indication", () => {
-		expect(sidebar).toContain('display: expanded ? undefined : "none"');
-		expect(sidebar).toContain("{expanded ? <Divider /> : null}");
 		expect(sidebar).toContain("{expanded ? (");
 		expect(sidebar).toContain("{expanded && projects.data?.length === 0 ? (");
 
 		const navLink = between(shell, "function NavLink", "function CountBadge");
 		expect(navLink).toContain('aria-current={active ? "page" : undefined}');
 		expect(navLink).toContain("aria-label={compact ? badgeLabel : undefined}");
-		expect(navLink).toContain("title={compact ? badgeLabel : undefined}");
+		expect(navLink).toContain("<Tip label={badgeLabel}");
 		expect(navLink).toContain("compact ? null : (");
 	});
 
-	test("keeps the nonzero Inbox count visible and associated in compact mode", () => {
+	test("a collapsed project is ONE tile: avatar link, one corner badge, tooltip, menu", () => {
+		const entry = read("features/shell/SidebarProject.tsx");
+		const tile = between(entry, "if (!expanded) {", "const chips = statChips");
+		expect(tile).toContain("<ProjectAvatar");
+		expect(tile).toContain("<BadgeView badge={badge} corner />");
+		expect(tile).toContain("aria-label={tooltip}");
+		expect(tile).toContain('aria-keyshortcuts="Shift+F10"');
+		// No second always-visible glyph: no brain link, no play button in the tile.
+		expect(tile).not.toContain("<BrainGlyphLink");
+		expect(tile).not.toContain("<Play");
+		expect(tile).not.toContain("Monitor");
+		// The menu opens by right-click, long-press, chevron, and keyboard.
+		expect(entry).toContain("onContextMenu");
+		expect(entry).toContain("setTimeout(open, 500)");
+		expect(entry).toContain('e.key === "ContextMenu"');
+		expect(entry).toContain("Change icon");
+	});
+
+	test("an expanded project row wraps its whole self in the highlight, with one badge and hover-only dispatch", () => {
+		const entry = read("features/shell/SidebarProject.tsx");
+		const row = entry.slice(entry.indexOf("const chips = statChips"));
+		expect(row).toContain('data-testid="project-row"');
+		expect(row).toContain("style={highlight}");
+		expect(row.match(/<BadgeView/g)).toHaveLength(1);
+		expect(row).toContain("group-hover/row:opacity-100");
+		expect(row).toContain("const showToggle = dispatch.playing");
+	});
+
+	test("keeps the nonzero needs count visible and associated in compact mode", () => {
 		expect(sidebar).toContain(
-			"badge={entry.to === href.inbox() ? inboxCount : undefined}",
+			"badge={entry.to === href.home() ? inboxCount : undefined}",
 		);
 		const navLink = between(shell, "function NavLink", "function CountBadge");
 		expect(navLink).toMatch(

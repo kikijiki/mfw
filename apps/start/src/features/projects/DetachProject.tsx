@@ -37,7 +37,7 @@ export function DetachProject({ project }: { project: string }) {
 					description: `MFW data in ${result.root} was kept. Adding it again restores the project.`,
 					duration: 0,
 				});
-				go(href.now(), { replace: true });
+				go(href.home(), { replace: true });
 			},
 		}),
 	);

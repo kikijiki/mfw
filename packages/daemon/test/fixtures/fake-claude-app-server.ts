@@ -1,4 +1,4 @@
-export {};
+import { subagentLines } from "./claude-subagent-lines.ts";
 
 let buf = "";
 for await (const bytes of Bun.stdin.stream()) {
@@ -34,6 +34,7 @@ for await (const bytes of Bun.stdin.stream()) {
 					},
 				}),
 			);
+			if (text === "SUBAGENT") for (const l of subagentLines()) console.log(l);
 			// Keep the turn active until the compatibility bridge sends SIGINT.
 			// This lets the driver integration test exercise the real interrupt path.
 			if (text === "WAIT_FOR_INTERRUPT") continue;

@@ -12,8 +12,9 @@
 	],
 	"scripts": {
 		"typecheck": "tsc --noEmit -p tsconfig.json",
-		"lint": "bunx biome check . && tsc --noEmit -p tsconfig.json",
+		"lint": "bunx biome check . && tsc --noEmit -p tsconfig.json && bun run --cwd apps/start typecheck",
 		"fix": "bunx biome check --write .",
+		"screenshots": "bun run tools/screenshots.ts",
 		"test": "bun run tools/root-test.ts",
 		"dev": "bun run --cwd apps/start dev",
 		"build": "bun run --cwd apps/start build",

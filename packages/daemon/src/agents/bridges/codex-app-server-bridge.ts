@@ -42,8 +42,15 @@ function nativeCall(method: string, params: unknown): Promise<unknown> {
 		pendingNative.set(id, { resolve, reject }),
 	);
 }
+/** The sub-thread whose notification is being translated; undefined for the run's own thread. */
+let subThread: string | undefined;
 function event(value: Record<string, unknown>): void {
-	writeEnvelope(notify("event", value));
+	writeEnvelope(
+		notify(
+			"event",
+			subThread ? { ...value, parent: { threadId: subThread } } : value,
+		),
+	);
 }
 function str(v: unknown, fallback = ""): string {
 	return typeof v === "string" ? v : fallback;
@@ -209,7 +216,38 @@ function complete(status: string, error?: unknown): void {
 	state = "session";
 }
 
+/**
+ * A notification names its thread (`params.threadId`). One that belongs to a
+ * thread other than this run's session is a subagent's: its entries carry
+ * `parent.threadId`, and its turn lifecycle and token totals are not the
+ * run's (a sub-thread finishing must not complete the run's turn).
+ */
 function translate(method: string, params: Record<string, unknown>): void {
+	const thread = str(params.threadId);
+	const own = !thread || !sessionId || thread === sessionId;
+	if (own) {
+		translateNotification(method, params);
+		return;
+	}
+	if (
+		method === "turn/started" ||
+		method === "turn/completed" ||
+		method.includes("tokenUsage") ||
+		method.includes("rateLimit")
+	)
+		return;
+	subThread = thread;
+	try {
+		translateNotification(method, params);
+	} finally {
+		subThread = undefined;
+	}
+}
+
+function translateNotification(
+	method: string,
+	params: Record<string, unknown>,
+): void {
 	const item = isRecord(params.item) ? params.item : params;
 	const itemType = str(item.type);
 	if (method === "turn/started") {
@@ -453,6 +491,41 @@ async function serverRequest(
 	params: Record<string, unknown>,
 ): Promise<void> {
 	const approval = /requestApproval/i.test(method);
+	if (!approval && /userInput/i.test(method)) {
+		// The agent asked the operator something. mfw has no channel to answer
+		// mid-turn, so the request is still refused, but the question is
+		// recorded as a `user_input` approval so activity classification and
+		// the transcript see it instead of a bare protocol error.
+		const requestId = String(bridgeRequestId++);
+		const questions = Array.isArray(params.questions) ? params.questions : [];
+		const first = isRecord(questions[0]) ? questions[0] : {};
+		const summary = str(
+			first.question,
+			str(params.prompt, str(params.message, "The agent asked a question")),
+		);
+		event({
+			type: "approval",
+			requestId,
+			itemId: params.itemId,
+			kind: "user_input",
+			status: "pending",
+			summary,
+			details: sanitize(params),
+		});
+		nativeSend({
+			id,
+			error: { code: -32601, message: "Unsupported server request" },
+		});
+		event({
+			type: "approval",
+			requestId,
+			itemId: params.itemId,
+			kind: "user_input",
+			status: "cancelled",
+			summary,
+		});
+		return;
+	}
 	if (!approval) {
 		nativeSend({
 			id,

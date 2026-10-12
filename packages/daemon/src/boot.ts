@@ -1,20 +1,35 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { loadBoardConfig } from "@mfw/board-core";
-import { openProjectDb } from "@mfw/db/client";
+import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
 import { EventBus, eventsSince, latestSeq, listEvents } from "@mfw/db/eventlog";
-import { ulid } from "@mfw/db/ids";
+import { outcomePrior } from "@mfw/db/outcomes";
+import { taskAttemptOutcomes } from "@mfw/db/schema";
+import { desc } from "drizzle-orm";
 import { AdrService } from "./adrs.ts";
 import { AgentHost } from "./agent-host.ts";
-import { AdapterRegistry, type ProviderConfig } from "./agents/adapter.ts";
+import { AgentReviewInference } from "./agent-review.ts";
+import { AdapterRegistry } from "./agents/adapter.ts";
 import { DEFAULT_PROVIDER_ID, providerConfigFor } from "./agents/catalogue.ts";
-import { BrainService, inferenceForProvider } from "./brain.ts";
+import { boardRepoPaths, recordBoardLocation } from "./board-layout.ts";
+import {
+	assertNoForeignTasksDir,
+	relocateLegacyBoard,
+} from "./board-relocate.ts";
+import { getBoardTemplate } from "./board-templates.ts";
+import {
+	BrainService,
+	type InferenceClient,
+	inferenceForProvider,
+} from "./brain.ts";
+import { BrainRuntime, resolveBrainConfig } from "./brain-runtime/runtime.ts";
+import { BudgetService } from "./budgets.ts";
 import { ClarifyService, continuationTerminalError } from "./clarify.ts";
 import {
 	mfwHome as configuredMfwHome,
 	effectiveAssistance,
+	effectiveReview,
 	FALLBACK_MERGE_CHECKS,
 	loadConfig,
 	mutateConfig,
@@ -23,11 +38,14 @@ import {
 } from "./config.ts";
 import { CredentialStore, WorkloadSecretGrantStore } from "./credentials.ts";
 import { ensureBoardConfig } from "./default-board-config.ts";
+import { readMemAvailable } from "./dispatch-preflight.ts";
+import { DocsService } from "./docs.ts";
 import {
 	ExecutionTargetRegistry,
 	executionOwnerKey,
 } from "./execution-target.ts";
-import { StepRunner } from "./finalize/step-runner.ts";
+import { settleParkedMerge } from "./finalize/settle-event.ts";
+import { type CriticResult, StepRunner } from "./finalize/step-runner.ts";
 import { git } from "./git.ts";
 import { GlobalDispatch } from "./global-dispatch.ts";
 import { Health } from "./health.ts";
@@ -38,7 +56,15 @@ import {
 } from "./host-probe-runtime.ts";
 import { createDefaultHostProbeAdapters } from "./host-probes.ts";
 import {
+	type HostConfig,
+	HostRegistry,
+	hostSlotResourceId,
+	type RegisteredHost,
+} from "./host-registry.ts";
+import type { ProbeTransport } from "./host-registry-probe.ts";
+import {
 	acquireDaemonLock,
+	type HostAdmissionSnapshot,
 	HostResourceCoordinator,
 	type HostResourceCoordinatorPort,
 	type HostResourceStore,
@@ -50,18 +76,21 @@ import {
 	SystemLeaseLiveness,
 	stableProjectIdentity,
 } from "./host-resources/index.ts";
+import { HostService, registryTransport } from "./host-service.ts";
 import { InboxService } from "./inbox.ts";
 import {
 	acquireKernelLock,
 	type KernelLock,
 	KernelLockError,
 } from "./kernel-lock.ts";
+import { LifecycleService } from "./lifecycle.ts";
 import { LifetimeManager } from "./lifetime.ts";
 import { createLocalExecutionTarget } from "./local-execution-target.ts";
 import { type Logger, rootLogger } from "./log.ts";
 import { Maintenance } from "./maintenance.ts";
 import { MergeQueue } from "./merge-queue.ts";
 import { makeNotifier, type NotifyConfig } from "./notify.ts";
+import { OpenAICompatibleInference } from "./openai-compatible-inference.ts";
 import { OpenRouterAccountService } from "./openrouter-account-service.ts";
 import {
 	OPENROUTER_MANAGEMENT_CREDENTIAL_ID,
@@ -69,14 +98,24 @@ import {
 	type OpenRouterClientPort,
 	openRouterCredentialSource,
 } from "./openrouter-client.ts";
+import { OutcomeRecorder } from "./outcome-recorder.ts";
+import { assertAppearance } from "./project-appearance.ts";
 import {
 	type AdmissionRecord,
 	type AdmissionTransition,
 	ProjectDispatchAdmission,
 } from "./project-dispatch-admission.ts";
 import { ProjectResourceSlots } from "./project-resource-slots.ts";
+import { ProviderHoldStore } from "./provider-holds.ts";
+import { RepoViewService } from "./repo-view.ts";
 import { ResourceService } from "./resources.ts";
 import { ReviewService } from "./review.ts";
+import {
+	parseExecutionTarget,
+	placeRun,
+	primaryHarness,
+	routingSettingsFrom,
+} from "./routing.ts";
 import { RunEngine } from "./run-engine.ts";
 import { RunRegistry } from "./run-registry.ts";
 import {
@@ -94,10 +133,15 @@ import { Scheduler } from "./scheduler.ts";
 import type { Orchestrator, ProjectServices } from "./services.ts";
 import { SessionService } from "./session.ts";
 import {
+	effectiveWatchdog,
 	ProviderSettings,
 	type SettingsLifecycle,
 	SettingsService,
 } from "./settings.ts";
+import {
+	SshExecutionTarget,
+	type SshExecutionTransport,
+} from "./ssh-execution-target.ts";
 import { Supervisor } from "./supervisor.ts";
 import { TaskService } from "./task-service.ts";
 import { BoardRepo } from "./tasks/board-git.ts";
@@ -109,6 +153,12 @@ import { createCreateTaskAction } from "./triggers/create-task-action.ts";
 import { createNotifyAction } from "./triggers/notify-action.ts";
 import { createScriptAction, Semaphore } from "./triggers/script-action.ts";
 import { TriggerService } from "./triggers/service.ts";
+import {
+	defaultUsageProbes,
+	type UsageConfig,
+	usageEnabled,
+} from "./usage/default-probes.ts";
+import { UsageMonitor, type UsageSubscription } from "./usage-monitor.ts";
 import { VerificationCoordinator } from "./verification-coordinator.ts";
 import { type EnvPolicy, verify } from "./verifier.ts";
 import { WorkspaceService } from "./workspace.ts";
@@ -124,12 +174,23 @@ export interface ProjectConfig {
 	root: string;
 	/** Where the board lives, if not `root` (see `config.ts`'s `projectSchema`). */
 	boardRoot?: string;
+	/**
+	 * Attach-time only, never persisted: the BOARD_TEMPLATES id whose
+	 * board.yaml is written when the board folder has none. An existing board
+	 * is adopted as-is.
+	 */
+	template?: string;
 	integrationBranch?: string;
+	/** Display options, see `project-appearance.ts`; validated before attach. */
+	icon?: string;
+	color?: string;
 	model?: string;
 	/** Model per task `model_tier`, see `config.ts`. */
 	modelTiers?: import("./config.ts").StoredProjectConfig["modelTiers"];
 	/** Model for the semantic change review, see `config.ts`. */
 	reviewModel?: string;
+	/** Review mode, independence, rounds and fallbacks, see `config.ts`. */
+	review?: import("./config.ts").StoredReviewPolicy;
 	/** Provider reasoning budget. Codex applies it to each turn. */
 	reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh" | "max";
 	/** Provider permission handling for runs in this project. */
@@ -143,12 +204,16 @@ export interface ProjectConfig {
 	 * a subscription on its own. The supervisor always runs (adopts in-flight runs).
 	 */
 	schedulerAutostart?: boolean;
-	maxRepairs?: number;
-	maxStalls?: number;
-	maxResumes?: number;
 	leaseMs?: number;
 	notify?: NotifyConfig;
-	provider?: ProviderConfig;
+	/** Catalogue harness (+ env, + codex-cli endpoint id), see `config.ts`. */
+	provider?: import("./config.ts").StoredProjectConfig["provider"];
+	/** Endpoints, fallbacks, escalation (`routing.ts`). */
+	routing?: import("./config.ts").StoredProjectConfig["routing"];
+	/** The project brain's routes and limits; absent = off. */
+	brain?: import("./config.ts").StoredBrainConfig;
+	/** Spend budgets (`budgets.ts`); the config file entry, when present, wins live. */
+	budgets?: import("./config.ts").StoredBudgets;
 	/** Wrapper command for verification checks (sandbox or dev-env entrypoint, e.g. `direnv exec .`). Never auto-detected. */
 	checkPrefix?: string;
 	/** Ambient environment a verification check may read. */
@@ -168,6 +233,10 @@ export interface ProjectConfig {
 	draftExpandMaxAttempts?: number;
 	/** Cap on simultaneous draft-expansion runs. */
 	maxConcurrentDraftExpansions?: number;
+	/** Dispatch preflight memory floor in MiB; see `config.ts`. */
+	minFreeMemoryMb?: number;
+	/** Live-run watchdog limits and scope policy; see `config.ts`. Applied live by settings. */
+	watchdog?: import("./config.ts").WatchdogConfig;
 	/** Optional narrowing of the machine-wide RunPod policy. */
 	runpod?: RunPodProjectPolicy;
 	/** Concrete bounded placement for tasks opting into the RunPod target. */
@@ -210,10 +279,21 @@ export interface BootOptions {
 	openrouterClient?: OpenRouterClientPort;
 	/** Deterministic seam for the separately scoped management credential. */
 	openrouterManagementClient?: OpenRouterClientPort;
+	/**
+	 * Subscription usage meters. Off under `bun test` (NODE_ENV=test) unless
+	 * `usage.probes` or `usage.enabled: true` is given, so a test never reads the
+	 * developer's real login.
+	 */
+	usage?: UsageConfig;
 	afterAdmissionTransition?: (
 		transition: AdmissionTransition,
 		row: AdmissionRecord,
 	) => void | Promise<void>;
+	/** Deterministic seam for registry SSH hosts; production uses the pinned SshTransport. */
+	sshTransport?: (
+		host: RegisteredHost,
+		pinned: readonly HostConfig[],
+	) => SshExecutionTransport & ProbeTransport;
 }
 
 /** Composition-only extension; ProjectServices receives the narrower port. */
@@ -253,35 +333,22 @@ const EXCLUDE_END = "# --- end mfw ---";
  * Single `*` on purpose: git cannot re-include a file under an excluded directory.
  * A file a human puts in `.mfw/` needs `git add -f`.
  *
- * `root` and `boardDir`'s parent can be different checkouts (`boardRoot`):
- * each repo only ever sees the `.mfw` entries that actually live under it, so
- * a standalone board repo isn't told to re-admit orchestration-only paths it
- * will never have, and vice versa.
+ * `.mfw/` holds daemon state only. The board (`board.yaml`, `tasks/`,
+ * `adrs/`) sits at the root of its board folder as ordinary tracked paths, so
+ * nothing here re-admits it, and a separate board repository gets no `.mfw`
+ * entries at all because it will never contain an `.mfw`.
  */
-async function ensureGitExclude(
-	root: string,
-	log: Logger,
-	kind: "code" | "board" | "combined",
-): Promise<void> {
+async function ensureGitExclude(root: string, log: Logger): Promise<void> {
 	const path = join(root, ".git", "info", "exclude");
-	const codeReadmits = [
+	const block = [
+		EXCLUDE_BEGIN,
+		"worktrees/",
+		"MFW_REPORT.json",
+		"/.mfw/*",
 		"!/.mfw/config.yaml",
 		"!/.mfw/AGENTS.md",
 		"!/.mfw/lifetime/",
 		"!/.mfw/triggers/",
-	];
-	const boardReadmits = [
-		"!/.mfw/templates/",
-		"!/.mfw/tasks/",
-		"!/.mfw/adrs/",
-		"!/.mfw/board.yaml",
-	];
-	const block = [
-		EXCLUDE_BEGIN,
-		...(kind !== "board" ? ["worktrees/", "MFW_REPORT.json"] : []),
-		"/.mfw/*",
-		...(kind !== "board" ? codeReadmits : []),
-		...(kind !== "code" ? boardReadmits : []),
 		EXCLUDE_END,
 	];
 
@@ -338,17 +405,28 @@ export async function attachProject(
 		afterAdmissionTransition?: BootOptions["afterAdmissionTransition"];
 		/** The one process-global RunPod control plane. */
 		runpod?: RunPodAccountService;
+		/** Registry SSH hosts; absent = no `ssh` target. */
+		hosts?: HostService;
+		sshTransport?: BootOptions["sshTransport"];
 		credentials?: CredentialStore;
 		workloadGrants?: WorkloadSecretGrantStore;
 		/** Announces durable ownership identity before DB migration can fail. */
 		onProjectIdentity?: (identity: ProjectIdentity) => void;
 		/** Shared attach/detach/settings serialization and generation guard. */
 		lifecycle?: SettingsLifecycle;
+		/** Every attached project's ledger, for machine-scoped budgets. */
+		ledgers?: () => ProjectDbHandle[];
+		/** Whether a sibling project owns this run id (shared tmux socket). */
+		ownedElsewhere?: (runId: string) => Promise<boolean>;
+		/** Machine-wide subscription usage, for the brain's capacity read. */
+		usage?: () => UsageSubscription[];
 	},
 ): Promise<ProjectServices> {
 	// Must run before any write: mkdir(recursive) would recreate a moved or
 	// unmounted root and report a healthy attach.
 	await assertGitRepo(cfg.root);
+	// A typo in `boardRoot` must not be "fixed" by mkdir(recursive) below.
+	if (cfg.boardRoot) await assertBoardRoot(cfg.boardRoot, cfg.root);
 	// Canonical root: git cwd, worktree base and path-escape prefix all compare
 	// as strings, and boot() can be called without loadConfig's normalization.
 	const root = normalizeRoot(cfg.root);
@@ -357,16 +435,13 @@ export async function attachProject(
 	// completely separate checkout from the code being orchestrated — e.g. the
 	// repo is `~/dev/app` but its board is tracked in `~/docs/projects/app`.
 	// Everything orchestration-only (worktrees, runs, mfw.db, the daemon lock,
-	// triggers) stays keyed on `root`/`mfwDir`; everything board-only is keyed
-	// on `boardRoot`/`boardDir` instead. They're equal unless `boardRoot` is set.
+	// triggers, per-task sidecars) lives in `mfwDir`, the repository's `.mfw/`.
+	// The board itself sits at the ROOT of `boardDir` (board.yaml, tasks/,
+	// adrs/, templates/): the repository root unless `boardRoot` is set.
 	const boardRoot = cfg.boardRoot ? normalizeRoot(cfg.boardRoot) : root;
-	const boardDir = boardRoot === root ? mfwDir : join(boardRoot, ".mfw");
-	await ensureGitExclude(root, log, boardRoot === root ? "combined" : "code");
-	if (boardRoot !== root && existsSync(join(boardRoot, ".git"))) {
-		await ensureGitExclude(boardRoot, log, "board");
-	}
+	const boardDir = boardRoot;
+	await ensureGitExclude(root, log);
 	await mkdir(mfwDir, { recursive: true });
-	await mkdir(boardDir, { recursive: true });
 	const releaseLock = await acquireProjectLock(mfwDir, bootId);
 	let projectIdentity: ProjectIdentity;
 	let taskKey: string;
@@ -374,20 +449,55 @@ export async function attachProject(
 	try {
 		projectIdentity = await stableProjectIdentity(mfwDir);
 		opts.onProjectIdentity?.(projectIdentity);
+		// Before the board loads: a board from the `.mfw/` era is moved to the
+		// folder root (refusing, with nothing changed, on a collision).
+		const relocated = await relocateLegacyBoard({
+			boardFolder: boardDir,
+			daemonDir: mfwDir,
+			log,
+		});
+		if (relocated.moved.length === 0) {
+			await assertNoForeignTasksDir(boardDir);
+		}
 		// Resolved before board.yaml is written so a brand-new project's board
 		// agrees with the ids it will really mint (resolveTaskKey reads
 		// board.json/config.yaml/the raw files, never board.yaml itself) —
 		// board-core now validates an id against its type's own-sequence
 		// grammar, so a mismatched default key here would quarantine every id
 		// this project writes.
-		taskKey = await resolveTaskKey(boardDir, root);
+		taskKey = await resolveTaskKey(mfwDir, root, boardDir);
 		handle = await openProjectDb(mfwDir);
 	} catch (error) {
 		await releaseLock();
 		throw error;
 	}
-	await ensureBoardConfig(boardDir, taskKey);
-	const boardConfig = await loadBoardConfig(join(boardDir, "board.yaml"));
+	// Also upgrades an existing board.yaml in place (the task type's
+	// `acceptance` checklist); a conflicting field refuses the attach.
+	let boardConfig: Awaited<ReturnType<typeof loadBoardConfig>>;
+	let boardYamlUpgraded: boolean;
+	try {
+		const template = cfg.template ? getBoardTemplate(cfg.template) : undefined;
+		if (cfg.template && !template) {
+			throw new Error(`unknown board template '${cfg.template}'`);
+		}
+		boardYamlUpgraded = (
+			await ensureBoardConfig(
+				boardDir,
+				taskKey,
+				template ? (key) => template.yaml(key) : undefined,
+			)
+		).upgraded;
+		boardConfig = await loadBoardConfig(join(boardDir, "board.yaml"));
+		// The worktree sparse rules and the merge firewall read this.
+		await recordBoardLocation(
+			root,
+			boardRepoPaths(root, boardDir, boardConfig),
+		);
+	} catch (error) {
+		handle.close();
+		await releaseLock();
+		throw error;
+	}
 	const plog = log.child({ project: cfg.name });
 	const bus = new EventBus();
 
@@ -406,7 +516,8 @@ export async function attachProject(
 	const tasks = new TaskService({
 		handle,
 		bus,
-		mfwDir: boardDir,
+		boardDir,
+		stateDir: mfwDir,
 		config: boardConfig,
 		taskKey,
 		log: plog,
@@ -419,12 +530,17 @@ export async function attachProject(
 	// same-repo board with no git (MFW-ADR-5).
 	const board = new BoardRepo({
 		projectRoot: boardRoot,
-		mfwDir: boardDir,
+		boardDir,
 		integrationBranch: boardIntegrationBranch,
 		log: plog,
 	});
 	tasks.onBoardChanged = () => board.touch();
-	const adrs = new AdrService({ mfwDir: boardDir, taskKey, log: plog });
+	const adrs = new AdrService({
+		boardDir,
+		stateDir: mfwDir,
+		taskKey,
+		log: plog,
+	});
 	adrs.onBoardChanged = () => board.touch();
 	// A board the loader distrusts (circuit breaker) must not be committed.
 	tasks.onBoardSuspended = (on) => board.setSuspended(on);
@@ -451,7 +567,10 @@ export async function attachProject(
 		tasks,
 		registry,
 	});
-	const clarify = new ClarifyService({
+	// A planner's answers re-plan; a task run's answer wakes the brain, which
+	// continues the run with `spawn worktree: continue:<runId>` (no autonomous
+	// resume path).
+	const clarify: ClarifyService = new ClarifyService({
 		handle,
 		bus,
 		log: plog,
@@ -478,26 +597,82 @@ export async function attachProject(
 			});
 		},
 	});
-	const provider = providerConfigFor(
-		cfg.provider?.id ?? DEFAULT_PROVIDER_ID,
-		cfg.provider?.env,
-	);
-	const model = cfg.model ?? DEFAULTS.model;
-	const reasoningEffort = cfg.reasoningEffort ?? DEFAULTS.reasoningEffort;
+	// Live routing source (settings changes replace it; see `settings.ts`).
+	// Resolved via the catalogue so an unknown provider or endpoint in
+	// config.json fails at attach, not at every launch.
+	let liveRouting = routingSettingsFrom({
+		provider: {
+			id: providerConfigFor(
+				cfg.provider?.id ?? DEFAULT_PROVIDER_ID,
+				cfg.provider?.env,
+			).id,
+			...(cfg.provider?.env ? { env: cfg.provider.env } : {}),
+			...(cfg.provider?.endpoint ? { endpoint: cfg.provider.endpoint } : {}),
+		},
+		model: cfg.model ?? DEFAULTS.model,
+		modelTiers: cfg.modelTiers ?? null,
+		reasoningEffort: cfg.reasoningEffort ?? DEFAULTS.reasoningEffort,
+		routing: cfg.routing ?? null,
+	});
+	const providerHolds = ProviderHoldStore.at(opts.mfwHome);
+	const brainInference = (): InferenceClient => {
+		const endpoint = liveRouting.provider.endpoint;
+		if (!endpoint)
+			return inferenceForProvider(liveRouting.provider, { cwd: root });
+		const grant = liveRouting.routing?.endpoints?.[endpoint.id]?.grant;
+		return new OpenAICompatibleInference({
+			baseUrl: endpoint.baseUrl,
+			// Daemon-side only: the brain is not an agent, so it reads the key
+			// through the same grant the endpoint's agent runs use.
+			apiKey: async () => {
+				if (!grant || !endpoint.envKey) return undefined;
+				if (!opts.credentials || !opts.workloadGrants)
+					throw new Error("workload secret grant resolver is unavailable");
+				const env = await opts.workloadGrants.resolve(
+					{ projectId: projectIdentity.id, taskId: null, grantIds: [grant] },
+					opts.credentials,
+				);
+				return env.materializeForLaunch()[endpoint.envKey];
+			},
+		});
+	};
 
 	const assistance = effectiveAssistance(cfg);
 	const assistanceState = { ...assistance };
+	const reviewPolicy = effectiveReview(cfg);
 	const brain = new BrainService({
+		review: reviewPolicy,
+		// Agent review runs the project's current harness (read live, like the
+		// brain's own transport), read-only, in a throwaway checkout of the run
+		// branch (see agent-review.ts). Other harnesses fall back to the critic.
+		agentReview: (subject) => {
+			const type = liveRouting.provider.type;
+			if (type !== "claude-cli" && type !== "codex-cli") return null;
+			return new AgentReviewInference({
+				subject: { projectRoot: root, ...subject },
+				harness: type,
+				hidePaths: [opts.mfwHome],
+			});
+		},
 		registry,
 		handle,
 		bus,
-		inference: inferenceForProvider(provider, { cwd: root }),
+		// Resolved per call so a live provider change reaches the brain too.
+		inference: {
+			complete: (prompt, o) => brainInference().complete(prompt, o),
+		},
 		tasks,
 		log: plog,
-		model,
+		get model() {
+			return liveRouting.model;
+		},
 		reviewModel: cfg.reviewModel,
-		providerId: provider.id,
-		reasoningEffort,
+		get providerId() {
+			return liveRouting.provider.id;
+		},
+		get reasoningEffort() {
+			return liveRouting.reasoningEffort ?? DEFAULTS.reasoningEffort;
+		},
 		// Dispatch planning always needs the brain; optional actions (diagnose,
 		// conflicts, review) keep their own gates below.
 		enabled: true,
@@ -539,14 +714,26 @@ export async function attachProject(
 		},
 		onMerged: async (job) => {
 			const mergedRun = await registry.get(job.runId);
-			if (job.taskId && mergedRun?.kind !== "repair")
-				await tasks.release(
-					job.taskId,
-					job.runId,
-					"done",
-					"scheduler",
-					"merged",
-				);
+			if (job.taskId && mergedRun?.kind !== "repair") {
+				// A board rule refusing `done` must not strand the run in `merging`.
+				const landed = await tasks.releaseMerged(job.taskId, job.runId);
+				if (landed.violation !== null) {
+					plog.warn(
+						{ taskId: job.taskId, runId: job.runId, to: landed.to },
+						"merged task refused by a board rule",
+					);
+					await notifier
+						.notify("review", {
+							project: cfg.name,
+							taskId: job.taskId,
+							runId: job.runId,
+							message: `merged, but a board rule refused done: ${landed.violation}`,
+						})
+						.catch(() => {
+							// best-effort: the task's status already says it needs a human
+						});
+				}
+			}
 			await registry.finish(job.runId, "completed", "merged");
 			if (mergedRun?.kind === "repair") {
 				supervisor.requestMaintenance();
@@ -562,52 +749,25 @@ export async function attachProject(
 		},
 		onParked: async (job, reason, kind) => {
 			const parkedRun = await registry.get(job.runId);
-			if (job.taskId && parkedRun?.kind !== "repair") {
-				await tasks.release(
-					job.taskId,
-					job.runId,
-					kind === "conflict" ? "blocked" : "review",
-					"scheduler",
-					reason,
-				);
-			}
-			await registry.finish(job.runId, "failed", reason);
-			await notifier.notify(kind === "conflict" ? "blocked" : "review", {
-				project: cfg.name,
-				taskId: job.taskId ?? undefined,
-				runId: job.runId,
-				message: reason,
-			});
-			// Reached only after park() exhausted its retries and any automatic unblock.
-			// `job` keeps the run's worktree and branch, which `open()` reuses.
-			await sessions
-				.raise({
-					source: "merge_parked",
-					sourceKey: String(job.id),
+			if (parkedRun?.kind === "repair") {
+				// A main-red recovery run has no task to hand back: the sweep's
+				// own escalation (main_red) is what tells a person.
+				await registry.finish(job.runId, "failed", reason);
+				await notifier.notify("blocked", {
+					project: cfg.name,
 					taskId: job.taskId ?? undefined,
 					runId: job.runId,
-					mergeJobId: job.id,
-					title: `merge parked: ${job.branch}`,
-					summary: reason,
-					whatWasTried: [
-						`rebased this branch onto ${job.targetBranch} and retried, ${job.parkRetries} time(s), each attempt against the CURRENT tip of ${job.targetBranch} (never the same stale target twice)`,
-						kind === "reverify"
-							? "the rebase itself succeeded cleanly each time: it was re-running mechanical verification afterwards that kept failing"
-							: "the rebase itself produced conflicting files each time",
-					],
-					environment:
-						"The rebase and re-verify both ran in the RUN's own worktree " +
-						"(path above)); the merge attempt itself ran separately, in " +
-						"mfw's own integration worktree at `.mfw/integration`, which " +
-						"is not reusable and already reset. The worktree above still " +
-						"has whatever state the last automatic attempt left it in.",
-				})
-				.catch((e) => {
-					plog.warn(
-						{ err: e, job: job.id },
-						"could not raise a session for the parked merge",
-					);
+					message: reason,
 				});
+				return;
+			}
+			// Retries are exhausted: the `merge_parked` settle, for the brain.
+			await settleParkedMerge(
+				{ handle, bus, registry, tasks, mergeQueue, log: plog },
+				job,
+				reason,
+				kind,
+			);
 		},
 		reclaimTask: async (job) => {
 			if (job.taskId) await tasks.reclaimForRetry(job.taskId, job.runId);
@@ -643,7 +803,39 @@ export async function attachProject(
 					}),
 				]
 			: []),
+		...(opts.hosts
+			? [
+					new SshExecutionTarget({
+						hosts: opts.hosts.registry,
+						projectRoot: root,
+						integrationBranch,
+						transport:
+							opts.sshTransport ??
+							((host, pinned) =>
+								registryTransport(host, pinned, {
+									commandTimeoutMs: 10 * 60_000,
+									maxOutputBytes: 96 * 1024 * 1024,
+								})),
+					}),
+				]
+			: []),
 	]);
+	const budgets: BudgetService = new BudgetService({
+		handle,
+		bus,
+		log: plog,
+		mfwHome: opts.mfwHome,
+		project: cfg.name,
+		stored: cfg.budgets,
+		holds: providerHolds,
+		registry,
+		// Late-bound: the engine and brain runtime are built below.
+		stopRun: (runId): Promise<void> => engine.stop(runId),
+		ledgers: () => opts.ledgers?.() ?? [handle],
+		pauseBrain: (paused): Promise<void> => brainRuntime.setPaused(paused),
+	});
+	// Set once the Docs service exists (after settings); the import prompt reads it lazily.
+	const docsRef: { current: DocsService | null } = { current: null };
 	const engine = new RunEngine({
 		handle,
 		registry,
@@ -658,10 +850,48 @@ export async function attachProject(
 			}
 			return opts.workloadGrants.resolveBound(selection, opts.credentials);
 		},
-		resolveTaskExecutionTarget: (task) => {
+		resolveTaskExecutionTarget: async (task) => {
 			if (task.executionTarget !== "runpod") {
+				// Placement: task execution_target > project routing.placement > local.
+				const hosts = opts.hosts;
+				const wantsSsh =
+					parseExecutionTarget(task.executionTarget).target === "ssh" ||
+					(task.executionTarget === "local" &&
+						liveRouting.routing?.placement?.target === "ssh");
+				if (!wantsSsh) {
+					return {
+						kind: task.executionTarget,
+						requiresResources: task.requiresResources,
+						localStagingResources: task.localStagingResources,
+					};
+				}
+				const placed = placeRun({
+					taskTarget: task.executionTarget,
+					placement: liveRouting.routing?.placement ?? null,
+					hosts: hosts ? await hosts.candidates() : [],
+					harness: primaryHarness(task, liveRouting),
+					...(hosts ? { free: (id: string) => hosts.free(id) } : {}),
+				});
+				if (placed.target === "ssh" && placed.hostId) {
+					return {
+						kind: "ssh",
+						requestedShape: {
+							hostId: placed.hostId,
+							placement: {
+								rule: placed.rule,
+								detail: placed.detail,
+								harnesses: placed.harnesses,
+							},
+						},
+						requiresResources: task.requiresResources,
+						localStagingResources: task.localStagingResources,
+						targetCapacity: [
+							{ scope: "host", id: hostSlotResourceId(placed.hostId) },
+						],
+					};
+				}
 				return {
-					kind: task.executionTarget,
+					kind: placed.target,
 					requiresResources: task.requiresResources,
 					localStagingResources: task.localStagingResources,
 				};
@@ -687,19 +917,35 @@ export async function attachProject(
 		projectRoot: root,
 		projectName: cfg.name,
 		integrationBranch,
-		// Resolved via the catalogue so an unknown provider in config.json fails at attach, not at every launch.
-		provider,
+		routing: () => liveRouting,
+		providerHolds,
+		budgetHold: (task): ReturnType<BudgetService["holdFor"]> =>
+			budgets.holdFor(task),
+		outcomePriors: async () => {
+			const rows = await handle.db
+				.select()
+				.from(taskAttemptOutcomes)
+				.orderBy(desc(taskAttemptOutcomes.startedAt))
+				.limit(2000);
+			return (c) => outcomePrior(rows, { harness: c.harness, model: c.model });
+		},
 		defaults: {
-			model,
-			modelTiers: cfg.modelTiers ?? {},
-			reasoningEffort,
-			maxRepairs: cfg.maxRepairs ?? DEFAULTS.maxRepairs,
 			leaseMs: cfg.leaseMs ?? DEFAULTS.leaseMs,
 			approvalMode: cfg.approvalMode ?? DEFAULTS.approvalMode,
 		},
+		preflight: {
+			memoryFloorBytes:
+				BigInt(cfg.minFreeMemoryMb ?? DEFAULTS.minFreeMemoryMb) * 1024n * 1024n,
+			memAvailableBytes: readMemAvailable,
+		},
 		globalPaused: opts.globalPaused,
 		beforeLaunch: () => verification.preemptBackground(),
-		buildPrompt: buildPrompts(tasks, registry),
+		buildPrompt: buildPrompts(
+			tasks,
+			registry,
+			{ get: (runId) => clarify.get(runId) },
+			{ hint: async () => (await docsRef.current?.promptHint()) ?? null },
+		),
 		// Hide the daemon's home (trigger arming store, credentials.json).
 		isolation:
 			(cfg.agentIsolation ?? DEFAULTS.agentIsolation) === "bwrap"
@@ -742,15 +988,7 @@ export async function attachProject(
 			get humanReviewEnabled() {
 				return assistanceState.changeReview === "human";
 			},
-			get replanEnabled() {
-				return assistanceState.failureDiagnosis === "assisted";
-			},
-			get importReviewEnabled() {
-				return assistanceState.changeReview === "assisted";
-			},
 			critic: (ctx) => brain.critic(ctx),
-			replan: (ctx) => brain.replan(ctx),
-			importReview: (ctx) => brain.importReview(ctx),
 		},
 		notifier: {
 			notify: async (kind, detail) => {
@@ -761,42 +999,19 @@ export async function attachProject(
 		checkPrefix: cfg.checkPrefix,
 		envPolicy: cfg.envPolicy,
 		verification,
+		providerHolds,
+		projectName: cfg.name,
 		log: plog,
 		config: {
-			maxStalls: cfg.maxStalls ?? DEFAULTS.maxStalls,
-			maxResumes: cfg.maxResumes ?? DEFAULTS.maxResumes,
 			draftExpandMaxAttempts:
 				cfg.draftExpandMaxAttempts ?? DEFAULTS.draftExpandMaxAttempts,
 			mergeChecks: configuredMergeChecks ?? FALLBACK_MERGE_CHECKS,
 		},
-		sessions,
+		eventTail: engine.eventTail,
+		// The supervisor holds the live watchdog policy (settings apply it there).
+		scopePolicy: () => supervisor.limits.scope,
 	});
-	// Late bindings: repair/resume children spawn from a finalize step, which would otherwise cycle.
-	stepRunner.spawnRepair = (parent, child) => engine.startRepair(parent, child);
-	stepRunner.spawnResume = (parent, child) => engine.startResume(parent, child);
 	sessions.startSession = (prompt, opts) => engine.startSession(prompt, opts);
-	// Late-bound (MergeQueue predates RunEngine). Returning null makes park()
-	// escalate straight to a human; a spawn failure degrades the same way.
-	mergeQueue.unblock = async (job, reason) => {
-		if (assistanceState.conflictResolution !== "assisted" || !job.taskId)
-			return null;
-		const childRunId = ulid();
-		try {
-			await engine.startUnblock(job.runId, childRunId, reason);
-		} catch (e) {
-			plog.error(
-				{ err: e, job: job.id, taskId: job.taskId },
-				"automatic unblock spawn failed",
-			);
-			return null;
-		}
-		await registry.finish(
-			job.runId,
-			"failed",
-			`${reason}; spawned automatic unblock run ${childRunId}`,
-		);
-		return { runId: childRunId };
-	};
 
 	const lifetime = new LifetimeManager({
 		handle,
@@ -860,25 +1075,158 @@ export async function attachProject(
 		checkPrefix: cfg.checkPrefix,
 		envPolicy: cfg.envPolicy,
 		leaseMs: cfg.leaseMs ?? DEFAULTS.leaseMs,
-		startExpand: (taskId, prompt) => engine.startPlan(prompt, { taskId }),
 		// `scheduler` is built later; safe because this is only called from the maintenance loop.
 		dispatching: () => scheduler.status().then((s) => s.playing),
-		maxConcurrentDraftExpansions:
-			cfg.maxConcurrentDraftExpansions ?? DEFAULTS.maxConcurrentDraftExpansions,
 		// BrainService implements DiagnosePort structurally; the wrapper gates it
 		// on the failure-diagnosis policy.
 		diagnose: {
-			get enabled() {
-				return assistanceState.failureDiagnosis === "assisted";
-			},
+			enabled: true,
 			diagnose: (ctx) => brain.diagnose(ctx),
 		},
 		sessions,
 		startRepair: (taskId, incidentId, detail) =>
-			scheduler.selfRepairMainRed &&
-			assistanceState.failureDiagnosis === "assisted"
+			scheduler.selfRepairMainRed
 				? engine.startRegressionRepair(taskId, incidentId, detail)
 				: Promise.resolve(null),
+	});
+
+	// The project brain: off unless `brain.routes` is configured, and then it
+	// decides what runs: the scheduler launches only its accepted spawns.
+	// Settings replace this live: the runtime reads it on every tick.
+	let liveBrainConfig = cfg.brain;
+	const brainRuntime = new BrainRuntime({
+		handle,
+		bus,
+		registry,
+		tasks,
+		engine,
+		log: plog,
+		mfwDir,
+		projectName: cfg.name,
+		bootId,
+		config: () => resolveBrainConfig(liveBrainConfig),
+		exec: {
+			projectRoot: root,
+			integrationBranch,
+			engine: {
+				startGroupRun: (spec, o) =>
+					engine.startGroupRun(
+						spec,
+						o?.hostSnapshot
+							? { hostSnapshot: o.hostSnapshot as HostAdmissionSnapshot }
+							: {},
+					),
+				stop: (runId) => engine.stop(runId),
+				steer: (runId, message) => engine.steer(runId, message),
+				startImport: (o) =>
+					engine.startImport({
+						runId: o.runId,
+						...(o.model ? { model: o.model } : {}),
+						...(o.originRef ? { originRef: o.originRef } : {}),
+					}),
+				startPlan: (goal, o) =>
+					engine.startPlan(goal, {
+						runId: o.runId,
+						...(o.taskId ? { taskId: o.taskId } : {}),
+						...(o.model ? { model: o.model } : {}),
+						...(o.originRef ? { originRef: o.originRef } : {}),
+					}),
+			},
+			mergeQueue,
+			humanReviewGate: (task) =>
+				task.requireReview || assistanceState.changeReview === "human",
+			wakeScheduler: () => scheduler?.wake(),
+			setBudget: async (input): Promise<Record<string, unknown>> => ({
+				...(await budgets.applyBrainLimit(input)),
+			}),
+			answerQuestion: async (runId, answer) => {
+				const current = await clarify.get(runId);
+				if (!current) throw new Error(`no open question on run ${runId}`);
+				const answers = current.items
+					.map((item, index) => ({ item, index }))
+					.filter(({ item }) => item.answer === null)
+					.map(({ index }) => ({ index, answer }));
+				if (answers.length === 0) {
+					throw new Error(`run ${runId} has no unanswered question`);
+				}
+				await clarify.answer(runId, answers, { by: "brain" });
+			},
+			notifyHuman: async ({ kind, title, body, taskIds }) => {
+				await notifier.notify("brain_escalation", {
+					project: cfg.name,
+					...(taskIds[0] ? { taskId: taskIds[0] } : {}),
+					message: `[${kind}] ${title}: ${body}`,
+				});
+				for (const id of taskIds) {
+					await tasks
+						.move(id, "blocked", "brain", `${kind}: ${title}`)
+						.catch(() => {
+							// a task with a live run keeps it; the hold still stops new spawns
+						});
+					await sessions
+						.raise({
+							source: "blocked",
+							sourceKey: id,
+							taskId: id,
+							title: `${title} (${id})`,
+							summary: body,
+							whatWasTried: [`the project brain asked for a person (${kind})`],
+							environment:
+								"The brain does not work in a shell; this note is its escalation.",
+						})
+						.catch(() => {});
+				}
+			},
+			review: async ({ runId }) => {
+				const run = await registry.get(runId);
+				if (!run) throw new Error(`no run '${runId}'`);
+				const steps = await registry.steps(runId);
+				const verify = steps.find(
+					(s) => s.step === "verify" && s.status === "done",
+				)?.result;
+				const result = await brain.critic({
+					runId,
+					taskId: run.taskId,
+					worktreePath: run.worktreePath,
+					branch: run.branch,
+					baseSha: run.baseSha,
+					verify: (verify as never) ?? null,
+					report: null,
+				});
+				return {
+					status: result.status,
+					...(result.verdict ? { verdict: result.verdict } : {}),
+					...(result.reason ? { reason: result.reason } : {}),
+				};
+			},
+		},
+		world: {
+			maxConcurrent: () => scheduler.maxConcurrent,
+			maxPlanRuns: () =>
+				cfg.maxConcurrentDraftExpansions ??
+				DEFAULTS.maxConcurrentDraftExpansions,
+			providerHolds: () => providerHolds.active(),
+			subscriptionUsage: () => opts.usage?.() ?? [],
+			budgets: (): ReturnType<BudgetService["list"]> => budgets.list(),
+			budgetHold: (task): ReturnType<BudgetService["holdFor"]> =>
+				budgets.holdFor(task),
+			checkBudget: (input): ReturnType<BudgetService["checkBrainLimit"]> =>
+				budgets.checkBrainLimit(input),
+			routeHeld: async (task, pick) => {
+				const held = (await engine.routeTask(task, pick ? { brain: pick } : {}))
+					.held;
+				return held
+					? { key: held.key, until: held.until, reason: held.reason }
+					: null;
+			},
+			dispatchPaused: async () =>
+				(await scheduler.blockedReason()) ?? opts.globalPaused?.() ?? null,
+		},
+		notifyStuck: (detail) =>
+			notifier.notify("brain_stuck", {
+				project: cfg.name,
+				message: `the project brain failed ${detail.failures} turns in a row and is paused: ${detail.error ?? "no error recorded"}`,
+			}),
 	});
 
 	supervisor = new Supervisor({
@@ -887,11 +1235,19 @@ export async function attachProject(
 		tasks,
 		host,
 		execution: engine,
+		brainRuntime,
+		budgets,
 		stepRunner,
+		eventTail: engine.eventTail,
+		// The tmux socket is machine-wide: a run another project owns is no orphan.
+		ownedElsewhere: opts.ownedElsewhere,
+		notify: (kind, detail) =>
+			notifier.notify(kind, { project: cfg.name, ...detail }),
 		log: plog,
 		projectRoot: root,
 		bootId,
 		leaseMs: cfg.leaseMs ?? DEFAULTS.leaseMs,
+		limits: effectiveWatchdog(cfg),
 		// Merging and housekeeping hang off the supervisor (always runs), so a
 		// project with dispatch disabled still merges, grooms and sweeps.
 		mergeQueue,
@@ -905,8 +1261,13 @@ export async function attachProject(
 		boardCommit: () => board.tick(),
 		releaseSlots: (runId) => admission.releaseRun(runId),
 		renewAdmission: (runId) => admission.renewRun(runId),
-		maintenance: async () => {
+		maintenance: async ({ exclusive }) => {
 			const coordinated = await verification.backgroundWork(async (signal) => {
+				if (!exclusive) {
+					// Provider runs are live: only groom and gc, never the sweep.
+					await maintenance.tick(signal, { exclusive: false });
+					return;
+				}
 				await lifetime.tick();
 				await maintenance.tick(signal);
 				// A parked merge is usually a stale conflict: requeue (bounded). This
@@ -935,28 +1296,6 @@ export async function attachProject(
 		},
 		maintenanceEveryNPasses: 150, // ~5 min at the 2s pass interval
 	});
-	let draftExpansionWake: Promise<void> | null = null;
-	let draftExpansionWakeRequested = false;
-	const wakeDraftExpansion = () => {
-		if (draftExpansionWake) {
-			draftExpansionWakeRequested = true;
-			return;
-		}
-		draftExpansionWake = maintenance
-			.expandDrafts()
-			.then(() => {})
-			.catch((error) => {
-				plog.error({ err: error }, "immediate draft expansion sweep failed");
-			})
-			.finally(() => {
-				draftExpansionWake = null;
-				if (draftExpansionWakeRequested) {
-					draftExpansionWakeRequested = false;
-					wakeDraftExpansion();
-				}
-			});
-	};
-	tasks.onDraftCaptured = wakeDraftExpansion;
 
 	scheduler = new Scheduler({
 		handle,
@@ -965,7 +1304,19 @@ export async function attachProject(
 		engine,
 		registry,
 		log: plog,
-		dispatchPlanner: brain,
+		// The brain's accepted spawn actions are the only source of runs.
+		spawns: {
+			pending: () => brainRuntime.executor.pendingSpawns(),
+			launch: (actionId, ctx) => brainRuntime.executor.launch(actionId, ctx),
+			holds: () => brainRuntime.executor.holds(),
+		},
+		// No brain route, no decider: dispatch is blocked and says why.
+		brainRoute: () => resolveBrainConfig(liveBrainConfig) !== null,
+		// Per candidate: a task whose route is held waits; others still start.
+		routeHold: async (task) => (await engine.routeTask(task)).held,
+		budgetHold: (task): ReturnType<BudgetService["holdFor"]> =>
+			budgets.holdFor(task),
+		providerHolds,
 		config: {
 			maxConcurrent: cfg.maxConcurrent ?? DEFAULTS.maxConcurrent,
 			selfRepairMainRed: cfg.selfRepairMainRed ?? DEFAULTS.selfRepairMainRed,
@@ -993,6 +1344,7 @@ export async function attachProject(
 		selfRepairMainRed: () => scheduler.selfRepairMainRed,
 		mergeQueue,
 		admission,
+		budgets,
 	});
 	sessions.dismissInboxItem = (itemId) => inbox.dismiss(itemId);
 	const review = new ReviewService({
@@ -1001,8 +1353,25 @@ export async function attachProject(
 		tasks,
 		projectRoot: root,
 		mergeQueue,
+		maxReviewRounds: reviewPolicy.maxRounds,
 	});
+	const lifecycle = new LifecycleService({
+		handle,
+		bus,
+		registry,
+		tasks,
+		projectRoot: root,
+		integrationBranch,
+		log: plog,
+	});
+	tasks.closeGuard = lifecycle;
 	const workspace = new WorkspaceService({ root: root, registry });
+	const repoView = new RepoViewService({
+		root,
+		integrationBranch,
+		registry,
+		handle,
+	});
 	const resources = new ResourceService({ handle, scheduler });
 	const settings = new SettingsService({
 		mfwHome: opts.mfwHome,
@@ -1020,9 +1389,33 @@ export async function attachProject(
 			},
 		},
 		mergeQueue,
+		supervisor,
+		brainConfig: {
+			set(next) {
+				liveBrainConfig = next;
+			},
+		},
+		routing: {
+			set(next) {
+				liveRouting = next;
+				scheduler.wake();
+			},
+		},
 		schedulerIntervalMs: opts.schedulerIntervalMs,
 		lifecycle: opts.lifecycle,
 	});
+	const docs = new DocsService({
+		repoRoot: root,
+		boardDir,
+		stateDir: mfwDir,
+		taskKey,
+		log: plog,
+		configured: async () => (await settings.get()).values.docs,
+		save: async (next) => {
+			await settings.update({ docs: next });
+		},
+	});
+	docsRef.current = docs;
 
 	// Before the board is read: creates the board dirs and the circuit-breaker sentinel.
 	await board.ensureTracked();
@@ -1038,6 +1431,38 @@ export async function attachProject(
 		},
 		"board loaded from disk",
 	);
+
+	// Once per board: old body `## Acceptance Criteria` lists move into the
+	// `acceptance` field, committed together with the board.yaml upgrade as
+	// one commit. Deferred (retried next attach) while the board is suspended.
+	const acceptance = await tasks.migrateAcceptance();
+	if (acceptance) {
+		plog.info(
+			{
+				migrated: acceptance.migrated.length,
+				skipped: acceptance.skipped.length,
+				boardYamlUpgraded,
+			},
+			"acceptance criteria moved into the acceptance field",
+		);
+	}
+	if (acceptance?.migrated.length || boardYamlUpgraded) {
+		await board.commit(
+			acceptance?.migrated.length
+				? "mfw: move acceptance criteria into the acceptance field"
+				: "mfw: upgrade board.yaml task fields",
+		);
+	}
+
+	// Once per board: claim sidecars name an attempt group, not a run. A group
+	// of one is named after its run, so only the key moves.
+	const claimGroups = await tasks.migrateClaimGroups();
+	if (claimGroups?.rewritten.length) {
+		plog.info(
+			{ rewritten: claimGroups.rewritten.length },
+			"task claims moved to attempt groups",
+		);
+	}
 
 	// Commit the freshly loaded board now instead of waiting for a transition.
 	// Idempotent: nothing staged means no empty commit.
@@ -1056,6 +1481,7 @@ export async function attachProject(
 		throw error;
 	}
 	await admission.reconcile();
+	new OutcomeRecorder({ handle, bus, tasks, log: plog }).start();
 	const releaseHostWake = opts.hostResources.subscribe(projectIdentity.id, () =>
 		scheduler.wake(),
 	);
@@ -1065,6 +1491,7 @@ export async function attachProject(
 		projectId: projectIdentity.id,
 		root: root,
 		mfwDir,
+		boardDir,
 		integrationBranch,
 		schedulerAutostart: cfg.schedulerAutostart ?? false,
 		handle,
@@ -1082,17 +1509,22 @@ export async function attachProject(
 		health,
 		scheduler,
 		brain,
+		brainRuntime,
+		budgets,
 		releaseLock,
 		board,
 		inbox,
 		review,
+		lifecycle,
 		maintenance,
 		sessions,
 		lifetime,
 		triggers,
 		clarify,
 		adrs,
+		docs,
 		workspace,
+		repoView,
 		resources,
 		settings,
 		events: {
@@ -1157,9 +1589,47 @@ async function renderTemplateSection(tasks: TaskService): Promise<string> {
 	].join("\n");
 }
 
+/**
+ * How a task run ends. Every task-run prompt carries it: a run is one-shot
+ * (its session closes about a second after its turn ends), so work left in
+ * the background dies unseen, and a question asked in prose is never read as
+ * one.
+ */
+const RUN_RULES = [
+	"\n## Ending your turn",
+	"Your session ends when your turn ends, and nothing wakes you afterwards.",
+	"Never end your turn with a background job, background agent or scheduled",
+	"wakeup still running: run commands in the foreground and wait for them.",
+	"If you cannot continue without a decision only the operator can make, write",
+	'MFW_REPORT.json (at `$MFW_REPORT_PATH`) as `{"status": "question",',
+	'"question": "...", "options": ["...", "..."]}` and end your turn. The',
+	"answer resumes your work in this same worktree. A question asked only in",
+	"your final message is not seen as one.",
+].join("\n");
+
 interface ReapedProcess {
 	pid: number;
 	command: string;
+}
+
+/** Background jobs the parent's transcript shows it never saw finish (journaled by `classify`). */
+async function backgroundJobsOf(
+	registry: RunRegistry,
+	runId: string,
+): Promise<{ tool: string; summary: string }[]> {
+	const step = (await registry.steps(runId)).find(
+		(s) => s.step === "classify" && s.status === "done",
+	);
+	const jobs = (step?.result as { background?: unknown } | undefined)
+		?.background;
+	if (!Array.isArray(jobs)) return [];
+	return jobs.filter(
+		(j): j is { tool: string; summary: string } =>
+			typeof j === "object" &&
+			j !== null &&
+			typeof (j as { summary?: unknown }).summary === "string" &&
+			typeof (j as { tool?: unknown }).tool === "string",
+	);
 }
 
 /** What a parent run's `reap_leftovers` step found still running, if anything. */
@@ -1181,8 +1651,62 @@ async function leftoversOf(
 	);
 }
 
+/**
+ * The repair brief for a review `fix` verdict (finalize T14f): the reviewer's
+ * findings, addressed by file and line. Null when the parent's review did not
+ * ask for fixes (a verification repair).
+ */
+export function reviewFixOf(
+	steps: readonly { step: string; status: string; result: unknown }[],
+): string | null {
+	const critic = steps.find((s) => s.step === "critic" && s.status === "done");
+	const r = critic?.result as CriticResult | undefined;
+	if (r?.status !== "ok" || r.verdict !== "fix") return null;
+	const findings = r.findings ?? [];
+	const unmet = (r.criteria ?? []).filter(
+		(c) => c.verdict !== "met" || c.evidenceClass === "claimed",
+	);
+	return [
+		`## Review asked for changes (round ${r.round ?? 1})`,
+		"Verification passed, but the reviewer found the work not ready to merge.",
+		...(findings.length > 0
+			? [
+					"",
+					"### Findings",
+					...findings.map(
+						(f) =>
+							`- [${f.severity}] ${f.file ? `\`${f.file}${f.line ? `:${f.line}` : ""}\`` : "(general)"}: ${f.change}`,
+					),
+				]
+			: []),
+		...(unmet.length > 0
+			? [
+					"",
+					"### Acceptance criteria not yet shown to be met",
+					...unmet.map(
+						(c) => `- ${c.criterion}${c.evidence ? ` (${c.evidence})` : ""}`,
+					),
+				]
+			: []),
+		...(r.reason ? ["", "### Reviewer notes", r.reason] : []),
+		"",
+		"The work so far is in this worktree. Address every blocker and major finding,",
+		"and show each criterion is met. Verification and review run again afterwards.",
+	].join("\n");
+}
+
 /** Prompt construction, kept out of RunEngine so wording is tunable separately from lifecycle. */
-export function buildPrompts(tasks: TaskService, registry: RunRegistry) {
+export function buildPrompts(
+	tasks: TaskService,
+	registry: RunRegistry,
+	clarify?: {
+		get(
+			runId: string,
+		): Promise<{ items: { question: string; answer: string | null }[] } | null>;
+	},
+	/** Where the repository keeps its documentation, told to the import survey. */
+	docs?: { hint(): Promise<string | null> },
+) {
 	const describeTask = async (taskId: string): Promise<string> => {
 		const t = await tasks.get(taskId);
 		if (!t) return `Task ${taskId} (details unavailable).`;
@@ -1196,6 +1720,7 @@ export function buildPrompts(tasks: TaskService, registry: RunRegistry) {
 			? JSON.stringify(tasks.projectMergeChecks(), null, 2)
 			: "(none configured)";
 		const spec = await tasks.getSpec(taskId);
+		const feedback = tasks.pendingFeedback(taskId);
 		return [
 			`# ${t.id}: ${t.title}`,
 			"",
@@ -1205,6 +1730,8 @@ export function buildPrompts(tasks: TaskService, registry: RunRegistry) {
 			`\n## Project merge checks\n\`\`\`json\n${mergeChecks}\n\`\`\``,
 			renderScopeSection(t.owns),
 			renderSpecSection(taskId, spec?.body ?? ""),
+			feedback ? `\n${feedback}` : "",
+			RUN_RULES,
 		].join("\n");
 	};
 
@@ -1219,69 +1746,135 @@ export function buildPrompts(tasks: TaskService, registry: RunRegistry) {
 				"claiming success is evidence, not the acceptance decision.",
 			].join("\n"),
 
-		repair: async (taskId: string, parentRunId: string) => {
+		/**
+		 * What a `continue:<runId>` spawn tells the continuing agent. The class the
+		 * parent settled in selects the section; the parent's journal supplies the
+		 * detail (failed checks, review findings, the answered question, the
+		 * commands left running, the merge conflict).
+		 */
+		continuation: async (taskId: string, parentRunId: string) => {
 			const steps = await registry.steps(parentRunId);
-			const verifyStep = steps.find((s) => s.step === "verify");
-			const failures = JSON.stringify(verifyStep?.result ?? {}, null, 2);
-			return [
-				await describeTask(taskId),
-				"",
-				"## The previous attempt did not pass verification",
-				"```json",
-				failures,
-				"```",
-				"Fix exactly what failed. The same checks run again afterwards.",
-			].join("\n");
-		},
-
-		resume: async (taskId: string, parentRunId: string) => {
-			const parent = await registry.get(parentRunId);
+			const settled = steps.find(
+				(s) => s.step === "settle" && s.status === "done",
+			)?.result as { class?: string } | undefined;
 			const leftovers = await leftoversOf(registry, parentRunId);
+			const background = await backgroundJobsOf(registry, parentRunId);
+			// A journal that predates `settle` (or a parent that never reached
+			// it) still names what was left running.
+			const cls =
+				settled?.class ??
+				(leftovers.length > 0 || background.length > 0
+					? "background_work"
+					: null);
+			const head = await describeTask(taskId);
+			if (cls === "question") {
+				const asked = clarify ? await clarify.get(parentRunId) : null;
+				const answers = (asked?.items ?? []).filter(
+					(i): i is { question: string; answer: string } => i.answer !== null,
+				);
+				return [
+					head,
+					"",
+					"## The question you asked was answered",
+					`A previous run (${parentRunId}) stopped to ask:`,
+					...answers.flatMap((a) => [
+						"",
+						"Question:",
+						a.question,
+						"",
+						"Answer:",
+						a.answer,
+					]),
+					"",
+					"Its work is already in this worktree: inspect `git status` and `git log`",
+					"before continuing, and do not redo what is done. Continue the task with",
+					"this answer.",
+				].join("\n");
+			}
+			if (cls === "merge_parked") {
+				const parent = await registry.get(parentRunId);
+				return [
+					head,
+					"",
+					"## This task's branch would not merge",
+					"mfw tried to merge this task's work into the target branch and could",
+					"not, after retrying automatically against the current target several",
+					"times:",
+					"```",
+					parent?.note ?? "(no reason recorded)",
+					"```",
+					"Resolve it in this worktree: rebase onto the target branch and fix",
+					"the conflict (or otherwise make the branch mergeable), keeping the",
+					"task's actual work intact. Verification and acceptance run again",
+					"afterwards, and a passing result re-enters the merge queue like any",
+					"other run; this does not merge anything by itself.",
+				].join("\n");
+			}
+			if (
+				cls === "background_work" ||
+				cls === "interrupted" ||
+				cls === "watchdog_killed"
+			) {
+				const parent = await registry.get(parentRunId);
+				return [
+					head,
+					"",
+					"## Resuming interrupted work",
+					leftovers.length > 0 || background.length > 0
+						? `A previous run (${parentRunId}) ended its session while commands it started were still running.`
+						: `A previous run (${parentRunId}) was ${cls === "watchdog_killed" ? "stopped by a watchdog" : "interrupted"} before finishing.`,
+					parent?.worktreePath
+						? "Its work is already in this worktree: inspect `git status` and `git log` before continuing, and do not redo what is done."
+						: "",
+					...(leftovers.length > 0
+						? [
+								"",
+								"## Commands left running",
+								"These were still running when that session ended, and mfw stopped them:",
+								"```",
+								...leftovers.map((p) => p.command),
+								"```",
+								"Their results were never seen. Nothing wakes an agent after its",
+								"session ends: a background job cannot report back to you. Run long",
+								"commands in the foreground, wait for them, and finish all of your",
+								"work within this session.",
+							]
+						: []),
+					...(background.length > 0
+						? [
+								"",
+								"## Background work that never finished",
+								"Your previous turn ended while it was still running these in the",
+								"background, so they were killed and you never saw their results:",
+								...background.map((j) => `- ${j.tool}: ${j.summary}`),
+								"Re-run them in the foreground and wait for each to finish.",
+							]
+						: []),
+				].join("\n");
+			}
+			const review = reviewFixOf(steps);
+			if (review) return [head, "", review].join("\n");
+			const verifyStep = steps.find((s) => s.step === "verify");
+			if (verifyStep?.result) {
+				return [
+					head,
+					"",
+					"## The previous attempt did not pass verification",
+					"```json",
+					JSON.stringify(verifyStep.result, null, 2),
+					"```",
+					"Fix exactly what failed. The same checks run again afterwards.",
+				].join("\n");
+			}
 			return [
-				await describeTask(taskId),
+				head,
 				"",
-				"## Resuming interrupted work",
-				leftovers.length > 0
-					? `A previous run (${parentRunId}) ended its session while commands it started were still running.`
-					: `A previous run (${parentRunId}) was interrupted before finishing.`,
-				parent?.worktreePath
-					? "Its work is already in this worktree: inspect `git status` and `git log` before continuing, and do not redo what is done."
-					: "",
-				...(leftovers.length > 0
-					? [
-							"",
-							"## Commands left running",
-							"These were still running when that session ended, and mfw stopped them:",
-							"```",
-							...leftovers.map((p) => p.command),
-							"```",
-							"Their results were never seen. Nothing wakes an agent after its",
-							"session ends: a background job cannot report back to you. Run long",
-							"commands in the foreground, wait for them, and finish all of your",
-							"work within this session.",
-						]
-					: []),
+				"## Continuing earlier work",
+				`A previous run (${parentRunId}) worked on this task${cls ? ` and settled as ${cls}` : ""}.`,
+				"Its work is already in this worktree: inspect `git status` and `git log`",
+				"before continuing, and do not redo what is done.",
 			].join("\n");
 		},
-
-		/** Automatic attempt before a retry-exhausted conflict reaches a human. `reason` is park()'s message (paths or re-verify detail). */
-		unblock: async (taskId: string, _parentRunId: string, reason: string) =>
-			[
-				await describeTask(taskId),
-				"",
-				"## This task's branch would not merge",
-				`mfw tried to merge this task's work into the target branch and could`,
-				`not, after retrying automatically against the current target several`,
-				"times:",
-				"```",
-				reason,
-				"```",
-				"Resolve it in this worktree: rebase onto the target branch and fix",
-				"the conflict (or otherwise make the branch mergeable), keeping the",
-				"task's actual work intact. Verification and acceptance run again",
-				"afterwards, and a passing result re-enters the merge queue like any",
-				"other run; this does not merge anything by itself.",
-			].join("\n"),
 
 		/**
 		 * An import describes a repository, so work may already be done and each
@@ -1289,6 +1882,7 @@ export function buildPrompts(tasks: TaskService, registry: RunRegistry) {
 		 * (see IMPORT_STATUS_ALIASES in finalize/step-runner.ts).
 		 */
 		import: async () => {
+			const docsHint = await docs?.hint();
 			return [
 				"Survey this repository and write its work as mfw tasks, plus a spec",
 				"for each body of work that several tasks share a design for.",
@@ -1320,6 +1914,7 @@ export function buildPrompts(tasks: TaskService, registry: RunRegistry) {
 				"Prefer few well-scoped tasks over many vague ones. If something about",
 				"this repository is genuinely ambiguous, put it in `questions` rather",
 				"than guessing.",
+				...(docsHint ? ["", docsHint] : []),
 			].join("\n");
 		},
 
@@ -1526,6 +2121,12 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 	});
 	const credentialStore = CredentialStore.at(home);
 	const workloadGrants = WorkloadSecretGrantStore.at(home);
+	const hosts = new HostService({
+		registry: HostRegistry.at(home),
+		ledger: hostResources,
+		log: log.child({ svc: "ssh-hosts" }),
+		...(opts.sshTransport ? { transport: opts.sshTransport } : {}),
+	});
 	const openrouter = new OpenRouterAccountService({
 		client:
 			opts.openrouterClient ??
@@ -1541,6 +2142,16 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 				),
 			}),
 		log: log.child({ svc: "openrouter-account" }),
+	});
+	const usageOn =
+		usageEnabled(opts.usage) &&
+		(opts.usage?.enabled === true ||
+			opts.usage?.probes !== undefined ||
+			process.env.NODE_ENV !== "test");
+	const usage = new UsageMonitor({
+		probes: usageOn ? defaultUsageProbes(opts.usage) : [],
+		holds: ProviderHoldStore.at(home),
+		log: log.child({ svc: "usage" }),
 	});
 	// Keyed by stable run-ownership identity, not the editable project name.
 	const runpodProjectPolicies = new Map<
@@ -1655,9 +2266,20 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 				mfwHome: home,
 				afterAdmissionTransition: opts.afterAdmissionTransition,
 				runpod,
+				hosts,
+				sshTransport: opts.sshTransport,
 				credentials: credentialStore,
 				workloadGrants,
 				lifecycle: settingsLifecycle(cfg.name, generation),
+				ledgers: () => [...projects.values()].map((p) => p.handle),
+				ownedElsewhere: async (runId) => {
+					for (const [other, svc] of projects) {
+						if (other !== cfg.name && (await svc.registry.get(runId)))
+							return true;
+					}
+					return false;
+				},
+				usage: () => usage.snapshot(),
 				onProjectIdentity: (identity) => {
 					configuredProjectId = identity.id;
 					configuredRunpodOwners.set(identity.id, { projectName: cfg.name });
@@ -1683,6 +2305,9 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 	const spinUp = async (svc: ProjectServices): Promise<void> => {
 		try {
 			await svc.supervisor.reconcile();
+			// What a crash left half done in the brain's outbox: adopt the spawns
+			// whose runs exist, replay the other effects.
+			await svc.brainRuntime.executor.recover();
 			await svc.brain.reconcileOrphans();
 			await svc.mergeQueue.resetInFlight();
 		} catch (e) {
@@ -1738,6 +2363,10 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 		// Provider inventory precedes any remote dispatch; a failure closes only the RunPod gate.
 		// Provider cleanup is machine safety and runs even when autostart is off.
 		await Promise.all([runpod.start(), openrouter.start()]);
+		// Not awaited: a slow `codex` spawn must not delay boot.
+		if (opts.autostart !== false && usageOn) void usage.start();
+		await hosts.syncSlots();
+		if (opts.autostart !== false) hosts.start();
 		await hostResources.reconcile("project_attached");
 		for (const svc of projects.values()) await spinUp(svc);
 	} catch (error) {
@@ -1749,7 +2378,9 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 			.shutdown()
 			.catch((cleanupError) => failures.push(cleanupError));
 		await runpod.stop().catch((cleanupError) => failures.push(cleanupError));
+		await hosts.stop().catch((cleanupError) => failures.push(cleanupError));
 		openrouter.stop();
+		usage.stop();
 		await daemonLock
 			.release()
 			.catch((cleanupError) => failures.push(cleanupError));
@@ -1765,6 +2396,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 		mfwHome: home,
 		projects,
 		log,
+		providerHolds: ProviderHoldStore.at(home),
 		// Process-global, not per project: one credentials file for the machine.
 		providers: new ProviderSettings(credentialStore, {
 			runpod,
@@ -1777,8 +2409,10 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 		}),
 		runpod,
 		openrouter,
+		usage,
 		globalDispatch,
 		hostResources,
+		hosts,
 		get(name) {
 			const svc = projects.get(name);
 			if (!svc) throw new Error(`unknown project '${name}'`);
@@ -1813,21 +2447,43 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 					}
 				};
 				assertConfigAvailable(await loadConfig(home));
-				const entry: ProjectConfig = { ...cfg, name, root };
-				const svc = await attachProject(entry, log, bootId, {
-					schedulerIntervalMs: opts.schedulerIntervalMs,
-					globalPaused: globalDispatch.gate,
-					hostResources,
-					mfwHome: home,
-					afterAdmissionTransition: opts.afterAdmissionTransition,
-					runpod,
-					credentials: credentialStore,
-					workloadGrants,
-					lifecycle: settingsLifecycle(name, generation),
-					onProjectIdentity: (identity) => {
-						configuredRunpodOwners.set(identity.id, { projectName: name });
+				// `template` only shapes a new board.yaml; it is not project config.
+				const { template, ...stored } = cfg;
+				if (template && !getBoardTemplate(template)) {
+					throw new Error(`unknown board template '${template}'`);
+				}
+				assertAppearance(stored);
+				const entry: ProjectConfig = { ...stored, name, root };
+				const svc = await attachProject(
+					template ? { ...entry, template } : entry,
+					log,
+					bootId,
+					{
+						schedulerIntervalMs: opts.schedulerIntervalMs,
+						globalPaused: globalDispatch.gate,
+						hostResources,
+						mfwHome: home,
+						afterAdmissionTransition: opts.afterAdmissionTransition,
+						runpod,
+						hosts,
+						sshTransport: opts.sshTransport,
+						credentials: credentialStore,
+						workloadGrants,
+						lifecycle: settingsLifecycle(name, generation),
+						ledgers: () => [...projects.values()].map((p) => p.handle),
+						ownedElsewhere: async (runId) => {
+							for (const [other, svc] of projects) {
+								if (other !== name && (await svc.registry.get(runId)))
+									return true;
+							}
+							return false;
+						},
+						usage: () => usage.snapshot(),
+						onProjectIdentity: (identity) => {
+							configuredRunpodOwners.set(identity.id, { projectName: name });
+						},
 					},
-				});
+				);
 				try {
 					await hostResources.reconcile("project_attached");
 				} catch (error) {
@@ -1885,7 +2541,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 
 		/**
 		 * Detach: removes only mfw's own state (loops, DB handle, lock, config
-		 * entry). `.mfw/tasks`, `.mfw/adrs` and history stay, so re-attaching
+		 * entry). `tasks/`, `adrs/` and history stay, so re-attaching
 		 * restores the project. windDown may add a final board commit.
 		 */
 		async detach(name) {
@@ -1971,7 +2627,9 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 				projects.clear();
 				projectGenerations.clear();
 				await runpod.stop().catch((error) => failures.push(error));
+				await hosts.stop().catch((error) => failures.push(error));
 				openrouter.stop();
+				usage.stop();
 			} finally {
 				await hostResources.shutdown().catch((error) => failures.push(error));
 				await daemonLock.release().catch((error) => failures.push(error));
@@ -1984,6 +2642,23 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 }
 
 /** A project must be a git repository (worktrees, merge queue, tracked board). Checked before anything is written. */
+/** The board folder must already exist; it is not required to be a git repository. */
+async function assertBoardRoot(
+	rawBoardRoot: string,
+	rawRoot: string,
+): Promise<void> {
+	const boardRoot = normalizeRoot(rawBoardRoot);
+	try {
+		const st = await stat(boardRoot);
+		if (!st.isDirectory()) throw new Error("not a directory");
+	} catch {
+		throw new Error(
+			`board folder ${boardRoot} does not exist or is not a directory; create it first or leave the board in the repository`,
+		);
+	}
+	if (boardRoot === normalizeRoot(rawRoot)) return; // same as the repo: the default layout
+}
+
 async function assertGitRepo(rawRoot: string): Promise<void> {
 	// Normalize so a trailing slash from a hand-edited config does not fail the toplevel comparison.
 	const root = normalizeRoot(rawRoot);

@@ -98,6 +98,47 @@ describe("shared app-server driver", () => {
 		}
 	}, 15_000);
 
+	test("a Codex user-input request is recorded as a user_input approval, then refused", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "mfw-app-server-"));
+		try {
+			await writeFile(
+				join(dir, "driver.json"),
+				JSON.stringify({
+					bridgeArgv: ["bun", "run", BRIDGE],
+					providerArgv: ["bun", "run", PROVIDER],
+					cwd: dir,
+					env: {},
+					initialMessage: "ASK-QUESTION please",
+					reasoningEffort: "high",
+					steer: true,
+					approvalMode: "autonomous",
+				}),
+			);
+			await writeFile(join(dir, "events.jsonl"), "");
+			await writeFile(join(dir, "control.jsonl"), "");
+			const proc = Bun.spawn(["bun", "run", DRIVER, dir], {
+				stdout: "ignore",
+				stderr: "pipe",
+			});
+			const code = await proc.exited;
+			const stderr = await new Response(proc.stderr).text();
+			expect(code, stderr).toBe(0);
+			const approvals = parseAgentEvents(
+				await readFile(join(dir, "events.jsonl"), "utf8"),
+			).filter((event) => event.type === "approval");
+			expect(approvals).toEqual([
+				expect.objectContaining({
+					kind: "user_input",
+					status: "pending",
+					summary: "Which branch?",
+				}),
+				expect.objectContaining({ kind: "user_input", status: "cancelled" }),
+			]);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	}, 15_000);
+
 	test("Claude's replay-user-messages echo does not double the prompt in the transcript", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "mfw-claude-app-server-"));
 		try {

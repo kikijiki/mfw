@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
 	testArgs,
 	testEnvironment,
+	testShards,
 	validateTestHome,
 } from "../../../tools/root-test.ts";
 
@@ -15,6 +16,20 @@ describe("root test runner isolation", () => {
 			"**/worktrees/**",
 			join(root, "packages"),
 			join(root, "apps"),
+		]);
+	});
+
+	test("shards the suite into stable, bounded processes", () => {
+		const files = ["/r/c.test.ts", "/r/a.test.ts", "/r/b.test.ts"];
+		expect(testShards(files, 2)).toEqual([
+			["/r/a.test.ts", "/r/b.test.ts"],
+			["/r/c.test.ts"],
+		]);
+		expect(testArgs("/r", ["/r/a.test.ts"])).toEqual([
+			"test",
+			"--path-ignore-patterns",
+			"**/worktrees/**",
+			"/r/a.test.ts",
 		]);
 	});
 

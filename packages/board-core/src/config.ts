@@ -2,6 +2,12 @@ import { readFile } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import {
+	type CoverageRule,
+	normalizeExternal,
+	type RefsRule,
+	rawExternalShape,
+} from "./external-config.ts";
+import {
 	normalizeWorkflow,
 	rawWorkflowShape,
 	type TypeWorkflow, // workflow-config: optional per-type workflow
@@ -112,6 +118,55 @@ export type IdSpec =
 	  }
 	| { strategy: "inherit"; from: string };
 
+/** A value a `forbid` key may be compared against. */
+export type RuleScalar = string | number | boolean;
+
+/**
+ * A per-type rule: one assertion over the items of one field. The items are
+ * the elements of a list field, the rows of a `json` list (keyed by `id`), the
+ * items of a checklist, or the single value of a scalar. A violating item is an
+ * issue of the rule's severity; an `error` rule also refuses any write that
+ * would introduce a new violation (see `BoardStore`).
+ */
+export interface FieldRule {
+	id: string;
+	field: string;
+	/** Applies only while the document's fields hold these values (like `required_when`). */
+	when?: RequiredWhen;
+	severity: "error" | "advisory";
+	/** Message template: `{id}` (item), `{text}` (item text, truncated), `{field}`, `{rule}`. */
+	message?: string;
+	/** `json` rows: the key whose value is the item's text (checklists: `text`). */
+	key?: string;
+	/** A row/item violates when any listed key holds any of its listed values. */
+	forbid?: Record<string, readonly RuleScalar[]>;
+	/** The item text must contain a match (`mustMatch`) / must not (`mustNotMatch`). */
+	mustMatch?: string;
+	mustNotMatch?: string;
+	/** RegExp flags for the three patterns below (`i`, `m`, `s`). */
+	flags: string;
+	/** Matched text is removed with this before `mustMatch`/`mustNotMatch` applies. */
+	strip?: string;
+	/** An item whose ORIGINAL text matches this is exempt from `mustNotMatch`. */
+	unless?: string;
+}
+
+/** Ids the built-in rules own; a configured rule cannot reuse them. */
+export const BUILTIN_RULE_IDS: readonly string[] = [
+	"document",
+	"id",
+	"reference",
+	"hierarchy",
+	"cycle",
+	"owns-glob",
+	"exemptions",
+	"unreachable",
+	"conflicts",
+	"inert-exemption",
+];
+
+const RULE_ID_RE = /^[a-z][a-z0-9-]*$/;
+
 export interface TypeSpec {
 	layout: "flat" | "directory";
 	/** Relative to the board root (the directory `board.yaml` lives in). */
@@ -133,6 +188,8 @@ export interface TypeSpec {
 	 * works in; `exemptions` is an optional YAML file (relative to the board
 	 * root) of rulings that let two documents share files on purpose. */
 	ownership?: { field: string; exemptions?: string };
+	/** Assertions over this type's fields; see `FieldRule`. */
+	rules?: readonly FieldRule[];
 }
 
 /** The parent/children relation: a single-ref `parent` field on child
@@ -210,10 +267,34 @@ export function parentRuleProblem(
 	return `${who} may only have a parent matching ${rule.parents.map(describeSelector).join(" or ")} (got a '${parent.type}' with ${JSON.stringify(parent.fields)})`;
 }
 
+/** How `check` treats the built-in rules whose severity is a board policy.
+ * Structural rules (schema, ids, references, hierarchy, cycles, globs) are
+ * always errors; these two are the board's call. Default: `error`. */
+export type BuiltinSeverity = "error" | "advisory" | "off";
+
+export interface BuiltinsSpec {
+	/** A live document that can never become ready (dangling/parked dependency). */
+	unreachable?: BuiltinSeverity;
+	/** Live documents whose file scopes overlap with nothing ordering them. */
+	conflicts?: BuiltinSeverity;
+}
+
 export interface BoardConfig {
 	mfw: number;
 	types: Record<string, TypeSpec>;
 	hierarchy?: HierarchySpec;
+	builtins?: BuiltinsSpec;
+	/** Named directories outside the board that `refs` rules read; paths are
+	 * relative to the directory of `board.yaml`. */
+	roots?: Record<string, string>;
+	/** Patterns in external files that must name live board documents. */
+	refs?: readonly RefsRule[];
+	/** Tables whose open rows each document set must cover. */
+	coverage?: readonly CoverageRule[];
+	/** Top-level `x-...` keys of `board.yaml`: kept verbatim, never validated
+	 * here. An extension (e.g. `x-mfw-daemon`) declares what it means; the
+	 * engine only guarantees the REST of the file is well-formed. */
+	extensions?: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +388,33 @@ const rawIdSchema = z.discriminatedUnion("strategy", [
 		.strict(),
 ]);
 
+const rawRuleScalar = z.union([z.string(), z.number(), z.boolean()]);
+
+const rawRuleSchema = z
+	.object({
+		id: z.string().regex(RULE_ID_RE, "must be lowercase letters, digits, '-'"),
+		field: z.string().regex(FIELD_NAME_RE),
+		when: rawRequiredWhen.optional(),
+		severity: z.enum(["error", "advisory"]).optional(),
+		message: z.string().min(1).optional(),
+		key: z.string().regex(FIELD_NAME_RE).optional(),
+		forbid: z
+			.record(
+				z.string().regex(FIELD_NAME_RE),
+				z.union([rawRuleScalar, z.array(rawRuleScalar).min(1)]),
+			)
+			.optional(),
+		must_match: z.string().min(1).optional(),
+		must_not_match: z.string().min(1).optional(),
+		flags: z
+			.string()
+			.regex(/^[ims]*$/, "flags may contain i, m, s")
+			.optional(),
+		strip: z.string().min(1).optional(),
+		unless: z.string().min(1).optional(),
+	})
+	.strict();
+
 const rawTypeSchema = z
 	.object({
 		layout: z.enum(["flat", "directory"]),
@@ -319,6 +427,7 @@ const rawTypeSchema = z
 			.record(z.string().regex(FIELD_NAME_RE), rawFieldSchema)
 			.default({}),
 		...rawWorkflowShape, // workflow-config.ts
+		rules: z.array(rawRuleSchema).optional(),
 		ownership: z
 			.object({
 				field: z.string().regex(FIELD_NAME_RE),
@@ -362,11 +471,21 @@ const rawHierarchySchema = z
 	})
 	.strict();
 
+const rawBuiltinSeverity = z.enum(["error", "advisory", "off"]);
+
 const rawConfigSchema = z
 	.object({
 		mfw: z.literal(BOARD_CONFIG_VERSION),
 		types: z.record(z.string().regex(TYPE_NAME_RE), rawTypeSchema),
 		hierarchy: rawHierarchySchema.optional(),
+		...rawExternalShape, // external-config.ts
+		builtins: z
+			.object({
+				unreachable: rawBuiltinSeverity.optional(),
+				conflicts: rawBuiltinSeverity.optional(),
+			})
+			.strict()
+			.optional(),
 	})
 	.strict();
 
@@ -434,9 +553,161 @@ function normalizeField(raw: z.infer<typeof rawFieldSchema>): FieldSpec {
 	};
 }
 
+function compileRulePattern(
+	where: string,
+	what: string,
+	p: string,
+	flags: string,
+) {
+	try {
+		return new RegExp(p, flags);
+	} catch (e) {
+		throw new BoardConfigError(
+			`${where}: ${what} is not a valid regular expression: ${e instanceof Error ? e.message : String(e)}`,
+		);
+	}
+}
+
+function normalizeRules(
+	typeName: string,
+	raw: readonly z.infer<typeof rawRuleSchema>[],
+	fields: Record<string, FieldSpec>,
+): FieldRule[] {
+	const out: FieldRule[] = [];
+	for (const r of raw) {
+		const where = `type '${typeName}' rule '${r.id}'`;
+		if (BUILTIN_RULE_IDS.includes(r.id)) {
+			throw new BoardConfigError(
+				`${where}: '${r.id}' is a built-in rule id; pick another`,
+			);
+		}
+		const field = fields[r.field];
+		if (!field) {
+			throw new BoardConfigError(
+				`${where}: field '${r.field}' is not a declared field of this type`,
+			);
+		}
+		for (const other of Object.keys(r.when ?? {})) {
+			if (!(other in fields)) {
+				throw new BoardConfigError(
+					`${where}: when names '${other}', which is not a declared field of this type`,
+				);
+			}
+		}
+		const kinds = [r.forbid, r.must_match, r.must_not_match].filter(
+			(x) => x !== undefined,
+		).length;
+		if (kinds !== 1) {
+			throw new BoardConfigError(
+				`${where}: give exactly one of forbid, must_match, must_not_match`,
+			);
+		}
+		const isRows =
+			field.kind === "scalar" && field.type === "json" && field.list;
+		const isChecklist = field.kind === "checklist";
+		if (r.forbid !== undefined && !isRows && !isChecklist) {
+			throw new BoardConfigError(
+				`${where}: forbid applies to rows of a 'type: json' list or to a checklist, but '${r.field}' is neither`,
+			);
+		}
+		if (r.key !== undefined && !isRows) {
+			throw new BoardConfigError(
+				`${where}: key only applies to a 'type: json' list field`,
+			);
+		}
+		if (r.must_match !== undefined || r.must_not_match !== undefined) {
+			if (isRows && r.key === undefined) {
+				throw new BoardConfigError(
+					`${where}: rows of '${r.field}' need a 'key' naming the row key to match`,
+				);
+			}
+			const textual =
+				isRows ||
+				isChecklist ||
+				field.kind === "enum" ||
+				(field.kind === "scalar" && field.type === "string");
+			if (!textual) {
+				throw new BoardConfigError(
+					`${where}: '${r.field}' has no text to match`,
+				);
+			}
+		} else if (
+			r.strip !== undefined ||
+			r.unless !== undefined ||
+			r.flags !== undefined
+		) {
+			throw new BoardConfigError(
+				`${where}: strip, unless and flags only apply with must_match / must_not_match`,
+			);
+		}
+		if (r.unless !== undefined && r.must_not_match === undefined) {
+			throw new BoardConfigError(
+				`${where}: unless only applies to must_not_match`,
+			);
+		}
+		const flags = r.flags ?? "";
+		for (const [what, p] of [
+			["must_match", r.must_match],
+			["must_not_match", r.must_not_match],
+			["strip", r.strip],
+			["unless", r.unless],
+		] as const) {
+			if (p !== undefined) compileRulePattern(where, what, p, flags);
+		}
+		out.push({
+			id: r.id,
+			field: r.field,
+			...(r.when ? { when: normalizeRequiredWhen(r.when) } : {}),
+			severity: r.severity ?? "error",
+			...(r.message !== undefined ? { message: r.message } : {}),
+			...(r.key !== undefined ? { key: r.key } : {}),
+			...(r.forbid
+				? {
+						forbid: Object.fromEntries(
+							Object.entries(r.forbid).map(([k, v]) => [
+								k,
+								Array.isArray(v) ? v : [v],
+							]),
+						),
+					}
+				: {}),
+			...(r.must_match !== undefined ? { mustMatch: r.must_match } : {}),
+			...(r.must_not_match !== undefined
+				? { mustNotMatch: r.must_not_match }
+				: {}),
+			flags,
+			...(r.strip !== undefined ? { strip: r.strip } : {}),
+			...(r.unless !== undefined ? { unless: r.unless } : {}),
+		});
+	}
+	return out;
+}
+
+/**
+ * Separate the top-level `x-...` keys (extensions this engine does not
+ * interpret) from the schema's own keys. Only the latter are strict-checked,
+ * so `x-foo: ...` is accepted while any other unknown key still fails.
+ */
+function splitExtensions(raw: unknown): {
+	core: unknown;
+	extensions: Record<string, unknown>;
+} {
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+		return { core: raw, extensions: {} };
+	}
+	const core: Record<string, unknown> = {};
+	const extensions: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(raw)) {
+		if (key.startsWith("x-")) extensions[key] = value;
+		else core[key] = value;
+	}
+	return { core, extensions };
+}
+
 /** Parse and fully validate a `board.yaml` document already read into memory. */
 export function parseBoardConfig(raw: unknown): BoardConfig {
-	const parsed = rawConfigSchema.safeParse(raw);
+	const split = splitExtensions(raw);
+	const parsed = rawConfigSchema.safeParse(split.core);
 	if (!parsed.success) {
 		throw new BoardConfigError(`board.yaml: ${formatIssues(parsed.error)}`);
 	}
@@ -535,6 +806,7 @@ export function parseBoardConfig(raw: unknown): BoardConfig {
 			parsed.data.hierarchy,
 		); // workflow-config.ts
 		if (!wf.ok) throw new BoardConfigError(wf.error);
+		const rules = normalizeRules(typeName, rawType.rules ?? [], fields);
 		types[typeName] = {
 			layout: rawType.layout,
 			dir: rawType.dir,
@@ -545,6 +817,7 @@ export function parseBoardConfig(raw: unknown): BoardConfig {
 			fields,
 			...(wf.workflow ? { workflow: wf.workflow } : {}),
 			...(rawType.ownership ? { ownership: rawType.ownership } : {}),
+			...(rules.length > 0 ? { rules } : {}),
 		};
 		const own = rawType.ownership;
 		if (own) {
@@ -554,6 +827,44 @@ export function parseBoardConfig(raw: unknown): BoardConfig {
 					`type '${typeName}': ownership.field '${own.field}' must be a list of strings (a path-glob list field)`,
 				);
 			}
+		}
+	}
+
+	// Rule ids are board-wide: `check --rule` and `--override` name them.
+	const ruleOwner = new Map<string, string>();
+	for (const [typeName, spec] of Object.entries(types)) {
+		for (const r of spec.rules ?? []) {
+			const first = ruleOwner.get(r.id);
+			if (first !== undefined) {
+				throw new BoardConfigError(
+					first === typeName
+						? `type '${typeName}': rule id '${r.id}' is declared twice`
+						: `rule id '${r.id}' is used by types '${first}' and '${typeName}'; rule ids are board-wide`,
+				);
+			}
+			ruleOwner.set(r.id, typeName);
+		}
+	}
+
+	const external = normalizeExternal(parsed.data, types);
+	if (!external.ok) throw new BoardConfigError(external.error);
+	for (const [kind, list] of [
+		["refs", external.external.refs],
+		["coverage", external.external.coverage],
+	] as const) {
+		for (const r of list) {
+			if (BUILTIN_RULE_IDS.includes(r.id)) {
+				throw new BoardConfigError(
+					`${kind} '${r.id}': '${r.id}' is a built-in rule id; pick another`,
+				);
+			}
+			const first = ruleOwner.get(r.id);
+			if (first !== undefined) {
+				throw new BoardConfigError(
+					`rule id '${r.id}' is used by ${kind} and by ${first === "refs" || first === "coverage" ? first : `type '${first}'`}; rule ids are board-wide`,
+				);
+			}
+			ruleOwner.set(r.id, kind);
 		}
 	}
 
@@ -616,9 +927,25 @@ export function parseBoardConfig(raw: unknown): BoardConfig {
 	const hierarchy = parsed.data.hierarchy
 		? validateHierarchy(parsed.data.hierarchy, types)
 		: undefined;
-	return hierarchy
-		? { mfw: parsed.data.mfw, types, hierarchy }
-		: { mfw: parsed.data.mfw, types };
+	const builtins = parsed.data.builtins as BuiltinsSpec | undefined;
+	return {
+		mfw: parsed.data.mfw,
+		types,
+		...(hierarchy ? { hierarchy } : {}),
+		...(builtins ? { builtins } : {}),
+		...(Object.keys(external.external.roots).length > 0
+			? { roots: external.external.roots }
+			: {}),
+		...(external.external.refs.length > 0
+			? { refs: external.external.refs }
+			: {}),
+		...(external.external.coverage.length > 0
+			? { coverage: external.external.coverage }
+			: {}),
+		...(Object.keys(split.extensions).length > 0
+			? { extensions: split.extensions }
+			: {}),
+	};
 }
 
 /** Does a ref field's declared target cover the named type? */

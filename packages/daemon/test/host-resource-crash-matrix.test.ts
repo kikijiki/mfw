@@ -63,10 +63,7 @@ function projectConfig(name: string, root: string): ProjectConfig {
 		root,
 		integrationBranch: "main",
 		maxConcurrent: 4,
-		maxRepairs: 0,
 		assistance: {
-			failureDiagnosis: "escalate",
-			conflictResolution: "escalate",
 			changeReview: "human",
 		},
 	};

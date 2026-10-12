@@ -1,6 +1,8 @@
-import { readdir, realpath, stat } from "node:fs/promises";
+import { mkdir, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { inspectBoardFolder } from "@mfw/daemon/board-inspect";
+import { BOARD_TEMPLATES } from "@mfw/daemon/board-templates";
 import {
 	dispatchStatusAll,
 	setDispatching,
@@ -166,7 +168,9 @@ export const systemRouter = createTRPCRouter({
 					(await svc.tasks.list()).map((t) => [t.id, t.status as string]),
 				);
 				digests.push(
-					buildDigest(svc.name, since, events, (id) => board.get(id)),
+					buildDigest(svc.name, since, events, (id) => board.get(id), {
+						now: Date.now(),
+					}),
 				);
 			}
 			return {
@@ -177,11 +181,19 @@ export const systemRouter = createTRPCRouter({
 
 	/** A query, not a `projects` sub-router: a tRPC path cannot be both a procedure and a router. */
 	projects: publicProcedure.query(({ ctx }) =>
-		ctx.orchestrator.list().map((s) => ({
-			name: s.name,
-			root: s.root,
-			integrationBranch: s.integrationBranch,
-		})),
+		Promise.all(
+			ctx.orchestrator.list().map(async (s) => {
+				// Display options live on the config entry; an unreadable one just draws the default.
+				const view = await s.settings.get().catch(() => null);
+				return {
+					name: s.name,
+					root: s.root,
+					integrationBranch: s.integrationBranch,
+					icon: view?.values.icon ?? null,
+					color: view?.values.color ?? null,
+				};
+			}),
+		),
 	),
 
 	/** A daemon-side folder browser used by the sidebar's project picker. */
@@ -196,6 +208,34 @@ export const systemRouter = createTRPCRouter({
 			return listProjectDirectory(input.path, new Set(attachedRoots));
 		}),
 
+	/**
+	 * Read-only: does this folder hold a board, and what is in it — so the
+	 * add-project dialog can say "existing board found" before attaching.
+	 * The path is resolved exactly like `projectDirectory`'s, and nothing is
+	 * written to the inspected folder.
+	 */
+	inspectBoardFolder: publicProcedure
+		.input(z.object({ path: z.string().min(1) }))
+		.query(async ({ input }) => {
+			const path = await realpath(resolve(input.path.trim() || homedir()));
+			const info = await stat(path);
+			if (!info.isDirectory()) throw new Error(`${path} is not a directory`);
+			return inspectBoardFolder(path);
+		}),
+
+	/**
+	 * The board templates a new project can pick when it needs a board.yaml.
+	 * Picker metadata only: the rendered yaml stays daemon-side.
+	 */
+	boardTemplates: publicProcedure.query(() =>
+		BOARD_TEMPLATES.map(({ id, title, description, statuses }) => ({
+			id,
+			title,
+			description,
+			statuses,
+		})),
+	),
+
 	/** Attach a repository. The path must be a git repo root, validated before anything is persisted. */
 	addProject: publicProcedure
 		.input(
@@ -203,13 +243,18 @@ export const systemRouter = createTRPCRouter({
 				name: z.string().min(1).optional(),
 				root: z.string().min(1),
 				boardRoot: z.string().min(1).optional(),
+				/** A BOARD_TEMPLATES id, used only when the board folder has no board.yaml. */
+				template: z.string().min(1).optional(),
+				/** Create `boardRoot` (one level, parent must exist) when it is missing. */
+				createBoardFolder: z.boolean().optional(),
 				integrationBranch: z.string().min(1).optional(),
+				/** Display options (`project-appearance.ts`); refused when unknown. */
+				icon: z.string().min(1).max(32).optional(),
+				color: z.string().min(1).max(16).optional(),
 				model: z.string().min(1).optional(),
 				schedulerAutostart: z.boolean().optional(),
 				assistance: z
 					.object({
-						failureDiagnosis: z.enum(["assisted", "escalate"]),
-						conflictResolution: z.enum(["assisted", "escalate"]),
 						changeReview: z.enum(["off", "assisted", "human"]),
 					})
 					.optional(),
@@ -225,7 +270,20 @@ export const systemRouter = createTRPCRouter({
 			for (let suffix = 2; names.has(name); suffix++) {
 				name = `${baseName}-${suffix}`;
 			}
-			const svc = await ctx.orchestrator.attach({ ...input, name });
+			const { createBoardFolder, ...attach } = input;
+			if (createBoardFolder && attach.boardRoot) {
+				const target = resolve(attach.boardRoot);
+				if (!(await stat(target).catch(() => null))) {
+					const parent = await stat(dirname(target)).catch(() => null);
+					if (!parent?.isDirectory()) {
+						throw new Error(
+							`cannot create ${target}: ${dirname(target)} does not exist`,
+						);
+					}
+					await mkdir(target);
+				}
+			}
+			const svc = await ctx.orchestrator.attach({ ...attach, name });
 			return {
 				name: svc.name,
 				root: svc.root,

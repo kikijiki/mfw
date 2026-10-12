@@ -38,6 +38,13 @@ export type ExecutionResourceRequirement =
 export interface TargetResolutionInput extends ExecutionTargetSelection {
 	requiresResources?: readonly ExecutionResourceRequirement[];
 	localStagingResources?: readonly ExecutionResourceRequirement[];
+	/**
+	 * Capacity of the remote machine itself, injected by the target resolver
+	 * (never authored): a registry SSH host is the slot resource
+	 * `remote.<hostId>.slots` in the same host coordinator, so admission waits
+	 * FIFO on it with the usual fencing and recovery.
+	 */
+	targetCapacity?: readonly HostResourceRequirement[];
 }
 
 export interface TargetAdmissionRequirements {
@@ -47,7 +54,12 @@ export interface TargetAdmissionRequirements {
 	projectSemaphores: readonly ProjectSemaphoreRequirement[];
 	/** Daemon-host capacity used to stage/collect a remote workspace. */
 	localStaging: readonly HostResourceRequirement[];
+	/** Target-scoped capacity (`remote.<hostId>.slots`); empty for local runs. */
+	targetCapacity?: readonly HostResourceRequirement[];
 }
+
+/** Coordinator id of a target-scoped remote slot resource. */
+export const TARGET_CAPACITY_ID = /^remote\.[a-z0-9][a-z0-9_-]{0,62}\.slots$/;
 
 export interface ResolvedExecutionTarget extends ExecutionTargetSelection {
 	requestedShape: TargetShape;
@@ -94,9 +106,11 @@ function authoredHostAmount(
 }
 
 /**
- * Split the three admission domains without acquiring anything. In
- * particular, host-scoped `requires_resources` on a remote target is rejected
- * here instead of being silently ignored or accidentally leased locally.
+ * Split the admission domains without acquiring anything. In particular,
+ * host-scoped `requires_resources` on a remote target is rejected here
+ * instead of being silently ignored or accidentally leased locally; the only
+ * host-coordinator capacity a remote target holds besides local staging is
+ * its own target-scoped slot (`targetCapacity`), which no task can author.
  */
 export function resolveExecutionTarget(
 	input: TargetResolutionInput,
@@ -189,10 +203,42 @@ export function resolveExecutionTarget(
 		});
 	}
 
+	const targetCapacity: HostResourceRequirement[] = [];
+	for (const requirement of input.targetCapacity ?? []) {
+		if (kind === "local") {
+			throw new InvalidExecutionTargetRequirementsError(
+				"target capacity is only valid for a non-local execution target",
+			);
+		}
+		if (
+			requirement.scope !== "host" ||
+			!TARGET_CAPACITY_ID.test(requirement.id) ||
+			(requirement.amount !== undefined && requirement.amount !== 1)
+		) {
+			throw new InvalidExecutionTargetRequirementsError(
+				`target capacity '${String(requirement.id)}' must be one slot of a remote.<host>.slots resource`,
+			);
+		}
+		if (
+			stagingSeen.has(requirement.id) ||
+			targetCapacity.some((item) => item.id === requirement.id)
+		) {
+			throw new InvalidExecutionTargetRequirementsError(
+				`duplicate host resource '${requirement.id}' in target capacity`,
+			);
+		}
+		targetCapacity.push({ scope: "host", id: requirement.id });
+	}
+
 	return {
 		kind,
 		requestedShape: { ...(input.requestedShape ?? {}) },
-		requirements: { executionHost, projectSemaphores, localStaging },
+		requirements: {
+			executionHost,
+			projectSemaphores,
+			localStaging,
+			...(targetCapacity.length > 0 ? { targetCapacity } : {}),
+		},
 	};
 }
 

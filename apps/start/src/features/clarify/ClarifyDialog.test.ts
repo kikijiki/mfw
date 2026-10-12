@@ -35,8 +35,10 @@ describe("clarification actions", () => {
 	);
 
 	test("offers one action appropriate to answer completeness", () => {
-		expect(source).toContain("replannable && complete ? (");
+		expect(source).toContain("continues && complete ? (");
 		expect(source).toContain('"Continue expansion"');
+		// A task run's own question resumes the agent instead of re-planning.
+		expect(source).toContain('"Answer and resume"');
 		expect(source).toContain('"Save progress"');
 		expect(source).not.toContain("Save &amp; re-plan");
 	});

@@ -1,15 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleAlert, CircleHelp, Play, Square } from "lucide-react";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import { Switch } from "~/components/ui/switch";
+import { Tip } from "~/components/ui/tooltip";
 import { cn } from "~/lib/utils";
+import { AppLink } from "../../components/AppLink";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { Chip } from "../../components/Page";
 import { formatAbsolute } from "../../lib/format";
+import { useLive } from "../../lib/live";
 import { humanizeError, useToast } from "../../lib/toast";
 import { useTRPC } from "../../lib/trpc";
+import { href } from "../../routes";
 import {
 	canStartFleet,
 	type DispatchStatusLike,
@@ -22,6 +26,7 @@ import {
 	fleetLabel,
 	fleetTone,
 	globalAction,
+	NO_BRAIN_HINT,
 } from "./state";
 
 /**
@@ -33,16 +38,13 @@ import {
  * says who stopped it and the control still offers "stop".
  */
 
-export function ProjectDispatchButton({
-	project,
-	/** `icon` is the sidebar/mobile form: no text, everything in the label. */
-	variant = "full",
-	className,
-}: {
-	project: string;
-	variant?: "full" | "icon";
-	className?: string;
-}) {
+/**
+ * One project's dispatch switch: the status query, the play/stop mutation and
+ * the confirm-before-start dialog state. Any surface (the project header, the
+ * sidebar tile menu) renders its own control from this and mounts
+ * `ProjectDispatchDialog` once, so a confirmation survives its menu closing.
+ */
+export function useProjectDispatch(project: string) {
 	const trpc = useTRPC();
 	const queryClient = useQueryClient();
 	const { toast } = useToast();
@@ -96,81 +98,141 @@ export function ProjectDispatchButton({
 	// Reads `projectPlaying`, not effective `playing`: with the master stop off,
 	// a switched-on project must still offer Stop.
 	const playing = data ? dispatchAction(data) === "stop" : false;
-	const pending = set.isPending;
-	const icon = playing ? <Square aria-hidden /> : <Play aria-hidden />;
 	const label = data
 		? `${playing ? "Stop" : "Start"} dispatching in ${project}: ${dispatchExplain(data)}`
 		: `Dispatch control for ${project}`;
 
-	const onClick = () => {
-		if (playing) set.mutate({ project, enabled: false });
-		else setConfirmPlay(true);
+	return {
+		project,
+		data,
+		playing,
+		pending: set.isPending,
+		label,
+		confirmPlay,
+		setConfirmPlay,
+		/** Stop is one click; start asks first (it spends a subscription). */
+		toggle: () => {
+			if (playing) set.mutate({ project, enabled: false });
+			else setConfirmPlay(true);
+		},
+		confirm: () => set.mutate({ project, enabled: true }),
 	};
+}
+
+export type ProjectDispatch = ReturnType<typeof useProjectDispatch>;
+
+/** The start confirmation for a `useProjectDispatch`. Mount it once per project. */
+export function ProjectDispatchDialog({
+	dispatch,
+}: {
+	dispatch: ProjectDispatch;
+}) {
+	const { project } = dispatch;
+	return (
+		<ConfirmDialog
+			open={dispatch.confirmPlay}
+			onOpenChange={dispatch.setConfirmPlay}
+			title={`Start dispatching in ${project}?`}
+			description={
+				<>
+					MFW will start ready tasks in <strong>{project}</strong>. This may use
+					your provider credits and stays enabled until you stop it.
+				</>
+			}
+			confirmLabel="Start dispatching"
+			pending={dispatch.pending}
+			onConfirm={dispatch.confirm}
+		/>
+	);
+}
+
+export function ProjectDispatchButton({
+	project,
+	/** `icon` is the sidebar/mobile form: no text, everything in the label. */
+	variant = "full",
+	className,
+}: {
+	project: string;
+	variant?: "full" | "icon";
+	className?: string;
+}) {
+	const dispatch = useProjectDispatch(project);
+	const { data, playing, pending, label } = dispatch;
+	const icon = playing ? <Square aria-hidden /> : <Play aria-hidden />;
+	const onClick = dispatch.toggle;
 
 	return (
 		<>
 			{variant === "icon" ? (
-				<Button
-					// 28px: sits in a 36px sidebar row and, on a phone, is the only way to stop the project.
-					size="icon-sm"
-					variant="ghost"
-					className={cn("max-md:size-11", className)}
-					aria-label={label}
-					title={label}
-					aria-pressed={playing}
-					disabled={pending || !data}
-					onClick={onClick}
-					style={{ color: `var(--mfw-${playing ? "ok" : "fg-faint"})` }}
-				>
-					{icon}
-				</Button>
-			) : (
-				<span className={cn("inline-flex items-center gap-1.5", className)}>
+				<Tip label={label}>
 					<Button
-						size="sm"
-						variant="outline"
-						className="max-md:min-h-11 max-md:px-3"
+						// 28px: sits in a 36px sidebar row and, on a phone, is the only way to stop the project.
+						size="icon-sm"
+						variant="ghost"
+						className={cn("max-md:size-11", className)}
 						aria-label={label}
-						title={label}
 						aria-pressed={playing}
 						disabled={pending || !data}
 						onClick={onClick}
+						style={{ color: `var(--mfw-${playing ? "ok" : "fg-faint"})` }}
 					>
 						{icon}
-						{pending ? "Working…" : playing ? "Stop" : "Play"}
 					</Button>
-					{data ? <DispatchChip status={data} /> : null}
+				</Tip>
+			) : (
+				<span className={cn("inline-flex items-center gap-1.5", className)}>
+					<Tip label={label}>
+						<Button
+							size="sm"
+							variant="outline"
+							className="max-md:min-h-11 max-md:px-3"
+							aria-label={label}
+							aria-pressed={playing}
+							disabled={pending || !data}
+							onClick={onClick}
+						>
+							{icon}
+							{pending ? "Working…" : playing ? "Stop" : "Play"}
+						</Button>
+					</Tip>
+					{data ? <DispatchChip status={data} project={project} /> : null}
 				</span>
 			)}
-
-			<ConfirmDialog
-				open={confirmPlay}
-				onOpenChange={setConfirmPlay}
-				title={`Start dispatching in ${project}?`}
-				description={
-					<>
-						MFW will start ready tasks in <strong>{project}</strong>. This may
-						use your provider credits and stays enabled until you stop it.
-					</>
-				}
-				confirmLabel="Start dispatching"
-				pending={pending}
-				onConfirm={() => set.mutate({ project, enabled: true })}
-			/>
+			<ProjectDispatchDialog dispatch={dispatch} />
 		</>
 	);
 }
 
 /** The status pill: state, who caused it, and when a hold lifts. */
-export function DispatchChip({ status }: { status: DispatchStatusLike }) {
+export function DispatchChip({
+	status,
+	project,
+}: {
+	status: DispatchStatusLike;
+	/** With a project, a blocked-by-no-brain chip links to its settings. */
+	project?: string;
+}) {
 	const detail = status.hold
 		? `${dispatchExplain(status)} (until ${formatAbsolute(status.hold.until)})`
 		: dispatchExplain(status);
-	return (
-		<Chip tone={dispatchTone(status)} title={detail}>
-			{dispatchLabel(status)}
-		</Chip>
+	const chip = (
+		<Tip label={detail}>
+			<span className="inline-flex">
+				<Chip tone={dispatchTone(status)}>{dispatchLabel(status)}</Chip>
+			</span>
+		</Tip>
 	);
+	if (status.blocked === "no_brain_route" && project) {
+		return (
+			<AppLink
+				to={href.projectSettings(project)}
+				aria-label={`${NO_BRAIN_HINT}: open ${project} settings`}
+			>
+				{chip}
+			</AppLink>
+		);
+	}
+	return chip;
 }
 
 /**
@@ -183,8 +245,8 @@ export function GlobalDispatchButton({
 	compact = false,
 	className,
 }: {
-	variant?: "full" | "icon" | "navigation";
-	/** Hides navigation-row copy while retaining its accessible name. */
+	variant?: "full" | "icon" | "navigation" | "status";
+	/** Hides navigation-row copy while retaining its accessible name. For `status`, the single-control rail form. */
 	compact?: boolean;
 	className?: string;
 }) {
@@ -194,6 +256,7 @@ export function GlobalDispatchButton({
 	const [confirmPlay, setConfirmPlay] = useState(false);
 
 	const fleet = useQuery(trpc.system.scheduler.all.queryOptions());
+	const { status: connection } = useLive();
 
 	const setGlobal = useMutation(
 		trpc.system.scheduler.setGlobal.mutationOptions({
@@ -272,7 +335,9 @@ export function GlobalDispatchButton({
 			className={cn(
 				variant === "navigation"
 					? "flex w-full flex-col items-start"
-					: "flex items-center gap-0.5",
+					: variant === "status"
+						? "flex w-full items-center"
+						: "flex items-center gap-0.5",
 				className,
 			)}
 		>
@@ -281,12 +346,31 @@ export function GlobalDispatchButton({
 					{summary}
 				</Chip>
 			) : null}
-			{variant === "navigation" ? (
+			{variant === "status" ? (
+				<MfwStatusGroup
+					compact={compact}
+					connection={connection}
+					dispatchWord={
+						unavailable ? "unknown" : playing ? "running" : "paused"
+					}
+					failed={failureText !== null}
+					detail={label}
+					statusIcon={statusIcon}
+					disabled={pending || unavailable || startBlocked}
+					playing={playing}
+					onToggle={() =>
+						playing
+							? setGlobal.mutate({ enabled: false })
+							: action === "play"
+								? setConfirmPlay(true)
+								: undefined
+					}
+				/>
+			) : variant === "navigation" ? (
 				<Button
 					type="button"
 					variant="ghost"
 					aria-label={label}
-					title={label}
 					aria-pressed={unavailable ? undefined : playing}
 					disabled={pending || unavailable || startBlocked}
 					className={cn(
@@ -322,7 +406,6 @@ export function GlobalDispatchButton({
 					variant="ghost"
 					size="icon-sm"
 					aria-label={label}
-					title={label}
 					aria-pressed={unavailable ? undefined : playing}
 					disabled={pending || unavailable || startBlocked}
 					className="max-md:size-11"
@@ -344,7 +427,6 @@ export function GlobalDispatchButton({
 			) : (
 				<Switch
 					aria-label={label}
-					title={label}
 					checked={playing}
 					disabled={pending || unavailable || startBlocked}
 					onCheckedChange={(checked) =>
@@ -411,6 +493,126 @@ export function GlobalDispatchButton({
 				</ul>
 			</ConfirmDialog>
 		</div>
+	);
+}
+
+const DOT: Record<string, string> = {
+	running: "--mfw-ok",
+	paused: "--mfw-fg-faint",
+	unknown: "--mfw-warn",
+	reconnecting: "--mfw-warn",
+	unreachable: "--mfw-critical",
+};
+
+/**
+ * The mfw identity's status and its master switch as ONE group: a dot, a word
+ * (running, paused, reconnecting, unreachable) and the play/stop button. The
+ * dot is the daemon connection first (no connection, no truth about
+ * dispatch), then the master stop. Collapsed it is a single small control.
+ */
+function MfwStatusGroup({
+	compact,
+	connection,
+	dispatchWord,
+	failed,
+	detail,
+	statusIcon,
+	disabled,
+	playing,
+	onToggle,
+}: {
+	compact: boolean;
+	connection: "connected" | "reconnecting" | "offline";
+	dispatchWord: "running" | "paused" | "unknown";
+	failed: boolean;
+	detail: string;
+	statusIcon: ReactNode;
+	disabled: boolean;
+	playing: boolean;
+	onToggle: () => void;
+}) {
+	const word =
+		connection === "offline"
+			? "unreachable"
+			: connection === "reconnecting"
+				? "reconnecting"
+				: dispatchWord;
+	const token = failed && word === "running" ? "--mfw-warn" : DOT[word];
+	const connectionNote =
+		connection === "offline"
+			? "The daemon is not reachable."
+			: connection === "reconnecting"
+				? "Reconnecting to the daemon."
+				: "Connected to the daemon.";
+	const tip = `mfw ${word}. ${connectionNote} ${detail}`;
+	const dot = (
+		<span
+			aria-hidden
+			className={cn(
+				"inline-block size-2.5 shrink-0 rounded-full",
+				connection !== "connected" && "mfw-pulse",
+			)}
+			style={{ background: `var(${token})` }}
+		/>
+	);
+	if (compact) {
+		return (
+			<Tip label={tip} side="right">
+				<Button
+					type="button"
+					variant="ghost"
+					size="icon-sm"
+					className="relative self-center"
+					aria-label={`mfw ${word}: ${detail}`}
+					aria-pressed={playing}
+					disabled={disabled}
+					onClick={onToggle}
+					style={{ color: `var(${token})` }}
+				>
+					{statusIcon}
+					<span
+						aria-hidden
+						className="absolute top-0.5 right-0.5 size-1.5 rounded-full"
+						style={{ background: `var(${token})` }}
+					/>
+				</Button>
+			</Tip>
+		);
+	}
+	return (
+		<fieldset
+			aria-label="mfw status"
+			className="m-0 flex w-full min-w-0 items-center gap-2 border-0 px-2 py-0"
+			style={{ minHeight: "var(--mfw-row-h)" }}
+		>
+			<Tip label={tip} side="right">
+				<span
+					role="status"
+					className="flex min-w-0 flex-1 items-center gap-2"
+					style={{
+						color: "var(--mfw-fg-muted)",
+						fontSize: "var(--mfw-text-xs)",
+					}}
+				>
+					{dot}
+					<span className="truncate">{word}</span>
+				</span>
+			</Tip>
+			<Tip label={tip} side="right">
+				<Button
+					type="button"
+					variant="ghost"
+					size="icon-sm"
+					aria-label={`${playing ? "Stop" : "Start"} mfw: ${detail}`}
+					aria-pressed={playing}
+					disabled={disabled}
+					onClick={onToggle}
+					style={{ color: `var(${token})` }}
+				>
+					{statusIcon}
+				</Button>
+			</Tip>
+		</fieldset>
 	);
 }
 

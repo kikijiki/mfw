@@ -18,6 +18,7 @@ import {
 	Scroller,
 } from "~/components/Page";
 import { Button } from "~/components/ui/button";
+import { TipDiv } from "~/components/ui/tooltip";
 import { useToast } from "~/lib/toast";
 import type { RouterOutputs } from "~/lib/trpc";
 import { useTRPC } from "~/lib/trpc";
@@ -323,9 +324,9 @@ function UsageTable({
 						key={row.name}
 						className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 px-3 py-2"
 					>
-						<div className="min-w-0 truncate" title={row.name}>
+						<TipDiv className="min-w-0 truncate" tip={row.name} clipped>
 							{row.name}
-						</div>
+						</TipDiv>
 						<div className="text-right mfw-num">
 							<div>{money(row.usage)}</div>
 							<div className="text-xs" style={{ color: "var(--mfw-fg-muted)" }}>
