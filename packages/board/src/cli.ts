@@ -5,7 +5,12 @@ import {
 	lookupTransitionCommand,
 	transitionUsage,
 } from "./commands/transition.ts";
-import { CliError, type ParsedArgs, UsageError } from "./commands/types.ts";
+import {
+	CliError,
+	type Command,
+	type ParsedArgs,
+	UsageError,
+} from "./commands/types.ts";
 import { type MfwProject, openMfwProject } from "./project.ts";
 
 let loaded: MfwProject | undefined;
@@ -18,7 +23,7 @@ let configFlag: string | undefined;
 
 function usageText(project?: MfwProject): string {
 	const lines = [
-		"usage: mfwb [--config <board.yaml>] [--json] <command> ...",
+		"usage: mfwb [--config <board.yaml>] [--json] <command> ...   (mfwb <command> --help for one command)",
 		"",
 	];
 	for (const c of commands) for (const u of c.usage) lines.push(`  ${u}`);
@@ -58,6 +63,8 @@ const VALUE_FLAGS = new Set([
 	"--type",
 	"--id",
 	"--body",
+	"--body-file",
+	"--dir",
 	"--base-rev",
 	"--run",
 	"--worktree",
@@ -99,6 +106,7 @@ function parseArgv(argv: string[]): Parsed {
 	};
 	let config: string | undefined;
 	let json = false;
+	let help = false;
 	const loose: string[] = [];
 	let terminated = false;
 	for (let i = 0; i < argv.length; i++) {
@@ -111,6 +119,8 @@ function parseArgv(argv: string[]): Parsed {
 			if (a === "--type") args.type = v;
 			else if (a === "--id") args.id = v;
 			else if (a === "--body") args.body = v;
+			else if (a === "--body-file") args.bodyFile = v;
+			else if (a === "--dir") args.dir = v;
 			else if (a === "--base-rev") args.baseRev = intFlag(a, v);
 			else if (a === "--run") args.run = v;
 			else if (a === "--worktree") args.worktree = v;
@@ -143,6 +153,7 @@ function parseArgv(argv: string[]): Parsed {
 				];
 			else config = v;
 		} else if (a === "--json") json = true;
+		else if (a === "--help" || a === "-h") help = true;
 		else if (a === "--if-present") args.ifPresent = true;
 		else if (a === "--global") args.global = true;
 		else if (a === "--here") args.here = true;
@@ -161,7 +172,14 @@ function parseArgv(argv: string[]): Parsed {
 		else loose.push(a);
 	}
 	const command = loose.shift();
-	if (!command) throw new UsageError();
+	if (help) args.help = true;
+	if (!command) {
+		if (help) {
+			args.command = "help";
+			return { args, config, json };
+		}
+		throw new UsageError();
+	}
 	args.command = command;
 	args.rest = [...loose];
 	for (const a of loose) {
@@ -171,10 +189,46 @@ function parseArgv(argv: string[]): Parsed {
 	return { args, config, json };
 }
 
+/** `--help`: usage on stdout, exit 0; for one command, just its lines plus
+ * (create/update) the board's fields and allowed values. */
+async function printHelp(
+	name: string,
+	cmd: Command | undefined,
+	config: string | undefined,
+): Promise<void> {
+	let project: MfwProject | undefined;
+	try {
+		project = await openMfwProject(process.cwd(), { configPath: config });
+	} catch {
+		// no board: static usage only
+	}
+	if (name === "help" || (!cmd && !project)) {
+		console.log(usageText(project));
+		return;
+	}
+	const target = cmd ?? (project && lookupTransitionCommand(project, name));
+	if (!target) {
+		console.log(usageText(project));
+		return;
+	}
+	console.log(`usage:\n${target.usage.map((u) => `  ${u}`).join("\n")}`);
+	if (project && (name === "create" || name === "update")) {
+		console.log("\nfields (name=value; name~a|b adds/removes list entries):");
+		for (const [t, spec] of Object.entries(project.config.types)) {
+			console.log(`  type ${t}:`);
+			for (const [f, field] of Object.entries(spec.fields)) {
+				const values = (field as { values?: readonly string[] }).values;
+				console.log(`    ${f}${values ? `: one of ${values.join(", ")}` : ""}`);
+			}
+		}
+	}
+}
+
 async function main(): Promise<void> {
 	const { args, config, json } = parseArgv(process.argv.slice(2));
 	configFlag = config;
 	const cmd = commands.find((c) => c.name === args.command);
+	if (args.help) return printHelp(args.command, cmd, config);
 	// Commands that don't need a board work from any directory.
 	if (cmd && cmd.needsBoard === false) {
 		// biome-ignore lint/suspicious/noExplicitAny: no project for board-less commands

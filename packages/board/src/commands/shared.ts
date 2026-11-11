@@ -86,3 +86,22 @@ export async function didYouMean(
 	}
 	return found.length > 0 ? ` (did you mean ${found.join(" or ")}?)` : "";
 }
+
+/**
+ * The body text for create/update: `--body`, or `--body-file <path>` (`-` reads
+ * stdin), which avoids argv limits and shell quoting for long bodies.
+ */
+export async function resolveBody(
+	args: ParsedArgs,
+): Promise<string | undefined> {
+	if (args.bodyFile === undefined) return args.body;
+	if (args.body !== undefined) {
+		throw new CliError("pass either --body or --body-file, not both", 2);
+	}
+	if (args.bodyFile === "-") return Bun.stdin.text();
+	try {
+		return await Bun.file(args.bodyFile).text();
+	} catch {
+		throw new CliError(`cannot read --body-file '${args.bodyFile}'`, 2);
+	}
+}

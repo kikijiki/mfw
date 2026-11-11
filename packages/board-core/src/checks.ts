@@ -299,6 +299,12 @@ export interface CollectOptions {
 	rules?: ReadonlySet<string>;
 	/** Skip rules that read outside the board directory. */
 	boardOnly?: boolean;
+	/** Keep only issues keyed by a document: skips `refs` rules, whose issues
+	 * name a file and line, never a document (what `check --under` reports). */
+	documentsOnly?: boolean;
+	/** The board's documents, when the caller already listed them (read-only
+	 * checks share one listing); default: list them here. */
+	docs?: readonly BoardDocument[];
 	/** `name -> path` overrides for `roots` (relative paths resolve against `cwd`). */
 	rootOverrides?: Readonly<Record<string, string>>;
 	/** Receives, per `refs` rule run, how much it scanned and matched. */
@@ -531,10 +537,10 @@ export async function collectIssues(
 	root: string,
 	opts: CollectOptions = {},
 ): Promise<CheckIssue[]> {
-	const docs = await listAllDocuments(store, config);
-	const issues = await builtinIssues(store, config, root);
+	const docs = opts.docs ?? (await listAllDocuments(store, config));
+	const issues = await builtinIssues(store, config, root, docs);
 	issues.push(...fieldRuleIssues(config, docs));
-	if (!opts.boardOnly)
+	if (!opts.boardOnly && !opts.documentsOnly)
 		issues.push(...(await refsIssues(config, docs, root, opts)));
 	issues.push(...(await coverageIssues(config, docs, root, opts)));
 	return issues;
@@ -549,22 +555,20 @@ export async function builtinIssues(
 	store: BoardStore,
 	config: BoardConfig,
 	root: string,
+	listed?: readonly BoardDocument[],
 ): Promise<CheckIssue[]> {
 	const issues: CheckIssue[] = (await store.validate()).map(fromValidation);
+	const docs = listed ?? (await listAllDocuments(store, config));
 
 	// Workflow cycles: only types that declare a workflow take part, so ids are
 	// unique across the documents it is given.
-	const wfDocs: BoardDocument[] = [];
-	for (const [name, t] of Object.entries(config.types)) {
-		if (t.workflow) wfDocs.push(...(await store.listDocuments(name)));
-	}
+	const wfDocs = docs.filter((d) => config.types[d.type]?.workflow);
 	if (wfDocs.length > 0) {
 		issues.push(...workflowIssues(config, wfDocs).map(fromValidation));
 	}
 
 	// File scopes: every glob usable, every exemptions file valid.
 	const ownershipTypes: string[] = [];
-	const docs = await listAllDocuments(store, config);
 	for (const [name, t] of Object.entries(config.types)) {
 		if (!t.ownership) continue;
 		ownershipTypes.push(name);

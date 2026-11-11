@@ -3,6 +3,7 @@ import { checklist } from "./checklist.ts";
 import { claim, release } from "./claim.ts";
 import { conflicts } from "./conflicts.ts";
 import { create } from "./create.ts";
+import { del } from "./delete.ts";
 import { graph } from "./graph.ts";
 import { levels } from "./levels.ts";
 import { list } from "./list.ts";
@@ -14,6 +15,7 @@ import { repair } from "./repair.ts";
 import { reparent } from "./reparent.ts";
 import { row } from "./row.ts";
 import { dec, inc, toggle, unset } from "./scalar-ops.ts";
+import { shim } from "./shim.ts";
 import { show } from "./show.ts";
 import { skill } from "./skill.ts";
 import type { Command } from "./types.ts";
@@ -26,10 +28,12 @@ export const commands: Command[] = [
 	show,
 	create,
 	update,
+	del,
 	claim,
 	release,
 	check,
 	skill,
+	shim,
 	ready,
 	levels,
 	view,

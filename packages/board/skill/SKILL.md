@@ -53,12 +53,15 @@ bun run --cwd packages/board src/cli.ts <command> ...
 ```
 list [--type <type>] [--json] [field=a|b ...] [field~a|b ...]
 show [--type <type>] [--json] <id>
-create [--type <type>] [--id <id>] [--body <text>] [field=value ...]
-update [--type <type>] <id> [--base-rev <n>] [--body <text>] [field=value ...]
+create [--type <type>] [--id <id>] [--body <text> | --body-file <path|->] [field=value ...]
+update [--type <type>] <id> [--base-rev <n>] [--body <text> | --body-file <path|->] [field=value ...]
 claim <id> [--run <runId>] [--worktree <path>] [--lease-ms <n>] [--from <status>]
 release <id> --run <runId>
 reparent [--type <type>] [--json] <id> <parentId|->
+delete [--type <type>] [--json] <id>
 repair [--json]
+shim install [--dir <dir>] [--dry-run]
+shim status [--dir <dir>]
 ready [--type <type>] [--under <id>] [--json] [--unblocks] [field=a|b ...]
 levels [--under <id>] [--format md|tsv|json]
 view board [--type <type>] [--under <id>] [--format md|tsv|json]

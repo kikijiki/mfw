@@ -27,6 +27,8 @@ export const RESERVED_VERBS: ReadonlySet<string> = new Set([
 	"skill",
 	"reparent",
 	"repair",
+	"delete",
+	"shim",
 	"graph",
 	"plan",
 	"conflicts",

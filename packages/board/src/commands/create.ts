@@ -1,11 +1,11 @@
 import { parseFieldArgs, printDocument } from "@mfw/board-core";
-import { resolveType } from "./shared.ts";
+import { resolveBody, resolveType } from "./shared.ts";
 import type { Command } from "./types.ts";
 
 export const create: Command = {
 	name: "create",
 	usage: [
-		"create [--type <type>] [--id <id>] [--body <text>] [field=value ...]",
+		"create [--type <type>] [--id <id>] [--body <text> | --body-file <path|->] [field=value ...]",
 	],
 	async run(ctx, args) {
 		const type = resolveType(ctx, args);
@@ -13,7 +13,7 @@ export const create: Command = {
 		const doc = await ctx.project.store.createDocument(type, {
 			id: args.id,
 			fields,
-			body: args.body,
+			body: await resolveBody(args),
 		});
 		printDocument(doc);
 	},

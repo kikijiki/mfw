@@ -15,6 +15,12 @@ export interface ParsedArgs {
 	type?: string;
 	id?: string;
 	body?: string;
+	/** `--body-file <path>` (create/update): the body from a file, `-` for stdin. */
+	bodyFile?: string;
+	/** `--dir <dir>` (shim): where the launcher goes. */
+	dir?: string;
+	/** `--help` / `-h`: print usage and exit 0. */
+	help?: boolean;
 	baseRev?: number;
 	run?: string;
 	worktree?: string;

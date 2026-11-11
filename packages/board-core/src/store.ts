@@ -150,6 +150,7 @@ export class HierarchyError extends Error {
 }
 
 type RefField = Extract<FieldSpec, { kind: "ref" }>;
+const SCAN_BATCH = 64;
 const RETRY = Symbol("retry");
 
 export interface BoardDocument {
@@ -287,30 +288,52 @@ export class BoardStore {
 			: join(this.typeDir(type), name, type.primary as string);
 	}
 
-	/** Every file/directory in a type's dir that could be one of its documents, unparsed. */
-	private async scan(type: TypeSpec): Promise<ScannedEntry[]> {
+	/** Names of the files/directories in a type's dir that could be one of its
+	 * documents (one `readdir`, no file reads), in directory order. */
+	private async entryNames(type: TypeSpec): Promise<string[]> {
 		let entries: Dirent[];
 		try {
 			entries = await readdir(this.typeDir(type), { withFileTypes: true });
 		} catch {
 			return [];
 		}
+		return entries
+			.filter((e) => {
+				if (e.name.startsWith(".")) return false;
+				return type.layout === "flat"
+					? e.isFile() && e.name.endsWith(".md")
+					: e.isDirectory();
+			})
+			.map((e) => e.name);
+	}
+
+	/** One entry of `entryNames`, unparsed; null when it is not a document. */
+	private async readEntry(
+		type: TypeSpec,
+		name: string,
+	): Promise<ScannedEntry | null> {
+		if (type.layout === "flat") {
+			const path = join(this.typeDir(type), name);
+			const raw = await safeRead(path);
+			return raw === null || !looksLikeBoardDocument(raw)
+				? null
+				: { path, raw };
+		}
+		const path = join(this.typeDir(type), name, type.primary as string);
+		const raw = await safeRead(path);
+		return raw === null ? null : { path, raw }; // no primary file: not a document (e.g. attachments-only leftover)
+	}
+
+	/** Every file/directory in a type's dir that could be one of its documents, unparsed. */
+	private async scan(type: TypeSpec): Promise<ScannedEntry[]> {
+		const names = await this.entryNames(type);
 		const out: ScannedEntry[] = [];
-		for (const e of entries) {
-			if (e.name.startsWith(".")) continue;
-			if (type.layout === "flat") {
-				if (!e.isFile() || !e.name.endsWith(".md")) continue;
-				const path = join(this.typeDir(type), e.name);
-				const raw = await safeRead(path);
-				if (raw === null || !looksLikeBoardDocument(raw)) continue;
-				out.push({ path, raw });
-			} else {
-				if (!e.isDirectory()) continue;
-				const path = join(this.typeDir(type), e.name, type.primary as string);
-				const raw = await safeRead(path);
-				if (raw === null) continue; // no primary file: not a document (e.g. attachments-only leftover)
-				out.push({ path, raw });
-			}
+		// Bounded parallel reads; results keep directory order.
+		for (let i = 0; i < names.length; i += SCAN_BATCH) {
+			const batch = await Promise.all(
+				names.slice(i, i + SCAN_BATCH).map((n) => this.readEntry(type, n)),
+			);
+			for (const e of batch) if (e) out.push(e);
 		}
 		return out;
 	}
@@ -371,11 +394,35 @@ export class BoardStore {
 		);
 	}
 
+	/**
+	 * The document `id` of `typeName`, or null. A document's file or directory
+	 * name starts with its id (`pathFor`), so the common case reads only the
+	 * entries named for `id`. Anything else (no such entry, or none that
+	 * parses to `id`: a misnamed or malformed file) falls back to scanning the
+	 * whole type, as before. On a corrupt board the two paths can differ: a
+	 * valid name-matching entry wins over an earlier malformed one or a
+	 * misnamed duplicate. `validate()` reports those boards either way.
+	 */
 	async readDocument(
 		typeName: string,
 		id: string,
 	): Promise<BoardDocument | null> {
 		const type = this.typeOf(typeName);
+		for (const name of await this.entryNames(type)) {
+			if (!nameMatchesId(name, id)) continue;
+			const entry = await this.readEntry(type, name);
+			if (!entry) continue;
+			const doc = this.tryToDocument(typeName, type, entry);
+			if (doc?.id === id) return doc;
+		}
+		return this.readDocumentByScan(typeName, type, id);
+	}
+
+	private async readDocumentByScan(
+		typeName: string,
+		type: TypeSpec,
+		id: string,
+	): Promise<BoardDocument | null> {
 		for (const entry of await this.scan(type)) {
 			const parsed = parseDocument(entry.raw, typeName, type);
 			if (parsed.ok) {
@@ -570,7 +617,7 @@ export class BoardStore {
 			);
 		const parentId = nonEmptyString(input.fields[h.parent]);
 		return this.lockedBy(
-			() => this.planKeys(typeName, id, parentId),
+			() => this.planKeys(typeName, id, parentId, true),
 			async () => {
 				let parent: BoardDocument | null = null;
 				const doc = await this.createLocked(
@@ -1082,11 +1129,14 @@ export class BoardStore {
 		typeName: string,
 		id: string,
 		newParent: string | null,
+		creating = false,
 	): Promise<string[]> {
 		const type = this.typeOf(typeName);
 		const h = this.hierarchyFor(type) as HierarchySpec;
 		const keys = [`${typeName}:${id}`];
-		const current = await this.readDocument(typeName, id);
+		// A document being created has no current parent to lock (an id that
+		// already exists is refused by `createLocked` under the lock anyway).
+		const current = creating ? null : await this.readDocument(typeName, id);
 		const ref = (type.fields[h.parent] as RefField).ref;
 		for (const p of [
 			current ? nonEmptyString(current.fields[h.parent]) : null,
@@ -1205,9 +1255,39 @@ export class BoardStore {
 			before: string[];
 			after: string[];
 		}[] = [];
+		// One read of the board: every type's documents, and the parent -> children
+		// map derived from them. Only a parent whose list differs is locked and
+		// rewritten (`syncChildren` re-derives it under the lock), so a consistent
+		// board is read-only.
+		const docsByType = new Map<string, BoardDocument[]>();
+		for (const typeName of Object.keys(this.config.types)) {
+			docsByType.set(typeName, await this.listDocuments(typeName));
+		}
 		for (const [typeName, spec] of Object.entries(this.config.types)) {
 			if (!(h.parent in spec.fields) || !(h.children in spec.fields)) continue;
-			for (const doc of await this.listDocuments(typeName)) {
+			const kids = new Map<string, Set<string>>();
+			for (const [t, tspec] of Object.entries(this.config.types)) {
+				const field = tspec.fields[h.parent];
+				if (field?.kind !== "ref" || !refCovers(field.ref, typeName)) continue;
+				for (const d of docsByType.get(t) ?? []) {
+					const p = nonEmptyString(d.fields[h.parent]);
+					if (!p || (t === typeName && d.id === p)) continue;
+					let set = kids.get(p);
+					if (!set) {
+						set = new Set();
+						kids.set(p, set);
+					}
+					set.add(d.id);
+				}
+			}
+			for (const doc of docsByType.get(typeName) ?? []) {
+				const before = (doc.fields[h.children] as string[] | undefined) ?? [];
+				const actual = kids.get(doc.id) ?? new Set<string>();
+				const after = [
+					...before.filter((c) => actual.has(c)),
+					...[...actual].filter((c) => !before.includes(c)).sort(),
+				];
+				if (JSON.stringify(before) === JSON.stringify(after)) continue;
 				const result = await this.lock.with(`${typeName}:${doc.id}`, () =>
 					this.syncChildren(doc),
 				);

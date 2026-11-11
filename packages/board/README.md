@@ -178,7 +178,7 @@ Exit codes: 0 ok; 1 the command failed (for `check`: an error issue); 2 usage er
 | --- | --- |
 | `mfwb list [--type t] [--json] [field=a\|b ...] [field~a\|b ...]` | Documents of a type. `field=a\|b`: equals a or b; `field~a\|b`: list contains. Filters AND together. |
 | `mfwb show [--type t] [--json] <id>` | One document: frontmatter and body. |
-| `mfwb check [<id>] [--rule a,b] [--under id] [--board-only] [--root name=path] [--strict] [--json]` | Runs every rule and prints each issue as `severity rule subject: message`; `--board-only` skips rules that read outside the board (`refs`), `--root` repoints a `roots` entry for this run. Built-in rules: `document`, `id`, `reference`, `hierarchy`, `cycle`, `owns-glob`, `exemptions` (always errors), `unreachable` and `conflicts` (error unless `builtins:` in `board.yaml` says `advisory` or `off`), `inert-exemption` (advisory). Exit 1 on an error issue (advisory ones only with `--strict`), 3 if a check cannot run. `<id>` limits output to one document, `--under` to a subtree, `--rule` to named rules. |
+| `mfwb check [<id>] [--rule a,b] [--under id] [--board-only] [--root name=path] [--strict] [--json]` | Runs every rule and prints each issue as `severity rule subject: message`; `--board-only` skips rules that read outside the board (`refs`), `--root` repoints a `roots` entry for this run. Built-in rules: `document`, `id`, `reference`, `hierarchy`, `cycle`, `owns-glob`, `exemptions` (always errors), `unreachable` and `conflicts` (error unless `builtins:` in `board.yaml` says `advisory` or `off`), `inert-exemption` (advisory). Exit 1 on an error issue (advisory ones only with `--strict`), 3 if a check cannot run. `<id>` limits output to one document, `--under` to a subtree, `--rule` to named rules. `--under` reports only issues on documents in the subtree and skips the `refs` rules (their issues name a file and line, never a document), so it does not scan the code roots. |
 | `mfwb check --list [--json]` | The rules, their severity and what they read. |
 
 ### Create and edit
@@ -207,7 +207,8 @@ starts with `--` goes after a bare `--`.
 | Command | What it does |
 | --- | --- |
 | `mfwb reparent [--type t] [--json] <id> <parentId\|->` | Move a document under another (`-` clears the parent). Both sides stay in sync; refusals (cycle, depth, rules) exit 1 and write nothing. |
-| `mfwb repair [--json]` | Rebuild every parent's `children` from the children's `parent` fields. Use after editing parents by hand. Any write touching a parent does this for that parent too. |
+| `mfwb delete [--type t] [--json] <id>` | Delete a document and drop it from its parent's `children`. Refused (exit 1, nothing written) while it has children or another document lists it in `depends_on`. |
+| `mfwb repair [--json]` | Rebuild every parent's `children` from the children's `parent` fields (reads the board once; only parents whose list is wrong are locked and rewritten, so a consistent board is a read-only no-op). Use after editing parents by hand. Any write touching a parent does this for that parent too. |
 
 ### Workflow: what is ready, what to schedule
 
@@ -252,6 +253,8 @@ with the file untouched. A parent cannot finish while a child is open.
 | Command | What it does |
 | --- | --- |
 | `mfwb skill install [--global] [--here] [--target list] [--dry-run]` | Copy the mfwb skill into detected agent tools (claude, codex, opencode, pi), at the git root (`--here`: the current directory) or per user (`--global`). Skips a tool that already reads another install. |
+| `mfwb shim install [--dir dir] [--dry-run]` | Write an `mfwb` launcher (a two-line `sh` script that runs this checkout's CLI under bun) into `dir`, default `~/.local/bin`, so `mfwb` is on PATH for scripts. Run it once as `bun packages/board/src/cli.ts shim install`. Never overwrites a file it did not write; re-running is a no-op. |
+| `mfwb shim status [--dir dir]` | Whether the launcher is installed, outdated (the checkout moved) or missing. |
 | `mfwb skill status [--global] [--target list]` | Where it is installed and whether it is current. |
 
 ## Typical flow
@@ -266,3 +269,5 @@ mfwb checklist ABC-12 acceptance done c2
 mfwb done ABC-12 "landed in abc123" --commit
 mfwb graph --under ABC-3 > plan.mmd
 ```
+
+`create` and `update` take the body from `--body <text>` or `--body-file <path>` (`-` reads stdin), which avoids argv limits and shell quoting for long bodies. `mfwb --help` and `mfwb <command> --help` print usage and exit 0; for `create`/`update` they also list each field's allowed values.

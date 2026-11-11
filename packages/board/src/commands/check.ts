@@ -3,10 +3,11 @@ import {
 	type CheckRuleInfo,
 	type CheckStat,
 	collectIssues,
+	listAllDocuments,
 	ruleCatalog,
 } from "@mfw/board-core";
 import { CliError, type Command, type CommandContext } from "./types.ts";
-import { allDocuments, checkUnder, descendantsOf } from "./workflow-shared.ts";
+import { checkUnder, descendantsOf } from "./workflow-shared.ts";
 
 /** Where an issue points: a document, or a line of an external file. */
 function subjectOf(i: CheckIssue): string {
@@ -30,7 +31,8 @@ export const check: Command = {
 	usage: [
 		"check [<id>] [--rule a,b] [--under <id>] [--board-only] [--root name=path] [--strict] [--json]",
 		"      (every rule: structure, references, hierarchy, cycles, readiness, file scopes, field rules, refs;",
-		"       exit 1 on an error issue, 3 if a check cannot run; advisory issues print but pass unless --strict)",
+		"       exit 1 on an error issue, 3 if a check cannot run; advisory issues print but pass unless --strict;",
+		"       --under reports only issues on documents in that subtree and skips the refs rules, which name files)",
 		"check --list [--json]   (the rules, their severity and what they read)",
 	],
 	async run(ctx, args) {
@@ -61,7 +63,31 @@ export const check: Command = {
 		let within: Set<string> | undefined;
 		const stats: CheckStat[] = [];
 		try {
+			// One listing for the whole run (check takes no locks, so it is consistent).
+			const docs = await listAllDocuments(store, config);
+			if (id !== undefined && !docs.some((d) => d.id === id)) {
+				throw new CliError(`'${id}' not found`, 2);
+			}
+			checkUnder(config, docs, args.under);
+			if (args.under !== undefined) {
+				within = descendantsOf(config, docs, args.under);
+				within.add(args.under);
+				const refsIds = new Set((config.refs ?? []).map((r) => r.id));
+				if (
+					args.rule?.length &&
+					args.rule.every((r) => refsIds.has(r)) &&
+					!ctx.json
+				) {
+					console.error(
+						"note: refs rules report a file and line, never a document, so --under skips them",
+					);
+				}
+			}
 			issues = await collectIssues(store, config, root, {
+				docs,
+				// A subtree report keeps document-keyed issues only; `refs` issues
+				// name a file and line, so --under always dropped them.
+				documentsOnly: args.under !== undefined,
 				...(args.rule && args.rule.length > 0
 					? { rules: new Set(args.rule) }
 					: {}),
@@ -69,17 +95,6 @@ export const check: Command = {
 				stats,
 				...(args.roots ? { rootOverrides: args.roots } : {}),
 			});
-			if (id !== undefined || args.under !== undefined) {
-				const docs = await allDocuments(ctx);
-				if (id !== undefined && !docs.some((d) => d.id === id)) {
-					throw new CliError(`'${id}' not found`, 2);
-				}
-				checkUnder(config, docs, args.under);
-				if (args.under !== undefined) {
-					within = descendantsOf(config, docs, args.under);
-					within.add(args.under);
-				}
-			}
 		} catch (e) {
 			if (e instanceof CliError) throw e;
 			throw new CliError(e instanceof Error ? e.message : String(e), 3);
