@@ -14,7 +14,8 @@ afterAll(async () => {
 	for (const c of cleanups) await c();
 });
 
-const NOW = Date.UTC(2026, 9, 12, 12, 0, 0);
+// Relative to the real clock: flowTree folds runs that ended > 7 days before Date.now().
+const NOW = Math.floor(Date.now() / 1000) * 1000;
 const T0 = NOW - 3600_000;
 const m = (n: number) => T0 + n * 60_000;
 
