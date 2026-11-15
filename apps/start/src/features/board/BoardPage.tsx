@@ -1888,7 +1888,7 @@ export function TaskCard({
 				/>
 			) : null}
 
-			<div className="flex flex-wrap items-center gap-1">
+			<div className="mt-auto flex flex-wrap items-center gap-1">
 				<Chip>
 					<TaskTypeIcon type={task.type} />
 					{task.type}
