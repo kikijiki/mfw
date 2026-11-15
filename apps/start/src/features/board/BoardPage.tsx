@@ -1835,7 +1835,7 @@ function ColumnMoveMenu({
 			</DropdownMenu.Trigger>
 			<DropdownMenu.Portal>
 				<DropdownMenu.Content
-					align="end"
+					align="start"
 					sideOffset={4}
 					collisionPadding={8}
 					aria-label={label}
