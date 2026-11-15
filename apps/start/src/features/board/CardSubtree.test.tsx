@@ -278,11 +278,11 @@ describe("expanded card subtree", () => {
 			);
 		const open = card(true);
 		expect(open).toContain('data-testid="card-subtree"');
-		expect(open).toContain('aria-expanded="true"');
-		expect(open).toContain('aria-label="Collapse T-1"');
+		expect(open).toContain('data-expanded="true"');
+		expect(open).not.toContain('aria-label="Collapse T-1"');
 		const closed = card(false);
 		expect(closed).not.toContain('data-testid="card-subtree"');
-		expect(closed).toContain('aria-label="Expand T-1"');
+		expect(closed).not.toContain('aria-label="Expand T-1"');
 		// Cards are focusable so Space can reach them.
 		expect(closed).toContain('tabindex="0"');
 	});

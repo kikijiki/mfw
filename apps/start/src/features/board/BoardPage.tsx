@@ -1853,21 +1853,11 @@ export function TaskCard({
 				) : null}
 				<span className="flex-1" />
 				{task.size ? <Chip>{task.size}</Chip> : null}
-				<Button
-					size="icon-xs"
-					className="-mr-1 size-5"
-					variant="ghost"
-					aria-expanded={expanded}
-					aria-label={`${expanded ? "Collapse" : "Expand"} ${task.id}`}
-					title={`${expanded ? "Collapse" : "Expand"} (Space)`}
-					onClick={() => setExpanded((v) => !v)}
-				>
-					{expanded ? (
-						<ChevronDown aria-hidden />
-					) : (
-						<ChevronRight aria-hidden />
-					)}
-				</Button>
+				{priorityLook(task.priority) ? (
+					<Chip>
+						<PriorityIcon priority={task.priority} />
+					</Chip>
+				) : null}
 			</div>
 
 			<Tip label={task.title} side="bottom" align="start">
@@ -1903,11 +1893,6 @@ export function TaskCard({
 					<TaskTypeIcon type={task.type} />
 					{task.type}
 				</Chip>
-				{priorityLook(task.priority) ? (
-					<Chip>
-						<PriorityIcon priority={task.priority} />
-					</Chip>
-				) : null}
 				{openDeps > 0 ? <Chip tone="info">{openDeps} deps</Chip> : null}
 				{task.draftPhase === "waiting_for_answers" ? (
 					<TipButton

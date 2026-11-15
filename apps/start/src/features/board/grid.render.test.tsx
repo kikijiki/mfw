@@ -217,7 +217,7 @@ describe("the grid layout", () => {
 		expect(html).toContain("waiting for the schema");
 		// the agent chip rides on the card
 		expect(html).toContain(">CC<");
-		expect(html).toContain('aria-label="Expand A"');
+		expect(html).not.toContain('aria-label="Expand A"');
 		expect(html).not.toContain("data-tile");
 	});
 
