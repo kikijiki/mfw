@@ -50,6 +50,7 @@ import {
 	StatusIcon,
 	TaskTypeIcon,
 } from "../../components/icons";
+import { priorityLook } from "../../components/icons/looks";
 import { LoadingRows } from "../../components/Loading";
 import { Chip, Page } from "../../components/Page";
 import { useNow } from "../../components/RelativeTime";
@@ -2286,7 +2287,11 @@ export function TaskCard({
 					<TaskTypeIcon type={task.type} />
 					{task.type}
 				</Chip>
-				<PriorityIcon priority={task.priority} />
+				{priorityLook(task.priority) ? (
+					<Chip>
+						<PriorityIcon priority={task.priority} />
+					</Chip>
+				) : null}
 				{openDeps > 0 ? <Chip tone="info">{openDeps} deps</Chip> : null}
 				{task.draftPhase === "waiting_for_answers" ? (
 					<TipButton
