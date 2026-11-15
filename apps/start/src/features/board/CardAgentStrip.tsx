@@ -48,7 +48,6 @@ export function CardAgentStrip({
 	onSelectPip,
 	scope,
 	outcomeDetail,
-	compact = false,
 }: {
 	runs: readonly CardRun[];
 	pips: readonly Pip[];
@@ -59,8 +58,6 @@ export function CardAgentStrip({
 	scope?: ReactNode;
 	/** When, which model and what cost of the last settled run, where known (the expanded card reads them from its story). */
 	outcomeDetail?: OutcomeDetail | null;
-	/** One line that never wraps (the lanes layout's fixed-height tile): chips, then pips, clipped at the edge. */
-	compact?: boolean;
 }) {
 	if (runs.length === 0 && pips.length === 0) return null;
 	const outcome = runs.length === 0 ? lastOutcome(pips, outcomeDetail) : null;
@@ -68,20 +65,11 @@ export function CardAgentStrip({
 	return (
 		<div
 			data-testid="card-agent-strip"
-			className={
-				compact
-					? "flex min-w-0 flex-nowrap items-center gap-x-2 overflow-hidden whitespace-nowrap"
-					: "flex flex-col gap-1"
-			}
+			className="flex flex-col gap-1"
 			style={{ fontSize: "var(--mfw-text-xs)" }}
 		>
 			{runs.length > 0 ? (
-				<div
-					className={cn(
-						"flex items-center gap-x-2",
-						compact ? "flex-nowrap" : "flex-wrap gap-y-1",
-					)}
-				>
+				<div className="flex flex-wrap items-center gap-x-2 gap-y-1">
 					{runs.map((run) => {
 						const activity = shownActivity(run);
 						const look = lookForRun({

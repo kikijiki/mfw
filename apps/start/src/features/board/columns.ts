@@ -146,6 +146,25 @@ export function dropVerdict(
 	return { ok: true };
 }
 
+/**
+ * What a drop of `task` on `column` does, for every layout (a grid section's
+ * header or body, a column): nothing when it is already there, a refusal with
+ * `dropVerdict`'s reason, or a move to the column's role.
+ */
+export function dropAction(
+	column: BoardColumn,
+	task: { status: string },
+):
+	| { kind: "stay" }
+	| { kind: "refuse"; reason: string }
+	| { kind: "move"; to: TaskStatus } {
+	if (column.role === task.status && column.writable) return { kind: "stay" };
+	const verdict = dropVerdict(column, task);
+	if (!verdict.ok) return { kind: "refuse", reason: verdict.reason };
+	// dropVerdict refuses a column without a role, so this is never reached without one.
+	return column.role ? { kind: "move", to: column.role } : { kind: "stay" };
+}
+
 /** A column a bulk move can start from or land on (neighbour controls). */
 export function bulkMoveTarget(
 	from: BoardColumn,

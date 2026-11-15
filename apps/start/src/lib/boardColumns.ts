@@ -54,26 +54,34 @@ export function writeExpandedEmpty(
 	writeList(EXPANDED_PREFIX + project, expanded);
 }
 
-/** How the board lays its statuses out: full-width swimlanes (default) or the classic columns. */
-export type BoardLayout = "lanes" | "columns";
+/** How the board lays its statuses out: a grid of cards per status (default) or the classic columns. */
+export type BoardLayout = "grid" | "columns";
 
-export const DEFAULT_BOARD_LAYOUT: BoardLayout = "lanes";
+export const DEFAULT_BOARD_LAYOUT: BoardLayout = "grid";
 
 const LAYOUT_PREFIX = "mfw:v2:board:layout:";
 
+/**
+ * A stored value read as a layout. "lanes" is what boards remembered before
+ * the grid replaced the swimlanes: it reads as the grid, its successor, so a
+ * remembered choice never points at a layout that no longer exists.
+ */
 export function parseBoardLayout(value: unknown): BoardLayout {
-	return value === "columns" || value === "lanes"
-		? value
-		: DEFAULT_BOARD_LAYOUT;
+	if (value === "columns" || value === "grid") return value;
+	if (value === "lanes") return "grid";
+	return DEFAULT_BOARD_LAYOUT;
 }
 
 /** The project's remembered layout; the default when nothing (or nothing usable) is stored. */
 export function readBoardLayout(project: string): BoardLayout {
 	if (typeof window === "undefined") return DEFAULT_BOARD_LAYOUT;
 	try {
-		return parseBoardLayout(
-			window.localStorage.getItem(LAYOUT_PREFIX + project),
-		);
+		const key = LAYOUT_PREFIX + project;
+		const raw = window.localStorage.getItem(key);
+		const layout = parseBoardLayout(raw);
+		// Rewritten once, so the retired value does not outlive the migration.
+		if (raw === "lanes") window.localStorage.setItem(key, layout);
+		return layout;
 	} catch {
 		return DEFAULT_BOARD_LAYOUT;
 	}

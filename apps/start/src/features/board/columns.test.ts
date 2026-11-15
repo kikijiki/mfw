@@ -9,6 +9,7 @@ import {
 	columnOfRole,
 	columnView,
 	defaultCollapsed,
+	dropAction,
 	dropVerdict,
 	type SchemaStatus,
 	tasksByColumn,
@@ -165,6 +166,37 @@ describe("drop rules", () => {
 		);
 		expect(dropVerdict(col({ role: "archived" }), { status: "draft" }).ok).toBe(
 			true,
+		);
+	});
+
+	test("a drop moves to the column's role, refuses with the verdict's reason, or stays", () => {
+		expect(dropAction(col({ role: "ready" }), { status: "backlog" })).toEqual({
+			kind: "move",
+			to: "ready",
+		});
+		// already there: nothing to do, no toast
+		expect(dropAction(col({ role: "review" }), { status: "review" })).toEqual({
+			kind: "stay",
+		});
+		expect(
+			dropAction(col({ role: "in_progress", label: "Doing" }), {
+				status: "ready",
+			}),
+		).toEqual({
+			kind: "refuse",
+			reason: "Tasks enter Doing when a run starts.",
+		});
+		const alias = dropAction(col({ writable: false, label: "Queued" }), {
+			status: "review",
+		});
+		// an alias of the task's own role is not "already there": it says why
+		expect(alias.kind).toBe("refuse");
+		expect(
+			dropAction(col({ role: null, writable: false }), { status: "ready" })
+				.kind,
+		).toBe("refuse");
+		expect(dropAction(col({ role: "draft" }), { status: "backlog" }).kind).toBe(
+			"refuse",
 		);
 	});
 

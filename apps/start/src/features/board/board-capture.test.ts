@@ -85,7 +85,7 @@ describe("mobile quick capture", () => {
 	test("human controls cannot manufacture an unclaimed In progress task", () => {
 		// Every drop, bulk move and phone move goes through the one rule
 		// (columns.ts, tested in columns.test.ts), which names its reason.
-		expect(source).toContain("dropVerdict(column, task)");
+		expect(source).toContain("dropAction(column, task)");
 		expect(source).toContain("bulkMoveTarget(column, previous");
 		expect(source).toContain("dropVerdict(c, task).ok");
 	});

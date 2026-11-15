@@ -12,8 +12,8 @@ import {
 	CircleHelp,
 	Columns3,
 	Ellipsis,
+	LayoutGrid,
 	Plus,
-	Rows3,
 } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
 import {
@@ -107,23 +107,13 @@ import {
 	columnCounts,
 	columnView,
 	defaultCollapsed,
+	dropAction,
 	dropVerdict,
 	isColumnCollapsed,
 	tasksByColumn,
 	toggleColumnState,
 } from "./columns";
-import {
-	isFocusKey,
-	LANE,
-	laneChrome,
-	laneSizes,
-	laneTile,
-	SPACE,
-	scrollLeftToReveal,
-	stepFocus,
-	tileMetrics,
-	wheelScrollLeft,
-} from "./lanes";
+import { GRID, GRID_TEMPLATE, isFocusKey, SPACE, stepFocus } from "./grid";
 import { OwnershipConflictNotice } from "./OwnershipConflictNotice";
 
 /** Board. Drag moves a task, optimistically; rolls back with the server's reason if the DoR gate refuses. Phones get a status menu instead of drag. */
@@ -529,17 +519,16 @@ export function BoardPage({
 		if (readOnly) return;
 		const task = rows.find((t) => t.id === id);
 		if (!task) return;
-		if (column.role === task.status && column.writable) return;
-		const verdict = dropVerdict(column, task);
-		if (!verdict.ok) {
+		const action = dropAction(column, task);
+		if (action.kind === "refuse") {
 			toast({
 				tone: "warning",
 				title: `${id} stayed put`,
-				description: verdict.reason,
+				description: action.reason,
 			});
 			return;
 		}
-		if (column.role) move.mutate({ project, id, to: column.role });
+		if (action.kind === "move") move.mutate({ project, id, to: action.to });
 	};
 
 	return (
@@ -773,8 +762,8 @@ export function BoardPage({
 								</Button>
 							}
 						/>
-					) : wide && layout === "lanes" ? (
-						<LaneStack
+					) : wide && layout === "grid" ? (
+						<GridStack
 							project={project}
 							readOnly={readOnly}
 							selectedTask={selectedTask}
@@ -982,7 +971,7 @@ export function BoardPage({
 	);
 }
 
-/** Lanes | Columns: the board's layout, remembered per project. */
+/** Grid | Columns: the board's layout, remembered per project. */
 export function LayoutToggle({
 	layout,
 	onChange,
@@ -997,7 +986,7 @@ export function LayoutToggle({
 		>
 			{(
 				[
-					["lanes", "Lanes", Rows3],
+					["grid", "Grid", LayoutGrid],
 					["columns", "Columns", Columns3],
 				] as const
 			).map(([value, label, Icon]) => (
@@ -1006,7 +995,7 @@ export function LayoutToggle({
 					size="xs"
 					variant={layout === value ? "default" : "outline"}
 					aria-pressed={layout === value}
-					className={value === "lanes" ? "rounded-r-none" : "rounded-l-none"}
+					className={value === "grid" ? "rounded-r-none" : "rounded-l-none"}
 					onClick={() => onChange(value)}
 				>
 					<Icon aria-hidden />
@@ -1337,7 +1326,7 @@ function columnRefusesDrops(column: BoardColumn): boolean {
 		: !dropVerdict(column, { status: "ready" }).ok;
 }
 
-/** The drag-over highlight and the handlers of one drop target (a column or a lane, collapsed or not). */
+/** The drag-over highlight and the handlers of one drop target (a grid section, collapsed or not). */
 function useDropTarget(readOnly: boolean, onDrop: (taskId: string) => void) {
 	const [over, setOver] = useState(false);
 	return {
@@ -1360,7 +1349,7 @@ function useDropTarget(readOnly: boolean, onDrop: (taskId: string) => void) {
 	};
 }
 
-/** A column or lane header's two view switches, each its own icon: "Only with agents", "Sort by activity". */
+/** A column or grid section header's two view switches, each its own icon: "Only with agents", "Sort by activity". */
 function ColumnMenu({
 	label,
 	view,
@@ -1369,8 +1358,6 @@ function ColumnMenu({
 	label: string;
 	view: ColumnViewOptions;
 	setView: (update: (v: ColumnViewOptions) => ColumnViewOptions) => void;
-	/** Kept for callers; the switches are inline, so there is no popup to place. */
-	placement?: "down" | "up";
 }) {
 	return (
 		<div className="flex items-center gap-1">
@@ -1402,8 +1389,8 @@ function ColumnMenu({
 	);
 }
 
-/** One status of the lanes layout, as the stack draws it. */
-export interface LaneItem {
+/** One status of the grid layout, as the stack draws it. */
+export interface GridItem {
 	column: BoardColumn;
 	tasks: Task[];
 	collapsed: boolean;
@@ -1411,13 +1398,21 @@ export interface LaneItem {
 	next?: BoardColumn;
 }
 
+/** How many cards share the first row of a grid body: its live column count, whatever the width. */
+function rowLength(cards: readonly HTMLElement[]): number {
+	const top = cards[0]?.offsetTop;
+	if (top === undefined) return 1;
+	const n = cards.findIndex((c) => c.offsetTop !== top);
+	return n === -1 ? cards.length : Math.max(1, n);
+}
+
 /**
- * The lanes layout (design: every status is a full-width swimlane exactly one
- * tile tall; each lane scrolls sideways on its own). The tile height is the
- * stack's measured height shared out over the open lanes (`laneSizes`); when
- * even minimum tiles do not fit, the stack scrolls vertically instead.
+ * The grid layout: every status is a full-width collapsible section whose
+ * cards wrap into as many columns as fit (`GRID_TEMPLATE`). The stack is the
+ * board's one scroller and it scrolls vertically only: a wide board grows
+ * columns, a busy status grows rows, nothing ever scrolls sideways.
  */
-export function LaneStack({
+export function GridStack({
 	items,
 	project,
 	readOnly = false,
@@ -1425,50 +1420,21 @@ export function LaneStack({
 	onToggle,
 	onMoveAll,
 	onDrop,
-	height,
 }: {
-	items: LaneItem[];
+	items: GridItem[];
 	project: string;
 	readOnly?: boolean;
 	selectedTask?: string | null;
 	onToggle: (column: BoardColumn, taskCount: number) => void;
 	onMoveAll: (from: BoardColumn, to: BoardColumn) => void;
 	onDrop: (column: BoardColumn, taskId: string) => void;
-	/** Test seam: the stack's height when there is no layout to measure. */
-	height?: number;
 }) {
-	const stack = useRef<HTMLDivElement>(null);
-	const [measured, setMeasured] = useState(height ?? 0);
-	useEffect(() => {
-		const el = stack.current;
-		if (!el) return;
-		const read = () => setMeasured(el.clientHeight);
-		read();
-		if (typeof ResizeObserver === "undefined") return;
-		const observer = new ResizeObserver(read);
-		observer.observe(el);
-		return () => observer.disconnect();
-	}, []);
-	const isEmpty = (i: LaneItem) => !i.collapsed && i.tasks.length === 0;
-	const empty = items.filter(isEmpty).length;
-	const open = items.filter((i) => !i.collapsed && !isEmpty(i)).length;
-	const sizes = laneSizes({
-		available: measured,
-		open,
-		collapsed: items.length - open - empty,
-		empty,
-	});
 	return (
 		// biome-ignore lint/a11y/noStaticElementInteractions: arrow keys bubble up from the focusable cards inside; the handler only acts on those
 		<div
-			ref={stack}
-			data-lane-stack
-			data-tile-height={sizes.tile}
-			className="flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto"
-			style={{
-				gap: LANE.GAP,
-				padding: `${LANE.STACK_PAD / 2}px 12px`,
-			}}
+			data-grid-stack
+			className="flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto p-3"
+			style={{ gap: GRID.GAP }}
 			onKeyDown={(e) => {
 				if (
 					!isFocusKey(e.key) ||
@@ -1480,27 +1446,29 @@ export function LaneStack({
 					return;
 				const target = e.target as HTMLElement;
 				if (!target.hasAttribute?.("data-card")) return;
+				// The columns are read from the layout at the moment of the key, so
+				// up and down follow whatever the width has wrapped the grid into.
 				const lists = [
-					...e.currentTarget.querySelectorAll<HTMLElement>("[data-lane-strip]"),
-				].map((strip) => [
-					...strip.querySelectorAll<HTMLElement>(":scope > [data-card]"),
+					...e.currentTarget.querySelectorAll<HTMLElement>("[data-grid-body]"),
+				].map((body) => [
+					...body.querySelectorAll<HTMLElement>(":scope > [data-card]"),
 				]);
-				const lane = lists.findIndex((l) => l.includes(target));
-				if (lane < 0) return;
+				const section = lists.findIndex((l) => l.includes(target));
+				if (section < 0) return;
 				const to = stepFocus(
-					lists.map((l) => l.length),
-					{ lane, index: lists[lane]?.indexOf(target) ?? 0 },
+					lists.map((l) => ({ count: l.length, columns: rowLength(l) })),
+					{ section, index: lists[section]?.indexOf(target) ?? 0 },
 					e.key,
 				);
-				const next = to ? lists[to.lane]?.[to.index] : undefined;
+				const next = to ? lists[to.section]?.[to.index] : undefined;
 				if (!next) return;
 				e.preventDefault();
 				next.focus();
-				next.scrollIntoView({ block: "nearest", inline: "nearest" });
+				next.scrollIntoView({ block: "nearest" });
 			}}
 		>
-			{items.map((item, index) => (
-				<Lane
+			{items.map((item) => (
+				<GridSection
 					key={item.column.value}
 					column={item.column}
 					tasks={item.tasks}
@@ -1512,8 +1480,6 @@ export function LaneStack({
 					onDrop={(id) => onDrop(item.column, id)}
 					project={project}
 					readOnly={readOnly}
-					tile={sizes.tile}
-					menuPlacement={index < 3 ? "down" : "up"}
 					selectedTask={selectedTask}
 				/>
 			))}
@@ -1521,8 +1487,8 @@ export function LaneStack({
 	);
 }
 
-/** One status as a horizontal swimlane: a fixed header gutter, then a strip of tiles that scrolls on its own. */
-export function Lane({
+/** One status as a collapsible section: a header row, then its cards in a wrapping grid. */
+export function GridSection({
 	column,
 	tasks,
 	collapsed,
@@ -1533,8 +1499,6 @@ export function Lane({
 	onDrop,
 	project,
 	readOnly = false,
-	tile: budget,
-	menuPlacement = "down",
 	selectedTask = null,
 }: {
 	column: BoardColumn;
@@ -1547,90 +1511,27 @@ export function Lane({
 	onDrop: (taskId: string) => void;
 	project: string;
 	readOnly?: boolean;
-	/** The tile height the stack can give this lane; it takes what its titles need, no more. */
-	tile: number;
-	menuPlacement?: "down" | "up";
 	selectedTask?: string | null;
 }) {
 	const { over, handlers } = useDropTarget(readOnly, onDrop);
 	const { counts, view, setView, shown } = useColumnView(tasks, project);
 	const refuses = columnRefusesDrops(column);
-	const strip = useRef<HTMLDivElement>(null);
-
-	// A wheel over the lane scrolls it sideways while it can; at its edge (or when
-	// nothing overflows) the page keeps the wheel. Native listener: React's
-	// onWheel is passive and could not prevent the vertical scroll.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: the strip only exists while the lane is open, so the listener is re-attached when it toggles
-	useEffect(() => {
-		const el = strip.current;
-		if (!el) return;
-		const onWheel = (e: WheelEvent) => {
-			const to = wheelScrollLeft({
-				deltaX: e.deltaX,
-				deltaY: e.deltaY,
-				scrollLeft: el.scrollLeft,
-				scrollWidth: el.scrollWidth,
-				clientWidth: el.clientWidth,
-			});
-			if (to === null) return;
-			e.preventDefault();
-			el.scrollLeft = to;
-		};
-		el.addEventListener("wheel", onWheel, { passive: false });
-		return () => el.removeEventListener("wheel", onWheel);
-	}, [collapsed]);
+	const body = useRef<HTMLDivElement>(null);
 
 	// The selected card (the docked inspector's task) stays in view.
 	const hasSelected =
 		selectedTask !== null && shown.some((t) => t.id === selectedTask);
 	useEffect(() => {
-		const el = strip.current;
+		const el = body.current;
 		if (!el || !hasSelected) return;
 		const card = [...el.children].find(
 			(c): c is HTMLElement =>
 				c instanceof HTMLElement && c.dataset.task === selectedTask,
 		);
-		if (!card) return;
-		el.scrollLeft = scrollLeftToReveal({
-			scrollLeft: el.scrollLeft,
-			viewport: el.clientWidth,
-			left: card.offsetLeft,
-			width: card.offsetWidth,
-		});
+		card?.scrollIntoView({ block: "nearest" });
 	}, [hasSelected, selectedTask]);
 
-	// The scrollbar only costs height while the strip really overflows, so an
-	// uncluttered lane keeps equal padding above and below its tiles.
-	const [overflows, setOverflows] = useState(false);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: re-measured when the lane toggles or its tiles change
-	useEffect(() => {
-		const el = strip.current;
-		if (!el) return;
-		const read = () => setOverflows(el.scrollWidth > el.clientWidth + 1);
-		read();
-		if (typeof ResizeObserver === "undefined") return;
-		const observer = new ResizeObserver(read);
-		observer.observe(el);
-		return () => observer.disconnect();
-	}, [collapsed, shown.length]);
 	const empty = tasks.length === 0;
-	const agents = useBoardAgents();
-	const hasMeta = shown.some(
-		(t) =>
-			t.labels.length > 0 ||
-			Boolean(t.blockedReason) ||
-			t.status === "draft" ||
-			runsForTask(agents, t).length > 0 ||
-			(agents.pips[t.id]?.length ?? 0) > 0 ||
-			agents.intents.has(t.id),
-	);
-	const tile = laneTile(
-		budget,
-		shown.map((t) => t.title),
-		hasMeta,
-	);
-	const laneHeight = empty ? LANE.EMPTY_OPEN : tile + laneChrome(overflows);
-
 	const dropState = readOnly ? "readonly" : refuses ? "refused" : "open";
 	const frame = {
 		borderColor: over
@@ -1649,18 +1550,18 @@ export function Lane({
 				type="button"
 				onClick={onToggle}
 				aria-expanded={false}
-				data-lane-collapsed
+				data-grid-collapsed
 				data-drop={dropState}
 				className="mfw-focus flex w-full shrink-0 items-center gap-2 border text-left"
 				style={{
 					...frame,
-					height: LANE.COLLAPSED,
+					height: GRID.COLLAPSED,
 					padding: `0 ${SPACE.PAD_X}px`,
 				}}
 				aria-label={`Expand ${column.label}, ${tasks.length} tasks`}
 				{...handlers}
 			>
-				{/* Same spot as the open lane's collapse button. */}
+				{/* Same spot as the open section's collapse button. */}
 				<span className="flex size-5 shrink-0 items-center justify-center">
 					<ChevronRight
 						aria-hidden
@@ -1684,64 +1585,45 @@ export function Lane({
 		);
 	}
 
-	const collapseButton = (
-		<Button
-			size="icon-xs"
-			className="size-5 shrink-0"
-			variant="ghost"
-			aria-expanded={true}
-			aria-label={`Collapse ${column.label}`}
-			onClick={onToggle}
-		>
-			<ChevronDown aria-hidden />
-		</Button>
-	);
-
 	return (
 		<section
-			aria-label={`${column.label} lane`}
-			data-lane
+			aria-label={`${column.label} section`}
+			data-grid-section
 			data-drop={dropState}
-			className="flex shrink-0 border"
-			style={{ ...frame, height: laneHeight }}
+			className="flex shrink-0 flex-col border"
+			style={{
+				...frame,
+				padding: `${(GRID.COLLAPSED - 2 - SPACE.ROW_H) / 2}px ${SPACE.PAD_X}px`,
+				gap: SPACE.PAD_Y,
+			}}
 			{...handlers}
 		>
 			<header
-				className="flex shrink-0 flex-col justify-center border-r"
-				style={{
-					width: LANE.GUTTER,
-					borderColor: "var(--mfw-border)",
-					padding: `${SPACE.PAD_Y}px ${SPACE.PAD_X}px`,
-					gap: SPACE.ROW_GAP,
-				}}
+				className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1"
+				style={{ minHeight: SPACE.ROW_H }}
 			>
-				<div
-					className="flex min-w-0 items-center gap-1.5"
-					style={{ height: SPACE.ROW_H }}
+				<Button
+					size="icon-xs"
+					className="size-5 shrink-0"
+					variant="ghost"
+					aria-expanded={true}
+					aria-label={`Collapse ${column.label}`}
+					onClick={onToggle}
 				>
-					{collapseButton}
-					<StatusIcon
-						statusRole={column.role}
-						value={column.value}
-						label={column.label}
-					/>
-					<TipSpan
-						className="min-w-0 truncate font-medium"
-						tip={column.label}
-						clipped
-					>
-						{column.label}
-					</TipSpan>
-					<span className="mfw-num" style={{ color: "var(--mfw-fg-muted)" }}>
-						{counts.total}
-					</span>
-					<ColumnSignals live={counts.live} needs={counts.needs} />
-				</div>
+					<ChevronDown aria-hidden />
+				</Button>
+				<StatusIcon
+					statusRole={column.role}
+					value={column.value}
+					label={column.label}
+				/>
+				<span className="font-medium">{column.label}</span>
+				<span className="mfw-num" style={{ color: "var(--mfw-fg-muted)" }}>
+					{counts.total}
+				</span>
+				<ColumnSignals live={counts.live} needs={counts.needs} />
 				{empty ? null : (
-					<div
-						className="flex items-center gap-2"
-						style={{ height: SPACE.ROW_H }}
-					>
+					<span className="flex items-center gap-1">
 						<ColumnMoveMenu
 							readOnly={readOnly}
 							column={column}
@@ -1750,50 +1632,39 @@ export function Lane({
 							next={next}
 							onMoveAll={onMoveAll}
 						/>
-						<ColumnMenu
-							label={column.label}
-							view={view}
-							setView={setView}
-							placement={menuPlacement}
-						/>
-					</div>
+						<ColumnMenu label={column.label} view={view} setView={setView} />
+					</span>
 				)}
 			</header>
-			<div
-				ref={strip}
-				data-lane-strip
-				className="relative flex min-w-0 flex-1 items-center overflow-x-auto overflow-y-hidden"
-				style={{
-					gap: LANE.TILE_GAP,
-					padding: `${LANE.STRIP_PAD_Y}px ${LANE.TILE_GAP}px`,
-					scrollbarWidth: "thin",
-				}}
-			>
-				{shown.map((task) => (
-					<TaskCard
-						key={task.id}
-						task={task}
-						project={project}
-						draggable={!readOnly}
-						tile={{ height: tile }}
-						selected={task.id === selectedTask}
-					/>
-				))}
-				{tasks.length === 0 ? null : view.onlyAgents && shown.length === 0 ? (
-					<span
-						className="shrink-0 whitespace-nowrap"
-						style={{ color: "var(--mfw-fg-muted)" }}
-					>
-						No agents here right now.
-					</span>
-				) : null}
-			</div>
+			{empty ? null : (
+				<div
+					ref={body}
+					data-grid-body
+					className="grid items-start"
+					style={{ gridTemplateColumns: GRID_TEMPLATE, gap: GRID.GAP }}
+				>
+					{shown.map((task) => (
+						<TaskCard
+							key={task.id}
+							task={task}
+							project={project}
+							draggable={!readOnly}
+							selected={task.id === selectedTask}
+						/>
+					))}
+				</div>
+			)}
+			{!empty && view.onlyAgents && shown.length === 0 ? (
+				<span style={{ color: "var(--mfw-fg-muted)" }}>
+					No agents here right now.
+				</span>
+			) : null}
 		</section>
 	);
 }
 
 /**
- * A lane or column's bulk moves, kept behind a menu: one stray click on a
+ * A grid section or column's bulk moves, kept behind a menu: one stray click on a
  * header must never move a whole status. Each item still goes through the
  * confirmation dialog, and the drop rules decide what is offered: Expansion
  * owns Draft exit, capture owns Draft entry, runs own In progress. A refused
@@ -1882,30 +1753,7 @@ function ColumnMoveMenu({
 	);
 }
 
-/**
- * The frame both card layouts share: one padding scale and the "needs you"
- * ring.
- */
-function cardFrame(opts: {
-	selected: boolean;
-	needsHuman: boolean;
-	draggable: boolean;
-	/** Vertical padding; the spacing scale's unless a dense tile tightens it. */
-	padY?: number;
-}): React.CSSProperties {
-	const padY = opts.padY ?? SPACE.PAD_Y;
-	return {
-		padding: `${padY}px ${SPACE.PAD_X}px`,
-		borderColor: opts.selected ? "var(--mfw-accent)" : "var(--mfw-border)",
-		borderRadius: "var(--mfw-radius-sm)",
-		background: opts.selected
-			? "var(--mfw-accent-subtle)"
-			: "var(--mfw-bg-raised)",
-		cursor: opts.draggable ? "grab" : undefined,
-		boxShadow: opts.needsHuman ? "0 0 0 2px var(--mfw-warn)" : undefined,
-	};
-}
-
+/** The one card every layout draws: the grid's cells, the columns, the phone's list. */
 export function TaskCard({
 	task,
 	project,
@@ -1913,14 +1761,11 @@ export function TaskCard({
 	moveOptions,
 	onMove,
 	defaultExpanded = false,
-	tile,
 	selected = false,
 }: {
 	task: Task;
 	project: string;
 	draggable: boolean;
-	/** The lanes layout's fixed-height tile: one compact card, its runs in a popover. */
-	tile?: { height: number };
 	/** This task is open in the docked inspector. */
 	selected?: boolean;
 	/** Start expanded (tests; the board starts every card compact). */
@@ -1949,250 +1794,12 @@ export function TaskCard({
 	const [outcomeDetail, setOutcomeDetail] = useState<OutcomeDetail | null>(
 		null,
 	);
-	const ref = useRef<HTMLElement>(null);
-	// A tile cannot grow, so its expansion is a popover anchored under it. It
-	// is `fixed` (the lane's scroller would clip it) and placed when opened;
-	// scrolling, a click elsewhere or Escape close it.
-	const [popover, setPopover] = useState<{
-		left: number;
-		top?: number;
-		bottom?: number;
-		maxHeight: number;
-	} | null>(null);
-	const toggle = () => {
-		if (!tile) {
-			setExpanded((v) => !v);
-			return;
-		}
-		if (expanded) {
-			setExpanded(false);
-			return;
-		}
-		const rect = ref.current?.getBoundingClientRect();
-		if (rect && typeof window !== "undefined") {
-			const width = 440;
-			const below = window.innerHeight - rect.bottom - 12;
-			const above = rect.top - 12;
-			const up = below < 220 && above > below;
-			setPopover({
-				left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
-				...(up
-					? { bottom: window.innerHeight - rect.top + 4 }
-					: { top: rect.bottom + 4 }),
-				maxHeight: Math.max(160, Math.min(520, (up ? above : below) - 4)),
-			});
-		}
-		setExpanded(true);
-	};
-	const popoverOpen = Boolean(tile) && expanded;
-	useEffect(() => {
-		if (!popoverOpen) return;
-		const away = (e: Event) => {
-			if (e.target instanceof Node && ref.current?.contains(e.target)) return;
-			setExpanded(false);
-		};
-		document.addEventListener("mousedown", away);
-		window.addEventListener("scroll", away, true);
-		return () => {
-			document.removeEventListener("mousedown", away);
-			window.removeEventListener("scroll", away, true);
-		};
-	}, [popoverOpen]);
-
-	if (tile) {
-		const { lines, gap, padY } = tileMetrics(tile.height);
-		const hasStrip = runs.length > 0 || pips.length > 0;
-		return (
-			<article
-				ref={ref}
-				data-card
-				data-task={task.id}
-				data-tile
-				data-expanded={expanded}
-				data-selected={selected}
-				// biome-ignore lint/a11y/noNoninteractiveTabindex: the card is a focus target; arrows move between cards, Space opens its runs
-				tabIndex={0}
-				onKeyDown={(e) => {
-					if (e.key === "Escape" && expanded) {
-						e.stopPropagation();
-						setExpanded(false);
-						return;
-					}
-					if (!isCardToggleKey(e)) return;
-					e.preventDefault();
-					toggle();
-				}}
-				draggable={draggable && !locked}
-				onDragStart={(e) => {
-					e.dataTransfer.setData("text/mfw-task", task.id);
-					e.dataTransfer.effectAllowed = "move";
-				}}
-				className="flex shrink-0 flex-col justify-center overflow-hidden border"
-				style={{
-					...cardFrame({
-						selected,
-						needsHuman,
-						draggable: draggable && !locked,
-						padY,
-					}),
-					width: LANE.TILE_W,
-					height: tile.height,
-					gap,
-				}}
-			>
-				<div
-					className="flex min-w-0 items-center gap-1.5"
-					style={{ height: SPACE.ROW_H }}
-				>
-					<Mono value={task.id} />
-					<TaskTypeIcon type={task.type} />
-					<PriorityIcon priority={task.priority} />
-					{askingRunId ? (
-						<AppLink
-							to={href.run(project, askingRunId)}
-							draggable={false}
-							title="Its agent asked a question; answer it to resume the work"
-						>
-							<Chip tone="warn">
-								<CircleHelp aria-hidden /> question
-							</Chip>
-						</AppLink>
-					) : null}
-					{firstRun ? <ScopeMeter sample={firstRun.scopeSample} /> : null}
-					{verdict && task.status !== "done" && task.status !== "archived" ? (
-						<VerdictChip verdict={verdict.verdict} round={verdict.round} />
-					) : null}
-					<span className="flex-1" />
-					{openDeps > 0 ? <Chip tone="info">{openDeps} deps</Chip> : null}
-					{task.size ? <Chip>{task.size}</Chip> : null}
-					<Button
-						size="icon-xs"
-						className="-mr-1 size-5"
-						variant="ghost"
-						aria-expanded={expanded}
-						aria-label={`${expanded ? "Collapse" : "Expand"} ${task.id}`}
-						title={`${expanded ? "Collapse" : "Expand"} runs (Space)`}
-						onClick={toggle}
-					>
-						{expanded ? (
-							<ChevronDown aria-hidden />
-						) : (
-							<ChevronRight aria-hidden />
-						)}
-					</Button>
-				</div>
-
-				<Tip label={task.title} side="bottom" align="start">
-					<AppLink
-						to={href.task(project, task.id)}
-						navigate={() => openTask(task.id)}
-						className={cn(
-							"min-w-0 font-medium",
-							lines === 2 ? "line-clamp-2" : "truncate",
-						)}
-						style={{ lineHeight: `${SPACE.LINE_H}px` }}
-					>
-						{task.title}
-					</AppLink>
-				</Tip>
-
-				{hasStrip ? (
-					<CardAgentStrip
-						compact
-						runs={runs}
-						pips={pips}
-						isDraft={task.status === "draft"}
-						runHref={(runId) => href.run(project, runId)}
-						onSelectPip={(ref) => go(href.board(project, { node: ref }))}
-					/>
-				) : task.blockedReason ? (
-					<Tip
-						label={blockedReasonText(task.blockedReason)}
-						side="bottom"
-						align="start"
-					>
-						<span
-							className="truncate"
-							style={{
-								color: "var(--mfw-warn)",
-								fontSize: "var(--mfw-text-xs)",
-								lineHeight: `${SPACE.META_H}px`,
-							}}
-						>
-							{blockedReasonText(task.blockedReason)}
-						</span>
-					</Tip>
-				) : task.status === "draft" ? (
-					<span
-						className="truncate"
-						style={{
-							color: "var(--mfw-fg-muted)",
-							fontSize: "var(--mfw-text-xs)",
-							lineHeight: `${SPACE.META_H}px`,
-						}}
-					>
-						{draftPhaseLabel(task.draftPhase, task.draftAttempts)} →{" "}
-						{task.afterExpansion}
-					</span>
-				) : intent ? (
-					<BrainIntentLine intent={intent} />
-				) : task.labels.length > 0 ? (
-					<Tip label={task.labels.join(" · ")} side="bottom" align="start">
-						<span
-							className="min-w-0 truncate"
-							style={{
-								color: "var(--mfw-fg-muted)",
-								fontSize: "var(--mfw-text-xs)",
-								lineHeight: `${SPACE.META_H}px`,
-							}}
-						>
-							{task.labels.slice(0, 2).join(" · ")}
-						</span>
-					</Tip>
-				) : null}
-
-				{expanded ? (
-					<div
-						role="dialog"
-						aria-label={`${task.id} runs`}
-						className="z-30 flex w-[440px] max-w-[calc(100vw-16px)] cursor-default flex-col gap-2 overflow-auto border p-2 shadow-lg"
-						style={{
-							position: popover ? "fixed" : "absolute",
-							left: popover?.left ?? 0,
-							top: popover ? popover.top : "100%",
-							bottom: popover?.bottom,
-							maxHeight: popover?.maxHeight ?? 360,
-							background: "var(--mfw-bg-raised)",
-							borderColor: "var(--mfw-border)",
-							borderRadius: "var(--mfw-radius-md)",
-							whiteSpace: "normal",
-						}}
-					>
-						<CardAgentStrip
-							runs={runs}
-							pips={pips}
-							isDraft={task.status === "draft"}
-							runHref={(runId) => href.run(project, runId)}
-							onSelectPip={(ref) => go(href.board(project, { node: ref }))}
-							outcomeDetail={outcomeDetail}
-						/>
-						{intent ? <BrainIntentLine intent={intent} /> : null}
-						<CardSubtree
-							project={project}
-							taskId={task.id}
-							onOutcome={setOutcomeDetail}
-						/>
-					</div>
-				) : null}
-			</article>
-		);
-	}
-
 	return (
 		<article
 			data-card
 			data-task={task.id}
 			data-expanded={expanded}
+			data-selected={selected}
 			// biome-ignore lint/a11y/noNoninteractiveTabindex: the card is a focus target; Space expands it (the chevron is the pointer path)
 			tabIndex={0}
 			onKeyDown={(e) => {
@@ -2205,14 +1812,18 @@ export function TaskCard({
 				e.dataTransfer.setData("text/mfw-task", task.id);
 				e.dataTransfer.effectAllowed = "move";
 			}}
-			className="flex flex-col border"
+			// min-w-0: a grid cell must not be widened by a long chip or title.
+			className="flex min-w-0 flex-col border"
 			style={{
-				...cardFrame({
-					selected,
-					needsHuman,
-					draggable: draggable && !locked,
-				}),
+				padding: `${SPACE.PAD_Y}px ${SPACE.PAD_X}px`,
 				gap: SPACE.ROW_GAP,
+				borderColor: selected ? "var(--mfw-accent)" : "var(--mfw-border)",
+				borderRadius: "var(--mfw-radius-sm)",
+				background: selected
+					? "var(--mfw-accent-subtle)"
+					: "var(--mfw-bg-raised)",
+				cursor: draggable && !locked ? "grab" : undefined,
+				boxShadow: needsHuman ? "0 0 0 2px var(--mfw-warn)" : undefined,
 			}}
 		>
 			<div
