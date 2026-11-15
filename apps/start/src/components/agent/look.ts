@@ -167,6 +167,8 @@ const MONOGRAMS: Record<string, string> = {
 	claude: "CC",
 	"codex-cli": "CX",
 	codex: "CX",
+	"cursor-agent": "CU",
+	"gemini-cli": "GM",
 	opencode: "OC",
 	pi: "PI",
 };

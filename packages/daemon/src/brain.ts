@@ -15,7 +15,8 @@ import {
 } from "@mfw/db/schema";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
-import type { ProviderConfig } from "./agents/adapter.ts";
+import { runAcpOneShot } from "./agents/acp-inference.ts";
+import { acpInferenceLaunch, type ProviderConfig } from "./agents/adapter.ts";
 import type {
 	BrainCallCtx,
 	BrainPort,
@@ -227,6 +228,49 @@ export class CodexCliInference implements InferenceClient {
 	}
 }
 
+/**
+ * One-shot call through the ACP bridge (Cursor, Gemini CLI, opencode) under
+ * policy `none` (no tools), in a fresh temp dir removed afterwards. The
+ * bridge owns read-only enforcement; this is just the app-server client.
+ */
+export class AcpInference implements InferenceClient {
+	constructor(
+		private readonly providerId: string,
+		private readonly opts: {
+			providerArgv?: string[];
+			env?: Record<string, string>;
+		} = {},
+	) {}
+
+	async complete(prompt: string, opts: InferenceOpts): Promise<InferenceReply> {
+		const launch = acpInferenceLaunch(this.providerId, opts.model);
+		const cwd = await mkdtemp(join(tmpdir(), "mfw-brain-acp-"));
+		try {
+			const r = await runAcpOneShot(prompt, {
+				argv: [
+					...launch.bridgeArgv,
+					...(this.opts.providerArgv ?? launch.providerArgv),
+				],
+				cwd,
+				env: { ...launch.env, ...(this.opts.env ?? {}) },
+				model: opts.model,
+				...(opts.reasoningEffort
+					? { reasoningEffort: opts.reasoningEffort }
+					: {}),
+				timeoutMs: opts.timeoutMs,
+				...(opts.signal ? { signal: opts.signal } : {}),
+			});
+			return Object.keys(r.usage).length > 0
+				? { text: r.text, usage: r.usage }
+				: { text: r.text };
+		} finally {
+			await rm(cwd, { recursive: true, force: true }).catch(() => {
+				// best-effort: an empty temp dir left behind is harmless
+			});
+		}
+	}
+}
+
 /** Provider selection at the composition boundary. */
 export function inferenceForProvider(
 	provider: ProviderConfig,
@@ -238,6 +282,8 @@ export function inferenceForProvider(
 			return new ClaudeCliInference();
 		case "codex-cli":
 			return new CodexCliInference(opts);
+		case "acp":
+			return new AcpInference(provider.id);
 		default:
 			// Deferred to call time so enabled:false stays a no-op.
 			return {

@@ -22,6 +22,14 @@ describe("MFW RunPod CPU runtime", () => {
 		expect(script).toContain("bun@1.3.13");
 		expect(script).toContain("@openai/codex@0.149.0");
 		expect(script).toContain("@anthropic-ai/claude-code@2.1.238");
+		// ACP agents with pinned npm releases.
+		expect(script).toContain("opencode-ai@1.19.5");
+		expect(script).toContain("@google/gemini-cli@0.68.0");
+		expect(script).toContain("opencode --version >/dev/null");
+		expect(script).toContain("gemini --version >/dev/null");
+		expect(script).toContain("@earendil-works/pi-coding-agent@1.5.2");
+		expect(script).toContain("pi-acp@0.0.34");
+		expect(script).toContain("pi --version >/dev/null");
 		expect(script).toContain(`touch ${MFW_RUNPOD_CPU_READY_PATH}`);
 	});
 });

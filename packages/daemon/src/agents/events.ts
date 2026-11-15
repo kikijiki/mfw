@@ -28,7 +28,7 @@ export const AgentEventSchema = z.discriminatedUnion("type", [
 	z.object({
 		...base,
 		type: z.literal("hello"),
-		provider: z.string(), // "claude-cli" | "acp:<agent>" | "pty"
+		provider: z.string(), // the catalogue id: "claude-cli", "codex-cli", "opencode", ...
 		capabilities: z.object({
 			steer: z.boolean(),
 			interrupt: z.boolean().optional(),

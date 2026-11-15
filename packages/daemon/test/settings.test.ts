@@ -480,12 +480,14 @@ describe("update", () => {
 		const env = await freshEnv();
 		await env.settings.update({ leaseMs: 120_000 });
 
+		const gemini = await env.settings.update({
+			provider: { id: "gemini-cli" },
+		});
+		expect(gemini.values.provider.type).toBe("acp");
+		expect(gemini.values.model).toBe("default");
 		const codex = await env.settings.update({ provider: { id: "codex-cli" } });
 		expect(codex.values.provider.type).toBe("codex-cli");
 		expect(codex.values.model).toBe("gpt-5.6-sol");
-		expect(
-			env.settings.update({ provider: { id: "gemini-cli" } }),
-		).rejects.toThrow(/cannot be run/);
 		expect(
 			env.settings.update({ provider: { id: "made-up" } }),
 		).rejects.toThrow(/unknown provider/);

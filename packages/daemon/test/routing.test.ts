@@ -8,6 +8,7 @@ import {
 	RoutingError,
 	type RoutingSettings,
 	routeRun,
+	routingSettingsFrom,
 	validateRoutingConfig,
 } from "../src/routing.ts";
 
@@ -205,7 +206,7 @@ describe("routeRun precedence: explicit > task > project tier map > catalogue", 
 		expect(() =>
 			routeRun({
 				kind: "task",
-				task: task({ provider: "gemini-cli" }),
+				task: task({ provider: "aider" }),
 				settings: settings({ routing: LOCAL }),
 			}),
 		).toThrow(/not something mfw can run.*endpoint \(local\)/);
@@ -394,6 +395,39 @@ describe("routing config", () => {
 				endpoints: { "codex-cli": { baseUrl: "http://h/v1" } },
 			}),
 		).toThrow(/collides/);
+	});
+
+	test("endpoints are accepted for codex-cli, opencode and pi, refused for the rest", () => {
+		const routing = {
+			endpoints: { local: { baseUrl: "http://127.0.0.1:1/v1" } },
+		};
+		for (const [id, type] of [
+			["codex-cli", "codex-cli"],
+			["opencode", "acp"],
+			["pi", "acp"],
+		] as const) {
+			const s = routingSettingsFrom({
+				provider: { id, type, endpoint: "local" },
+				model: "m",
+				routing,
+			});
+			expect(s.provider.endpoint?.id).toBe("local");
+		}
+		for (const [id, type] of [
+			["claude-cli", "claude-cli"],
+			["cursor-agent", "acp"],
+			["gemini-cli", "acp"],
+		] as const) {
+			expect(() =>
+				routingSettingsFrom({
+					provider: { id, type, endpoint: "local" },
+					model: "m",
+					routing,
+				}),
+			).toThrow(
+				/only codex-cli, opencode, pi can use an OpenAI-compatible endpoint/,
+			);
+		}
 	});
 
 	test("Codex gets the endpoint as a responses-wire model provider, key by env name only", () => {

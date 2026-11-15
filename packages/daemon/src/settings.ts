@@ -658,6 +658,8 @@ export interface ProviderView {
 	path: string | null;
 	version: string | null;
 	versionError?: string;
+	/** Set when `bin` was found on PATH but is not the CLI mfw means; `installed` is false then. */
+	identityError?: string;
 	/** Subscription and/or API-key methods, each with whether it is satisfied. */
 	auth: ProviderAuthStatus[];
 	models: ProviderModelChoice[];
@@ -750,6 +752,9 @@ export class ProviderSettings {
 			version: detection?.version ?? null,
 			...(detection?.versionError
 				? { versionError: detection.versionError }
+				: {}),
+			...(detection?.identityError
+				? { identityError: detection.identityError }
 				: {}),
 			auth: await probeAuth(entry, {
 				home: this.deps.home,

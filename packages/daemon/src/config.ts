@@ -49,7 +49,7 @@ const ROUTE_ID = /^[A-Za-z0-9_-]+$/;
 /** Which agent CLI this project runs. Credentials are per-machine; the tool is per-repo. */
 const providerSchema = z.object({
 	id: z.string().min(1),
-	type: z.enum(["claude-cli", "codex-cli", "custom"]),
+	type: z.enum(["claude-cli", "codex-cli", "acp", "custom"]),
 	command: z.array(z.string().min(1)).optional(),
 	env: z.record(z.string(), z.string()).optional(),
 	/** codex-cli only: id of a `routing.endpoints` entry to use as Codex's model provider. */

@@ -1,7 +1,19 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+	chmod,
+	mkdir,
+	mkdtemp,
+	rm,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { adapterFor } from "../src/agents/adapter.ts";
+import {
+	CURSOR_AGENT_IDENTITY,
+	PI_IDENTITY,
+} from "../src/agents/agent-identity.ts";
 import {
 	catalogueCredentialIds,
 	DEFAULT_PROVIDER_ID,
@@ -61,13 +73,19 @@ describe("catalogue", () => {
 				// so it must not ship a guessed one.
 				expect(entry.models).toEqual([]);
 			}
+			// Every drivable entry must resolve to a real adapter.
+			if (entry.drivable) expect(adapterFor(entry.id)).toBeDefined();
 		}
 	});
 
-	test("Claude and Codex are drivable, and Claude remains the default", () => {
+	test("Claude, Codex and the ACP agents are drivable, and Claude remains the default", () => {
 		expect(drivableProviders().map((p) => p.id)).toEqual([
 			"claude-cli",
 			"codex-cli",
+			"gemini-cli",
+			"cursor-agent",
+			"opencode",
+			"pi",
 		]);
 		expect(findProvider(DEFAULT_PROVIDER_ID)?.drivable).toBe(true);
 	});
@@ -115,8 +133,47 @@ describe("catalogue", () => {
 			id: "codex-cli",
 			type: "codex-cli",
 		});
-		expect(() => providerConfigFor("gemini-cli")).toThrow(/cannot be run/);
+		for (const id of ["gemini-cli", "cursor-agent", "opencode", "pi"]) {
+			expect(providerConfigFor(id)).toEqual({ id, type: "acp" });
+		}
 		expect(() => providerConfigFor("nope")).toThrow(/unknown provider/);
+	});
+
+	test("ACP agents offer only their own default model", () => {
+		for (const id of ["gemini-cli", "cursor-agent", "opencode", "pi"]) {
+			const entry = findProvider(id);
+			expect(entry?.models).toEqual([
+				{ id: "default", label: "Agent default", kind: "alias" },
+			]);
+			expect(entry?.defaultModel).toBe("default");
+			expect(entry?.tiers).toBeUndefined();
+		}
+		const cursor = findProvider("cursor-agent");
+		expect(
+			cursor?.auth.some((a) => a.envVars?.includes("CURSOR_API_KEY")),
+		).toBe(true);
+	});
+
+	test("Cursor is found as `agent` and pi as `pi`, each with an identity check", () => {
+		const cursor = findProvider("cursor-agent");
+		expect(cursor?.bin).toBe("agent");
+		expect(cursor?.identity).toBe(CURSOR_AGENT_IDENTITY);
+		const pi = findProvider("pi");
+		expect(pi).toMatchObject({
+			id: "pi",
+			bin: "pi",
+			drivable: true,
+			configType: "acp",
+			acceptsEndpoints: true,
+			modelsAreSnapshot: false,
+			defaultModel: "default",
+		});
+		expect(pi?.identity).toBe(PI_IDENTITY);
+		expect(pi?.auth[0]?.loginFiles).toEqual([
+			".pi/agent/auth.json",
+			".pi/agent/models.json",
+		]);
+		expect(pi?.tiers).toBeUndefined();
 	});
 
 	test("credential ids are collected for the extra-credentials diff", () => {
@@ -152,7 +209,7 @@ describe("catalogue", () => {
 		expect(tierModel("claude-cli", "standard")).toBe("sonnet");
 		expect(tierModel("claude-cli", "strong")).toBe("opus");
 		expect(tierModel("codex-cli", "strong")).toBe("gpt-5.6-sol");
-		// A non-drivable provider has no tiers.
+		// ACP agents have no tiers: routing falls back to the project model.
 		expect(tierModel("gemini-cli", "light")).toBeUndefined();
 		expect(tierModel("nope", "light")).toBeUndefined();
 	});
@@ -214,6 +271,73 @@ describe("detection", () => {
 		expect(d.installed).toBe(true);
 		expect(d.version).toBeNull();
 		expect(d.versionError).toContain("bad flag");
+	});
+
+	test("Cursor's `agent` counts only when it resolves to a cursor-agent binary", async () => {
+		const entry = findProvider(
+			"cursor-agent",
+		) as (typeof PROVIDER_CATALOGUE)[number];
+		// Genuine layout: agent is a link to .../versions/<v>/cursor-agent.
+		const good = await tmp("mfw-detect-cursor-");
+		await mkdir(join(good, "share"), { recursive: true });
+		await fakeBin(join(good, "share"), "cursor-agent", "2026.05.01-abc");
+		await mkdir(join(good, "bin"));
+		await symlink(
+			join(good, "share", "cursor-agent"),
+			join(good, "bin", "agent"),
+		);
+		const ok = await new ProviderDetector({
+			env: { PATH: join(good, "bin") },
+		}).detect(entry);
+		expect(ok).toMatchObject({ installed: true, version: "2026.05.01-abc" });
+		expect(ok.identityError).toBeUndefined();
+
+		// Some other tool called `agent`.
+		const bad = await tmp("mfw-detect-agent-");
+		await fakeBin(bad, "agent", "1.0");
+		const refused = await new ProviderDetector({
+			env: { PATH: bad },
+		}).detect(entry);
+		expect(refused).toMatchObject({
+			installed: false,
+			path: join(bad, "agent"),
+			version: null,
+		});
+		expect(refused.identityError).toContain("not Cursor's CLI");
+	});
+
+	test("pi counts only when `pi --help` names the pi coding agent", async () => {
+		const entry = findProvider("pi") as (typeof PROVIDER_CATALOGUE)[number];
+		const dir = await tmp("mfw-detect-pi-");
+		await fakeBin(dir, "pi", "1.5.2");
+		const seen: string[][] = [];
+		const make = (text: string) =>
+			new ProviderDetector({
+				env: { PATH: dir },
+				probeIdentity: async (_p, args) => {
+					seen.push([...args]);
+					return { ok: true, text };
+				},
+			});
+		const ok = await make(
+			"pi - AI coding assistant with read, bash, edit, write tools",
+		).detect(entry);
+		expect(ok).toMatchObject({ installed: true, version: "1.5.2" });
+		expect(seen).toEqual([["--help"]]);
+		const bad = await make("pi: the irrational number calculator").detect(
+			entry,
+		);
+		expect(bad).toMatchObject({ installed: false, path: join(dir, "pi") });
+		expect(bad.identityError).toContain("not the pi coding agent");
+		// A probe that cannot run fails closed.
+		const broken = await new ProviderDetector({
+			env: { PATH: dir },
+			probeIdentity: async () => {
+				throw new Error("boom");
+			},
+		}).detect(entry);
+		expect(broken.installed).toBe(false);
+		expect(broken.identityError).toBeDefined();
 	});
 
 	test("caches within the TTL and re-probes after it", async () => {
@@ -321,7 +445,14 @@ describe("ProviderSettings.catalogue", () => {
 		});
 		const view = await providers.catalogue();
 
-		expect(view.selectableProviderIds).toEqual(["claude-cli", "codex-cli"]);
+		expect(view.selectableProviderIds).toEqual([
+			"claude-cli",
+			"codex-cli",
+			"gemini-cli",
+			"cursor-agent",
+			"opencode",
+			"pi",
+		]);
 		expect(view.allowsCustomModel).toBe(true);
 		expect(view.modelSnapshotCheckedOn).toBe(MODEL_SNAPSHOT_CHECKED);
 

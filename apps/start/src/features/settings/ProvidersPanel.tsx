@@ -277,6 +277,11 @@ function ProviderRow({
 						at <Mono value={provider.path} />
 					</span>
 				) : null}
+				{provider.identityError ? (
+					<span style={{ color: "var(--mfw-warn)" }}>
+						{provider.identityError}
+					</span>
+				) : null}
 				{provider.versionError ? (
 					<span style={{ color: "var(--mfw-warn)" }}>
 						version check failed: {provider.versionError}

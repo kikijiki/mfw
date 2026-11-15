@@ -9,6 +9,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	BASE_EXECUTION_ENVIRONMENT,
 	SecretEnvironment,
@@ -24,6 +25,7 @@ import {
 	type HostObservation,
 	type RegisteredHost,
 } from "../src/host-registry.ts";
+import { bundleRemoteSupport } from "../src/remote-execution-support.ts";
 import {
 	SharedHostSecretError,
 	SshExecutionTarget,
@@ -237,6 +239,24 @@ await Bun.write(runDir + "/events.jsonl", JSON.stringify({ type: "done" }) + "\\
 		ref,
 	};
 }
+
+describe("ACP bridge shipping", () => {
+	test("the ACP bridge bundles with the SDK inlined", async () => {
+		const bridge = fileURLToPath(
+			new URL("../src/agents/bridges/acp-bridge.ts", import.meta.url),
+		);
+		// Bun's first bundle in a `bun test` process cannot resolve parent-relative
+		// imports (the daemon itself is unaffected); warm it with the bridge's SDK-importing translator.
+		await bundleRemoteSupport(
+			fileURLToPath(new URL("../src/agents/acp-translate.ts", import.meta.url)),
+		);
+		const bytes = await bundleRemoteSupport(bridge);
+		expect(bytes.byteLength).toBeGreaterThan(0);
+		const text = new TextDecoder().decode(bytes);
+		expect(text).not.toContain('from "@agentclientprotocol/sdk"');
+		expect(text).not.toMatch(/require\(["']@agentclientprotocol\/sdk/);
+	});
+});
 
 describe("SSH ExecutionTarget", () => {
 	test("stage, detached driver under the box user's HOME, collect back, proven delete", async () => {

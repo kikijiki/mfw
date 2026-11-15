@@ -30,14 +30,15 @@ export interface Invocation {
 export interface ProviderConfig {
 	/** A `PROVIDER_CATALOGUE` id. Only ids with an adapter below can run. */
 	id: string;
-	type: "claude-cli" | "codex-cli" | "custom";
+	/** `acp`: any Agent Client Protocol agent (Cursor, Gemini CLI, opencode), told apart by `id`. */
+	type: "claude-cli" | "codex-cli" | "acp" | "custom";
 	/** Reserved for a future pty adapter. Nothing reads it: `type: "custom"` has no adapter and `AdapterRegistry.invocation` throws. */
 	command?: string[];
 	env?: Record<string, string>;
 	/**
-	 * Codex only: an OpenAI-compatible endpoint (routing `endpoints`) to use
-	 * as Codex's model provider instead of OpenAI. Names, a URL and the env
-	 * var that holds the key; never a key.
+	 * Codex and opencode only: an OpenAI-compatible endpoint (routing
+	 * `endpoints`) to use as the model provider instead of the default.
+	 * Names, a URL and the env var that holds the key; never a key.
 	 */
 	endpoint?: {
 		id: string;
@@ -117,6 +118,14 @@ export const FROM_ROOT = {
 		"bridges",
 		"codex-exec-bridge.ts",
 	),
+	acpBridge: join(
+		"packages",
+		"daemon",
+		"src",
+		"agents",
+		"bridges",
+		"acp-bridge.ts",
+	),
 	/** The MCP server a brain turn is given (`@mfw/mcp --brain`). */
 	mcpMain: join("packages", "mcp", "src", "main.ts"),
 } as const;
@@ -180,6 +189,11 @@ const BRIDGES = {
 		rel: FROM_ROOT.codexExecBridge,
 		file: "codex-exec-bridge.ts",
 		env: "MFW_CODEX_EXEC_BRIDGE_SCRIPT",
+	},
+	acp: {
+		rel: FROM_ROOT.acpBridge,
+		file: "acp-bridge.ts",
+		env: "MFW_ACP_BRIDGE_SCRIPT",
 	},
 } as const;
 
@@ -419,10 +433,135 @@ export const codexAdapter: AgentAdapter = {
 	},
 };
 
+/**
+ * ACP adapters: one generic bridge (`acp-bridge.ts`) speaks the Agent Client
+ * Protocol to the provider CLI and re-emits canonical `mfw.app-server/v1`;
+ * `MFW_ACP_AGENT` (the catalogue id) selects per-agent quirks. The model is
+ * chosen inside the bridge over ACP session config; `default` or empty leaves
+ * the agent's own default. Not steerable.
+ *
+ * Brain turns run under `MFW_ACP_POLICY=read-only`: the argv carries the
+ * agent's own read-only flags and the bridge enforces the rest (mode,
+ * permission classification, violation detection). The agent mints the
+ * session id (like Codex); the bridge reports it on the `session` event.
+ * Endpoints reach the bridge as `MFW_ACP_ENDPOINT` + `MFW_ACP_MODEL`; the
+ * bridge decides per agent whether it can honour them.
+ */
+type AcpArgv = (model: string, mode: AcpLaunchMode) => string[];
+
+/** How an ACP provider CLI is launched: a task run, a project-brain turn, or the critic's one-shot call. */
+type AcpLaunchMode = "task" | "brain" | "inference";
+
+/** The pi-acp release mfw launches (adapter) and installs (RunPod). */
+export const PI_ACP_VERSION = "0.0.34";
+
+const hasModel = (model: string) => model !== "" && model !== "default";
+
+const ACP_ARGV: Record<string, AcpArgv> = {
+	"cursor-agent": (_model, mode) => [
+		"agent",
+		// Root flags go before the `acp` subcommand.
+		...(mode === "task" ? [] : ["--mode", "plan"]),
+		...(mode === "brain" ? ["--approve-mcps"] : []),
+		"acp",
+	],
+	"gemini-cli": (model, mode) => [
+		"gemini",
+		"--acp",
+		...(hasModel(model) ? ["--model", model] : []),
+		...(mode === "task" ? [] : ["--approval-mode", "plan"]),
+	],
+	// opencode's read-only enforcement is config the bridge injects, not argv.
+	opencode: () => ["opencode", "acp"],
+	// pi-acp takes no pi flags; the bridge wraps pi itself for those.
+	pi: () => ["bunx", `pi-acp@${PI_ACP_VERSION}`],
+};
+
+function acpEndpointEnv(
+	cfg: ProviderConfig,
+	model: string,
+): Record<string, string> {
+	if (!cfg.endpoint) return {};
+	return {
+		MFW_ACP_ENDPOINT: JSON.stringify({
+			id: cfg.endpoint.id,
+			baseUrl: cfg.endpoint.baseUrl,
+			...(cfg.endpoint.envKey ? { envKey: cfg.endpoint.envKey } : {}),
+		}),
+		MFW_ACP_MODEL: model,
+	};
+}
+
+function acpAdapter(id: string): AgentAdapter {
+	const argv = ACP_ARGV[id] as AcpArgv;
+	return {
+		id,
+		invocation(cfg, model, _prompt, opts) {
+			const providerArgv = argv(model, opts.brain ? "brain" : "task");
+			return {
+				driverScript: appServerDriverScript(),
+				agentArgv: providerArgv,
+				bridgeArgv: ["bun", "run", bridgeScript("acp")],
+				providerArgv,
+				env: {
+					...(cfg.env ?? {}),
+					MFW_ACP_AGENT: id,
+					...(opts.brain
+						? {
+								MFW_ACP_POLICY: "read-only",
+								MFW_ACP_MCP_CONFIG: opts.brain.mcpConfigPath,
+								...(opts.brain.resumeSessionId
+									? { MFW_ACP_RESUME_SESSION: opts.brain.resumeSessionId }
+									: {}),
+							}
+						: {}),
+					...acpEndpointEnv(cfg, model),
+				},
+				declaredCapabilities: { steer: false },
+			};
+		},
+	};
+}
+
+/**
+ * Launch facts for a one-shot, tool-less critic call through the ACP bridge:
+ * policy `none`, the brain's read-only argv flags without MCP approval, no MCP
+ * config, no resume. `AcpInference` spawns `[...bridgeArgv, ...providerArgv]`
+ * in a fresh temp dir. Throws for an id that is not an ACP provider.
+ */
+export function acpInferenceLaunch(
+	providerId: string,
+	model: string,
+): {
+	bridgeArgv: string[];
+	providerArgv: string[];
+	env: Record<string, string>;
+} {
+	const argv = ACP_ARGV[providerId];
+	if (!argv) throw new Error(`'${providerId}' is not an ACP provider`);
+	return {
+		bridgeArgv: ["bun", "run", bridgeScript("acp")],
+		providerArgv: argv(model, "inference"),
+		env: {
+			MFW_ACP_AGENT: providerId,
+			MFW_ACP_POLICY: "none",
+		},
+	};
+}
+
+export const cursorAdapter = acpAdapter("cursor-agent");
+export const geminiAdapter = acpAdapter("gemini-cli");
+export const opencodeAdapter = acpAdapter("opencode");
+export const piAdapter = acpAdapter("pi");
+
 /** Every adapter the daemon actually has, keyed by provider id. */
 const ADAPTERS: ReadonlyMap<string, AgentAdapter> = new Map([
 	[claudeAdapter.id, claudeAdapter],
 	[codexAdapter.id, codexAdapter],
+	[cursorAdapter.id, cursorAdapter],
+	[geminiAdapter.id, geminiAdapter],
+	[opencodeAdapter.id, opencodeAdapter],
+	[piAdapter.id, piAdapter],
 ]);
 
 /** Adapter by provider id, or `undefined` for one no longer run. Callers that only interpret output treat that as "no opinion". */

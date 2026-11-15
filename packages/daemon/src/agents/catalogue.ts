@@ -1,14 +1,19 @@
 import type { ModelTier } from "../tasks/types.ts";
 import type { ProviderConfig } from "./adapter.ts";
+import {
+	type BinaryIdentity,
+	CURSOR_AGENT_IDENTITY,
+	PI_IDENTITY,
+} from "./agent-identity.ts";
 
 /**
  * The agent-CLI catalogue: which providers and models exist, as data.
  *
  * `drivable` is true only when a daemon adapter can run the CLI end to end
- * (Claude and Codex). The rest are detected and named in the UI as "found, not
- * yet drivable". `AdapterRegistry.invocation` throws for anything it cannot
- * drive and `SettingsService` refuses to store a non-drivable provider, so an
- * entry cannot over-promise.
+ * (Claude, Codex, and the ACP agents). Any other entry would be detected and
+ * named in the UI as "found, not yet drivable". `AdapterRegistry.invocation`
+ * throws for anything it cannot drive and `SettingsService` refuses to store
+ * a non-drivable provider, so an entry cannot over-promise.
  */
 
 export type ProviderAuthKind = "subscription" | "api-key";
@@ -49,10 +54,18 @@ export interface ProviderEntry {
 	bin: string;
 	/** Argv that makes the tool report its own version. Asked, never assumed. */
 	versionArgs: readonly string[];
+	/** Extra proof that a generically named `bin` on PATH is the CLI mfw means; a failed check reports the tool as not installed. */
+	identity?: BinaryIdentity;
 	/** True only when an adapter in this daemon can actually run it. */
 	drivable: boolean;
 	/** `ProviderConfig.type` this entry produces. Only set when drivable. */
 	configType?: ProviderConfig["type"];
+	/**
+	 * True when the adapter can run on an OpenAI-compatible routing endpoint
+	 * (Codex via model providers, opencode via an injected provider config).
+	 * Cursor and Gemini CLI have no such mechanism.
+	 */
+	acceptsEndpoints?: boolean;
 	/** Why it is not drivable. Rendered verbatim. Required when !drivable. */
 	unsupportedReason?: string;
 	auth: readonly ProviderAuthMethod[];
@@ -114,8 +127,10 @@ const CODEX_MODELS: readonly ProviderModelChoice[] = [
 	{ id: "gpt-5.6-luna", label: "GPT-5.6-Luna", kind: "pinned" },
 ];
 
-/** A non-drivable entry carries no model list (nothing to verify it against). Detection still reports the installed version. */
-const NO_MODELS: readonly ProviderModelChoice[] = [];
+/** ACP agents own their model list; the bridge picks over ACP session config, and `default` leaves the agent's own choice. */
+const ACP_MODELS: readonly ProviderModelChoice[] = [
+	{ id: "default", label: "Agent default", kind: "alias" },
+];
 
 export const PROVIDER_CATALOGUE: readonly ProviderEntry[] = [
 	{
@@ -156,6 +171,7 @@ export const PROVIDER_CATALOGUE: readonly ProviderEntry[] = [
 		versionArgs: ["--version"],
 		drivable: true,
 		configType: "codex-cli",
+		acceptsEndpoints: true,
 		auth: [
 			{
 				kind: "subscription",
@@ -177,12 +193,11 @@ export const PROVIDER_CATALOGUE: readonly ProviderEntry[] = [
 		id: "gemini-cli",
 		name: "Gemini CLI",
 		description:
-			"Detected so you can see whether it is installed. mfw cannot drive it yet.",
+			"Google's Gemini CLI, driven over the Agent Client Protocol (`gemini --acp`). Runs tasks, project-brain turns (read-only plan mode) and critic calls; no custom endpoints.",
 		bin: "gemini",
 		versionArgs: ["--version"],
-		drivable: false,
-		unsupportedReason:
-			"No mfw adapter: its output is not the stream-json protocol the daemon's only driver parses.",
+		drivable: true,
+		configType: "acp",
 		auth: [
 			{
 				kind: "api-key",
@@ -191,41 +206,48 @@ export const PROVIDER_CATALOGUE: readonly ProviderEntry[] = [
 				hint: "Set GEMINI_API_KEY, or sign in through the Gemini CLI.",
 			},
 		],
-		models: NO_MODELS,
-		defaultModel: "",
+		models: ACP_MODELS,
+		defaultModel: "default",
 		modelsAreSnapshot: false,
+		docsUrl: "https://google-gemini.github.io/gemini-cli/",
 	},
 	{
 		id: "cursor-agent",
 		name: "Cursor Agent",
 		description:
-			"Detected so you can see whether it is installed. mfw cannot drive it yet.",
-		bin: "cursor-agent",
+			"Cursor's agent CLI, driven over the Agent Client Protocol (`agent acp`). Runs tasks, project-brain turns (read-only plan mode) and critic calls; no custom endpoints.",
+		bin: "agent",
 		versionArgs: ["--version"],
-		drivable: false,
-		unsupportedReason:
-			"No mfw adapter: its output is not the stream-json protocol the daemon's only driver parses.",
+		identity: CURSOR_AGENT_IDENTITY,
+		drivable: true,
+		configType: "acp",
 		auth: [
 			{
 				kind: "subscription",
 				loginFiles: [".cursor/cli-config.json"],
 				hint: "Sign in through the Cursor agent CLI itself.",
 			},
+			{
+				kind: "api-key",
+				envVars: ["CURSOR_API_KEY"],
+				hint: "Export CURSOR_API_KEY for the daemon instead of signing in.",
+			},
 		],
-		models: NO_MODELS,
-		defaultModel: "",
+		models: ACP_MODELS,
+		defaultModel: "default",
 		modelsAreSnapshot: false,
+		docsUrl: "https://cursor.com/docs/cli/acp",
 	},
 	{
 		id: "opencode",
 		name: "opencode",
 		description:
-			"Detected so you can see whether it is installed. mfw cannot drive it yet.",
+			"opencode, driven over the Agent Client Protocol (`opencode acp`). Runs tasks, project-brain turns and critic calls with permissions denied for edits and shell; can use an OpenAI-compatible endpoint.",
 		bin: "opencode",
 		versionArgs: ["--version"],
-		drivable: false,
-		unsupportedReason:
-			"No mfw adapter: its output is not the stream-json protocol the daemon's only driver parses.",
+		drivable: true,
+		configType: "acp",
+		acceptsEndpoints: true,
 		auth: [
 			{
 				kind: "api-key",
@@ -234,9 +256,33 @@ export const PROVIDER_CATALOGUE: readonly ProviderEntry[] = [
 				hint: "Configure a provider inside opencode itself.",
 			},
 		],
-		models: NO_MODELS,
-		defaultModel: "",
+		models: ACP_MODELS,
+		defaultModel: "default",
 		modelsAreSnapshot: false,
+		docsUrl: "https://opencode.ai/docs/",
+	},
+	{
+		id: "pi",
+		name: "pi",
+		description:
+			"The pi coding agent, driven over the Agent Client Protocol through pi-acp (an MVP adapter; needs pi >= 0.81 and Node >= 22). Runs tasks, project-brain turns and critic calls; can use an OpenAI-compatible endpoint. Models are `provider/id` from your own pi configuration.",
+		bin: "pi",
+		versionArgs: ["--version"],
+		identity: PI_IDENTITY,
+		drivable: true,
+		configType: "acp",
+		acceptsEndpoints: true,
+		auth: [
+			{
+				kind: "subscription",
+				loginFiles: [".pi/agent/auth.json", ".pi/agent/models.json"],
+				hint: "Configure a provider in pi itself: `pi auth login <provider>`, or add one to ~/.pi/agent/models.json.",
+			},
+		],
+		models: ACP_MODELS,
+		defaultModel: "default",
+		modelsAreSnapshot: false,
+		docsUrl: "https://github.com/svkozak/pi-acp",
 	},
 ];
 

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
 	chmod,
+	mkdir,
 	mkdtemp,
 	readFile,
 	rm,
@@ -10,6 +11,10 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import {
+	CURSOR_AGENT_IDENTITY,
+	identityShell,
+} from "../src/agents/agent-identity.ts";
 import { SecretEnvironment } from "../src/execution-environment.ts";
 import { resolveExecutionTarget } from "../src/execution-target.ts";
 import {
@@ -21,7 +26,11 @@ import {
 	hostSlotResourceId,
 	registryPinnedPolicy,
 } from "../src/host-registry.ts";
-import { assessHostProbe, probeHost } from "../src/host-registry-probe.ts";
+import {
+	assessHostProbe,
+	hostProbeScript,
+	probeHost,
+} from "../src/host-registry-probe.ts";
 import {
 	HostResourceCoordinator,
 	openHostResourceStore,
@@ -36,6 +45,7 @@ import {
 	type SshProcessRunner,
 	scanRunPodDirectSshHostKey,
 } from "../src/remote-agent-host.ts";
+import { placeRun } from "../src/routing.ts";
 import { SshTransport } from "../src/ssh-transport.ts";
 
 const roots: string[] = [];
@@ -438,6 +448,101 @@ describe("registry SSH hosts", () => {
 			"not a registry-pinned host",
 		);
 		expect(ran).toBe(0);
+	});
+
+	test("ACP harnesses are offered on a host only with a binary and a login, and placement can pick it", () => {
+		const host = registryHost();
+		const script = hostProbeScript();
+		for (const [id, bin, auth] of [
+			["cursor-agent", "agent", ".cursor/cli-config.json"],
+			["gemini-cli", "gemini", ".gemini/oauth_creds.json"],
+			["opencode", "opencode", ".local/share/opencode/auth.json"],
+			["pi", "pi", ".pi/agent/auth.json"],
+			["pi", "pi", ".pi/agent/models.json"],
+		] as const) {
+			expect(script).toContain(`command -v ${bin}`);
+			expect(script).toContain(`harness.${id}=`);
+			expect(script).toContain(`auth.${id}=`);
+			expect(script).toContain(`"$HOME"/'${auth}'`);
+		}
+		const observed = assessHostProbe(
+			host,
+			probeOutput({
+				"harness.cursor-agent": "2026.05.01-abc",
+				"auth.cursor-agent": "yes",
+				// Binary but no login: not offered.
+				"harness.gemini-cli": "0.68.0",
+				"auth.gemini-cli": "no",
+				// Login but no binary: not offered.
+				"harness.opencode": "",
+				"auth.opencode": "yes",
+			}),
+			1_000,
+		);
+		const candidate = hostCandidate({ config: host, observed }, 2_000);
+		expect(candidate.harnesses).toEqual(["claude-cli", "cursor-agent"]);
+		const placed = placeRun({
+			taskTarget: "ssh",
+			hosts: [candidate],
+			harness: "cursor-agent",
+		});
+		expect(placed).toMatchObject({ target: "ssh", hostId: host.id });
+		expect(placed.harnesses).toContain("cursor-agent");
+		expect(() =>
+			placeRun({
+				taskTarget: "ssh",
+				hosts: [candidate],
+				harness: "gemini-cli",
+			}),
+		).toThrow("no logged-in gemini-cli");
+		expect(() =>
+			placeRun({ taskTarget: "ssh", hosts: [candidate], harness: "opencode" }),
+		).toThrow("no logged-in opencode");
+	});
+
+	test("the probe gates `agent` and `pi` on their identity checks", async () => {
+		const script = hostProbeScript();
+		expect(script).toContain(
+			`$(basename "$(readlink -f "$(command -v agent)")")`,
+		);
+		expect(script).toContain("pi '--help'");
+		// Run the real cursor check against a layout where `agent` is not Cursor's.
+		const dir = await mkdtemp(join(tmpdir(), "mfw-identity-"));
+		try {
+			const other = join(dir, "other");
+			await writeFile(other, "#!/bin/sh\n", { mode: 0o755 });
+			await symlink(other, join(dir, "agent"));
+			const check = identityShell(CURSOR_AGENT_IDENTITY, "agent");
+			const run = (bin: string) =>
+				Bun.spawn(["/bin/sh", "-c", check], {
+					env: { PATH: `${bin}:${process.env.PATH ?? "/usr/bin:/bin"}` },
+				}).exited;
+			expect(await run(dir)).not.toBe(0);
+			const real = join(dir, "real");
+			await mkdir(real);
+			await writeFile(join(real, "cursor-agent"), "#!/bin/sh\n", {
+				mode: 0o755,
+			});
+			await symlink(join(real, "cursor-agent"), join(real, "agent"));
+			expect(await run(real)).toBe(0);
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+		// A failed check reports an empty harness, so placement never offers it.
+		const host = registryHost();
+		const observed = assessHostProbe(
+			host,
+			probeOutput({
+				"harness.cursor-agent": "",
+				"auth.cursor-agent": "yes",
+				"harness.pi": "",
+				"auth.pi": "yes",
+			}),
+			1_000,
+		);
+		const candidate = hostCandidate({ config: host, observed }, 2_000);
+		expect(candidate.harnesses).not.toContain("cursor-agent");
+		expect(candidate.harnesses).not.toContain("pi");
 	});
 
 	test("a shared host cannot opt out of bwrap and root is never a host user", () => {

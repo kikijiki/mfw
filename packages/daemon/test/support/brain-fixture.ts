@@ -54,6 +54,10 @@ export async function brainFixture(
 	opts: {
 		brain?: Partial<StoredBrainConfig> | null;
 		project?: Partial<ProjectConfig>;
+		/** Replaces the fake-claude argv prefix (e.g. a fake ACP agent). `null` keeps the real CLI. */
+		providerCommand?: string[] | null;
+		/** Extra env for the default project provider (reaches the agent/bridge process). */
+		providerEnv?: Record<string, string>;
 	} = {},
 ): Promise<BrainFixture> {
 	const base = await mkdtemp(join(tmpdir(), "mfw-test-brain-"));
@@ -77,7 +81,7 @@ export async function brainFixture(
 		provider: {
 			id: "claude-cli",
 			type: "claude-cli",
-			env: { FAKE_BRAIN_STORE: store },
+			env: { FAKE_BRAIN_STORE: store, ...opts.providerEnv },
 		},
 		...(opts.brain === null
 			? {}
@@ -105,7 +109,10 @@ export async function brainFixture(
 		const adapters = (
 			svc.engine as unknown as { deps: { adapters: AdapterRegistry } }
 		).deps.adapters;
-		adapters.providerCommand = ["bun", "run", FAKE_CLAUDE];
+		adapters.providerCommand =
+			opts.providerCommand === null
+				? null
+				: (opts.providerCommand ?? ["bun", "run", FAKE_CLAUDE]);
 		// Creates the session at the current head: enabling the brain never
 		// replays history, so events the test emits afterwards are the wakes.
 		await svc.brainRuntime.tick();

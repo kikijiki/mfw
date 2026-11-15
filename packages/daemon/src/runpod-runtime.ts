@@ -1,3 +1,5 @@
+import { PI_ACP_VERSION } from "./agents/adapter.ts";
+
 export const MFW_RUNPOD_CPU_READY_PATH = "/run/mfw-ready";
 
 const NODE_VERSION = "24.19.0";
@@ -16,12 +18,17 @@ const MFW_RUNPOD_CPU_BOOTSTRAP = [
 	`curl -fsSLo "$tmp/node.tar.xz" https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz`,
 	`printf '%s  %s\\n' '${NODE_LINUX_X64_SHA256}' "$tmp/node.tar.xz" | sha256sum -c -`,
 	'tar -xJf "$tmp/node.tar.xz" -C /usr/local --strip-components=1',
-	"npm install --global --no-audit --no-fund bun@1.3.13 @openai/codex@0.149.0 @anthropic-ai/claude-code@2.1.238",
+	// ACP agents that ship pinned npm releases; Cursor's agent has only an
+	// unpinned curl installer, so it is not installed on pods.
+	`npm install --global --no-audit --no-fund bun@1.3.13 @openai/codex@0.149.0 @anthropic-ai/claude-code@2.1.238 opencode-ai@1.19.5 @google/gemini-cli@0.68.0 @earendil-works/pi-coding-agent@1.5.2 pi-acp@${PI_ACP_VERSION}`,
 	"node --version >/dev/null",
 	"bun --version >/dev/null",
 	"git --version >/dev/null",
 	"codex --version >/dev/null",
 	"claude --version >/dev/null",
+	"opencode --version >/dev/null",
+	"gemini --version >/dev/null",
+	"pi --version >/dev/null",
 	`touch ${MFW_RUNPOD_CPU_READY_PATH}`,
 ].join("; ");
 

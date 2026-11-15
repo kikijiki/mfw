@@ -1,6 +1,11 @@
 import type { RunReasoningEffort } from "@mfw/db/schema";
 import type { ProviderConfig } from "./agents/adapter.ts";
-import { findProvider, tierModel } from "./agents/catalogue.ts";
+import {
+	drivableProviders,
+	findProvider,
+	PROVIDER_CATALOGUE,
+	tierModel,
+} from "./agents/catalogue.ts";
 import type { HostCandidate } from "./host-registry.ts";
 import type { ModelTier } from "./tasks/types.ts";
 
@@ -249,7 +254,9 @@ export function resolveProviderRef(
 	if (!entry?.drivable) {
 		const endpoints = Object.keys(routing?.endpoints ?? {});
 		throw new RoutingError(
-			`provider '${ref}' is not something mfw can run: use claude-cli, codex-cli${
+			`provider '${ref}' is not something mfw can run: use ${drivableProviders()
+				.map((p) => p.id)
+				.join(", ")}${
 				endpoints.length ? `, or an endpoint (${endpoints.join(", ")})` : ""
 			}, or add '${ref}' under the project's routing endpoints`,
 		);
@@ -786,7 +793,7 @@ export interface StoredProviderRef {
 /**
  * Runtime routing settings from stored project values. Throws a
  * `RoutingError` when the provider names an endpoint the routing config does
- * not define, or an endpoint on a harness other than Codex.
+ * not define, or an endpoint on a harness that cannot take one (see `acceptsEndpoints`).
  */
 export function routingSettingsFrom(input: {
 	provider: ProviderConfig | StoredProviderRef;
@@ -807,9 +814,13 @@ export function routingSettingsFrom(input: {
 			throw new RoutingError(
 				`provider endpoint '${endpointRef}' is not defined under routing endpoints`,
 			);
-		if (provider.id !== "codex-cli")
+		if (!findProvider(provider.id)?.acceptsEndpoints)
 			throw new RoutingError(
-				`only codex-cli can use an OpenAI-compatible endpoint (provider is '${provider.id}')`,
+				`only ${PROVIDER_CATALOGUE.filter((p) => p.acceptsEndpoints)
+					.map((p) => p.id)
+					.join(
+						", ",
+					)} can use an OpenAI-compatible endpoint (provider is '${provider.id}')`,
 			);
 		endpoint = {
 			id: endpointRef,

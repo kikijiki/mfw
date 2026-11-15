@@ -128,6 +128,8 @@ describe("badges", () => {
 		expect(harnessMonogram("claude-cli")).toBe("CC");
 		expect(harnessMonogram("codex-cli")).toBe("CX");
 		expect(harnessMonogram("opencode")).toBe("OC");
+		expect(harnessMonogram("cursor-agent")).toBe("CU");
+		expect(harnessMonogram("gemini-cli")).toBe("GM");
 		expect(harnessMonogram("pi")).toBe("PI");
 		expect(harnessMonogram("codex-cli@lab")).toBe("CX");
 		expect(harnessMonogram("zed-agent")).toBe("ZE");

@@ -3,6 +3,11 @@ import { isIP } from "node:net";
 import { dirname, join } from "node:path";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
 import { z } from "zod";
+import {
+	type BinaryIdentity,
+	CURSOR_AGENT_IDENTITY,
+	PI_IDENTITY,
+} from "./agents/agent-identity.ts";
 import { ExecutionEnvironmentBuilder } from "./execution-environment.ts";
 import { runProc } from "./proc.ts";
 import {
@@ -48,7 +53,29 @@ const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export const REMOTE_HARNESSES = {
 	"claude-cli": { binary: "claude", authPaths: [".claude/.credentials.json"] },
 	"codex-cli": { binary: "codex", authPaths: [".codex/auth.json"] },
-} as const;
+	"cursor-agent": {
+		binary: "agent",
+		authPaths: [".cursor/cli-config.json"],
+		identity: CURSOR_AGENT_IDENTITY,
+	},
+	"gemini-cli": { binary: "gemini", authPaths: [".gemini/oauth_creds.json"] },
+	opencode: {
+		binary: "opencode",
+		authPaths: [".local/share/opencode/auth.json"],
+	},
+	pi: {
+		binary: "pi",
+		authPaths: [".pi/agent/auth.json", ".pi/agent/models.json"],
+		identity: PI_IDENTITY,
+	},
+} as const satisfies Record<
+	string,
+	{
+		binary: string;
+		authPaths: readonly string[];
+		identity?: BinaryIdentity;
+	}
+>;
 export type RemoteHarnessId = keyof typeof REMOTE_HARNESSES;
 
 export const HostConfigSchema = z

@@ -3,6 +3,7 @@ import { access, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import { runProc } from "../proc.ts";
+import { checkIdentity, resolvedPath } from "./agent-identity.ts";
 import type {
 	ProviderAuthKind,
 	ProviderAuthMethod,
@@ -25,6 +26,8 @@ export interface ProviderDetection {
 	version: string | null;
 	/** Why the version is null despite the binary existing. */
 	versionError?: string;
+	/** Why a binary that was found on PATH is not the CLI mfw means (`installed` is false then). */
+	identityError?: string;
 }
 
 export interface ProviderAuthStatus {
@@ -79,6 +82,11 @@ export interface DetectorDeps {
 		path: string,
 		args: readonly string[],
 	) => Promise<{ ok: boolean; text: string }>;
+	/** Test seam: run an identity help probe (`<path> <identity.args>`); text is stdout + stderr. */
+	probeIdentity?: (
+		path: string,
+		args: readonly string[],
+	) => Promise<{ ok: boolean; text: string }>;
 }
 
 /** Caches per entry id so a polling settings panel does not spawn `--version` on every render. */
@@ -116,10 +124,55 @@ export class ProviderDetector {
 		return new Map(found.map((d) => [d.id, d]));
 	}
 
+	/** The reason `path` is not the CLI the entry means, or null when it is (or needs no check). */
+	private async identityFailure(
+		entry: ProviderEntry,
+		path: string,
+	): Promise<string | null> {
+		const identity = entry.identity;
+		if (!identity) return null;
+		if (identity.kind === "symlink-target") {
+			const v = checkIdentity(identity, entry.bin, {
+				resolvedPath: resolvedPath(path),
+			});
+			return v.ok ? null : v.reason;
+		}
+		const run =
+			this.deps.probeIdentity ??
+			(async (p: string, args: readonly string[]) => {
+				const r = await runProc([p, ...args], {
+					timeoutMs: VERSION_TIMEOUT_MS,
+					env: this.env,
+				});
+				return {
+					ok: r.exitCode === 0,
+					text: `${r.stdout}\n${r.stderr}`,
+				};
+			});
+		let text = "";
+		try {
+			text = (await run(path, identity.args)).text;
+		} catch {
+			// An unrunnable probe leaves the text empty, so the check fails closed.
+		}
+		const v = checkIdentity(identity, entry.bin, { helpText: text });
+		return v.ok ? null : v.reason;
+	}
+
 	private async probe(entry: ProviderEntry): Promise<ProviderDetection> {
 		const path = await whichBin(entry.bin, this.env);
 		if (!path) {
 			return { id: entry.id, installed: false, path: null, version: null };
+		}
+		const identityError = await this.identityFailure(entry, path);
+		if (identityError) {
+			return {
+				id: entry.id,
+				installed: false,
+				path,
+				version: null,
+				identityError,
+			};
 		}
 		const probe =
 			this.deps.probeVersion ??
