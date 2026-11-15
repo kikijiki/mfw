@@ -1640,8 +1640,13 @@ export function GridSection({
 				<div
 					ref={body}
 					data-grid-body
-					className="grid items-start"
-					style={{ gridTemplateColumns: GRID_TEMPLATE, gap: GRID.GAP }}
+					className="grid items-stretch"
+					style={{
+						gridTemplateColumns: GRID_TEMPLATE,
+						// Every card in a section is as tall as the tallest one.
+						gridAutoRows: "1fr",
+						gap: GRID.GAP,
+					}}
 				>
 					{shown.map((task) => (
 						<TaskCard
