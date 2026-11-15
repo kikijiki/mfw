@@ -151,11 +151,12 @@ describe("the lanes layout", () => {
 		expect(html).toContain("waiting for the schema");
 	});
 
-	test("bulk-move arrows point along the stack: up and down, not left and right", () => {
+	test("bulk moves are one closed menu per lane, not buttons on the header", () => {
 		const html = stack();
-		// The move buttons are the only chevron-up users; left/right ones would
-		// mean the arrows still point across the lane.
-		expect(html).toContain("lucide-chevron-up");
+		// A stray click on a lane header must never move a whole status.
+		expect(html).toContain("move all tasks");
+		expect(html).not.toContain('role="menu"');
+		expect(html).not.toContain("lucide-chevron-up");
 		expect(html).not.toContain("lucide-chevron-left");
 	});
 

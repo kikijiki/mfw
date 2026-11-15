@@ -383,7 +383,9 @@ describe("board header and cards", () => {
 		);
 		expect(html).toContain('aria-label="Doing: only with agents"');
 		expect(html).toContain('aria-label="Doing: sort by activity"');
-		expect(html).not.toContain("aria-haspopup");
+		// The bulk moves are one menu trigger, closed until it is opened.
+		expect(html).toContain('aria-label="Doing: move all tasks"');
+		expect(html).not.toContain('role="menu"');
 	});
 });
 

@@ -8,14 +8,14 @@ import {
 	ArrowDownUp,
 	Bot,
 	ChevronDown,
-	ChevronLeft,
 	ChevronRight,
-	ChevronUp,
 	CircleHelp,
 	Columns3,
+	Ellipsis,
 	Plus,
 	Rows3,
 } from "lucide-react";
+import { DropdownMenu } from "radix-ui";
 import {
 	createContext,
 	type DragEvent,
@@ -852,7 +852,7 @@ export function BoardPage({
 							</div>
 							<div className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto">
 								{mobileColumn && !readOnly ? (
-									<ColumnMoveControls
+									<ColumnMoveMenu
 										column={mobileColumn}
 										count={columnTasks(mobileColumn.value).length}
 										previous={columns[mobileIndex - 1]}
@@ -1258,8 +1258,7 @@ export function Column({
 					{counts.total}
 				</span>
 				<ColumnSignals live={counts.live} needs={counts.needs} />
-				<ColumnMoveControls
-					compact
+				<ColumnMoveMenu
 					readOnly={readOnly}
 					column={column}
 					count={tasks.length}
@@ -1742,9 +1741,7 @@ export function Lane({
 						className="flex items-center gap-2"
 						style={{ height: SPACE.ROW_H }}
 					>
-						<ColumnMoveControls
-							compact
-							vertical
+						<ColumnMoveMenu
 							readOnly={readOnly}
 							column={column}
 							count={tasks.length}
@@ -1794,9 +1791,14 @@ export function Lane({
 	);
 }
 
-function ColumnMoveControls({
-	compact = false,
-	vertical = false,
+/**
+ * A lane or column's bulk moves, kept behind a menu: one stray click on a
+ * header must never move a whole status. Each item still goes through the
+ * confirmation dialog, and the drop rules decide what is offered: Expansion
+ * owns Draft exit, capture owns Draft entry, runs own In progress. A refused
+ * move stays in the menu, disabled, with its reason.
+ */
+function ColumnMoveMenu({
 	column,
 	count,
 	previous,
@@ -1804,9 +1806,6 @@ function ColumnMoveControls({
 	onMoveAll,
 	readOnly = false,
 }: {
-	compact?: boolean;
-	/** Lanes stack top to bottom, so "previous"/"next" point up/down, not left/right. */
-	vertical?: boolean;
 	readOnly?: boolean;
 	column: BoardColumn;
 	count: number;
@@ -1814,50 +1813,71 @@ function ColumnMoveControls({
 	next?: BoardColumn;
 	onMoveAll: (to: BoardColumn) => void;
 }) {
-	// The drop rules decide: Expansion owns Draft exit, capture owns Draft
-	// entry, runs own In progress. Controls stay visible but disabled with the
-	// reason as their title.
-	const prev = bulkMoveTarget(column, previous, "previous");
-	const nxt = bulkMoveTarget(column, next, "next");
-	const previousTitle = prev.ok
-		? `Move all shown tasks to ${previous?.label}`
-		: prev.title;
-	const nextTitle = nxt.ok
-		? `Move all shown tasks to ${next?.label}`
-		: nxt.title;
+	const targets = [
+		{ to: previous, verdict: bulkMoveTarget(column, previous, "previous") },
+		{ to: next, verdict: bulkMoveTarget(column, next, "next") },
+	];
+	const label = `${column.label}: move all tasks`;
 	return (
-		<div
-			className={
-				compact
-					? cn("flex gap-1", !vertical && "ml-auto")
-					: "grid grid-cols-2 gap-1"
-			}
-		>
-			<Button
-				size={compact ? "icon-xs" : "xs"}
-				className={compact ? "size-5" : undefined}
-				variant="outline"
-				disabled={readOnly || count === 0 || !prev.ok}
-				onClick={() => previous && onMoveAll(previous)}
-				aria-label={previousTitle}
-				title={previousTitle}
-			>
-				{vertical ? <ChevronUp aria-hidden /> : <ChevronLeft aria-hidden />}
-				{compact ? null : "All"}
-			</Button>
-			<Button
-				size={compact ? "icon-xs" : "xs"}
-				className={compact ? "size-5" : undefined}
-				variant="outline"
-				disabled={readOnly || count === 0 || !nxt.ok}
-				onClick={() => next && onMoveAll(next)}
-				aria-label={nextTitle}
-				title={nextTitle}
-			>
-				{compact ? null : "All"}
-				{vertical ? <ChevronDown aria-hidden /> : <ChevronRight aria-hidden />}
-			</Button>
-		</div>
+		<DropdownMenu.Root>
+			<DropdownMenu.Trigger asChild>
+				<Button
+					size="icon-xs"
+					className="size-5"
+					variant="ghost"
+					disabled={readOnly || count === 0}
+					aria-label={label}
+					title={label}
+				>
+					<Ellipsis aria-hidden />
+				</Button>
+			</DropdownMenu.Trigger>
+			<DropdownMenu.Portal>
+				<DropdownMenu.Content
+					align="end"
+					sideOffset={4}
+					collisionPadding={8}
+					aria-label={label}
+					className="z-[90] flex w-60 flex-col gap-0.5 border p-1"
+					style={{
+						background: "var(--mfw-bg-raised)",
+						borderColor: "var(--mfw-border-strong)",
+						borderRadius: "var(--mfw-radius-md)",
+						boxShadow: "var(--mfw-shadow-overlay)",
+					}}
+				>
+					{targets.map(({ to, verdict }) => (
+						<DropdownMenu.Item
+							key={to?.value ?? "none"}
+							disabled={!to || !verdict.ok}
+							onSelect={() => to && onMoveAll(to)}
+							className="mfw-focus flex min-h-8 flex-col justify-center border-0 px-2 py-1 text-left outline-none data-[disabled]:opacity-50 data-[highlighted]:bg-[var(--mfw-bg-hover)]"
+							style={{
+								color: "var(--mfw-fg)",
+								borderRadius: "var(--mfw-radius-sm)",
+								fontSize: "var(--mfw-text-sm)",
+							}}
+						>
+							{to && verdict.ok ? (
+								`Move all ${count} shown to ${to.label}…`
+							) : (
+								<>
+									<span>{to ? `Move all to ${to.label}` : null}</span>
+									<span
+										style={{
+											color: "var(--mfw-fg-faint)",
+											fontSize: "var(--mfw-text-2xs)",
+										}}
+									>
+										{verdict.ok ? null : verdict.title}
+									</span>
+								</>
+							)}
+						</DropdownMenu.Item>
+					))}
+				</DropdownMenu.Content>
+			</DropdownMenu.Portal>
+		</DropdownMenu.Root>
 	);
 }
 

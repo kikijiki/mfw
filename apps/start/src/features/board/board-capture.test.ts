@@ -62,24 +62,24 @@ describe("mobile quick capture", () => {
 		expect(source).toContain("requireReview: captureRequireReview");
 	});
 
-	test("each board column exposes guarded previous and next bulk moves", () => {
-		expect(source).toContain("function ColumnMoveControls");
+	test("each board column offers guarded previous and next bulk moves", () => {
+		expect(source).toContain("function ColumnMoveMenu");
 		expect(source).toContain("trpc.tasks.moveMany.mutationOptions");
-		expect(source).toContain("Move all shown tasks to");
+		expect(source).toMatch(/Move all \$\{count\} shown to/);
 		expect(source).toContain("bulkMoveTarget(column, next");
 		expect(source).toContain('confirmLabel="Move all"');
 	});
 
-	test("desktop bulk moves are compact actions inside the column header", () => {
+	test("bulk moves sit behind a per-column menu, never as header buttons", () => {
 		const header = source.match(
 			/<header className="flex items-center gap-2">([\s\S]*?)<\/header>/,
 		)?.[1];
 
-		expect(header).toContain("<ColumnMoveControls");
-		expect(header).toContain("compact");
-		expect(header).toContain('size="icon-xs"');
-		expect(source).toContain('size={compact ? "icon-xs" : "xs"}');
-		expect(source).toContain('cn("flex gap-1", !vertical && "ml-auto")');
+		expect(header).toContain("<ColumnMoveMenu");
+		expect(source).toContain("<DropdownMenu.Root>");
+		// The old always-visible previous/next buttons are gone.
+		expect(source).not.toContain("ColumnMoveControls");
+		expect(source).not.toContain("Move all shown tasks to");
 	});
 
 	test("human controls cannot manufacture an unclaimed In progress task", () => {
