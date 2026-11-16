@@ -13,12 +13,12 @@ mfw is three things that fit together. You can use the first on its own.
 | [**Web UI**](#3-the-web-ui) | A website served from your machine | Watch and steer everything: the board, running agents, reviews |
 
 ```
-  you ──► Web UI ──► Daemon ──► agents (Claude Code, Codex) working in git
+  you ──► Web UI ──► Daemon ──► coding agents working in git
               │         │
               └─────────┴──► Board: plain task files in a folder  ◄── mfwb (CLI)
 ```
 
-![The board: every status a lane, agents and the brain's decisions on the cards](docs/screenshots/board-dark-1440x900.png)
+![The board: a grid of task cards for every status, with agents and the brain's decisions](docs/screenshots/board-dark-1440x900.png)
 
 More screenshots [below, in the web UI section](#3-the-web-ui).
 
@@ -61,10 +61,10 @@ The daemon is the engine that does the work. For each project you attach, it:
 - **Picks ready tasks** in dependency order, and runs several at once.
 - **Gives each task its own copy of the repository** (a git worktree on its own
   branch), so agents never overwrite each other.
-- **Runs a coding agent** (Claude Code or OpenAI Codex CLI) on the task. Each agent
+- **Runs a coding agent** on the task: Claude Code, OpenAI Codex CLI, or any agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com) (ACP): Cursor, Gemini CLI, opencode and pi are supported. Each agent
   runs in its own terminal session that survives restarts of the daemon, and you
   can steer or stop it while it works.
-- **Checks the result** against the task's goal and acceptance criteria, then runs
+- **Checks the result** against the task's goal, then runs
   the checks in a clean copy of the repository. It never takes the agent's word.
 - **Merges automatically** when everything passes, into a branch you choose. If the
   main branch turns red, it stops merging and can repair it.
@@ -83,7 +83,7 @@ projects you are happy to let them work on.
 
 The web UI runs on your machine and shows:
 
-- the **board** as columns of tasks, with each task's detail, history and files;
+- the **board** as a grid of task cards grouped by status (or as columns), with each task's detail, history and files;
 - **running agents**, live: a readable view and the raw output, with buttons to
   steer or stop an agent mid-task;
 - the **review queue** for work waiting on a human, and an **inbox** of things that
@@ -118,7 +118,7 @@ and move tasks, check the inbox and health, and look at runs.
 
 You need [Bun](https://bun.sh), [git](https://git-scm.com) and
 [tmux](https://github.com/tmux/tmux), plus the agent CLIs you want to use
-(Claude Code and/or Codex).
+(Claude Code, Codex, or an ACP agent: Cursor, Gemini CLI, opencode, pi).
 
 ```sh
 bun install
@@ -174,41 +174,6 @@ Both keep the scheduler off until you enable it in the UI.
 Provider keys, if you use any, are stored in a private file
 (`~/.local/share/mfw/credentials.json`, readable only by you), never in the
 database. mfw never edits your `.gitignore`.
-
-### Acceptance criteria on older boards
-
-Acceptance criteria are the task type's `acceptance` checklist field. When mfw
-attaches a board created before that field existed, it adds the field to
-`board.yaml` and moves each task's `## Acceptance Criteria` list into it, in one
-board commit. To hand the board back to an older mfw, stop the daemon and run:
-
-```sh
-bun run tools/board-acceptance.ts --revert /absolute/project/root
-```
-
-### Advanced: automatic reopen conditions
-
-A parked task can declare `reopen_when` conditions. `task_done` predicates are
-checked automatically. Command predicates are inert until an operator arms the
-exact conditions outside the repository:
-
-```sh
-bun run tools/reopen-policy.ts arm /absolute/project/root MFW-42
-bun run tools/reopen-policy.ts disarm /absolute/project/root MFW-42
-```
-
-Arming uses the attached project's operator configuration and pins the conditions,
-check prefix and integration branch in `$MFW_HOME/reopen/` (default
-`~/.local/share/mfw/reopen/`). Editing them requires rearming. Commands run only
-while dispatch is enabled, at most once every ten minutes across restarts. Every
-attempt has durable start and result events in the project audit log.
-
-The default checkout is a fresh detached worktree of the integration branch;
-install any dependencies needed by the check there. A probe intentionally inspecting
-the primary checkout must opt in with a final `primary` argument to `arm`.
-A worktree isolates ordinary checkout writes, but is not a shell security sandbox.
-Automatic reopening rechecks task conditions, dependencies, the specification and
-required template sections before moving the task to ready.
 
 ## How it is built
 
