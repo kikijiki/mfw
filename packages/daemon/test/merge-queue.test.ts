@@ -1453,3 +1453,63 @@ describe("operator actions on a parked job", () => {
 		await f.cleanup();
 	});
 });
+
+describe("a clone run is merged from its quarantine ref", () => {
+	/** A run whose only copy in the primary is `refs/mfw/quarantine/<runId>`, as after a host import. */
+	async function quarantined(
+		f: Fixture,
+		name: string,
+		file: string,
+		content: string,
+	): Promise<string> {
+		const runId = await f.makeBranchRun(name, file, content);
+		const tip = await gitOk(["rev-parse", name], f.root);
+		await gitOk(["update-ref", `refs/mfw/quarantine/${runId}`, tip], f.root);
+		const [row] = await f.handle.db
+			.select({ wt: runs.worktreePath })
+			.from(runs)
+			.where(eq(runs.id, runId));
+		await gitOk(["worktree", "remove", "--force", row?.wt as string], f.root);
+		await gitOk(["branch", "-D", name], f.root);
+		return runId;
+	}
+
+	test("the branch need not exist in the primary", async () => {
+		const f = await fixture();
+		const runId = await quarantined(f, "mfw/cl1", "c.txt", "clone\n");
+		await f.queue.enqueue({
+			runId,
+			branch: "mfw/cl1",
+			targetBranch: "main",
+		});
+		expect(await f.queue.tick()).toBe("merged");
+		expect((await git(["show", "main:c.txt"], f.root)).stdout).toBe("clone");
+		await f.cleanup();
+	});
+
+	test("a conflict parks with a reason instead of rebasing in the clone", async () => {
+		const f = await fixture();
+		const r1 = await f.makeBranchRun("mfw/t1", "base.txt", "from t1\n");
+		const r2 = await quarantined(f, "mfw/cl2", "base.txt", "base\nfrom cl2\n");
+		await f.queue.enqueue({
+			runId: r1,
+			branch: "mfw/t1",
+			targetBranch: "main",
+		});
+		await f.queue.enqueue({
+			runId: r2,
+			branch: "mfw/cl2",
+			targetBranch: "main",
+		});
+		expect(await f.queue.tick()).toBe("merged");
+		expect(await f.queue.tick()).toBe("parked");
+		const [ev] = await f.handle.db
+			.select()
+			.from(eventsTable)
+			.where(eq(eventsTable.type, "merge.parked"));
+		expect(String((ev?.payload as { reason: string }).reason)).toContain(
+			"clone run",
+		);
+		await f.cleanup();
+	});
+});

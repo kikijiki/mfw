@@ -6,6 +6,7 @@ import { engineKv, type MergeJobState, mergeJobs, runs } from "@mfw/db/schema";
 import { and, asc, eq, inArray, lt } from "drizzle-orm";
 import { readProtectedBoardPaths } from "./board-layout.ts";
 import { git } from "./git.ts";
+import { quarantineRef } from "./host-git/fetch.ts";
 import type { Logger } from "./log.ts";
 import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
 
@@ -348,6 +349,15 @@ export class MergeQueue {
 		}
 
 		// Conflict: rebase the RUN worktree onto the target, re-verify, retry once.
+		if ((await this.mergeSource(job)) !== job.branch) {
+			// A clone is agent-writable: the host must not run a rebase in it.
+			await this.park(
+				job,
+				"merge conflict in a clone run: its rebase runs in a host-owned scratch clone, which is not built yet",
+				"conflict",
+			);
+			return "parked";
+		}
 		if (!job.worktreePath) {
 			await this.park(
 				job,
@@ -509,10 +519,25 @@ export class MergeQueue {
 		this.deps.bus.publish([stored]);
 	}
 
+	/**
+	 * What to merge. A clone run's work reaches the primary only as the
+	 * host-verified quarantine ref (`refs/mfw/quarantine/<runId>`), so that is
+	 * read when it exists; a worktree run's branch lives in the primary itself.
+	 */
+	private async mergeSource(job: MergeJobView): Promise<string> {
+		const ref = quarantineRef(job.runId);
+		const found = await git(
+			["rev-parse", "--verify", "-q", `${ref}^{commit}`],
+			this.deps.projectRoot,
+		);
+		return found.exitCode === 0 ? ref : job.branch;
+	}
+
 	/** `git merge --no-ff` in the integration worktree; abort on failure. */
 	private async tryMerge(job: MergeJobView): Promise<boolean> {
 		const dir = this.integrationDir;
-		const r = await git(["merge", "--no-ff", "--no-edit", job.branch], dir);
+		const source = await this.mergeSource(job);
+		const r = await git(["merge", "--no-ff", "--no-edit", source], dir);
 		if (r.exitCode === 0) return true;
 		await git(["merge", "--abort"], dir);
 		return false;
