@@ -272,7 +272,9 @@ export async function startEgressProxy(
 			return;
 		}
 		const pinned = await withDeadline(
-			resolvePinned(target.host, resolve),
+			// Fully qualified: the policy keeps the normalised name, but the
+			// resolver must not retry it under the host's DNS search domains.
+			resolvePinned(`${target.host}.`, resolve),
 			limits.resolveMs,
 			deny(504, "dns-timeout"),
 		);

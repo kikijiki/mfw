@@ -94,7 +94,7 @@ async function startHarness(
 			opts.resolve ??
 			(async (host) => {
 				resolved.push(host);
-				const a = dns[host];
+				const a = dns[host.replace(/\.$/, "")];
 				if (!a) throw new Error("NXDOMAIN");
 				return a;
 			}),
@@ -394,7 +394,9 @@ describe("egress proxy: tunnels", () => {
 		r.socket.end();
 		await new Promise((res) => setTimeout(res, 150));
 		expect(h.dialled).toEqual([PUBLIC_IP]);
-		expect(h.resolved).toEqual(["allowed.test"]); // resolved exactly once
+		// Resolved exactly once, as a fully-qualified name so the host's DNS search
+		// domains are never appended.
+		expect(h.resolved).toEqual(["allowed.test."]);
 		expect(Buffer.concat(h.backend.received).toString()).toBe("ping");
 		const allow = h.log.find(
 			(e) => e.decision === "ALLOW" && e.phase === "close",

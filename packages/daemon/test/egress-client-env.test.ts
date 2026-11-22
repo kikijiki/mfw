@@ -200,7 +200,8 @@ async function startStack(): Promise<Stack> {
 		socketPath: join(dir, "e.sock"),
 		allow: ["allowed.test", "redirect.test"],
 		resolve: async (host) => {
-			if (host === "allowed.test" || host === "redirect.test")
+			const name = host.replace(/\.$/, "");
+			if (name === "allowed.test" || name === "redirect.test")
 				return [PUBLIC_IP];
 			throw new Error("NXDOMAIN");
 		},

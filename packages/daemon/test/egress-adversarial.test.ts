@@ -74,7 +74,7 @@ async function rig(dns: Record<string, string[]>) {
 			{ host: "rebind.test", port: 18443 },
 		],
 		resolve: async (h) => {
-			const a = dns[h];
+			const a = dns[h.replace(/\.$/, "")];
 			if (!a) throw new Error("NXDOMAIN");
 			return a;
 		},
