@@ -6,6 +6,7 @@ import {
 	fetchRunResult,
 	quarantineRef,
 	sandboxBundleArgv,
+	unsafeNoValidation,
 } from "../src/host-git/fetch.ts";
 import { HostGit, HostGitError } from "../src/host-git/runner.ts";
 import {
@@ -54,6 +55,7 @@ function fetchOpts(t: TamperedClone, extra: Record<string, unknown> = {}) {
 		runId: t.runId,
 		scratchRoot: t.scratchRoot,
 		assertProcessesDead: dead,
+		validate: unsafeNoValidation,
 		...rest,
 	};
 }
@@ -626,5 +628,33 @@ describe("atomic quarantine import (security review M4)", () => {
 		expect(res.wipRefs).toEqual([]);
 		const q = await quarantine(t);
 		expect(Object.keys(q)).toEqual(["refs/mfw/quarantine/run1"]);
+	});
+});
+
+describe("mandatory validator and config prelude (security review m1, m2)", () => {
+	test("an import with no validator is refused and changes nothing", async () => {
+		const t = await fixture();
+		const before = await refs(t.primary);
+		expect(
+			await codeOf(fetchRunResult(fetchOpts(t, { validate: undefined }))),
+		).toBe("validation");
+		expect(await refs(t.primary)).toEqual(before);
+	});
+
+	test("core.alternateRefsCommand in the primary never runs", async () => {
+		const t = await fixture();
+		await plainGit(
+			["config", "core.alternateRefsCommand", `${t.canary} altrefs`],
+			t.primary,
+		);
+		await mkdir(join(t.primary, ".git", "objects", "info"), {
+			recursive: true,
+		});
+		await writeFile(
+			join(t.primary, ".git", "objects", "info", "alternates"),
+			`${join(t.secret, ".git", "objects")}\n`,
+		);
+		await fetchRunResult(fetchOpts(t));
+		expect(await readFile(t.canaryLog, "utf8")).toBe("");
 	});
 });

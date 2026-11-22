@@ -55,13 +55,21 @@ export interface FetchRunResultOpts {
 	scratchRoot: string;
 	/** Throws or rejects unless every run process is dead and its cgroup gone. */
 	assertProcessesDead: () => void | Promise<void>;
-	/** Runs on the bare repo before anything reaches the primary. Throw to reject. */
-	validate?: (ctx: FetchValidationContext) => void | Promise<void>;
+	/**
+	 * Runs on the bare repo before anything reaches the primary. Throw to reject.
+	 * Required: fsck passes some hostile content (a `ext::` submodule url, a
+	 * symlink out of the tree, filter or diff drivers), so an import with no
+	 * validator is refused. Tests opt out with `unsafeNoValidation`.
+	 */
+	validate: (ctx: FetchValidationContext) => void | Promise<void>;
 	/** Refuse a bundle file larger than this. Default 1 GiB. */
 	maxBundleBytes?: number;
 	/** Refuse a bundle advertising more refs than this. Default 1000. */
 	maxRefs?: number;
 }
+
+/** Test-only opt-out of the mandatory validator. Never pass this in daemon code. */
+export const unsafeNoValidation = (): void => {};
 
 export interface FetchRunResultOk {
 	quarantineRef: string;
@@ -308,6 +316,12 @@ export async function fetchRunResult(
 			`refusing a scratch root under the workspace root: ${o.scratchRoot}`,
 		);
 	}
+	if (typeof o.validate !== "function") {
+		throw new HostGitError(
+			"validation",
+			"refusing to import without a validator (pass one; fsck alone is not enough)",
+		);
+	}
 	const maxBytes = o.maxBundleBytes ?? DEFAULT_MAX_BUNDLE_BYTES;
 	const maxRefs = o.maxRefs ?? DEFAULT_MAX_REFS;
 
@@ -368,7 +382,9 @@ export async function fetchRunResult(
 			// Includes a child killed by the memory or CPU cap (a delta bomb).
 			throw new HostGitError(
 				"bad_bundle",
-				`the bundle was rejected (${imported.raw.signalCode ?? imported.exitCode}): ${imported.stderr.slice(0, 300)}`,
+				imported.stderr.includes("mismatched algorithms")
+					? "the primary repo's object format (sha256) is not supported"
+					: `the bundle was rejected (${imported.raw.signalCode ?? imported.exitCode}): ${imported.stderr.slice(0, 300)}`,
 			);
 		}
 
@@ -396,24 +412,20 @@ export async function fetchRunResult(
 		const tip = heads.get(BARE_HEAD);
 		if (!tip) throw new HostGitError("no_branch", "no head ref was fetched");
 		const wipNames = [...heads.keys()].filter((n) => n.startsWith(BARE_WIP));
-
-		// 5. validation hook, on the untrusted bare repo only.
-		if (o.validate) {
-			try {
-				await o.validate({
-					bareRepo: bare,
-					runId,
-					headRef: BARE_HEAD,
-					wipRefs: wipNames,
-					host,
-				});
-			} catch (e) {
-				if (e instanceof HostGitError) throw e;
-				throw new HostGitError(
-					"validation",
-					e instanceof Error ? e.message : String(e),
-				);
-			}
+		try {
+			await o.validate({
+				bareRepo: bare,
+				runId,
+				headRef: BARE_HEAD,
+				wipRefs: wipNames,
+				host,
+			});
+		} catch (e) {
+			if (e instanceof HostGitError) throw e;
+			throw new HostGitError(
+				"validation",
+				e instanceof Error ? e.message : String(e),
+			);
 		}
 
 		// 6. into the primary's quarantine namespaces, in one transaction.

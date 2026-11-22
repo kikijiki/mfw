@@ -352,7 +352,17 @@ export class HostGit {
 		this.scratchRoots = (opts.ownedRoots ?? [])
 			.map(resolveReal)
 			.filter((r) => !isUnder(r, this.workspaceRoot));
-		this.gitBin = opts.gitBin ?? "git";
+		// Resolve git once, to an absolute path: a later change to PATH cannot swap it.
+		const bin =
+			opts.gitBin ??
+			Bun.which("git", { PATH: (opts.baseEnv ?? process.env).PATH ?? "" });
+		if (!bin || !isAbsolute(bin)) {
+			throw new HostGitError(
+				"bad_argument",
+				"cannot resolve an absolute path to git",
+			);
+		}
+		this.gitBin = bin;
 		this.maxMemoryKiB = Math.floor(
 			(opts.maxMemoryBytes ?? DEFAULT_MAX_MEMORY_BYTES) / 1024,
 		);
@@ -389,6 +399,7 @@ export class HostGit {
 		env.GIT_ATTR_NOSYSTEM = "1";
 		env.GIT_NO_REPLACE_OBJECTS = "1";
 		env.GIT_OPTIONAL_LOCKS = "0";
+		env.MALLOC_ARENA_MAX = "1";
 		env.HOME = "/nonexistent";
 		return env;
 	}
@@ -412,6 +423,12 @@ export class HostGit {
 			"maintenance.auto=false",
 			"-c",
 			"fetch.recurseSubmodules=false",
+			// One thread: under an address-space cap every extra thread reserves a
+			// stack and a malloc arena, which can exhaust the cap on a many-core host.
+			"-c",
+			"pack.threads=1",
+			"-c",
+			"core.alternateRefsCommand=",
 		];
 		if (opts.allowFile) c.push("-c", "protocol.file.allow=always");
 		return c;
@@ -461,7 +478,9 @@ export class HostGit {
 			if (!st.isDirectory()) {
 				throw new HostGitError(
 					"path_under_workspace",
-					`refusing a repo whose .git is a ${st.isSymbolicLink() ? "symlink" : "file"}: ${repo}`,
+					st.isSymbolicLink()
+						? `refusing a repo whose .git is a symlink: ${repo}`
+						: `refusing a repo whose .git is a file (a linked worktree; host repos must be plain clones): ${repo}`,
 				);
 			}
 			gitDir = dotgit;
