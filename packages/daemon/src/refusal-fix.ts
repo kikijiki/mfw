@@ -175,6 +175,14 @@ export const REFUSAL_FIXES: Record<RefusalCode, FixFor> = {
 		kind: "command",
 		text: `Inspect ${waitingFor[0] ?? "the worktree path"}; if it holds nothing you need, remove it: git worktree remove --force ${waitingFor[0] ?? "<path>"} (or delete the directory if git does not list it).`,
 	}),
+	sandbox_unavailable: () => ({
+		kind: "command",
+		text: "Install bubblewrap (bwrap) and set agentIsolation to bwrap, or set approvalMode to interactive for this project. Autonomous runs are refused without a sandbox.",
+	}),
+	sandbox_probe_failed: (waitingFor) => ({
+		kind: "command",
+		text: `The sandbox probe failed (${waitingFor[0] ?? "no detail"}). Check that bwrap can create user namespaces on this host (AppArmor or sysctl kernel.unprivileged_userns_clone), then retry; autonomous runs stay refused until the probe passes.`,
+	}),
 	memory_floor: (waitingFor) => ({
 		kind: "setting",
 		text: `Free memory on the host (${waitingFor.join(", ")}), or lower minFreeMemoryMb in this project's entry in $MFW_HOME/config.json (0 turns the check off).`,

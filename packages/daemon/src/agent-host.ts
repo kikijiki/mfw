@@ -21,6 +21,8 @@ import { runProc } from "./proc.ts";
 import {
 	type BwrapIsolation,
 	bwrapAvailable,
+	SANDBOX_ENV_ALLOWLIST,
+	SandboxUnavailableError,
 	wrapWithBwrap,
 } from "./sandbox.ts";
 
@@ -46,8 +48,27 @@ function q(s: string): string {
 /** Dedicated socket keeps agent runs out of the user's tmux server and cgroup. Tests set MFW_TMUX_SOCKET=mfw-test. */
 const TMUX_SOCKET = process.env.MFW_TMUX_SOCKET || "mfw";
 
+/**
+ * Environment names the tmux server may be started with. The server's global
+ * environment is inherited by every pane, so it must hold nothing secret (the
+ * sandbox experiment E1: a canary in the daemon's env reached every run).
+ * `TMUX_TMPDIR` only locates the socket.
+ */
+const TMUX_ENV_NAMES = [...SANDBOX_ENV_ALLOWLIST, "TMUX_TMPDIR"];
+
+/** The mfw tmux server is driven under `env -i`; per-run public values travel by `-e`. */
+function tmuxEnv(source: NodeJS.ProcessEnv = process.env): string[] {
+	return TMUX_ENV_NAMES.flatMap((n) => {
+		const v = source[n];
+		return typeof v === "string" ? [`${n}=${v}`] : [];
+	});
+}
+
 async function tmux(args: string[]) {
-	return runProc(["tmux", "-L", TMUX_SOCKET, ...args], { timeoutMs: 10_000 });
+	return runProc(
+		["env", "-i", ...tmuxEnv(), "tmux", "-L", TMUX_SOCKET, ...args],
+		{ timeoutMs: 10_000 },
+	);
 }
 
 export type AgentTmuxRunner = typeof tmux;
@@ -104,22 +125,18 @@ export interface LaunchSpec {
 	initialMessage?: string;
 	steer: boolean; // declared capability; driver verifies via `hello`
 	approvalMode?: "autonomous" | "interactive";
-	/** Isolate the driver from the daemon home (trigger arming store, credentials.json). Best-effort: without `bwrap` on `PATH` the run launches unsandboxed and logs it. */
+	/** Isolate the driver from the daemon home (trigger arming store, credentials.json). Fail closed: without `bwrap` on `PATH` the launch throws `SandboxUnavailableError`. */
 	isolation?: BwrapIsolation;
 }
 
 export class AgentHost {
-	/** Optional; without it a missing `bwrap` degrades silently. */
 	private readonly runTmux: AgentTmuxRunner;
 	private readonly secretCarrierRoot: string;
 	private readonly secretHandoffTimeoutMs: number;
 	private readonly secretHandoffWriter: AgentSecretHandoffWriter;
 	private readonly sandbox: NonNullable<AgentHostOptions["sandbox"]>;
 
-	constructor(
-		private readonly log?: Logger,
-		opts: AgentHostOptions = {},
-	) {
+	constructor(_log?: Logger, opts: AgentHostOptions = {}) {
 		this.runTmux = opts.tmuxRunner ?? tmux;
 		this.sandbox = opts.sandbox ?? { bwrapAvailable, wrapWithBwrap };
 		this.secretCarrierRoot = opts.secretCarrierRoot ?? tmpdir();
@@ -191,24 +208,24 @@ export class AgentHost {
 			"fi",
 		].join("\n");
 
-		// Run the driver under bwrap when requested and available (never a hard failure).
-		// Applies to the driver line only: direnv's export runs in the outer, unsandboxed
-		// shell and reaches the driver as normal env.
+		// Run the driver under bwrap when requested. Fail closed: a missing bwrap
+		// is a refusal, never a silent unsandboxed launch. Applies to the driver
+		// line only: direnv's export runs in the outer, unsandboxed shell, and
+		// only allowlisted names (plus this launch's own) reach the driver.
 		let driverCmd = `bun run ${q(spec.driverScript)} ${q(dir)}`;
 		if (spec.isolation) {
-			if (await this.sandbox.bwrapAvailable()) {
-				driverCmd = this.sandbox.wrapWithBwrap(
-					driverCmd,
-					spec.cwd,
-					dir,
-					spec.isolation,
-				);
-			} else {
-				this.log?.warn(
-					{ runId: spec.runId },
-					"isolation requested but `bwrap` is not on PATH, launching unsandboxed",
+			if (!(await this.sandbox.bwrapAvailable())) {
+				throw new SandboxUnavailableError(
+					"isolation requested but `bwrap` is not on PATH",
 				);
 			}
+			driverCmd = this.sandbox.wrapWithBwrap(
+				driverCmd,
+				spec.cwd,
+				dir,
+				spec.isolation,
+				[...Object.keys(publicEnvironment), ...secretEnvironment.names()],
+			);
 		}
 
 		// Secrets never touch a regular file: write through a 0600 FIFO once run.sh
@@ -246,6 +263,9 @@ export class AgentHost {
 		const script = [
 			"#!/usr/bin/env bash",
 			"set +e",
+			// The tmux server runs under `env -i`, so the pane's login shell rebuilds PATH from
+			// system defaults (on NixOS, dropping the daemon's toolchain). PATH is public: restore it.
+			`export PATH=${q(process.env.PATH ?? "/usr/bin:/bin")}`,
 			"IFS= read -r _ 2>/dev/null  # wait for go signal",
 			`cd ${q(spec.cwd)} || { printf 'exit:1' > ${q(exitPath)}; exit 1; }`,
 			envrcGate,

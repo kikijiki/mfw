@@ -319,8 +319,10 @@ const projectSchema = z.object({
 	pushRemote: z.string().min(1).optional(),
 	/**
 	 * Isolate agent runs from the daemon's home (trigger arming store,
-	 * `credentials.json`) via `bwrap`. Degrades to unsandboxed, with a log
-	 * warning, if the binary is missing.
+	 * `credentials.json`), its environment and the tmux sockets via `bwrap`.
+	 * Defaults to `bwrap`. `none` is allowed only with `approvalMode:
+	 * "interactive"`; an autonomous run without a working sandbox is refused
+	 * at preflight (`sandbox_unavailable`), never silently unsandboxed.
 	 */
 	agentIsolation: z.enum(["none", "bwrap"]).optional(),
 	/** Failed expansion runs before a `draft` is marked failed (see `TaskService.recordDraftExpandFailure`). */
@@ -384,7 +386,7 @@ export const PROJECT_DEFAULTS = {
 	// remote already configured. No remote means nothing is pushed.
 	pushOnMerge: true,
 	pushRemote: "origin",
-	agentIsolation: "none",
+	agentIsolation: "bwrap",
 	// Enough to rule out a blip without leaving a draft unusable through an outage.
 	draftExpandMaxAttempts: 3,
 	// Read-only planning; should not serialize a capture burst.
