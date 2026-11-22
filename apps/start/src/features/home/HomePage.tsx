@@ -52,9 +52,13 @@ export function HomePage() {
 					</span>
 				}
 			/>
-			<Scroller className="flex flex-col gap-6 p-3">
+			<Scroller data-ui="home-grid" className="flex flex-col gap-6 p-3">
 				{headlines.data && headlines.data.length > 0 ? (
-					<section aria-label="Projects" className="flex flex-col gap-2">
+					<section
+						data-ui="home-projects"
+						aria-label="Projects"
+						className="flex flex-col gap-2"
+					>
 						<SectionHeading>Projects</SectionHeading>
 						<Headlines headlines={headlines.data} />
 					</section>
@@ -62,6 +66,7 @@ export function HomePage() {
 
 				<section
 					id="needs-you"
+					data-ui="home-needs"
 					aria-label="Needs you"
 					className="flex flex-col gap-2"
 				>
@@ -88,7 +93,11 @@ export function HomePage() {
 					<EscalationsPanel />
 				</section>
 
-				<section aria-label="Live" className="flex flex-col gap-2">
+				<section
+					data-ui="home-live"
+					aria-label="Live"
+					className="flex flex-col gap-2"
+				>
 					<SectionHeading count={runs.length > 0 ? runs.length : undefined}>
 						Live
 					</SectionHeading>

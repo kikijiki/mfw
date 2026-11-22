@@ -172,7 +172,9 @@ export function NeedsQueue({
 	if (!grouped) {
 		return (
 			<>
-				<ul className="flex flex-col gap-2">{ordered.map(row)}</ul>
+				<ul data-ui="need-list" className="flex flex-col gap-2">
+					{ordered.map(row)}
+				</ul>
 				{actions.dialog}
 			</>
 		);
@@ -182,7 +184,9 @@ export function NeedsQueue({
 		<>
 			{groupByAttention(ordered).map((g) => {
 				const list = (
-					<ul className="flex flex-col gap-2">{g.items.map(row)}</ul>
+					<ul data-ui="need-list" className="flex flex-col gap-2">
+						{g.items.map(row)}
+					</ul>
 				);
 				if (g.attention === "act") return <div key="act">{list}</div>;
 				return (
@@ -234,6 +238,9 @@ function NeedRow({
 	return (
 		<li
 			data-need={item.kind}
+			data-ui="need"
+			data-attention={item.attention}
+			data-severity={item.severity}
 			className="flex flex-col gap-1.5 border p-2"
 			style={{
 				borderColor: `color-mix(in oklch, var(${token}) 40%, var(--mfw-border))`,
@@ -241,17 +248,21 @@ function NeedRow({
 				background: "var(--mfw-bg-raised)",
 			}}
 		>
-			<div className="flex min-w-0 flex-wrap items-center gap-2">
+			<div
+				data-ui="need-head"
+				className="flex min-w-0 flex-wrap items-center gap-2"
+			>
 				<Icon
+					data-ui="need-icon"
 					aria-hidden
 					className="size-4 shrink-0"
 					style={{ color: `var(${token})` }}
 				/>
-				<Chip>{item.project}</Chip>
+				<Chip className="mfw-need-project">{item.project}</Chip>
 				{item.taskId ? (
 					<AppLink
 						to={href.task(item.project, item.taskId)}
-						className="mfw-num"
+						className="mfw-num mfw-need-task"
 						onClick={onNavigate}
 					>
 						{item.taskId}
@@ -260,17 +271,18 @@ function NeedRow({
 				{linkTitle ? (
 					<AppLink
 						to={linkTitle}
-						className="min-w-0 flex-1 truncate font-medium"
+						className="mfw-need-title min-w-0 flex-1 truncate font-medium"
 						onClick={onNavigate}
 					>
 						{item.title}
 					</AppLink>
 				) : (
-					<span className="min-w-0 flex-1 truncate font-medium">
+					<span className="mfw-need-title min-w-0 flex-1 truncate font-medium">
 						{item.title}
 					</span>
 				)}
 				<span
+					data-ui="need-age"
 					className="shrink-0"
 					style={{
 						color: "var(--mfw-fg-faint)",
@@ -280,6 +292,7 @@ function NeedRow({
 					<RelativeTime value={item.ts} />
 				</span>
 				<Button
+					data-ui="need-dismiss"
 					size="icon-sm"
 					variant="ghost"
 					aria-label={`Dismiss: ${item.title}`}
@@ -291,6 +304,7 @@ function NeedRow({
 
 			{item.detail ? (
 				<p
+					data-ui="need-detail"
 					className="m-0"
 					style={{
 						color: "var(--mfw-fg-muted)",
@@ -301,7 +315,11 @@ function NeedRow({
 				</p>
 			) : null}
 			{item.fix ? (
-				<p className="m-0" style={{ fontSize: "var(--mfw-text-xs)" }}>
+				<p
+					data-ui="need-fix"
+					className="m-0"
+					style={{ fontSize: "var(--mfw-text-xs)" }}
+				>
 					Fix: {item.fix}
 				</p>
 			) : null}
@@ -312,7 +330,7 @@ function NeedRow({
 
 			{inline === "run" ? (
 				run ? (
-					<div className="flex flex-col gap-2">
+					<div data-ui="need-actions" className="flex flex-col gap-2">
 						<Button
 							size="sm"
 							variant="outline"
@@ -362,7 +380,10 @@ function NeedRow({
 			) : null}
 
 			{inline === "merge" && item.mergeJobId !== undefined ? (
-				<div className="flex flex-wrap items-center gap-2">
+				<div
+					data-ui="need-actions"
+					className="flex flex-wrap items-center gap-2"
+				>
 					{item.runId ? (
 						<Button size="sm" variant="ghost" asChild>
 							<AppLink
@@ -398,7 +419,10 @@ function NeedRow({
 			) : null}
 
 			{inline === "brain" ? (
-				<div className="flex flex-wrap items-center gap-2">
+				<div
+					data-ui="need-actions"
+					className="flex flex-wrap items-center gap-2"
+				>
 					<LetBrainDecide
 						project={item.project}
 						title={item.title.replace(/^brain: /, "")}
@@ -414,7 +438,10 @@ function NeedRow({
 			) : null}
 
 			{inline === "review" ? (
-				<div className="flex flex-wrap items-center gap-2">
+				<div
+					data-ui="need-actions"
+					className="flex flex-wrap items-center gap-2"
+				>
 					<Button size="sm" variant="outline" asChild>
 						<AppLink to={target} onClick={onNavigate}>
 							Open changes

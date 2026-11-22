@@ -157,20 +157,20 @@ describe("pre-paint bootstrap", () => {
 
 	test("applies the stored theme and mode", () => {
 		const root = runBootstrap({
-			stored: { [THEME_NAME_KEY]: "swiss", "mfw:v2:theme": "light" },
+			stored: { [THEME_NAME_KEY]: "docket", "mfw:v2:theme": "light" },
 			osDark: true,
 		});
-		expect(root.attrs.get("data-theme")).toBe("swiss");
+		expect(root.attrs.get("data-theme")).toBe("docket");
 		expect(root.attrs.get("data-mode")).toBe("light");
 		expect(root.classes.has("dark")).toBe(false);
 	});
 
 	test("the URL wins over storage", () => {
 		const root = runBootstrap({
-			search: "?theme=teletype&mode=dark",
-			stored: { [THEME_NAME_KEY]: "swiss", "mfw:v2:theme": "light" },
+			search: "?theme=bench&mode=dark",
+			stored: { [THEME_NAME_KEY]: "docket", "mfw:v2:theme": "light" },
 		});
-		expect(root.attrs.get("data-theme")).toBe("teletype");
+		expect(root.attrs.get("data-theme")).toBe("bench");
 		expect(root.attrs.get("data-mode")).toBe("dark");
 		expect(root.classes.has("dark")).toBe(true);
 	});
@@ -223,21 +223,21 @@ describe("selectTheme", () => {
 
 	test("applies and persists", () => {
 		const { root, store } = install("http://x/");
-		selectTheme("control");
-		expect(root.attrs.get("data-theme")).toBe("control");
-		expect(store.get(THEME_NAME_KEY)).toBe("control");
-		expect(paintedTheme()).toBe("control");
+		selectTheme("switchyard");
+		expect(root.attrs.get("data-theme")).toBe("switchyard");
+		expect(store.get(THEME_NAME_KEY)).toBe("switchyard");
+		expect(paintedTheme()).toBe("switchyard");
 	});
 
 	test("still applies when storage is blocked", () => {
 		const { root } = install("http://x/", true);
-		selectTheme("fieldnotes");
-		expect(root.attrs.get("data-theme")).toBe("fieldnotes");
+		selectTheme("singlefile");
+		expect(root.attrs.get("data-theme")).toBe("singlefile");
 	});
 
 	test("drops ?theme= so a reload keeps the choice", () => {
-		const { replaced } = install("http://x/p?theme=swiss&tab=1");
-		selectTheme("broadsheet");
+		const { replaced } = install("http://x/p?theme=docket&tab=1");
+		selectTheme("bench");
 		expect(replaced).toEqual(["http://x/p?tab=1"]);
 	});
 });
