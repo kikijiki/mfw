@@ -118,7 +118,7 @@ describe("wrapWithBwrap flags (pure)", () => {
 			},
 			["MFW_RUN_ID"],
 		);
-		expect(w).toContain("env -i PATH=");
+		expect(w).toMatch(/\/env' -i PATH=/);
 		expect(w).toMatch(/'\/[^']*bwrap' '--die-with-parent'/);
 		expect(w).toContain("'--new-session'");
 		expect(w).toContain("'--clearenv'");
@@ -215,5 +215,36 @@ describe("probeSandbox in real bwrap", () => {
 		}
 		// MFW_CANARY_E0 is not allowlisted, so it never enters the sandbox.
 		expect(r).toEqual({ ok: true });
+	});
+});
+
+describe("pinned host tools (review G4)", () => {
+	test("a binary planted in a writable PATH entry is never selected", async () => {
+		const { mkdtemp, mkdir, writeFile, chmod, symlink } = await import(
+			"node:fs/promises"
+		);
+		const { pinnedToolIn, trustedPathEntries } = await import(
+			"../src/sandbox.ts"
+		);
+		const root = await mkdtemp(join(tmpdir(), "mfw-pin-"));
+		try {
+			const home = join(root, "home");
+			const planted = join(home, ".local", "bin");
+			const real = join(root, "system", "bin");
+			await mkdir(planted, { recursive: true });
+			await mkdir(real, { recursive: true });
+			for (const d of [planted, real]) {
+				await writeFile(join(d, "bwrap"), "#!/bin/sh\nexit 0\n");
+				await chmod(join(d, "bwrap"), 0o755);
+			}
+			// a profile link inside the writable root that points outside it is pinned to its target
+			await symlink(real, join(home, "profile-bin"));
+			const path = `${planted}:${join(home, "profile-bin")}:${real}`;
+			expect(pinnedToolIn("bwrap", path, [home])).toBe(join(real, "bwrap"));
+			expect(trustedPathEntries(path, [home])).toEqual([real]);
+			expect(pinnedToolIn("bwrap", planted, [home])).toBeNull();
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
 	});
 });

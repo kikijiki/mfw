@@ -13,6 +13,7 @@ import {
 	bwrapCore,
 	cleanEnvSetenvArgs,
 	maskedRuntimePaths,
+	pinnedTool,
 	resolveBwrapPath,
 	SANDBOX_ENV_ALLOWLIST,
 	SandboxUnavailableError,
@@ -205,8 +206,12 @@ export class AgentReviewInference implements InferenceClient {
 			(p): p is string => typeof p === "string",
 		);
 		const env = process.env;
+		const envPath = pinnedTool("env");
+		if (!envPath) {
+			throw new SandboxUnavailableError("env is not on a trusted PATH");
+		}
 		return [
-			"env",
+			envPath,
 			"-i",
 			`PATH=${env.PATH ?? "/usr/bin:/bin"}`,
 			...bwrapCore({

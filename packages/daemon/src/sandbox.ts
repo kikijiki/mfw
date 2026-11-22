@@ -1,5 +1,12 @@
-import { existsSync } from "node:fs";
+import {
+	accessSync,
+	existsSync,
+	constants as fsConstants,
+	realpathSync,
+	statSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	buildProbeScript,
 	PROBE_EXIT_CODE,
@@ -69,13 +76,85 @@ export class SandboxUnavailableError extends Error {
 	}
 }
 
-let cachedPath: string | null | undefined;
+/**
+ * Directories an agent can write: `$HOME`, `/tmp` and the OS temp dir. A binary
+ * found there is the agent's, not the host's (security review G4).
+ */
+function agentWritableRoots(): string[] {
+	const roots = [homedir(), "/tmp", tmpdir()];
+	return [...new Set(roots.map(realOrSelf))];
+}
 
-/** The absolute `bwrap` path, resolved once per process; null when absent. */
+function realOrSelf(p: string): string {
+	try {
+		return realpathSync(p);
+	} catch {
+		return p;
+	}
+}
+
+const within = (p: string, root: string) =>
+	p === root || p.startsWith(root.endsWith("/") ? root : `${root}/`);
+
+/**
+ * `PATH` entries the agent cannot have planted a binary in: each entry is
+ * resolved through symlinks (a `~/.nix-profile` link into the store is pinned
+ * to its store target) and dropped if it lands in a writable root.
+ */
+export function trustedPathEntries(
+	pathVar: string | undefined,
+	writableRoots: readonly string[] = agentWritableRoots(),
+): string[] {
+	const out: string[] = [];
+	for (const entry of (pathVar ?? "").split(":")) {
+		if (!entry.startsWith("/")) continue;
+		let real: string;
+		try {
+			real = realpathSync(entry);
+		} catch {
+			continue;
+		}
+		if (writableRoots.some((r) => within(real, r))) continue;
+		if (!out.includes(real)) out.push(real);
+	}
+	return out;
+}
+
+/** The first executable `name` in a trusted `PATH` entry, as an absolute real path; null if none. */
+export function pinnedToolIn(
+	name: string,
+	pathVar: string | undefined,
+	writableRoots?: readonly string[],
+): string | null {
+	for (const dir of trustedPathEntries(pathVar, writableRoots)) {
+		const candidate = join(dir, name);
+		try {
+			accessSync(candidate, fsConstants.X_OK);
+			if (statSync(candidate).isFile()) return candidate;
+		} catch {}
+	}
+	return null;
+}
+
+const pinned = new Map<string, string | null>();
+
+/** Host tools (`bwrap`, `tmux`, `env`, `bash`) resolved once per process from a trusted `PATH`. */
+export function pinnedTool(name: string): string | null {
+	if (!pinned.has(name)) pinned.set(name, pinnedToolIn(name, process.env.PATH));
+	return pinned.get(name) ?? null;
+}
+
+let cachedSafePath: string | undefined;
+
+/** `PATH` for host-side shells: trusted entries only. */
+export function safeHostPath(): string {
+	cachedSafePath ??= trustedPathEntries(process.env.PATH).join(":");
+	return cachedSafePath;
+}
+
+/** The pinned absolute `bwrap` path, resolved once per process; null when absent. */
 export async function resolveBwrapPath(): Promise<string | null> {
-	if (cachedPath !== undefined) return cachedPath;
-	cachedPath = Bun.which("bwrap") ?? null;
-	return cachedPath;
+	return pinnedTool("bwrap");
 }
 
 /** Cached for the process lifetime; checked on every launch. */
@@ -85,7 +164,8 @@ export async function bwrapAvailable(): Promise<boolean> {
 
 /** Test seam: clears the `bwrapAvailable` memo. */
 export function resetBwrapAvailableCache(): void {
-	cachedPath = undefined;
+	pinned.clear();
+	cachedSafePath = undefined;
 }
 
 /** POSIX single-quote, mirrors `agent-host.ts`'s `q`. */
@@ -183,10 +263,17 @@ export function wrapWithBwrap(
 	passEnv: readonly string[] = [],
 	extra: { readOnly?: readonly string[] } = {},
 ): string {
-	const bwrapPath = Bun.which("bwrap");
-	if (!bwrapPath) throw new Error("bwrap is not on PATH");
+	const bwrapPath = pinnedTool("bwrap");
+	const envPath = pinnedTool("env");
+	if (!bwrapPath || !envPath) {
+		throw new SandboxUnavailableError("bwrap is not on a trusted PATH");
+	}
 	const masks = maskedRuntimePaths();
-	const names = [...new Set([...SANDBOX_ENV_ALLOWLIST, ...passEnv])];
+	// PATH is handled apart: run.sh keeps a trusted host PATH for itself and
+	// hands the daemon's full PATH to the sandbox as MFW_SANDBOX_PATH.
+	const names = [...new Set([...SANDBOX_ENV_ALLOWLIST, ...passEnv])].filter(
+		(n) => n !== "PATH",
+	);
 	const core = bwrapCore({
 		bwrapPath,
 		cwd,
@@ -195,14 +282,16 @@ export function wrapWithBwrap(
 		masks,
 		readOnly: extra.readOnly,
 	});
-	const inner = `${probeScriptFor(isolation, names, masks)}\n${cmd}`;
+	const inner = `${probeScriptFor(isolation, [...names, "PATH"], masks)}\n${cmd}`;
 	return [
 		"_mfw_env=()",
 		`for _n in ${names.join(" ")}; do`,
 		// biome-ignore lint/suspicious/noTemplateCurlyInString: bash indirect expansion, not a JS template
 		'  if [ -n "${!_n+x}" ]; then _mfw_env+=(--setenv "$_n" "${!_n}"); fi',
 		"done",
-		`env -i PATH="$PATH" ${core.map(q).join(" ")} "\${_mfw_env[@]}" -- sh -c ${q(inner)}`,
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: bash default expansion
+		'_mfw_env+=(--setenv PATH "${MFW_SANDBOX_PATH-$PATH}")',
+		`${q(envPath)} -i PATH="$PATH" ${core.map(q).join(" ")} "\${_mfw_env[@]}" -- sh -c ${q(inner)}`,
 	].join("\n");
 }
 
@@ -256,8 +345,10 @@ export async function probeSandbox(
 		isolation,
 		masks,
 	});
+	const envPath = pinnedTool("env");
+	if (!envPath) return { ok: false, detail: "env is not on a trusted PATH" };
 	const argv = [
-		"env",
+		envPath,
 		"-i",
 		`PATH=${env.PATH ?? "/usr/bin:/bin"}`,
 		...core,

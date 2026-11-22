@@ -159,6 +159,7 @@ process.exit(0);
 			model: "test-model",
 			initialMessage: "",
 			steer: false,
+			approvalMode: "interactive",
 			// no isolation
 		});
 		await waitFor(async () => (await host.readExit(runDir)).kind === "exit");

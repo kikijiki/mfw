@@ -23,8 +23,10 @@ import { runProc } from "./proc.ts";
 import {
 	type BwrapIsolation,
 	bwrapAvailable,
+	pinnedTool,
 	SANDBOX_ENV_ALLOWLIST,
 	SandboxUnavailableError,
+	safeHostPath,
 	underPrivateTmp,
 	wrapWithBwrap,
 } from "./sandbox.ts";
@@ -62,14 +64,20 @@ const TMUX_ENV_NAMES = [...SANDBOX_ENV_ALLOWLIST, "TMUX_TMPDIR"];
 /** The mfw tmux server is driven under `env -i`; per-run public values travel by `-e`. */
 function tmuxEnv(source: NodeJS.ProcessEnv = process.env): string[] {
 	return TMUX_ENV_NAMES.flatMap((n) => {
-		const v = source[n];
+		const v = n === "PATH" ? safeHostPath() : source[n];
 		return typeof v === "string" ? [`${n}=${v}`] : [];
 	});
 }
 
 async function tmux(args: string[]) {
+	// Absolute, pinned paths (security review G4): never a `PATH` lookup an agent can steer.
+	const env = pinnedTool("env");
+	const tmuxBin = pinnedTool("tmux");
+	if (!env || !tmuxBin) {
+		throw new SandboxUnavailableError("env or tmux is not on a trusted PATH");
+	}
 	return runProc(
-		["env", "-i", ...tmuxEnv(), "tmux", "-L", TMUX_SOCKET, ...args],
+		[env, "-i", ...tmuxEnv(), tmuxBin, "-L", TMUX_SOCKET, ...args],
 		{ timeoutMs: 10_000 },
 	);
 }
@@ -327,7 +335,14 @@ export class AgentHost {
 			"set +e",
 			// The tmux server runs under `env -i`, so the pane's login shell rebuilds PATH from
 			// system defaults (on NixOS, dropping the daemon's toolchain). PATH is public: restore it.
-			`export PATH=${q(process.env.PATH ?? "/usr/bin:/bin")}`,
+			// With a sandbox, the shell itself keeps only trusted PATH entries (an agent can
+			// plant binaries in $HOME) and the full PATH goes to the sandbox (security review G4).
+			...(spec.isolation
+				? [
+						`MFW_SANDBOX_PATH=${q(process.env.PATH ?? "/usr/bin:/bin")}`,
+						`export PATH=${q(safeHostPath())}`,
+					]
+				: [`export PATH=${q(process.env.PATH ?? "/usr/bin:/bin")}`]),
 			"IFS= read -r _ 2>/dev/null  # wait for go signal",
 			`cd ${q(spec.cwd)} || { printf 'exit:1' > ${q(exitPath)}; exit 1; }`,
 			envrcGate,
@@ -360,7 +375,11 @@ export class AgentHost {
 		for (const [k, v] of Object.entries(spec.env ?? {})) {
 			if (v !== undefined && v !== null) args.push("-e", `${k}=${v}`);
 		}
-		args.push(`bash ${q(scriptPath)}`);
+		const bashBin = pinnedTool("bash");
+		if (!bashBin) {
+			throw new SandboxUnavailableError("bash is not on a trusted PATH");
+		}
+		args.push(`${q(bashBin)} ${q(scriptPath)}`);
 
 		// The tmux server exits with its last session; a dispatch in that window fails transiently. Retry briefly.
 		let r = await this.runTmux(args);

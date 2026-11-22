@@ -155,6 +155,7 @@ process.exit(0);
 				model: "m",
 				initialMessage: "",
 				steer: false,
+				approvalMode: "interactive",
 			});
 			await waitExit(host, runDir);
 			expect(await readFile(join(runDir, "raw.log"), "utf8")).toContain(
