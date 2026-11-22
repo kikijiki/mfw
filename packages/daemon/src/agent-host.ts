@@ -65,7 +65,14 @@ const TMUX_ENV_NAMES = [...SANDBOX_ENV_ALLOWLIST, "TMUX_TMPDIR"];
 /** The mfw tmux server is driven under `env -i`; per-run public values travel by `-e`. */
 function tmuxEnv(source: NodeJS.ProcessEnv = process.env): string[] {
 	return TMUX_ENV_NAMES.flatMap((n) => {
-		const v = n === "PATH" ? safeHostPath() : source[n];
+		// The pane command goes through `$SHELL -c`, which would read the user's
+		// rc files (agent-writable): pin it to a plain sh (security review G3).
+		const v =
+			n === "PATH"
+				? safeHostPath()
+				: n === "SHELL"
+					? (pinnedTool("sh") ?? "/bin/sh")
+					: source[n];
 		return typeof v === "string" ? [`${n}=${v}`] : [];
 	});
 }
@@ -78,7 +85,18 @@ async function tmux(args: string[]) {
 		throw new SandboxUnavailableError("env or tmux is not on a trusted PATH");
 	}
 	return runProc(
-		[env, "-i", ...tmuxEnv(), tmuxBin, "-L", TMUX_SOCKET, ...args],
+		// `-f /dev/null`: never read `~/.tmux.conf`, which an agent can write (`run-shell`).
+		[
+			env,
+			"-i",
+			...tmuxEnv(),
+			tmuxBin,
+			"-f",
+			"/dev/null",
+			"-L",
+			TMUX_SOCKET,
+			...args,
+		],
 		{ timeoutMs: 10_000 },
 	);
 }
@@ -255,9 +273,11 @@ export class AgentHost {
 		].join("\n");
 
 		// Run the driver under bwrap when requested. Fail closed: a missing bwrap
-		// is a refusal, never a silent unsandboxed launch. Applies to the driver
-		// line only: direnv's export runs in the outer, unsandboxed shell, and
-		// only allowlisted names (plus this launch's own) reach the driver.
+		// is a refusal, never a silent unsandboxed launch. With a sandbox the
+		// direnv gate runs INSIDE it (security review G3: `~/.config/direnv/direnvrc`
+		// is agent-writable and must not be sourced by the host shell), after the
+		// probe, so its exports reach the driver and the allowlist still holds for
+		// everything inherited.
 		let driverCmd = `bun run ${q(spec.driverScript)} ${q(dir)}`;
 		if (spec.isolation) {
 			if (!(await this.sandbox.bwrapAvailable())) {
@@ -268,7 +288,7 @@ export class AgentHost {
 			// Make sure the tmux socket dir exists so it is masked even on a first launch.
 			ensureTmuxSocketDir();
 			driverCmd = this.sandbox.wrapWithBwrap(
-				driverCmd,
+				`${envrcGate}\n${driverCmd}`,
 				spec.cwd,
 				dir,
 				{
@@ -348,7 +368,7 @@ export class AgentHost {
 				: [`export PATH=${q(process.env.PATH ?? "/usr/bin:/bin")}`]),
 			"IFS= read -r _ 2>/dev/null  # wait for go signal",
 			`cd ${q(spec.cwd)} || { printf 'exit:1' > ${q(exitPath)}; exit 1; }`,
-			envrcGate,
+			...(spec.isolation ? [] : [envrcGate]),
 			...secretGate,
 			driverCmd,
 			"rc=$?",
