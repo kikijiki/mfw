@@ -284,7 +284,9 @@ function envFromProcess(): WipHelperEnv {
 	};
 }
 
-if (import.meta.main) {
+// Run as a command only when this file is the script bun was started with. A bundled server also reports
+// `import.meta.main` as true for its own entry, which must never run the helper (it exits when its env is unset).
+if (import.meta.main && /wip-helper\.[cm]?[jt]s$/.test(process.argv[1] ?? "")) {
 	const env = envFromProcess();
 	const cmd = process.argv[2];
 	if (cmd === "snapshot") {
