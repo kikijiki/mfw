@@ -171,7 +171,7 @@ export async function brainFixture(
 				if (Date.now() > deadline) {
 					throw new Error(`timed out waiting for ${o.what ?? "condition"}`);
 				}
-				await Bun.sleep(150);
+				await Bun.sleep(40);
 			}
 		},
 		async turns() {

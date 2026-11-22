@@ -232,9 +232,7 @@ describe("brain crash matrix", () => {
 
 	test("row 10: repeated failures open the circuit: one page, no more turns, the rest keeps running, a human reset resumes", async () => {
 		const notified = "notified.log";
-		fx = await brainFixture();
 		// Notifications go to a file through the project's command sink.
-		await fx.cleanup();
 		fx = await brainFixture({
 			project: {
 				notify: {
