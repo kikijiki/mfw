@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
 	fetchRunResult,
 	quarantineRef,
@@ -42,14 +42,19 @@ const host = (t: TamperedClone) =>
 const dead = () => {};
 
 function fetchOpts(t: TamperedClone, extra: Record<string, unknown> = {}) {
+	const { bundlePath, ...rest } = extra as { bundlePath?: string };
+	const abs = bundlePath ?? t.bundle;
+	// Tests name the bundle by absolute path; split it into the API's root + rel.
+	const inside = abs.startsWith(`${t.workspaceRoot}/`);
 	return {
 		host: host(t),
 		primaryRepo: t.primary,
-		bundlePath: t.bundle,
+		outboxRoot: inside ? t.workspaceRoot : dirname(abs),
+		bundleRel: inside ? abs.slice(t.workspaceRoot.length + 1) : basename(abs),
 		runId: t.runId,
 		scratchRoot: t.scratchRoot,
 		assertProcessesDead: dead,
-		...extra,
+		...rest,
 	};
 }
 
@@ -173,7 +178,7 @@ describe("fetchRunResult refusals", () => {
 		const t = await fixture();
 		const marker = join(t.root, "pwned");
 		for (const extra of [
-			{ bundlePath: `--upload-pack=touch ${marker}` },
+			{ outboxRoot: `--upload-pack=touch ${marker}` },
 			{ primaryRepo: "--upload-pack=x" },
 		]) {
 			expect(await codeOf(fetchRunResult(fetchOpts(t, extra)))).toBe(
@@ -181,7 +186,10 @@ describe("fetchRunResult refusals", () => {
 			);
 		}
 		expect(
-			await codeOf(fetchRunResult(fetchOpts(t, { bundlePath: "rel.bundle" }))),
+			await codeOf(fetchRunResult(fetchOpts(t, { bundleRel: "../x.bundle" }))),
+		).toBe("bad_argument");
+		expect(
+			await codeOf(fetchRunResult(fetchOpts(t, { outboxRoot: "rel/dir" }))),
 		).toBe("bad_argument");
 		expect(await Bun.file(marker).exists()).toBe(false);
 	});
@@ -466,5 +474,56 @@ describe("tips must be commits (security review M1)", () => {
 		);
 		const res = await fetchRunResult(fetchOpts(t, { bundlePath: out }));
 		expect(res.wipRefs).toHaveLength(1);
+	});
+});
+
+describe("outbox containment (security review M2)", () => {
+	test("a symlinked outbox parent is refused, and its contents are not imported", async () => {
+		const t = await fixture();
+		const hostOnly = join(t.root, "host-only");
+		await mkdir(hostOnly, { recursive: true });
+		await writeFile(join(hostOnly, "x.bundle"), await readFile(t.bundle));
+		await symlink(hostOnly, join(t.workspaceRoot, "outbox2"));
+		const before = await refs(t.primary);
+		expect(
+			await codeOf(
+				fetchRunResult(
+					fetchOpts(t, {
+						bundlePath: join(t.workspaceRoot, "outbox2", "x.bundle"),
+					}),
+				),
+			),
+		).toBe("bad_bundle");
+		expect(await refs(t.primary)).toEqual(before);
+	});
+
+	test("host file text never appears in an error message", async () => {
+		const t = await fixture();
+		const secret = join(t.root, "host-secret.txt");
+		await writeFile(
+			secret,
+			"# v3 git bundle\n@TOP-SECRET-LINE-FROM-HOST-FILE\n\n",
+		);
+		await symlink(t.root, join(t.workspaceRoot, "outbox3"));
+		let msg = "";
+		try {
+			await fetchRunResult(
+				fetchOpts(t, {
+					bundlePath: join(t.workspaceRoot, "outbox3", "host-secret.txt"),
+				}),
+			);
+		} catch (e) {
+			msg = String(e);
+		}
+		expect(msg).not.toContain("TOP-SECRET");
+		// and a plain hostile header does not echo its own lines either
+		const bad = join(t.workspaceRoot, "outbox", "echo.bundle");
+		await writeFile(bad, "# v3 git bundle\n@ECHOED-LINE\n\n");
+		try {
+			await fetchRunResult(fetchOpts(t, { bundlePath: bad }));
+		} catch (e) {
+			msg = String(e);
+		}
+		expect(msg).not.toContain("ECHOED-LINE");
 	});
 });

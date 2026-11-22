@@ -23,9 +23,9 @@
  *
  * Every git call goes through `HostGit`.
  */
-import { constants } from "node:fs";
+import { constants, lstatSync, realpathSync } from "node:fs";
 import { mkdtemp, open, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { assertLocalSource, type HostGit, HostGitError } from "./runner.ts";
 
 export interface FetchValidationContext {
@@ -42,8 +42,13 @@ export interface FetchRunResultOpts {
 	host: HostGit;
 	/** The host-owned repo that receives the quarantine refs. */
 	primaryRepo: string;
-	/** The bundle the sandbox wrote to the run's outbox. Read as bytes, never as a repo. */
-	bundlePath: string;
+	/**
+	 * A host-owned directory the bundle lives under (for example the run dir).
+	 * It is the trust anchor: nothing from `outboxRoot` down may be a symlink.
+	 */
+	outboxRoot: string;
+	/** Path of the bundle below `outboxRoot`, such as `outbox/result.bundle`. Read as bytes, never as a repo. */
+	bundleRel: string;
 	runId: string;
 	/** Host-owned dir under which the throwaway repo is made. */
 	scratchRoot: string;
@@ -124,6 +129,7 @@ export interface BundleHeader {
 export function parseBundleHeader(head: string, maxRefs: number): BundleHeader {
 	const lines = head.split("\n");
 	const magic = lines.shift();
+	// Error texts never echo the bytes: a mis-pointed read must not leak a host file.
 	if (magic !== "# v2 git bundle" && magic !== "# v3 git bundle") {
 		throw new HostGitError("bad_bundle", "not a git bundle (bad signature)");
 	}
@@ -137,7 +143,7 @@ export function parseBundleHeader(head: string, maxRefs: number): BundleHeader {
 		if (line.startsWith("@")) {
 			// v3 capabilities: object-format and filter change what the pack holds.
 			if (line !== "@object-format=sha1") {
-				throw new HostGitError("bad_bundle", `unsupported capability ${line}`);
+				throw new HostGitError("bad_bundle", "unsupported bundle capability");
 			}
 			continue;
 		}
@@ -175,14 +181,19 @@ async function copyBundle(
 			src,
 			constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
 		);
-	} catch (e) {
+	} catch {
 		throw new HostGitError(
 			"bad_bundle",
-			`cannot open the bundle (a symlink, or missing): ${e instanceof Error ? e.message : String(e)}`,
+			"cannot open the bundle (a symlink, or missing)",
 		);
 	}
 	try {
 		const st = await from.stat();
+		// The path we checked is the file we opened (no swap in between).
+		const seen = lstatSync(src);
+		if (seen.dev !== st.dev || seen.ino !== st.ino) {
+			throw new HostGitError("bad_bundle", "the bundle changed while opening");
+		}
 		if (!st.isFile()) {
 			throw new HostGitError("bad_bundle", "the bundle is not a regular file");
 		}
@@ -227,12 +238,62 @@ async function copyBundle(
 	}
 }
 
+/**
+ * `outboxRoot/bundleRel` as a path, after proving no component from the root
+ * down is a symlink. `O_NOFOLLOW` only covers the last component, so an agent
+ * that can swap a parent directory for a symlink could point the host at any
+ * file; processes are dead by now, which makes this check stable.
+ */
+export function resolveBundlePath(
+	outboxRoot: string,
+	bundleRel: string,
+): string {
+	assertLocalSource(outboxRoot);
+	const parts = bundleRel.split("/");
+	if (
+		bundleRel === "" ||
+		isAbsolute(bundleRel) ||
+		bundleRel.includes("\0") ||
+		parts.some((c) => c === "" || c === "." || c === "..")
+	) {
+		throw new HostGitError(
+			"bad_argument",
+			"bundleRel must be a clean relative path",
+		);
+	}
+	let cur: string;
+	try {
+		cur = realpathSync(outboxRoot);
+	} catch {
+		throw new HostGitError("bad_bundle", "the outbox root does not exist");
+	}
+	for (const [i, c] of parts.entries()) {
+		cur = join(cur, c);
+		let st: ReturnType<typeof lstatSync>;
+		try {
+			st = lstatSync(cur);
+		} catch {
+			throw new HostGitError("bad_bundle", "the bundle is missing");
+		}
+		if (st.isSymbolicLink()) {
+			throw new HostGitError("bad_bundle", "the bundle path crosses a symlink");
+		}
+		if (i < parts.length - 1 && !st.isDirectory()) {
+			throw new HostGitError(
+				"bad_bundle",
+				"the bundle path crosses a non-directory",
+			);
+		}
+	}
+	return cur;
+}
+
 export async function fetchRunResult(
 	o: FetchRunResultOpts,
 ): Promise<FetchRunResultOk> {
 	const { host, runId } = o;
 	assertRunId(runId);
-	assertLocalSource(o.bundlePath);
+	assertLocalSource(o.outboxRoot);
 	assertLocalSource(o.primaryRepo);
 	if (host.isWorkspacePath(o.primaryRepo)) {
 		throw new HostGitError(
@@ -264,7 +325,11 @@ export async function fetchRunResult(
 		// 2-3. copy the file out of the outbox, parse its header.
 		const copy = join(work, "run.bundle");
 		const header = parseBundleHeader(
-			await copyBundle(o.bundlePath, copy, maxBytes),
+			await copyBundle(
+				resolveBundlePath(o.outboxRoot, o.bundleRel),
+				copy,
+				maxBytes,
+			),
 			maxRefs,
 		);
 		const headSrc = runHeadSourceRef(runId);
