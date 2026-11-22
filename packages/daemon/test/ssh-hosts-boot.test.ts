@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -21,7 +21,14 @@ import { RemoteTransportError } from "../src/ssh-transport.ts";
 
 const roots: string[] = [];
 const orchestrators: Awaited<ReturnType<typeof boot>>[] = [];
+// Remote targets are experimental and off by default (remote-experimental.ts).
+const priorRemote = process.env.MFW_EXPERIMENTAL_REMOTE;
+beforeEach(() => {
+	process.env.MFW_EXPERIMENTAL_REMOTE = "1";
+});
 afterEach(async () => {
+	if (priorRemote === undefined) delete process.env.MFW_EXPERIMENTAL_REMOTE;
+	else process.env.MFW_EXPERIMENTAL_REMOTE = priorRemote;
 	for (const o of orchestrators.splice(0).reverse())
 		await o.shutdown().catch(() => {});
 	for (const root of roots.splice(0).reverse())
@@ -166,6 +173,8 @@ describe("registry SSH hosts through boot", () => {
 			root: await repo(),
 			integrationBranch: "main",
 			maxConcurrent: 4,
+			// Remote targets refuse autonomous runs (remote-experimental.ts).
+			approvalMode: "interactive",
 			assistance: {
 				changeReview: "human",
 			},
