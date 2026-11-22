@@ -79,24 +79,67 @@ export interface HostGitResult {
 	raw: ProcResult;
 }
 
-/** Options that run a program or redirect git to another repo or config. Refused before `--`. */
-const FORBIDDEN_OPTIONS = [
-	"-c",
-	"-C",
-	"--config",
-	"--config-env",
-	"--git-dir",
-	"--work-tree",
-	"--exec-path",
-	"--namespace",
-	"--super-prefix",
-	"--upload-pack",
-	"--receive-pack",
-	"--exec",
-	"--ssh-command",
-	"--template",
-	"--separate-git-dir",
-];
+/**
+ * The subcommands HostGit will run, each with the exact flags it accepts. This
+ * is an allowlist on purpose: git expands abbreviated long options
+ * (`--upload-pac=` is `--upload-pack=`) and attached short values (`grep -Oprog`),
+ * so a denylist of "dangerous" options cannot be made complete. Anything that
+ * starts with `-` and is not listed here, before a `--`, is refused.
+ * `flags` are exact; `valued` flags take `--name=value` (value is data, never
+ * a program: none of these options execute their value).
+ */
+interface SubcommandSpec {
+	flags?: string[];
+	valued?: string[];
+	/** Operands must follow a `--` (anything that may be a path or url). */
+	requireDashDash?: boolean;
+}
+
+const SUBCOMMANDS: Record<string, SubcommandSpec> = {
+	init: { flags: ["--bare", "--quiet", "-q"], requireDashDash: true },
+	fetch: {
+		flags: [
+			"--no-tags",
+			"--no-write-fetch-head",
+			"--no-recurse-submodules",
+			"--no-auto-gc",
+			"--no-auto-maintenance",
+			"--no-prune",
+			"--force",
+			"--quiet",
+			"-q",
+		],
+		requireDashDash: true,
+	},
+	"for-each-ref": { valued: ["--format", "--count", "--sort"] },
+	"rev-parse": {
+		flags: ["--verify", "--quiet", "-q", "--is-bare-repository", "--git-dir"],
+	},
+	"cat-file": { flags: ["-e", "-t", "-s", "-p", "--batch-check", "--batch"] },
+	"rev-list": {
+		flags: ["--count", "--objects", "--no-walk"],
+		valued: ["--max-count"],
+	},
+	"show-ref": { flags: ["--verify", "--quiet", "--hash"] },
+	"merge-base": { flags: ["--is-ancestor"] },
+	"ls-tree": { flags: ["-r", "-z", "-l", "-t", "--name-only", "--full-tree"] },
+	"diff-tree": {
+		flags: [
+			"-r",
+			"-z",
+			"--raw",
+			"--name-status",
+			"--name-only",
+			"--numstat",
+			"--no-renames",
+			"--no-ext-diff",
+			"--no-textconv",
+		],
+	},
+	// read-only: lets tests and the doctor show the effective config
+	config: { flags: ["--list", "--show-origin"] },
+	"update-ref": { flags: ["-d", "--no-deref"] },
+};
 
 /** Env vars inherited from the daemon. Everything else is dropped. */
 const INHERITED_ENV = ["PATH", "LANG", "LC_ALL", "TMPDIR", "TZ"];
@@ -247,30 +290,37 @@ export class HostGit {
 		if (opts.gitDir) this.assertHostOwned("gitdir", opts.gitDir);
 		if (opts.workTree) this.assertHostOwned("work tree", opts.workTree);
 
+		const sub = args[0];
+		const spec = sub ? SUBCOMMANDS[sub] : undefined;
+		if (!sub || !spec) {
+			throw new HostGitError(
+				sub?.startsWith("-") ? "option_injection" : "bad_argument",
+				`refusing git ${JSON.stringify(sub ?? "")}: not an allowlisted subcommand (global options are the runner's)`,
+			);
+		}
 		const dd = args.indexOf("--");
-		const optionPart = dd === -1 ? args : args.slice(0, dd);
+		if (spec.requireDashDash && dd === -1) {
+			throw new HostGitError(
+				"bad_argument",
+				`git ${sub}: operands must follow a "--"`,
+			);
+		}
+		const optionPart = dd === -1 ? args.slice(1) : args.slice(1, dd);
 		for (const a of optionPart) {
-			const flag = a.startsWith("--") ? (a.split("=")[0] as string) : a;
-			if (
-				FORBIDDEN_OPTIONS.includes(a) ||
-				FORBIDDEN_OPTIONS.includes(flag) ||
-				a.startsWith("-c") ||
-				a.startsWith("-C")
-			) {
+			if (!a.startsWith("-")) continue;
+			const eq = a.indexOf("=");
+			const exact = spec.flags?.includes(a) === true;
+			const valued = eq > 0 && spec.valued?.includes(a.slice(0, eq)) === true;
+			if (!exact && !valued) {
 				throw new HostGitError(
 					"option_injection",
-					`refusing git option ${JSON.stringify(a)}: the runner owns config and repo selection`,
+					`refusing git ${sub} option ${JSON.stringify(a)}: not on the allowlist`,
 				);
 			}
 		}
-		// Anything after `--` is data; it still must not look like an option to a
-		// shell-ish transport, and an absolute path under the workspace is only
-		// ever a fetch source, never an operand of a local-repo command.
-		if (dd !== -1) {
-			for (const a of args.slice(dd + 1)) {
-				if (a.includes("\0")) {
-					throw new HostGitError("bad_argument", "argument contains NUL");
-				}
+		for (const a of args) {
+			if (a.includes("\0")) {
+				throw new HostGitError("bad_argument", "argument contains NUL");
 			}
 		}
 	}

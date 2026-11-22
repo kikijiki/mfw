@@ -50,11 +50,13 @@ async function codeOf(p: Promise<unknown>): Promise<string> {
 describe("HostGit refuses the workspace root", () => {
 	test("cwd under the workspace root", async () => {
 		const t = await fixture();
-		expect(await codeOf(hostFor(t).run(["status"], { cwd: t.clone }))).toBe(
-			"path_under_workspace",
-		);
 		expect(
-			await codeOf(hostFor(t).run(["status"], { cwd: join(t.clone, ".git") })),
+			await codeOf(hostFor(t).run(["for-each-ref"], { cwd: t.clone })),
+		).toBe("path_under_workspace");
+		expect(
+			await codeOf(
+				hostFor(t).run(["for-each-ref"], { cwd: join(t.clone, ".git") }),
+			),
 		).toBe("path_under_workspace");
 	});
 
@@ -63,11 +65,16 @@ describe("HostGit refuses the workspace root", () => {
 		const h = hostFor(t);
 		expect(
 			await codeOf(
-				h.run(["status"], { cwd: t.primary, gitDir: join(t.clone, ".git") }),
+				h.run(["for-each-ref"], {
+					cwd: t.primary,
+					gitDir: join(t.clone, ".git"),
+				}),
 			),
 		).toBe("path_under_workspace");
 		expect(
-			await codeOf(h.run(["status"], { cwd: t.primary, workTree: t.clone })),
+			await codeOf(
+				h.run(["for-each-ref"], { cwd: t.primary, workTree: t.clone }),
+			),
 		).toBe("path_under_workspace");
 	});
 
@@ -75,7 +82,7 @@ describe("HostGit refuses the workspace root", () => {
 		const t = await fixture();
 		const link = join(t.root, "innocent");
 		await symlink(t.clone, link);
-		expect(await codeOf(hostFor(t).run(["status"], { cwd: link }))).toBe(
+		expect(await codeOf(hostFor(t).run(["for-each-ref"], { cwd: link }))).toBe(
 			"path_under_workspace",
 		);
 	});
@@ -85,45 +92,77 @@ describe("HostGit refuses the workspace root", () => {
 		const d = await mkdtemp(join(tmpdir(), "mfw-gitfile-"));
 		dirs.push(d);
 		await writeFile(join(d, ".git"), `gitdir: ${join(t.clone, ".git")}\n`);
-		expect(await codeOf(hostFor(t).run(["status"], { cwd: d }))).toBe(
+		expect(await codeOf(hostFor(t).run(["for-each-ref"], { cwd: d }))).toBe(
 			"path_under_workspace",
 		);
 	});
 
 	test("a host-owned cwd is allowed", async () => {
 		const t = await fixture();
-		const r = await hostFor(t).run(["rev-parse", "--is-inside-work-tree"], {
+		const r = await hostFor(t).run(["rev-parse", "--is-bare-repository"], {
 			cwd: t.primary,
 		});
-		expect(r.stdout).toBe("true");
+		expect(r.stdout).toBe("false");
 	});
 });
 
-describe("HostGit refuses option injection", () => {
-	const bad = [
-		["-C", "/tmp"],
-		["-c", "core.fsmonitor=/bin/true"],
-		["--git-dir=/tmp/x"],
-		["--work-tree=/tmp/x"],
-		["--upload-pack=touch /tmp/pwn"],
-		["--exec-path=/tmp/x"],
-		["-ccore.pager=x"],
-		["--config-env=a=b"],
+describe("HostGit allowlist", () => {
+	const bad: string[][] = [
+		["fetch", "-C", "/tmp"],
+		["fetch", "-c", "core.fsmonitor=/bin/true"],
+		["fetch", "--git-dir=/tmp/x"],
+		["fetch", "--work-tree=/tmp/x"],
+		["fetch", "--upload-pack=touch /tmp/pwn"],
+		// git expands abbreviated long options; the denylist missed these.
+		["fetch", "--upload-pac=touch /tmp/pwn"],
+		["fetch", "--upload-p=touch /tmp/pwn"],
+		["fetch", "--recurse-submodules"],
+		["fetch", "--exec=x"],
+		["fetch", "-ccore.pager=x"],
+		["fetch", "--config-env=a=b"],
+		["for-each-ref", "--shell", "--format=x"],
+		["cat-file", "--filters"],
+		["diff-tree", "--ext-diff"],
+		["diff-tree", "--textconv"],
+		// global options and non-allowlisted subcommands
+		["-c", "core.fsmonitor=x", "status"],
+		["--exec-path=/tmp/x", "fetch"],
+		["-C", "/tmp", "fetch"],
+		["ls-remote", "--upload-p=touch /tmp/pwn"],
+		["grep", "-Otouch /tmp/pwn", "x"],
+		["status"],
+		["checkout", "main"],
+		["clone", "--", "x"],
+		["config", "--get", "x"],
+		[],
 	];
-	for (const extra of bad) {
-		test(extra.join(" "), async () => {
+	for (const args of bad) {
+		test(JSON.stringify(args), async () => {
 			const t = await fixture();
-			expect(
-				await codeOf(hostFor(t).run(["fetch", ...extra], { cwd: t.primary })),
-			).toBe("option_injection");
+			const code = await codeOf(hostFor(t).run(args, { cwd: t.primary }));
+			expect(["option_injection", "bad_argument"]).toContain(code);
 		});
 	}
 
-	test("options after -- are data and pass the option check", async () => {
+	test("fetch and init need a -- before their operands", async () => {
+		const t = await fixture();
+		expect(
+			await codeOf(hostFor(t).run(["fetch", "/x", "ref"], { cwd: t.primary })),
+		).toBe("bad_argument");
+	});
+
+	test("options after -- are data, allowlisted ones before it pass", async () => {
 		const t = await fixture();
 		const h = hostFor(t);
 		expect(() =>
-			h.check(["rev-parse", "--", "--upload-pack=x"], { cwd: t.primary }),
+			h.check(["fetch", "--no-tags", "--", "--upload-pack=x", "r"], {
+				cwd: t.primary,
+			}),
+		).not.toThrow();
+		expect(() =>
+			h.check(["for-each-ref", "--format=%(refname)", "refs/"], {
+				cwd: t.primary,
+			}),
 		).not.toThrow();
 	});
 });
@@ -149,7 +188,7 @@ describe("HostGit environment and config", () => {
 				SSH_AUTH_SOCK: "/tmp/agent",
 			},
 		});
-		const r = await h.run(["status"], { cwd: t.primary });
+		const r = await h.run(["for-each-ref"], { cwd: t.primary });
 		const out = r.stdout;
 		expect(out).toContain("GIT_CONFIG_GLOBAL=/dev/null");
 		expect(out).toContain("GIT_CONFIG_SYSTEM=/dev/null");
@@ -175,7 +214,7 @@ describe("HostGit environment and config", () => {
 		expect(args).toContain("fetch.fsckObjects=true");
 		expect(args).toContain("core.hooksPath=/dev/null");
 		expect(args).not.toContain("protocol.file.allow");
-		const withFile = await h.run(["status"], {
+		const withFile = await h.run(["for-each-ref"], {
 			cwd: t.primary,
 			allowFile: true,
 		});
