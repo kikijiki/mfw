@@ -18,7 +18,7 @@ import {
 } from "./usageModel";
 
 /**
- * Subscription usage meters (Claude Code 5h / 7d, Codex windows, ...).
+ * Subscription usage meters (Claude Code's weekly window, Codex windows, ...).
  *
  * Data: ONE shared query, `usage.subscriptions`, refetched every 60 s by
  * `useUsageFeed()` (mounted once, by the shell), plus the `usage.changes`
@@ -353,7 +353,11 @@ export function UsageStrip({
 					<span className="font-medium">{v.name}</span>
 					{v.meters.length === 0 ? (
 						<span>
-							{v.status === "unavailable" ? "unavailable" : "no data"}
+							{v.status === "unavailable"
+								? "unavailable"
+								: v.status === "unknown"
+									? "unknown"
+									: "no data"}
 						</span>
 					) : (
 						v.meters.map((m) => (

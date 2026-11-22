@@ -126,7 +126,7 @@ export interface SubscriptionView {
 	summary: string;
 }
 
-/** Order: 5h before 7d before the rest, then by label. */
+/** Order: shorter windows first, then by label. */
 function windowRank(w: UsageWindow): number {
 	const m = w.windowMinutes;
 	if (m !== null) return m;
@@ -148,6 +148,9 @@ export function subscriptionOf(
 	let note: string | null = null;
 	if (s.status === "unavailable") {
 		note = `usage unavailable${s.error ? `: ${s.error}` : ""}`;
+	} else if (s.status === "unknown") {
+		// Never a 0% bar: nothing has been reported yet.
+		note = "usage unknown until the CLI reports it";
 	} else if (s.status === "stale") {
 		note = `stale${s.fetchedAt ? `, read ${ageText(s.fetchedAt, now)} ago` : ""}${s.error ? ` (${s.error})` : ""}`;
 	}

@@ -75,6 +75,19 @@ describe("UsageRail", () => {
 		expect(html).not.toContain('data-testid="usage-meter"');
 	});
 
+	test("unknown is stated and never drawn as 0%", () => {
+		const unknown = viewsOf(
+			[{ ...claude, status: "unknown", windows: [], fetchedAt: NOW }],
+			NOW,
+		);
+		const html = renderToStaticMarkup(
+			<UsageRail views={unknown} expanded onNavigate={noop} />,
+		);
+		expect(html).toContain("usage unknown until the CLI reports it");
+		expect(html).not.toContain('data-testid="usage-meter"');
+		expect(html).not.toContain("0%");
+	});
+
 	test("stale numbers are marked as stale", () => {
 		const stale = viewsOf(
 			[{ ...claude, status: "stale", error: "usage endpoint unreachable" }],
