@@ -26,6 +26,7 @@ import {
 	ensureTmuxSocketDir,
 	pinnedTool,
 	SANDBOX_ENV_ALLOWLIST,
+	requireHostTool,
 	SandboxUnavailableError,
 	safeHostPath,
 	underPrivateTmp,
@@ -462,9 +463,12 @@ export class AgentHost {
 		const fifoPath = join(directory, "environment.fifo");
 		const ackPath = join(directory, "reader-ready");
 		try {
-			const made = await runProc(["mkfifo", "-m", "600", fifoPath], {
-				timeoutMs: 5_000,
-			});
+			const made = await runProc(
+				[requireHostTool("mkfifo"), "-m", "600", fifoPath],
+				{
+					timeoutMs: 5_000,
+				},
+			);
 			if (made.exitCode !== 0) {
 				throw new Error("could not create driver secret FIFO");
 			}

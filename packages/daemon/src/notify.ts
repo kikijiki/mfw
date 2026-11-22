@@ -1,5 +1,6 @@
 import type { Logger } from "./log.ts";
 import { runProc } from "./proc.ts";
+import { requireHostTool } from "./sandbox.ts";
 
 /**
  * Notifications. Every attempt yields a `DeliveryResult`; failures (including
@@ -167,17 +168,20 @@ export class ConfigNotifier implements Notifier {
 	): Promise<DeliveryResult> {
 		const t0 = Date.now();
 		try {
-			const r = await runProc(["sh", "-c", this.cfg.command as string], {
-				timeoutMs,
-				env: {
-					...process.env,
-					MFW_NOTIFY_TYPE: n.type,
-					MFW_NOTIFY_PROJECT: n.project,
-					MFW_NOTIFY_TASK: n.taskId ?? "",
-					MFW_NOTIFY_RUN: n.runId ?? "",
-					MFW_NOTIFY_MESSAGE: n.message,
+			const r = await runProc(
+				[requireHostTool("sh"), "-c", this.cfg.command as string],
+				{
+					timeoutMs,
+					env: {
+						...process.env,
+						MFW_NOTIFY_TYPE: n.type,
+						MFW_NOTIFY_PROJECT: n.project,
+						MFW_NOTIFY_TASK: n.taskId ?? "",
+						MFW_NOTIFY_RUN: n.runId ?? "",
+						MFW_NOTIFY_MESSAGE: n.message,
+					},
 				},
-			});
+			);
 			return {
 				sink: "command",
 				ok: r.exitCode === 0 && !r.timedOut,

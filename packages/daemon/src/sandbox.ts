@@ -159,6 +159,38 @@ export function pinnedTool(name: string): string | null {
 	return path;
 }
 
+/**
+ * A pinned host tool, or a refusal. Used where a missing tool must stop the
+ * operation rather than fall back to a `PATH` lookup an agent can steer
+ * (security review X8).
+ */
+export function requireHostTool(name: string): string {
+	const path = pinnedTool(name);
+	if (!path) {
+		throw new SandboxUnavailableError(`${name} is not on a trusted PATH`);
+	}
+	return path;
+}
+
+/**
+ * The sandbox's `PATH` for the agent: the trusted entries first, then every
+ * other entry of the daemon's `PATH`. An entry an agent can write (in `$HOME`,
+ * `/tmp`) can therefore never shadow a trusted tool, so a run cannot plant a
+ * binary that the next run starts with its secrets (security review X7).
+ */
+export function agentSandboxPath(pathVar: string | undefined): string {
+	const trusted = trustedPathEntries(pathVar);
+	const rest = (pathVar ?? "")
+		.split(":")
+		.filter((e) => e.startsWith("/") && !trusted.includes(e));
+	return [...new Set([...trusted, ...rest])].join(":");
+}
+
+/** The host-only control directory (`run.sh`, secret FIFOs, exit records): masked in every sandbox. */
+export function controlRootPath(uid: number = process.getuid?.() ?? 0): string {
+	return join(tmpdir(), `mfw-control-${uid}`);
+}
+
 let cachedSafePath: { pathVar: string | undefined; value: string } | undefined;
 
 /** `PATH` for host-side shells: trusted entries only. */

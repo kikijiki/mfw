@@ -2,6 +2,7 @@ import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { git } from "./git.ts";
 import { runProc } from "./proc.ts";
+import { requireHostTool } from "./sandbox.ts";
 import type { DefinitionOfDone, DoDCheck } from "./tasks/types.ts";
 
 /**
@@ -241,8 +242,10 @@ export function buildRunner(
 	opts: VerifyOptions,
 ): (checkCmd: string) => string[] {
 	const prefix = opts.checkPrefix?.trim();
-	if (prefix) return (c) => ["sh", "-c", `${prefix} sh -c ${q(c)}`];
-	return (c) => ["sh", "-c", c];
+	// An absolute pinned `sh`, never a `PATH` lookup an agent can steer (security review X8).
+	const sh = requireHostTool("sh");
+	if (prefix) return (c) => [sh, "-c", `${prefix} sh -c ${q(c)}`];
+	return (c) => [sh, "-c", c];
 }
 
 export async function verify(
