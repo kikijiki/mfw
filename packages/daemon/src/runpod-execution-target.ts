@@ -29,6 +29,11 @@ import {
 	remoteErrorCode,
 	syncRemoteArtifacts,
 } from "./remote-execution-support.ts";
+import {
+	assertRemoteNotAutonomous,
+	assertRemoteTargetEnabled,
+	remoteTargetEnabled,
+} from "./remote-experimental.ts";
 import { applyRemoteCollection, createRemoteStage } from "./remote-worktree.ts";
 import {
 	createRunWorkspace,
@@ -81,6 +86,8 @@ export interface RunPodExecutionTargetOptions {
 	account: RunPodExecutionAccount;
 	projectRoot: string;
 	integrationBranch: string;
+	/** Experimental, off by default: omitted reads MFW_EXPERIMENTAL_REMOTE=1. */
+	enabled?: boolean;
 	worktrees?: WorkspacePort;
 	transport?: (connection: RunPodLeaseConnection) => RunPodExecutionTransport;
 	readinessMs?: number;
@@ -133,6 +140,10 @@ export class RunPodExecutionTarget implements ExecutionTarget {
 	}
 
 	async prepare(request: PrepareExecutionRequest): Promise<PreparedExecution> {
+		assertRemoteTargetEnabled(
+			this.kind,
+			remoteTargetEnabled(this.options.enabled),
+		);
 		const lease = await this.options.account.putLeaseIntent({
 			operationId: `${request.owner.ownerKey}/prepare/intent`,
 			targetKind: this.kind,
@@ -194,6 +205,7 @@ export class RunPodExecutionTarget implements ExecutionTarget {
 	}
 
 	async launch(request: LaunchExecutionRequest): Promise<void> {
+		assertRemoteNotAutonomous(this.kind, request.driver.approvalMode);
 		assertPublicEnvironmentHasNoCredentials(request.driver.env);
 		const ref = this.requireLease(request.globalLeaseRef);
 		await this.options.account.command(

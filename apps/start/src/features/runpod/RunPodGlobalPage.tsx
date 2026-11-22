@@ -145,6 +145,12 @@ export function RunPodGlobalPage() {
 				meta={
 					model ? (
 						<>
+							<Chip
+								tone="warn"
+								title="Remote targets are off by default and cannot run autonomously"
+							>
+								experimental
+							</Chip>
 							<Chip tone={model.gate.open ? "ok" : "critical"}>
 								dispatch {model.gate.open ? "open" : "closed"}
 							</Chip>
