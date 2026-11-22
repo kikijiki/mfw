@@ -168,6 +168,13 @@
         "zod": "^4.4.3",
       },
     },
+    "packages/plugin-api": {
+      "name": "@mfw/plugin-api",
+      "version": "0.1.0",
+      "dependencies": {
+        "zod": "^4.4.3",
+      },
+    },
   },
   "packages": {
     "@agentclientprotocol/sdk": ["@agentclientprotocol/sdk@1.0.0", "", { "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" } }, "sha512-5FHgLbLZhSAq9F+9SU7AOCXTDzaw/IYx/AvMjrZDs/YFZ9ZPxkdn9ti3fSkny0huHfj2hrqF6pqdns9gN5/Fig=="],
@@ -475,6 +482,8 @@
     "@mfw/db": ["@mfw/db@workspace:packages/db"],
 
     "@mfw/mcp": ["@mfw/mcp@workspace:packages/mcp"],
+
+    "@mfw/plugin-api": ["@mfw/plugin-api@workspace:packages/plugin-api"],
 
     "@mfw/start": ["@mfw/start@workspace:apps/start"],
 
