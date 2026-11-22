@@ -2,18 +2,32 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { projectNav } from "./projectNav";
+import { lensActive, projectNav } from "./projectNav";
 
 describe("project header navigation", () => {
 	const nav = projectNav("mfw", { triggersNeedingAttention: 2 });
 
-	test("two lenses over the same work: Board and Flow, both routable", () => {
-		expect(nav.lenses.map((l) => l.label)).toEqual(["Board", "Flow"]);
-		const [board, flow] = nav.lenses;
+	test("Lead first, then two lenses over the same work: Board and Flow", () => {
+		expect(nav.lenses.map((l) => l.label)).toEqual(["Lead", "Board", "Flow"]);
+		const [lead, board, flow] = nav.lenses;
+		expect(lead?.to).toBe("/p/mfw");
+		expect(lead?.exact).toBe(true);
 		expect(board?.disabled).toBeUndefined();
 		expect(board?.to).toBe("/p/mfw/board");
 		expect(flow?.disabled).toBeUndefined();
 		expect(flow?.to).toBe("/p/mfw/flow");
+	});
+
+	test("Lead is active only on its own path, never on another tab's", () => {
+		const [lead, board] = nav.lenses;
+		const active = (p: string, to: string) =>
+			p === to || p.startsWith(`${to}/`);
+		for (const path of ["/p/mfw", "/p/mfw/"]) {
+			expect(lead && lensActive(path, lead, active)).toBe(true);
+		}
+		expect(lead && lensActive("/p/mfw/board", lead, active)).toBe(false);
+		expect(lead && lensActive("/p/mfw/runs/r1", lead, active)).toBe(false);
+		expect(board && lensActive("/p/mfw/board", board, active)).toBe(true);
 	});
 
 	test("everything that is not a lens is in the overflow", () => {

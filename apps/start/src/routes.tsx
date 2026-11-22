@@ -33,6 +33,8 @@ export type ProcedurePath =
 	| "node.story"
 	| "brain.intents"
 	| "brain.states"
+	| "brain.decisions"
+	| "inbox.headlines"
 	| "brain.session"
 	| "node.get"
 	| "flow.tree"
@@ -233,7 +235,7 @@ export const ROUTES = {
 		component: "features/fleet/FleetPage",
 		queries: ["fleet.summary", "stats.outcomes"],
 		notes:
-			"Fleet: where agents run and what they cost. One machine-wide read " +
+			"Capacity (route /fleet): where agents run and what they cost. One machine-wide read " +
 			"(fleet.summary) of hosts, harness accounts, RunPod and OpenRouter, " +
 			"with occupants as run chips (each opens its inspector in its own " +
 			"project's Flow), budgets and ledger spend, holds with their reset " +
@@ -309,8 +311,20 @@ export const ROUTES = {
 	projectIndex: {
 		path: "/p/$project/",
 		file: "routes/p.$project.index.tsx",
-		component: "redirect → board",
-		queries: [],
+		component: "features/lead/LeadPage",
+		queries: [
+			"inbox.headlines",
+			"inbox.list",
+			"runs.active",
+			"brain.states",
+			"brain.decisions",
+			"brain.intents",
+		],
+		notes:
+			"Lead: the landing page. The mechanical headline, the brain's " +
+			"paragraph (its latest plan) and standing intent, what needs you, " +
+			"what is live, then one-click drill-down to Board, Flow, docs, repo " +
+			"and triggers.",
 	},
 	board: {
 		path: "/p/$project/board",

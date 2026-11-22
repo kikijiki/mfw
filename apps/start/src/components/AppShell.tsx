@@ -215,12 +215,12 @@ function SearchButton({ expanded }: { expanded: boolean }) {
 
 const PRIMARY_NAV: NavEntry[] = [
 	{ label: "Home", to: href.home(), icon: House },
-	{ label: "Fleet", to: href.fleet(), icon: Boxes },
+	{ label: "Capacity", to: href.fleet(), icon: Boxes },
 ];
 
 const MOBILE_NAV: NavEntry[] = [
 	{ label: "Home", to: href.home(), icon: House },
-	{ label: "Fleet", to: href.fleet(), icon: Boxes },
+	{ label: "Capacity", to: href.fleet(), icon: Boxes },
 ];
 
 function Sidebar({
