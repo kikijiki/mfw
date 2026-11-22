@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { CloneRunWorkspace, type CloneWorkspaceOptions } from "./clone-impl.ts";
 import type { RunWorkspace, RunWorkspaceHandle } from "./run-workspace.ts";
+import { VerifierClones } from "./verifier-clone.ts";
 import { WorktreeRunWorkspace } from "./worktree-impl.ts";
 
 export type RunWorkspaceKind = "worktree" | "clone";
@@ -41,6 +42,24 @@ export function createRunWorkspace(projectRoot: string): RunWorkspace {
 		return new CloneRunWorkspace(resolve(projectRoot), setting.clone);
 	}
 	return new WorktreeRunWorkspace(projectRoot);
+}
+
+/**
+ * The disposable verification clones for a project, or null when it runs on
+ * worktrees (verification then happens in the run's own worktree, as before).
+ */
+export function createVerifierClones(
+	projectRoot: string,
+): VerifierClones | null {
+	const setting = settings.get(resolve(projectRoot));
+	if (setting?.kind !== "clone" || !setting.clone) return null;
+	return new VerifierClones({
+		workspaceRoot: setting.clone.workspaceRoot,
+		primaryRoot: resolve(projectRoot),
+		...(setting.clone.caches ? { caches: setting.clone.caches } : {}),
+		...(setting.clone.gitBin ? { gitBin: setting.clone.gitBin } : {}),
+		...(setting.clone.log ? { log: setting.clone.log } : {}),
+	});
 }
 
 /**

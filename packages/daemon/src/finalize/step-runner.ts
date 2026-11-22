@@ -40,10 +40,14 @@ import type {
 import { parseRoutingRecord } from "../routing.ts";
 import { RunEventTail } from "../run-event-tail.ts";
 import type { BeginStepResult, RunRegistry, RunRow } from "../run-registry.ts";
-import { createRunWorkspace } from "../run-workspace/factory.ts";
+import {
+	createRunWorkspace,
+	createVerifierClones,
+} from "../run-workspace/factory.ts";
 import type { WorktreeReportIdentity } from "../run-workspace/run-workspace.ts";
 import {
 	changedFiles,
+	changedFilesInRef,
 	SCOPE_KILL_REASONS,
 	type ScopePolicy,
 } from "../scope-watchdog.ts";
@@ -58,6 +62,7 @@ import {
 	type EnvPolicy,
 	type VerificationResult,
 	verify,
+	verifyInClone,
 } from "../verifier.ts";
 import {
 	type Directive,
@@ -1294,11 +1299,52 @@ export class StepRunner {
 		}
 		// Hardened verifier: scrubbed env, per-check timeouts, declared
 		// checkPrefix/envPolicy, no guessing at the project (see verifier.ts).
-		const runVerification = () =>
-			verify(run.worktreePath as string, dod, run.baseSha ?? "", {
-				checkPrefix: this.deps.checkPrefix,
-				envPolicy: this.deps.envPolicy,
+		const verifyOpts = {
+			checkPrefix: this.deps.checkPrefix,
+			envPolicy: this.deps.envPolicy,
+		};
+		// A clone's tree is agent-writable: the checks run in a disposable
+		// host-owned clone of the imported tip, never in the run's workspace.
+		const clones = createVerifierClones(this.deps.projectRoot);
+		let candidate: string | null = null;
+		if (clones) {
+			const imported = await createRunWorkspace(
+				this.deps.projectRoot,
+			).fetchResult({
+				path: run.worktreePath,
+				branch: run.branch ?? "",
+				baseSha: run.baseSha ?? "",
 			});
+			if (!imported.sha) {
+				return {
+					passed: false,
+					checks: [
+						{
+							check: "precondition",
+							ok: false,
+							detail: "the run left no imported result to verify",
+						},
+					],
+				};
+			}
+			candidate = imported.sha;
+		}
+		const runVerification = () =>
+			clones && candidate
+				? verifyInClone(
+						clones,
+						candidate,
+						run.id,
+						dod,
+						run.baseSha ?? "",
+						verifyOpts,
+					)
+				: verify(
+						run.worktreePath as string,
+						dod,
+						run.baseSha ?? "",
+						verifyOpts,
+					);
 		const result = this.deps.verification
 			? await this.deps.verification.foreground(runVerification)
 			: await runVerification();
@@ -1903,13 +1949,30 @@ export class StepRunner {
 		const owns = task?.owns ?? [];
 		let files: string[] = [];
 		const wt = run.worktreePath;
+		const workspace = createRunWorkspace(this.deps.projectRoot);
 		const present =
 			wt !== null &&
 			(await access(wt).then(
 				() => true,
 				() => false,
 			));
-		if (present && wt && run.baseSha) {
+		if (workspace.kind === "clone" && run.baseSha) {
+			// No host git in a clone: diff the imported ref in the primary.
+			const imported = await workspace.fetchResult({
+				path: wt ?? workspace.paths(run.id).workPath,
+				branch: run.branch ?? "",
+				baseSha: run.baseSha,
+			});
+			if (imported.sha) {
+				files = (
+					await changedFilesInRef(
+						this.deps.projectRoot,
+						run.baseSha,
+						imported.ref,
+					)
+				).files;
+			}
+		} else if (present && wt && run.baseSha) {
 			files = (await changedFiles(wt, run.baseSha)).files;
 		} else if (run.branch && run.baseSha) {
 			const diff = await git(

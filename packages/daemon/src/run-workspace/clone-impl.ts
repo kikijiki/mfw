@@ -455,6 +455,12 @@ export class CloneRunWorkspace implements RunWorkspace {
 	 * imported branch tip (it also holds the uncommitted work), else the tip.
 	 * Read in the trusted primary only.
 	 */
+	async newestWorkOf(
+		handle: Pick<RunWorkspaceHandle, "path">,
+	): Promise<string | null> {
+		return this.newestWork(this.runIdOf(handle.path));
+	}
+
 	private async newestWork(runId: string): Promise<string | null> {
 		const tip = await this.quarantineTip(runId);
 		if (!tip) return null;

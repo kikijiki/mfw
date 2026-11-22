@@ -66,12 +66,23 @@ export interface MergeQueueDeps {
 	projectRoot: string;
 	log: Logger;
 	/**
-	 * Re-run the task's DoD in the run worktree after a rebase. `crashed`
+	 * Re-run the task's DoD on the rebased branch (a disposable clone on clone
+	 * projects, the run worktree otherwise). `crashed`
 	 * mirrors `VerificationResult.crashed`: a check process died to a signal,
 	 * so `!passed` alone does not mean the rebase broke anything.
 	 */
 	reverify: (
 		job: MergeJobView,
+	) => Promise<{ passed: boolean; detail?: string; crashed?: boolean }>;
+	/**
+	 * Verify the merge commit itself (the integration worktree's HEAD, after
+	 * the board restore) before it lands, in a disposable host-owned clone.
+	 * Absent (worktree projects) means no pre-landing verification. A failure
+	 * parks the job as `reverify`.
+	 */
+	verifyMerge?: (
+		job: MergeJobView,
+		mergeSha: string,
 	) => Promise<{ passed: boolean; detail?: string; crashed?: boolean }>;
 	/** Post-merge tail of the owning run's journal (release task → done, etc.). */
 	onMerged: (job: MergeJobView, sha: string) => Promise<void>;
@@ -345,6 +356,7 @@ export class MergeQueue {
 		await this.setState(job.id, "merging");
 		if (await this.tryMerge(job)) {
 			await this.restoreBoard(job, baseSha);
+			if (!(await this.mergeCommitPasses(job))) return "parked";
 			return this.finishMerged(job, baseSha);
 		}
 
@@ -405,6 +417,7 @@ export class MergeQueue {
 		await git(["reset", "--hard", "-q", baseSha], this.integrationDir);
 		if (await this.tryMerge(job)) {
 			await this.restoreBoard(job, baseSha);
+			if (!(await this.mergeCommitPasses(job))) return "parked";
 			return this.finishMerged(job, baseSha);
 		}
 		await this.park(job, "merge conflict persisted after rebase", "conflict");
@@ -531,6 +544,32 @@ export class MergeQueue {
 			this.deps.projectRoot,
 		);
 		return found.exitCode === 0 ? ref : job.branch;
+	}
+
+	/**
+	 * Verify the merge commit before it lands (clone projects). Returns true
+	 * when the job may land; otherwise the job is parked.
+	 */
+	private async mergeCommitPasses(job: MergeJobView): Promise<boolean> {
+		if (!this.deps.verifyMerge) return true;
+		const sha = (
+			await git(["rev-parse", "HEAD"], this.integrationDir)
+		).stdout.trim();
+		await this.setState(job.id, "reverifying");
+		const verdict = await this.deps.verifyMerge(job, sha);
+		if (verdict.passed) {
+			await this.setState(job.id, "merging");
+			return true;
+		}
+		await this.park(
+			job,
+			verdict.crashed
+				? `a DoD check was killed by a signal twice in a row verifying the merge commit; not evidence the merge is bad: ${verdict.detail ?? ""}`
+				: `the merge commit failed verification: ${verdict.detail ?? ""}`,
+			"reverify",
+			verdict.crashed === true,
+		);
+		return false;
 	}
 
 	/** `git merge --no-ff` in the integration worktree; abort on failure. */
