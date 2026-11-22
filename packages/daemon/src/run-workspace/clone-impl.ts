@@ -1,4 +1,6 @@
+import { randomBytes } from "node:crypto";
 import {
+	appendFile,
 	lstat,
 	mkdir,
 	readdir,
@@ -7,6 +9,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import { readSmallRegularFile } from "../containment/safe-file.ts";
 import { git } from "../git.ts";
 import {
 	assertRunId,
@@ -29,6 +32,7 @@ import type {
 	WorktreeReportIdentity,
 } from "./run-workspace.ts";
 import { seedWorkspace } from "./seed.ts";
+import { type WipAck, wipAckFile, wipControlLine } from "./wip-helper.ts";
 
 /**
  * `RunWorkspace` over a private clone per run (backstage architecture.md,
@@ -81,6 +85,18 @@ export interface CloneWorkspaceOptions {
 		ctx: FetchValidationContext,
 		baseSha: string,
 	) => void | Promise<void>;
+	/**
+	 * Where the run's `control.jsonl` lives. Needed by `requestWip`, which asks
+	 * the in-sandbox helper (`wip-helper.ts`) for a snapshot through it.
+	 */
+	controlPath?: (runId: string) => string;
+	/**
+	 * Proves a *live* run is quiescent (for example its cgroup is frozen), so a
+	 * snapshot bundle can be imported before the run ends. Without it
+	 * `requestWip` returns the helper's ack and imports nothing; the bundle is
+	 * then imported by `fetchResult` once `assertProcessesDead` passes.
+	 */
+	assertQuiescent?: (runId: string) => void | Promise<void>;
 	/** Caches carried into the clone; none by default. */
 	caches?: CacheDeclaration[];
 	gitBin?: string;
@@ -160,6 +176,25 @@ function symlinkEscapes(path: string, target: string): boolean {
 		}
 	}
 	return false;
+}
+
+/** The helper's ack for request `id`, or null while there is none (or it is for another request). */
+async function readAck(path: string, id: string): Promise<WipAck | null> {
+	const text = await readSmallRegularFile(path).catch(() => null);
+	if (!text) return null;
+	try {
+		const v = JSON.parse(text) as Partial<WipAck>;
+		if (v.id !== id || typeof v.ok !== "boolean") return null;
+		return {
+			id,
+			ok: v.ok,
+			...(typeof v.n === "number" ? { n: v.n } : {}),
+			...(typeof v.sha === "string" ? { sha: v.sha.slice(0, 64) } : {}),
+			...(typeof v.error === "string" ? { error: v.error.slice(0, 500) } : {}),
+		};
+	} catch {
+		return null;
+	}
 }
 
 export class CloneRunWorkspace implements RunWorkspace {
@@ -310,6 +345,53 @@ export class CloneRunWorkspace implements RunWorkspace {
 		return { ref, sha: await this.quarantineTip(runId) };
 	}
 
+	/**
+	 * Save the run's uncommitted work without the host touching the clone: ask
+	 * the in-sandbox helper through `control.jsonl`, wait for its ack, and (when
+	 * `assertQuiescent` proves the run is stopped) import the bundle it wrote.
+	 * The ack is sandbox-reported and only says the bundle is ready; the
+	 * returned `sha` comes from the verified import, never from the ack.
+	 * Replaces `snapshotWorktree` (`git add -A` in the work tree) for clones.
+	 */
+	async requestWip(
+		handle: Pick<RunWorkspaceHandle, "path">,
+		opts: { timeoutMs?: number; pollMs?: number } = {},
+	): Promise<{ ack: WipAck; imported: { tip: string; wip: string[] } | null }> {
+		const runId = this.runIdOf(handle.path);
+		const marker = await this.readMarker(runId);
+		if (!marker) throw new Error(`not an owned run workspace: ${handle.path}`);
+		const control = this.opts.controlPath?.(runId);
+		if (!control) throw new Error("requestWip needs controlPath");
+		const id = randomBytes(8).toString("hex");
+		await appendFile(control, wipControlLine(id));
+		const ackPath = join(this.dirOf(runId), "outbox", wipAckFile());
+		const deadline = Date.now() + (opts.timeoutMs ?? 30_000);
+		let ack: WipAck | null = null;
+		while (!ack && Date.now() < deadline) {
+			ack = await readAck(ackPath, id);
+			if (!ack) await new Promise((r) => setTimeout(r, opts.pollMs ?? 100));
+		}
+		if (!ack) throw new Error(`the in-sandbox helper did not answer ${id}`);
+		if (!ack.ok) return { ack, imported: null };
+		const gate = this.opts.assertQuiescent;
+		if (!gate) return { ack, imported: null };
+		const validate = this.opts.validate ?? validateRunResult;
+		const out = await fetchRunResult({
+			host: this.host,
+			primaryRepo: this.primaryRoot,
+			outboxRoot: this.dirOf(runId),
+			bundleRel: BUNDLE_REL,
+			runId,
+			scratchRoot: await this.ensureScratch(),
+			assertProcessesDead: () => gate(runId),
+			validate: (ctx) => validate(ctx, marker.baseSha),
+		});
+		return {
+			ack,
+			imported: { tip: out.tip, wip: out.wipRefs.map((w) => w.ref) },
+		};
+	}
+
 	private async ensureScratch(): Promise<string> {
 		await mkdir(this.scratch, { recursive: true, mode: 0o700 });
 		return this.scratch;
@@ -368,12 +450,44 @@ export class CloneRunWorkspace implements RunWorkspace {
 		}
 	}
 
+	/**
+	 * What to save: the newest in-sandbox WIP snapshot when it builds on the
+	 * imported branch tip (it also holds the uncommitted work), else the tip.
+	 * Read in the trusted primary only.
+	 */
+	private async newestWork(runId: string): Promise<string | null> {
+		const tip = await this.quarantineTip(runId);
+		if (!tip) return null;
+		const prefix = quarantineWipPrefix(runId);
+		const refs = await git(
+			["for-each-ref", "--format=%(refname) %(objectname)", prefix],
+			this.primaryRoot,
+		);
+		const wips = refs.stdout
+			.split("\n")
+			.filter(Boolean)
+			.map((l) => {
+				const [name = "", sha = ""] = l.split(" ");
+				return { n: Number(name.slice(prefix.length)), sha };
+			})
+			.filter((w) => Number.isInteger(w.n))
+			.sort((a, b) => b.n - a.n);
+		for (const w of wips) {
+			const desc = await git(
+				["merge-base", "--is-ancestor", tip, w.sha],
+				this.primaryRoot,
+			);
+			if (desc.exitCode === 0) return w.sha;
+		}
+		return tip;
+	}
+
 	async archive(
 		handle: RunWorkspaceHandle,
 		name: WorkspaceName,
 	): Promise<WipArchive | null> {
 		const runId = this.runIdOf(handle.path);
-		const sha = await this.quarantineTip(runId);
+		const sha = await this.newestWork(runId);
 		if (!sha || sha === handle.baseSha) return null;
 		const base = `refs/heads/wip/${name.taskId ? `${name.taskId}-` : ""}${name.runId}`;
 		for (let n = 1; n <= 20; n++) {
