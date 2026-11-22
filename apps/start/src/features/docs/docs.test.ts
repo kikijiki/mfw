@@ -5,6 +5,7 @@ import {
 	docAssetUrl,
 	fromBoardPath,
 	fromDirSource,
+	isSafeExternalHref,
 	joinBasePath,
 	locateInSources,
 	resolveDocLink,
@@ -427,5 +428,37 @@ describe("source form rules", () => {
 			"board:notes/",
 		);
 		expect(describeSource({ path: "." })).toBe(".");
+	});
+});
+
+describe("unsafe link schemes", () => {
+	const none = { from: { base: "repo" as const, dir: "" }, sources: [] };
+	for (const bad of [
+		"javascript:alert(1)",
+		"JaVaScRiPt:alert(1)",
+		"java\tscript:alert(1)",
+		" javascript:alert(1)",
+		"data:text/html,<script>alert(1)</script>",
+		"vbscript:msgbox(1)",
+		"file:///etc/passwd",
+	]) {
+		test(`${JSON.stringify(bad)} is never an external link`, () => {
+			expect(isSafeExternalHref(bad)).toBe(false);
+			expect(resolveDocLink(bad, none).kind).toBe("unresolved");
+		});
+	}
+	for (const good of [
+		"https://example.com/a",
+		"http://example.com",
+		"mailto:a@b.c",
+		"//cdn.example.com/x",
+	])
+		test(`${good} stays external`, () => {
+			expect(resolveDocLink(good, none).kind).toBe("external");
+		});
+	test("an unsafe image src is dropped", () => {
+		expect(resolveImageSrc("javascript:alert(1)", none, () => "never")).toBe(
+			"",
+		);
 	});
 });

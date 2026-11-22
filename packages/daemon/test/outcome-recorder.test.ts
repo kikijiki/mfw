@@ -10,7 +10,11 @@ import pino from "pino";
 import { OutcomeRecorder } from "../src/outcome-recorder.ts";
 import { RunRegistry } from "../src/run-registry.ts";
 
-async function fixture() {
+async function fixture(
+	onFailureClass?: ConstructorParameters<
+		typeof OutcomeRecorder
+	>[0]["onFailureClass"],
+) {
 	const dir = await mkdtemp(join(tmpdir(), "mfw-outcomes-"));
 	const handle = await openProjectDb(dir);
 	const bus = new EventBus();
@@ -25,6 +29,7 @@ async function fixture() {
 		bus,
 		tasks: { get: async () => task },
 		log: pino({ level: "silent" }),
+		onFailureClass,
 	}).start();
 	return {
 		handle,
@@ -39,6 +44,55 @@ async function fixture() {
 		},
 	};
 }
+
+describe("OutcomeRecorder failure classes", () => {
+	test("classifies settled runs, reports failures and unconfirmed, skips clean finishes", async () => {
+		const seen: { runId: string; failureClass: string }[] = [];
+		const f = await fixture((c) => {
+			seen.push({ runId: c.runId, failureClass: c.failureClass });
+		});
+		const mk = (label: string) =>
+			f.registry.create({
+				kind: "task",
+				taskId: label,
+				label,
+				model: "opus",
+				providerId: "claude-cli",
+				cwd: "/w",
+			});
+		const a = await mk("T-1");
+		const b = await mk("T-2");
+		const c = await mk("T-3");
+		await f.registry.finish(a.id, "failed", "Error: not logged in");
+		await f.registry.finish(b.id, "completed");
+		await f.registry.finish(c.id, "interrupted");
+		await f.recorder.idle();
+		expect(seen).toEqual([
+			{ runId: a.id, failureClass: "auth" },
+			{ runId: c.id, failureClass: "unconfirmed" },
+		]);
+		await f.done();
+	});
+
+	test("a throwing consumer is logged and never breaks recording", async () => {
+		const f = await fixture(() => {
+			throw new Error("boom");
+		});
+		const r = await f.registry.create({
+			kind: "task",
+			taskId: "T-1",
+			label: "T-1",
+			model: "opus",
+			providerId: "claude-cli",
+			cwd: "/w",
+		});
+		await f.registry.finish(r.id, "failed", "x");
+		await f.recorder.idle();
+		const [row] = await f.handle.db.select().from(taskAttemptOutcomes);
+		expect(row?.rootRunId).toBe(r.id);
+		await f.done();
+	});
+});
 
 describe("OutcomeRecorder", () => {
 	test("snapshots task facts at run creation and folds the chain on each settle", async () => {

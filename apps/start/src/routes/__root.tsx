@@ -9,6 +9,7 @@ import {
 	Outlet,
 	Scripts,
 	useParams,
+	useRouter,
 	useRouterState,
 } from "@tanstack/react-router";
 import type { TRPCOptionsProxy } from "@trpc/tanstack-react-query";
@@ -88,6 +89,8 @@ function Shell() {
 }
 
 function RootDocument({ children }: { children: React.ReactNode }) {
+	// The CSP nonce for the inline theme script (server render only).
+	const nonce = useRouter().options.ssr?.nonce;
 	return (
 		<html lang="en">
 			<head>
@@ -97,6 +100,10 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 				 * last two in step). The script is a constant built from the registry.
 				 */}
 				<script
+					nonce={nonce}
+					// The browser hides the nonce attribute from script, so the client
+					// render differs from the server's by design.
+					suppressHydrationWarning
 					// biome-ignore lint/security/noDangerouslySetInnerHtml: same
 					dangerouslySetInnerHTML={{ __html: themeBootstrapScript() }}
 				/>

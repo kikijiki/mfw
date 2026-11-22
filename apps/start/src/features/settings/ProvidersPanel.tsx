@@ -21,6 +21,7 @@ import { Chip, Panel } from "../../components/Page";
 import { useToast } from "../../lib/toast";
 import type { RouterOutputs } from "../../lib/trpc";
 import { useTRPC } from "../../lib/trpc";
+import { isSafeExternalHref } from "../docs/docLinks";
 
 /**
  * Agent CLIs on this machine and their credentials, driven by `providers.catalogue`.
@@ -228,7 +229,7 @@ function ProviderRow({
 				) : (
 					<Chip tone="warn">not found</Chip>
 				)}
-				{provider.docsUrl ? (
+				{provider.docsUrl && isSafeExternalHref(provider.docsUrl) ? (
 					<a
 						href={provider.docsUrl}
 						target="_blank"
