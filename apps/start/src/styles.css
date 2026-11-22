@@ -1,5 +1,6 @@
 @import "tailwindcss" source(".");
 @import "tw-animate-css";
+@import "./themes/index.css";
 
 @custom-variant dark (&:is(.dark *));
 /* radix sets data-state="active"; shadcn components target `data-active:`. */

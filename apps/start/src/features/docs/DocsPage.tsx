@@ -657,7 +657,7 @@ function SourceOverview({
 				first ? (
 					<AppLink
 						to={href.docs(project, { source: source.id, key: first.key })}
-						className="text-sky-400"
+						className="text-[var(--mfw-link)]"
 					>
 						Open {first.title}
 					</AppLink>

@@ -22,8 +22,8 @@ import { CommandPalette } from "~/features/palette/CommandPalette";
 import { useGo } from "~/lib/nav";
 import { useDarkClassSync } from "~/lib/theme";
 import { makeQueryClient, makeTRPCClient, TRPCProvider } from "~/lib/trpc";
-
 import appCss from "~/styles.css?url";
+import { themeBootstrapScript } from "~/themes/bootstrap";
 
 /** Mount prefix, no trailing slash. `public/` files live at `${BASE}/...`; the icon is linked explicitly because `/favicon.ico` hits the origin root, which is not routed here under `tailscale serve`. */
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -95,10 +95,9 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 		<html lang="en">
 			<head>
 				{/*
-				 * Sets the theme before first paint, synchronously in <head>. Sets BOTH
-				 * `data-theme` (`--mfw-*` tokens) and `.dark` (shadcn `dark:`);
-				 * `useDarkClassSync` keeps them in step. Storage keys are duplicated
-				 * from lib/theme.ts since this cannot import.
+				 * Sets the theme before first paint, synchronously in <head>:
+				 * `data-theme`, `data-mode` and `.dark` (`useDarkClassSync` keeps the
+				 * last two in step). The script is a constant built from the registry.
 				 */}
 				<script
 					nonce={nonce}
@@ -106,17 +105,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 					// render differs from the server's by design.
 					suppressHydrationWarning
 					// biome-ignore lint/security/noDangerouslySetInnerHtml: same
-					dangerouslySetInnerHTML={{
-						__html: `(function(){try{
-var t=localStorage.getItem("mfw:v2:theme");
-var d=localStorage.getItem("mfw:v2:density");
-var r=document.documentElement;
-if(t==="light"||t==="dark")r.setAttribute("data-theme",t);
-if(d==="compact")r.setAttribute("data-density",d);
-var dark=t==="dark"||(t!=="light"&&matchMedia("(prefers-color-scheme: dark)").matches);
-r.classList.toggle("dark",dark);
-}catch(e){}})()`,
-					}}
+					dangerouslySetInnerHTML={{ __html: themeBootstrapScript() }}
 				/>
 				<HeadContent />
 			</head>

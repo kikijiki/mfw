@@ -51,7 +51,7 @@ export function CodeView({ path, text, wrap }: CodeViewProps) {
 
 /**
  * Observes what the document paints. Only `lib/theme` writes
- * `<html data-theme>` (absent means follow the OS, hence the media query).
+ * `<html data-mode>` (absent means follow the OS, hence the media query).
  * Reading both avoids a second copy of the preference. Safe during render:
  * this module only loads in the browser.
  */
@@ -64,7 +64,7 @@ function useDark(): boolean {
 		const observer = new MutationObserver(sync);
 		observer.observe(document.documentElement, {
 			attributes: true,
-			attributeFilter: ["data-theme"],
+			attributeFilter: ["data-mode"],
 		});
 		media.addEventListener("change", sync);
 		sync();
@@ -79,7 +79,7 @@ function useDark(): boolean {
 
 /** Same resolution as `styles/tokens.css`, in JS. */
 function painted(): boolean {
-	const choice = document.documentElement.getAttribute("data-theme");
+	const choice = document.documentElement.getAttribute("data-mode");
 	if (choice === "dark") return true;
 	if (choice === "light") return false;
 	return window.matchMedia("(prefers-color-scheme: dark)").matches;

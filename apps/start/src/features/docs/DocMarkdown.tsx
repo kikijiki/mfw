@@ -76,7 +76,7 @@ export function DocMarkdown({
 								to={
 									isAdrId(id) ? href.adr(project, id) : href.task(project, id)
 								}
-								className="text-sky-400 underline"
+								className="text-[var(--mfw-link)] underline"
 							>
 								{children}
 							</AppLink>
@@ -87,7 +87,7 @@ export function DocMarkdown({
 						case "anchor":
 							return (
 								<a
-									className="text-sky-400 underline"
+									className="text-[var(--mfw-link)] underline"
 									href={`#${resolved.fragment}`}
 								>
 									{children}
@@ -96,7 +96,7 @@ export function DocMarkdown({
 						case "external":
 							return (
 								<a
-									className="text-sky-400 underline"
+									className="text-[var(--mfw-link)] underline"
 									href={resolved.href}
 									target="_blank"
 									rel="noopener noreferrer"
@@ -108,7 +108,7 @@ export function DocMarkdown({
 							if (targets) {
 								return (
 									<AppLink
-										className="text-sky-400 underline"
+										className="text-[var(--mfw-link)] underline"
 										to={targets.link(resolved.key, resolved.fragment)}
 									>
 										{children}
@@ -117,7 +117,7 @@ export function DocMarkdown({
 							}
 							return resolved.asset ? (
 								<a
-									className="text-sky-400 underline"
+									className="text-[var(--mfw-link)] underline"
 									href={docAssetUrl(
 										DOC_ASSET_BASE(),
 										project,
@@ -131,7 +131,7 @@ export function DocMarkdown({
 								</a>
 							) : (
 								<AppLink
-									className="text-sky-400 underline"
+									className="text-[var(--mfw-link)] underline"
 									to={`${href.docs(project, { source: resolved.sourceId, key: resolved.key })}${
 										resolved.fragment ? `#${resolved.fragment}` : ""
 									}`}

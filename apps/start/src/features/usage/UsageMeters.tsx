@@ -130,7 +130,7 @@ export function Meter({
 					aria-hidden
 					className="relative h-1.5 min-w-0 flex-1 overflow-hidden"
 					style={{
-						background: "var(--mfw-border)",
+						background: "var(--mfw-meter-track, var(--mfw-border))",
 						borderRadius: "var(--mfw-radius-sm)",
 					}}
 				>
