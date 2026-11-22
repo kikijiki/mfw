@@ -1,0 +1,15 @@
+{
+	"name": "@mfw/cli",
+	"version": "0.1.0",
+	"author": "Matteo Bernacchia <dev@kikijiki.com>",
+	"license": "MIT",
+	"type": "module",
+	"bin": {
+		"mfw": "src/main.ts"
+	},
+	"main": "src/main.ts",
+	"dependencies": {
+		"@mfw/board": "workspace:*",
+		"@mfw/mcp": "workspace:*"
+	}
+}

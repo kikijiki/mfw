@@ -93,7 +93,7 @@
       "name": "@mfw/board",
       "version": "0.5.0",
       "bin": {
-        "mfwb": "src/cli.ts",
+        "mfw-board": "src/cli.ts",
       },
       "dependencies": {
         "@mfw/board-core": "workspace:*",
@@ -107,6 +107,17 @@
       "dependencies": {
         "yaml": "^2.9.0",
         "zod": "^4.4.3",
+      },
+    },
+    "packages/cli": {
+      "name": "@mfw/cli",
+      "version": "0.1.0",
+      "bin": {
+        "mfw": "src/main.ts",
+      },
+      "dependencies": {
+        "@mfw/board": "workspace:*",
+        "@mfw/mcp": "workspace:*",
       },
     },
     "packages/core": {
@@ -148,9 +159,6 @@
     "packages/mcp": {
       "name": "@mfw/mcp",
       "version": "0.1.0",
-      "bin": {
-        "mfw-mcp": "src/main.ts",
-      },
       "dependencies": {
         "@mfw/api": "workspace:*",
         "@mfw/core": "workspace:*",
@@ -457,6 +465,8 @@
     "@mfw/board": ["@mfw/board@workspace:packages/board"],
 
     "@mfw/board-core": ["@mfw/board-core@workspace:packages/board-core"],
+
+    "@mfw/cli": ["@mfw/cli@workspace:packages/cli"],
 
     "@mfw/core": ["@mfw/core@workspace:packages/core"],
 
