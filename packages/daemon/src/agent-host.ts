@@ -3,6 +3,8 @@ import {
 	access,
 	appendFile,
 	type FileHandle,
+	lstat,
+	mkdir,
 	mkdtemp,
 	open,
 	readFile,
@@ -86,7 +88,7 @@ export interface AgentHostOptions {
 		bwrapAvailable: typeof bwrapAvailable;
 		wrapWithBwrap: typeof wrapWithBwrap;
 	};
-	/** Outside every worktree; defaults to the OS temporary directory. */
+	/** Where secret FIFOs are made; defaults to the host-only control directory. Must be private and is masked inside every sandbox. */
 	secretCarrierRoot?: string;
 	/** Bound for run.sh to open and acknowledge the FIFO reader. */
 	secretHandoffTimeoutMs?: number;
@@ -131,7 +133,7 @@ export interface LaunchSpec {
 
 export class AgentHost {
 	private readonly runTmux: AgentTmuxRunner;
-	private readonly secretCarrierRoot: string;
+	private readonly carrierRootOverride: string | null;
 	private readonly secretHandoffTimeoutMs: number;
 	private readonly secretHandoffWriter: AgentSecretHandoffWriter;
 	private readonly sandbox: NonNullable<AgentHostOptions["sandbox"]>;
@@ -139,7 +141,7 @@ export class AgentHost {
 	constructor(_log?: Logger, opts: AgentHostOptions = {}) {
 		this.runTmux = opts.tmuxRunner ?? tmux;
 		this.sandbox = opts.sandbox ?? { bwrapAvailable, wrapWithBwrap };
-		this.secretCarrierRoot = opts.secretCarrierRoot ?? tmpdir();
+		this.carrierRootOverride = opts.secretCarrierRoot ?? null;
 		this.secretHandoffTimeoutMs = opts.secretHandoffTimeoutMs ?? 5_000;
 		this.secretHandoffWriter =
 			opts.secretHandoffWriter ??
@@ -154,6 +156,28 @@ export class AgentHost {
 		}
 	}
 
+	/**
+	 * The host-only control directory: `run.sh` and the secret FIFOs live here,
+	 * never in the run dir (which the agent can write) and never where another
+	 * run can see them (security review G1/G2). It is masked inside every
+	 * sandbox. Created 0700 and verified: owned by us, not a symlink.
+	 */
+	private async controlRoot(): Promise<string> {
+		const uid = process.getuid?.() ?? 0;
+		const root = join(tmpdir(), `mfw-control-${uid}`);
+		await mkdir(root, { recursive: true, mode: 0o700 });
+		const st = await lstat(root);
+		if (
+			st.isSymbolicLink() ||
+			!st.isDirectory() ||
+			st.uid !== uid ||
+			(st.mode & 0o077) !== 0
+		) {
+			throw new Error(`control directory ${root} is not private to this user`);
+		}
+		return root;
+	}
+
 	session(runId: string): string {
 		return `mfw_${runId}`;
 	}
@@ -161,6 +185,8 @@ export class AgentHost {
 	/** Launch the driver in a fresh detached tmux session. The run dir (and meta.json) must already exist (RunRegistry.create). */
 	async launch(spec: LaunchSpec): Promise<void> {
 		const dir = spec.runDir;
+		const control = await this.controlRoot();
+		const scriptPath = join(control, `run-${spec.runId}.sh`);
 		const rawLog = join(dir, "raw.log");
 		const exitPath = join(dir, "exit");
 
@@ -223,8 +249,16 @@ export class AgentHost {
 				driverCmd,
 				spec.cwd,
 				dir,
-				spec.isolation,
+				{
+					...spec.isolation,
+					hidePaths: [
+						...spec.isolation.hidePaths,
+						control,
+						...(this.carrierRootOverride ? [this.carrierRootOverride] : []),
+					],
+				},
 				[...Object.keys(publicEnvironment), ...secretEnvironment.names()],
+				{ readOnly: [spec.driverScript] },
 			);
 		}
 
@@ -232,7 +266,10 @@ export class AgentHost {
 		// acknowledges its reader, then unlink. A crash leaves at worst an empty FIFO for the session trap.
 		const secretHandoff = secretEnvironment.isEmpty()
 			? null
-			: await this.prepareSecretHandoff(secretEnvironment);
+			: await this.prepareSecretHandoff(
+					secretEnvironment,
+					this.carrierRootOverride ?? control,
+				);
 		const secretGate = secretHandoff
 			? [
 					"secret_handoff_failed() {",
@@ -262,6 +299,9 @@ export class AgentHost {
 			: [];
 		const script = [
 			"#!/usr/bin/env bash",
+			// One brace group: bash parses it whole before running anything, so text
+			// appended to this file later is never executed (security review G1).
+			"{",
 			"set +e",
 			// The tmux server runs under `env -i`, so the pane's login shell rebuilds PATH from
 			// system defaults (on NixOS, dropping the daemon's toolchain). PATH is public: restore it.
@@ -274,9 +314,11 @@ export class AgentHost {
 			"rc=$?",
 			// compare-and-skip: never overwrite an exit the kill path already wrote
 			`[ -f ${q(exitPath)} ] || printf 'exit:%s' "$rc" > ${q(exitPath)}`,
+			'exit "$rc"',
+			"}",
 			"",
 		].join("\n");
-		await writeFileAtomic(join(dir, "run.sh"), script);
+		await writeFileAtomic(scriptPath, script);
 
 		const name = this.session(spec.runId);
 		const args = [
@@ -296,7 +338,7 @@ export class AgentHost {
 		for (const [k, v] of Object.entries(spec.env ?? {})) {
 			if (v !== undefined && v !== null) args.push("-e", `${k}=${v}`);
 		}
-		args.push(`bash ${q(join(dir, "run.sh"))}`);
+		args.push(`bash ${q(scriptPath)}`);
 
 		// The tmux server exits with its last session; a dispatch in that window fails transiently. Retry briefly.
 		let r = await this.runTmux(args);
@@ -350,10 +392,9 @@ export class AgentHost {
 
 	private async prepareSecretHandoff(
 		secretEnvironment: SecretEnvironment,
+		controlRoot: string,
 	): Promise<SecretHandoff> {
-		const directory = await mkdtemp(
-			join(this.secretCarrierRoot, "mfw-driver-secret-"),
-		);
+		const directory = await mkdtemp(join(controlRoot, "mfw-driver-secret-"));
 		const fifoPath = join(directory, "environment.fifo");
 		const ackPath = join(directory, "reader-ready");
 		try {

@@ -124,8 +124,7 @@ export interface BwrapCoreOptions {
 /** The bwrap flags shared by the driver sandbox and the reviewer: no env, no command. */
 export function bwrapCore(o: BwrapCoreOptions): string[] {
 	const home = homedir();
-	// `/tmp` stays writable: build tools and test runners use it as scratch.
-	const writable = [...new Set([home, "/tmp", o.cwd, o.runDir])];
+	const writable = [...new Set([home, o.cwd, o.runDir])];
 	const tokens: string[] = [
 		o.bwrapPath,
 		"--die-with-parent",
@@ -137,6 +136,11 @@ export function bwrapCore(o: BwrapCoreOptions): string[] {
 		"/dev",
 		"--proc",
 		"/proc",
+		// A private, empty `/tmp` per sandbox (security review G2/G8): runs share a
+		// uid, so a shared `/tmp` lets one run reach another's FIFOs and sockets.
+		// Build scratch still works; the writable binds below nest inside it.
+		"--tmpfs",
+		"/tmp",
 	];
 	for (const p of writable) tokens.push("--bind", p, p);
 	for (const p of new Set(o.readOnly ?? [])) tokens.push("--ro-bind", p, p);
@@ -177,12 +181,20 @@ export function wrapWithBwrap(
 	runDir: string,
 	isolation: BwrapIsolation,
 	passEnv: readonly string[] = [],
+	extra: { readOnly?: readonly string[] } = {},
 ): string {
 	const bwrapPath = Bun.which("bwrap");
 	if (!bwrapPath) throw new Error("bwrap is not on PATH");
 	const masks = maskedRuntimePaths();
 	const names = [...new Set([...SANDBOX_ENV_ALLOWLIST, ...passEnv])];
-	const core = bwrapCore({ bwrapPath, cwd, runDir, isolation, masks });
+	const core = bwrapCore({
+		bwrapPath,
+		cwd,
+		runDir,
+		isolation,
+		masks,
+		readOnly: extra.readOnly,
+	});
 	const inner = `${probeScriptFor(isolation, names, masks)}\n${cmd}`;
 	return [
 		"_mfw_env=()",
