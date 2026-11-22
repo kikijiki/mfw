@@ -27,7 +27,12 @@ import type {
 	UsernsValue,
 } from "./host-caps.ts";
 import { planLimits } from "./limits.ts";
-import { effectiveLimits, type SandboxProfile } from "./profile.ts";
+import {
+	effectiveLimits,
+	ProfileRejectedError,
+	parseSandboxProfile,
+	type SandboxProfile,
+} from "./profile.ts";
 import {
 	DISABLE_USERNS_BWRAP_ARGS,
 	generateSeccompProgram,
@@ -77,6 +82,7 @@ export interface CompileHost {
 
 export type CompileRefusalCode =
 	| "host_unsupported"
+	| "invalid_profile"
 	| "invalid_command"
 	| "invalid_host"
 	| "toolchain_unresolved"
@@ -117,6 +123,12 @@ function under(path: string, dir: string): boolean {
 
 function overlaps(a: string, b: string): boolean {
 	return under(a, b) || under(b, a);
+}
+
+/** `dir/rel`, or null unless the result sits strictly inside `dir`. */
+export function joinUnder(dir: string, rel: string): string | null {
+	const full = posix.join(dir, rel);
+	return full !== dir && under(full, dir) ? full : null;
 }
 
 interface SourceBind {
@@ -281,7 +293,14 @@ function checkSources(
 	const fleet = profile.filesystem?.fleetConfig;
 	if (fleet) {
 		for (const rel of fleet.writable) {
-			const full = posix.join(fleet.source, rel);
+			const full = joinUnder(fleet.source, rel);
+			if (full === null) {
+				return refuse(
+					"path_denied",
+					`fleet directory ${rel} leaves ${fleet.source}`,
+					"name a directory inside the fleet config",
+				);
+			}
 			if (host.realpath(full) !== full) {
 				return refuse(
 					"path_not_canonical",
@@ -425,8 +444,9 @@ function buildMounts(
 		for (const rel of [...fs.fleetConfig.writable].sort()) {
 			after.push(
 				"--bind",
-				posix.join(fs.fleetConfig.source, rel),
-				posix.join(dest, rel),
+				// checkSources refused any path that leaves the source.
+				joinUnder(fs.fleetConfig.source, rel) as string,
+				joinUnder(dest, rel) as string,
 			);
 		}
 	}
@@ -436,12 +456,28 @@ function buildMounts(
 	return { before, after };
 }
 
-/** Compile a parsed profile and a command into the launch argv, or refuse. */
+/**
+ * Compile a profile and a command into the launch argv, or refuse. The profile
+ * is parsed again here: the type alone proves nothing, because a cast can
+ * carry a path traversal or a loader variable past the schema.
+ */
 export function compileBwrap(
-	profile: SandboxProfile,
+	input: SandboxProfile,
 	command: readonly string[],
 	host: CompileHost,
 ): CompileResult {
+	let profile: SandboxProfile;
+	try {
+		profile = parseSandboxProfile(input);
+	} catch (err) {
+		if (!(err instanceof ProfileRejectedError)) throw err;
+		return refuse(
+			"invalid_profile",
+			err.message,
+			"fix the profile so it passes the schema",
+		);
+	}
+
 	const bad = command.length === 0 || command[0] === "";
 	if (bad || command.some((a) => a.includes("\0"))) {
 		return refuse(

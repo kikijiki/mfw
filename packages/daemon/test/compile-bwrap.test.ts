@@ -3,6 +3,7 @@ import {
 	type CompiledSandbox,
 	type CompileHost,
 	compileBwrap,
+	joinUnder,
 	SANDBOX_PATHS,
 } from "../src/containment/compile-bwrap.ts";
 import type { Check } from "../src/containment/host-caps.ts";
@@ -352,6 +353,49 @@ describe("argv snapshots", () => {
 		const { seccomp } = compiled(minimal());
 		expect(seccomp.equals(generateSeccompProgram("x64"))).toBe(true);
 		expect(decodeProgram(seccomp).length).toBeGreaterThan(10);
+	});
+});
+
+describe("a profile that skipped the schema", () => {
+	const raw = (over: Record<string, unknown>) =>
+		({ version: 1, role: "task", ...over }) as unknown as SandboxProfile;
+
+	test.each([
+		[
+			"a fleet path that climbs out to the home",
+			raw({
+				filesystem: {
+					fleetConfig: {
+						cli: "codex",
+						source: `${R}/fleet`,
+						writable: ["../../../../../../.ssh"],
+					},
+				},
+			}),
+		],
+		["a loader variable", raw({ process: { env: { LD_PRELOAD: "/x.so" } } })],
+		[
+			"a cache name that climbs out of /cache",
+			raw({
+				filesystem: {
+					caches: [{ name: "../../etc", source: `${R}/c`, access: "rw" }],
+				},
+			}),
+		],
+		["an unknown key", raw({ hostRoot: true })],
+		["another version", raw({ version: 2 })],
+	])("refuses %s", (_name, profile) => {
+		const r = compileBwrap(profile, ["agent"], host());
+		expect(r.ok).toBe(false);
+		if (!r.ok) expect(r.code).toBe("invalid_profile");
+	});
+
+	test("a joined fleet path must stay under its source", () => {
+		expect(joinUnder("/f/src", "sessions/a")).toBe("/f/src/sessions/a");
+		expect(joinUnder("/f/src", "../other")).toBeNull();
+		expect(joinUnder("/f/src", "a/../../other")).toBeNull();
+		expect(joinUnder("/f/src", "../src2")).toBeNull();
+		expect(joinUnder("/f/src", ".")).toBeNull();
 	});
 });
 
