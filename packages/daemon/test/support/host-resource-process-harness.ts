@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { createClient } from "@libsql/client";
 
 const WORKER = join(import.meta.dir, "host-resource-child.ts");
+/** The test preload bunfig.toml gives `bun test`; a spawned child has to ask for it. The children are killed, never powered off, so skipping fsync hides nothing. */
+const PRELOAD = join(import.meta.dir, "../../../../tools/test-preload.ts");
 
 type Child = ReturnType<typeof Bun.spawn>;
 
@@ -72,12 +74,15 @@ export class HostProcessHarness {
 			`${JSON.stringify({ ...config, readyPath, resultPath })}\n`,
 			{ mode: 0o600 },
 		);
-		const child = Bun.spawn([process.execPath, WORKER, configPath], {
-			stdin: "ignore",
-			stdout: "pipe",
-			stderr: "pipe",
-			env: { ...process.env, MFW_PROCESS_HARNESS: "1" },
-		});
+		const child = Bun.spawn(
+			[process.execPath, "--preload", PRELOAD, WORKER, configPath],
+			{
+				stdin: "ignore",
+				stdout: "pipe",
+				stderr: "pipe",
+				env: { ...process.env, MFW_PROCESS_HARNESS: "1" },
+			},
+		);
 		const observation: ChildObservation = {
 			resultPath,
 			exitCode: null,
