@@ -34,7 +34,7 @@ import {
 	RunPodPolicyError,
 	runPodShapeViolations,
 } from "../src/runpod-policy.ts";
-import { useRealSqliteSync } from "./support/real-sqlite-sync.ts";
+import { withRealSqliteSync } from "./support/real-sqlite-sync.ts";
 
 const homes: string[] = [];
 
@@ -401,7 +401,6 @@ describe("RunPod policy", () => {
 });
 
 describe("RunPod live-first account service", () => {
-	useRealSqliteSync();
 	test("serial concurrent duplicate provisioning adopts one Pod and creates once", async () => {
 		const provider = new InventoryProvider();
 		const account = await service(provider);
@@ -939,33 +938,39 @@ describe("RunPod live-first account service", () => {
 	});
 
 	test("uses a distinct FULL/WAL account journal and persists no credential", async () => {
-		const provider = new InventoryProvider();
-		provider.pods.push(
-			parseRunPodPod({
-				id: "unrelated-exited-pod",
-				desiredStatus: "EXITED",
-				costPerHr: 0.1,
-				env: { UNRELATED_SECRET: "provider-env-secret" },
-			}),
-		);
-		const account = await service(provider);
-		const lease = await account.putLeaseIntent(intent("durable", cpuRequest()));
-		await account.command(lease.ref, "provision", { type: "provision" });
-		expect(account.dbPath).toEndWith("/runpod/test-account/account.db");
+		return withRealSqliteSync(async () => {
+			const provider = new InventoryProvider();
+			provider.pods.push(
+				parseRunPodPod({
+					id: "unrelated-exited-pod",
+					desiredStatus: "EXITED",
+					costPerHr: 0.1,
+					env: { UNRELATED_SECRET: "provider-env-secret" },
+				}),
+			);
+			const account = await service(provider);
+			const lease = await account.putLeaseIntent(
+				intent("durable", cpuRequest()),
+			);
+			await account.command(lease.ref, "provision", { type: "provision" });
+			expect(account.dbPath).toEndWith("/runpod/test-account/account.db");
 
-		const db = createClient({ url: `file:${account.dbPath}` });
-		const mode = await db.execute("PRAGMA journal_mode");
-		const sync = await db.execute("PRAGMA synchronous");
-		expect(String(mode.rows[0]?.journal_mode).toLowerCase()).toBe("wal");
-		expect(Number(sync.rows[0]?.synchronous)).toBe(2);
-		const durable = await db.execute(
-			"SELECT request_json, result_json FROM operations ORDER BY created_at",
-		);
-		expect(JSON.stringify(durable.rows)).not.toContain("api-key");
-		expect(durable.rows.length).toBeGreaterThan(0);
-		const inventory = await db.execute("SELECT observed_json FROM inventory");
-		expect(JSON.stringify(inventory.rows)).not.toContain("provider-env-secret");
-		db.close();
-		await account.stop();
+			const db = createClient({ url: `file:${account.dbPath}` });
+			const mode = await db.execute("PRAGMA journal_mode");
+			const sync = await db.execute("PRAGMA synchronous");
+			expect(String(mode.rows[0]?.journal_mode).toLowerCase()).toBe("wal");
+			expect(Number(sync.rows[0]?.synchronous)).toBe(2);
+			const durable = await db.execute(
+				"SELECT request_json, result_json FROM operations ORDER BY created_at",
+			);
+			expect(JSON.stringify(durable.rows)).not.toContain("api-key");
+			expect(durable.rows.length).toBeGreaterThan(0);
+			const inventory = await db.execute("SELECT observed_json FROM inventory");
+			expect(JSON.stringify(inventory.rows)).not.toContain(
+				"provider-env-secret",
+			);
+			db.close();
+			await account.stop();
+		});
 	});
 });

@@ -37,7 +37,22 @@ const here = createRequire(
 const clientDir = here.resolve("@libsql/client/package.json");
 const libsqlPath = createRequire(clientDir).resolve("libsql");
 const Database = createRequire(libsqlPath)(libsqlPath);
+// A store that opens with its own `PRAGMA synchronous=FULL` (the host, resource
+// and RunPod account stores do) would otherwise undo the default below.
+const unsyncPragma = (sql: unknown): unknown =>
+	sqliteSync.off && typeof sql === "string"
+		? sql.replace(
+				/\bpragma\s+synchronous\s*=\s*\w+/gi,
+				"PRAGMA synchronous=OFF",
+			)
+		: sql;
 class UndurableDatabase extends Database {
+	exec(sql: unknown, ...rest: unknown[]) {
+		return super.exec(unsyncPragma(sql), ...rest);
+	}
+	prepare(sql: unknown, ...rest: unknown[]) {
+		return super.prepare(unsyncPragma(sql), ...rest);
+	}
 	constructor(...args: unknown[]) {
 		super(...args);
 		if (!sqliteSync.off) return;
