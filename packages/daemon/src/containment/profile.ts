@@ -116,7 +116,15 @@ const FleetConfigSection = z.strictObject({
 const FilesystemSection = z.strictObject({
 	workspace: WorkspaceSection.optional(),
 	scratch: z.literal("tmpfs").optional(),
-	caches: z.array(CacheSection).max(32).optional(),
+	caches: z
+		.array(CacheSection)
+		.max(32)
+		.refine(
+			(caches) => new Set(caches.map((c) => c.name)).size === caches.length,
+			// A later bind would shadow an earlier one at the same /cache/<name>.
+			"cache names must be unique",
+		)
+		.optional(),
 	toolchain: z
 		.strictObject({ binaries: z.array(BinaryName).max(128) })
 		.optional(),

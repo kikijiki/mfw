@@ -164,6 +164,18 @@ describe("schema", () => {
 	test.each([0, -1, 1.5, 2_000_000])("rejects tasksMax %d", (tasksMax) =>
 		rejects({ ...minimal, resources: { tasksMax, memoryMax: "1G" } }));
 
+	test("rejects two caches with one name", () => {
+		rejects({
+			...minimal,
+			filesystem: {
+				caches: [
+					{ name: "deps", source: "/r/ro", access: "ro" },
+					{ name: "deps", source: "/r/rw", access: "rw" },
+				],
+			},
+		});
+	});
+
 	test("memoryBytes", () => {
 		expect(memoryBytes("512M")).toBe(512 * 1024 ** 2);
 		expect(memoryBytes("2G")).toBe(2 * 1024 ** 3);
