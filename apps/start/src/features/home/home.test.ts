@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AppRouter } from "@mfw/api";
 import type { FlowNode } from "@mfw/daemon/flow";
+import type { Headline } from "@mfw/daemon/headlines";
 import type { InboxItem } from "@mfw/daemon/inbox";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createTRPCClient } from "@trpc/client";
@@ -14,7 +15,13 @@ import { FlowLens } from "../flow/FlowPage";
 import { HomePage } from "./HomePage";
 import { liveProjects, liveRows } from "./live";
 import { inlineKind, NeedsQueue, queueOrder } from "./NeedsQueue";
-import { answersInPlace, needTarget, nextNeedTarget } from "./needs";
+import {
+	answersInPlace,
+	groupByAttention,
+	headlineTarget,
+	needTarget,
+	nextNeedTarget,
+} from "./needs";
 import {
 	ActivityHistogram,
 	barHeights,
@@ -28,6 +35,7 @@ const item = (over: Partial<InboxItem> & { id: string }): InboxItem => ({
 	kind: "needs_answer",
 	ref: `run:${over.id}`,
 	severity: "attention",
+	attention: "act",
 	title: `Item ${over.id}`,
 	detail: "",
 	ts: 1000,
@@ -110,6 +118,7 @@ interface Seed {
 	flowLive?: Record<string, unknown[]>;
 	questions?: unknown[];
 	sessions?: unknown[];
+	headlines?: Headline[];
 }
 
 function renderWith(seed: Seed, build: () => ReactElement): string {
@@ -125,6 +134,10 @@ function renderWith(seed: Seed, build: () => ReactElement): string {
 			attention: inbox.filter((i) => i.severity === "attention").length,
 		},
 	} as never);
+	queryClient.setQueryData(
+		trpc.inbox.headlines.queryKey(),
+		(seed.headlines ?? []) as never,
+	);
 	queryClient.setQueryData(
 		trpc.runs.active.queryKey(),
 		(seed.runs ?? []) as never,
@@ -192,6 +205,12 @@ describe("needs rules", () => {
 			item({ id: "b", kind: "stalled", runId: "RB", ts: 100 }),
 		];
 		expect(nextNeedTarget(items)).toBe("/p/mfw/runs/RB");
+	});
+
+	test("headline links lead to their lists", () => {
+		expect(headlineTarget("mfw", "landed")).toBe("/p/mfw/repo/commits");
+		expect(headlineTarget("mfw", "budgets")).toBe("/p/mfw/settings");
+		expect(groupByAttention([])).toEqual([]);
 	});
 
 	test("the queue works the most severe first, then the oldest", () => {
@@ -320,16 +339,76 @@ describe("HomePage", () => {
 		const inbox = [
 			item({ id: "1", kind: "review", taskId: "MFW-1" }),
 			item({ id: "2", kind: "review", taskId: "MFW-2" }),
-			item({ id: "3", kind: "followups", severity: "info" }),
+			item({
+				id: "3",
+				kind: "followups",
+				severity: "info",
+				attention: "know",
+			}),
 		];
 		const html = renderWith({ inbox, runs: [activeRun()] }, () =>
 			createElement(HomePage),
 		);
-		expect(html).toContain("3 need you");
+		expect(html).toContain("2 need you");
+		expect(html).toContain("1 to read");
 		expect(html).toContain('aria-label="Needs you"');
 		expect(html).toContain('aria-label="Live"');
 		expect(html).toContain('aria-label="Since you left"');
 		expect(html.match(/data-need="/g)?.length).toBe(3);
+	});
+
+	test("rows are grouped by attention class; ambient is folded", () => {
+		const inbox = [
+			item({ id: "1", kind: "review", taskId: "MFW-1" }),
+			item({
+				id: "2",
+				kind: "failed_run",
+				severity: "info",
+				attention: "know",
+			}),
+			item({
+				id: "3",
+				kind: "sweep_infra",
+				severity: "info",
+				attention: "ambient",
+			}),
+		];
+		const html = renderWith({ inbox }, () => createElement(HomePage));
+		expect(html).toContain('data-attention="know"');
+		expect(html).toContain('data-attention="ambient"');
+		expect(html).toMatch(/<details[^>]*data-attention="know"[^>]*open/);
+		expect(html).not.toMatch(/<details[^>]*data-attention="ambient"[^>]*open/);
+		// act rows first, then know, then ambient.
+		const order = ["review", "failed_run", "sweep_infra"].map((k) =>
+			html.indexOf(`data-need="${k}"`),
+		);
+		expect(order).toEqual([...order].sort((a, b) => a - b));
+		expect(order.every((i) => i >= 0)).toBe(true);
+	});
+
+	test("each project shows its headline, every number a link", () => {
+		const headlines: Headline[] = [
+			{
+				project: "mfw",
+				text: "Landed 7, needs you 1; main green; spend 62%",
+				parts: [
+					{ key: "landed", text: "Landed 7", link: "landed" },
+					{ key: "needs_you", text: "needs you 1", link: "needs_you" },
+					{ key: "main", text: "main green", link: "main" },
+					{ key: "spend", text: "spend 62%", link: "budgets" },
+				],
+				landedToday: 7,
+				needsYou: 1,
+				spendFraction: 0.62,
+			},
+		];
+		const html = renderWith({ headlines }, () => createElement(HomePage));
+		expect(html).toContain('data-headline="mfw"');
+		expect(html).toContain("Landed 7");
+		expect(html).toContain("spend 62%");
+		expect(html).toContain("/p/mfw/repo/commits");
+		expect(html).toContain("#needs-you");
+		expect(html).toContain("/p/mfw/settings");
 	});
 
 	test("escalations are listed so they can be started and resolved", () => {

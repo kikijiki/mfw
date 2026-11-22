@@ -5,6 +5,7 @@ import { LoadingRows } from "../../components/Loading";
 import { Page, PageHeader, Scroller } from "../../components/Page";
 import { useTRPC } from "../../lib/trpc";
 import { EscalationsPanel } from "../sessions/SessionCard";
+import { Headlines } from "./Headlines";
 import { LiveSection } from "./LiveSection";
 import { NeedsQueue } from "./NeedsQueue";
 import { SinceYouLeft } from "./SinceYouLeft";
@@ -22,10 +23,15 @@ export function HomePage() {
 	const inbox = useQuery(trpc.inbox.list.queryOptions());
 	const active = useQuery(trpc.runs.active.queryOptions());
 	const sessions = useQuery(trpc.sessions.open.queryOptions());
+	const headlines = useQuery(trpc.inbox.headlines.queryOptions());
 
 	const items = inbox.data?.items ?? [];
 	const runs = active.data ?? [];
 	const escalations = sessions.data?.length ?? 0;
+	// Only `act` items need you; the rest is worth knowing or already handled.
+	const act = items.filter((i) => i.attention === "act").length;
+	const know = items.filter((i) => i.attention === "know").length;
+	const needs = act + escalations;
 
 	return (
 		<Page className="h-full">
@@ -34,9 +40,10 @@ export function HomePage() {
 				meta={
 					<span>
 						<StaleWhenOffline>
-							{items.length + escalations === 0
+							{needs === 0
 								? "nothing needs you"
-								: `${items.length + escalations} need${items.length + escalations === 1 ? "s" : ""} you`}
+								: `${needs} need${needs === 1 ? "s" : ""} you`}
+							{know > 0 ? ` · ${know} to read` : ""}
 							{" · "}
 							{runs.length === 0
 								? "nothing running"
@@ -46,11 +53,19 @@ export function HomePage() {
 				}
 			/>
 			<Scroller className="flex flex-col gap-6 p-3">
-				<section aria-label="Needs you" className="flex flex-col gap-2">
-					<SectionHeading
-						tone="warn"
-						count={items.length > 0 ? items.length : undefined}
-					>
+				{headlines.data && headlines.data.length > 0 ? (
+					<section aria-label="Projects" className="flex flex-col gap-2">
+						<SectionHeading>Projects</SectionHeading>
+						<Headlines headlines={headlines.data} />
+					</section>
+				) : null}
+
+				<section
+					id="needs-you"
+					aria-label="Needs you"
+					className="flex flex-col gap-2"
+				>
+					<SectionHeading tone="warn" count={act > 0 ? act : undefined}>
 						Needs you
 					</SectionHeading>
 					{inbox.isLoading ? (
@@ -67,6 +82,7 @@ export function HomePage() {
 							runs={active.data}
 							// An escalation is also something that needs you.
 							empty={escalations === 0}
+							grouped
 						/>
 					)}
 					<EscalationsPanel />

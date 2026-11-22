@@ -890,12 +890,7 @@ export function attentionOf(
 /** Merge per-project lists into one cross-project queue with badge counts. */
 export function mergeInboxes(lists: InboxItem[][]): {
 	items: InboxItem[];
-	counts: {
-		total: number;
-		critical: number;
-		attention: number;
-		byClass: Record<AttentionClass, number>;
-	};
+	counts: { total: number; critical: number; attention: number };
 } {
 	const items = lists.flat();
 	items.sort((a, b) => RANK[a.severity] - RANK[b.severity] || b.ts - a.ts);
@@ -905,11 +900,6 @@ export function mergeInboxes(lists: InboxItem[][]): {
 			total: items.length,
 			critical: items.filter((i) => i.severity === "critical").length,
 			attention: items.filter((i) => i.severity === "attention").length,
-			byClass: {
-				act: items.filter((i) => i.attention === "act").length,
-				know: items.filter((i) => i.attention === "know").length,
-				ambient: items.filter((i) => i.attention === "ambient").length,
-			},
 		},
 	};
 }

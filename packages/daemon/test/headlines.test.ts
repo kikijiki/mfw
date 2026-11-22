@@ -16,7 +16,6 @@ import {
 	attentionOf,
 	type InboxKind,
 	type InboxSeverity,
-	mergeInboxes,
 } from "../src/inbox.ts";
 
 const act = { kind: "review", attention: "act" } as const;
@@ -77,26 +76,6 @@ describe("attention classes", () => {
 	test("failed runs and follow-ups are know", () => {
 		expect(attentionOf("failed_run", "info")).toBe("know");
 		expect(attentionOf("followups", "info")).toBe("know");
-	});
-
-	test("mergeInboxes counts by class", () => {
-		const mk = (kind: InboxKind, severity: InboxSeverity, id: string) => ({
-			id,
-			project: "p",
-			kind,
-			severity,
-			attention: attentionOf(kind, severity),
-			title: id,
-			detail: "",
-			ref: "brain",
-			ts: 1,
-		});
-		const { counts } = mergeInboxes([
-			[mk("review", "attention", "a"), mk("failed_run", "info", "b")],
-			[mk("sweep_infra", "info", "c"), mk("main_red", "critical", "d")],
-		]);
-		expect(counts.byClass).toEqual({ act: 2, know: 1, ambient: 1 });
-		expect(counts.total).toBe(4);
 	});
 });
 

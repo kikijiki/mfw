@@ -1,4 +1,5 @@
-import type { InboxItem, InboxKind } from "@mfw/daemon/inbox";
+import type { HeadlineLink } from "@mfw/daemon/headlines";
+import type { AttentionClass, InboxItem, InboxKind } from "@mfw/daemon/inbox";
 
 import { nodeRef } from "../../lib/nodeRef";
 import { href } from "../../routes";
@@ -73,4 +74,38 @@ export function needTarget(item: InboxItem): string {
 export function nextNeedTarget(items: readonly InboxItem[]): string | null {
 	const first = oldestFirst(items)[0];
 	return first ? needTarget(first) : null;
+}
+
+/** What each attention class is called where its rows are grouped. */
+export const ATTENTION_LABEL: Record<AttentionClass, string> = {
+	act: "Needs you",
+	know: "Worth knowing",
+	ambient: "Handled",
+};
+
+/** The classes in the order Home shows them. */
+const CLASS_ORDER: readonly AttentionClass[] = ["act", "know", "ambient"];
+
+/** Items split by class, in display order; an empty class is left out. */
+export function groupByAttention<T extends Pick<InboxItem, "attention">>(
+	items: readonly T[],
+): { attention: AttentionClass; items: T[] }[] {
+	return CLASS_ORDER.map((attention) => ({
+		attention,
+		items: items.filter((i) => i.attention === attention),
+	})).filter((g) => g.items.length > 0);
+}
+
+/** Where a headline number leads (every number links to its list). */
+export function headlineTarget(project: string, link: HeadlineLink): string {
+	switch (link) {
+		case "landed":
+			return href.repoCommits(project);
+		case "needs_you":
+			return `${href.home()}#needs-you`;
+		case "main":
+			return href.repo(project);
+		case "budgets":
+			return href.projectSettings(project);
+	}
 }

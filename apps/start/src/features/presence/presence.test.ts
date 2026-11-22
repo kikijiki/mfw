@@ -44,6 +44,7 @@ const item = (
 	kind: "needs_answer",
 	ref: `run:${project}:${n}`,
 	severity: "attention",
+	attention: "act",
 	title: `Question ${n}`,
 	detail: "",
 	ts: 1000 - n,
