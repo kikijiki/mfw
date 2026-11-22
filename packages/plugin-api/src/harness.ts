@@ -201,7 +201,7 @@ export interface HarnessWidening {
 
 /**
  * What approving this manifest widens for every run of the harness. Egress
- * and `fleet.writable` are ask-first sandbox widening (Q14); the card lists
+ * and `fleet.writable` are ask-first sandbox widening; the card lists
  * each entry in plain words. Built-in manifests are reviewed with the release
  * and skip the card, but the list is still computed for Capacity.
  */
