@@ -232,6 +232,19 @@ function destructive(script: string) {
 	return spawnSandbox(scenarioArgv, scenario);
 }
 
+/**
+ * Run a mis-expansion inside the sandbox and prove it really deleted: a file
+ * planted in the synthetic HOME must be gone afterwards (exit 82 if not). The
+ * command's own status is ignored, since `rm` reports the read-only mounts.
+ */
+function misExpansion(command: string) {
+	return destructive(`: > "$HOME/planted" || exit 80
+[ -e "$HOME/planted" ] || exit 81
+${command}
+if [ -e "$HOME/planted" ]; then exit 82; fi
+exit 0`);
+}
+
 function canaryIntact(): void {
 	expect(readFileSync(join(home, CANARY), "utf8")).toBe("irreplaceable\n");
 	expect(readFileSync(join(home, ".ssh/id_canary"), "utf8")).toBe(
@@ -452,21 +465,25 @@ describe.skipIf(skip !== null)("compiled profile under bwrap", () => {
 		expect(checkControlReport(r.out, spec).join()).toContain("/stand-in");
 	});
 
+	test("a mis-expansion scenario that deletes nothing does not pass", () => {
+		expect(misExpansion("true").code).toBe(82);
+	});
+
 	// The mis-expansion scenarios the containment suite tracks as fail-until:P1.
 	test.each([
-		["rm -rf ~", "rm -rf ~; true"],
-		["find $HOME -delete", 'find "$HOME" -delete; true'],
+		["rm -rf ~", "rm -rf ~"],
+		["find $HOME -delete", 'find "$HOME" -delete'],
 		// Skips the top-level names starting with n, u or l (/nix, /usr, /lib*):
 		// they are read-only binds (checked above) and walking them takes minutes.
-		["rm -rf with an unset variable", 'rm -rf "$UNSET/"[!nul]*; true'],
+		["rm -rf with an unset variable", 'rm -rf "$UNSET/"[!nul]*'],
 		[
 			"rm -rf of the host path of the canary",
-			`rm -rf ${JSON.stringify("__HOME__")}; true`,
+			`rm -rf "$HOME/planted" ${JSON.stringify("__HOME__")}`,
 		],
 	])(
 		"mis-expansion: %s leaves the canary HOME intact",
 		(_name, script) => {
-			const r = destructive(script.replace("__HOME__", home));
+			const r = misExpansion(script.replace("__HOME__", home));
 			expect(r.code).toBe(0);
 			canaryIntact();
 		},
