@@ -75,6 +75,47 @@ describe("rebaseQuarantineInScratch", () => {
 		).toBe(0);
 	});
 
+	test("each rebase keeps the tip it replaced under refs/mfw/pre-rebase, numbered from 1", async () => {
+		const t = await setup();
+		const first = await t.quarantine("r6", "c.txt", "mine\n");
+		const o1 = await t.advance("a.txt", "two\n");
+		await rebaseQuarantineInScratch(t.opts, {
+			runId: "r6",
+			targetBranch: "main",
+			onto: o1,
+		});
+		const second = await gitOk(
+			["rev-parse", "refs/mfw/quarantine/r6"],
+			t.primary,
+		);
+		const o2 = await t.advance("a.txt", "three\n");
+		await rebaseQuarantineInScratch(t.opts, {
+			runId: "r6",
+			targetBranch: "main",
+			onto: o2,
+		});
+		expect(
+			await gitOk(["rev-parse", "refs/mfw/pre-rebase/r6/1"], t.primary),
+		).toBe(first);
+		expect(
+			await gitOk(["rev-parse", "refs/mfw/pre-rebase/r6/2"], t.primary),
+		).toBe(second);
+	});
+
+	test("a conflict keeps no pre-rebase ref", async () => {
+		const t = await setup();
+		await t.quarantine("r7", "b.txt", "base\nfrom run\n");
+		const onto = await t.advance("b.txt", "from main\n");
+		await rebaseQuarantineInScratch(t.opts, {
+			runId: "r7",
+			targetBranch: "main",
+			onto,
+		});
+		expect(
+			await gitOk(["for-each-ref", "refs/mfw/pre-rebase/"], t.primary),
+		).toBe("");
+	});
+
 	test("a conflict reports the paths and does not move the quarantine ref", async () => {
 		const t = await setup();
 		const old = await t.quarantine("r2", "b.txt", "base\nfrom run\n");

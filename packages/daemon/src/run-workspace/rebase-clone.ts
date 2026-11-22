@@ -26,6 +26,12 @@ import { runProc } from "../proc.ts";
 
 const GIT_TIMEOUT_MS = 120_000;
 
+/** Where each rebase keeps the quarantine tip it replaced: `<prefix><n>`, n from 1. */
+export function preRebasePrefix(runId: string): string {
+	assertRunId(runId);
+	return `refs/mfw/pre-rebase/${runId}/`;
+}
+
 export interface RebaseCloneOptions {
 	/** `$MFW_HOME/workspaces`; the scratch clone is never under it. */
 	workspaceRoot: string;
@@ -157,6 +163,36 @@ export async function rebaseQuarantineInScratch(
 		const tip = head.stdout.trim();
 		if (head.exitCode !== 0 || !/^[0-9a-f]{40,64}$/.test(tip)) {
 			return { ok: false, kind: "error", detail: "no rebased tip" };
+		}
+		// Keep the tip this rebase replaces, so the run's original work survives.
+		const old = await run(
+			["rev-parse", "--verify", "-q", `${quarantine}^{commit}`],
+			primary,
+		);
+		if (old.exitCode === 0) {
+			const kept = await run(
+				["for-each-ref", "--format=%(refname)", preRebasePrefix(args.runId)],
+				primary,
+			);
+			const n =
+				Math.max(
+					0,
+					...kept.stdout
+						.split("\n")
+						.map((r) => Number(r.slice(preRebasePrefix(args.runId).length)))
+						.filter(Number.isInteger),
+				) + 1;
+			const saved = await run(
+				["update-ref", `${preRebasePrefix(args.runId)}${n}`, old.stdout.trim()],
+				primary,
+			);
+			if (saved.exitCode !== 0) {
+				return {
+					ok: false,
+					kind: "error",
+					detail: `could not keep the pre-rebase tip: ${tail(saved.stderr)}`,
+				};
+			}
 		}
 		// Back into the primary's quarantine namespace, fscked, from a host-owned repo.
 		const back = await run(
