@@ -16,7 +16,7 @@ export type {
 
 /**
  * `UsageMonitor`: how full each found subscription's rolling windows are
- * (Claude Code 5h and 7d, Codex's primary and secondary), for the sidebar
+ * (Claude Code's weekly window, Codex's primary and secondary), for the sidebar
  * meters, the Fleet page and the brain's capacity read.
  *
  * Machine-wide, owned by the orchestrator, never per project: a subscription
@@ -35,7 +35,9 @@ export type {
  *  - A window at 100% with a known reset holds the provider in the shared
  *    `ProviderHoldStore` until that reset (reason prefixed
  *    `USAGE_HOLD_PREFIX`). The monitor clears only holds it placed itself.
- *  - Probes cost no model tokens (see `usage/*`).
+ *    For Claude that only happens after an observed `rate_limit_event`.
+ *  - A provider that answers with no windows is `unknown`, never 0%.
+ *  - Probes cost no model tokens and read no login file (see `usage/*`).
  */
 
 export const USAGE_REFRESH_MS = 60_000;
@@ -288,6 +290,16 @@ export class UsageMonitor {
 				name: s.probe.name,
 				accountLabel: s.accountLabel,
 			};
+			if (s.good && s.error === null && s.good.windows.length === 0) {
+				// Reachable but told us nothing (Claude before its first rate-limit event).
+				out.push({
+					...base,
+					windows: [],
+					fetchedAt: s.good.fetchedAt,
+					status: "unknown",
+				});
+				continue;
+			}
 			if (s.good && s.error === null) {
 				out.push({
 					...base,

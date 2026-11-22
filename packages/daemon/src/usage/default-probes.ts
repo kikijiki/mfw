@@ -1,14 +1,14 @@
 import { readFileSync } from "node:fs";
 import { whichBin } from "../agents/detect.ts";
-import { claudeUsageProbe } from "./claude-usage.ts";
+import { claudeWeeklyProbe, type RateLimitObserver } from "./claude-weekly.ts";
 import { codexUsageProbe } from "./codex-usage.ts";
 import { clampPercent, type UsageProbe, type UsageWindow } from "./types.ts";
 
 export interface UsageConfig {
 	/** Master switch; `MFW_USAGE_MONITOR=0` also turns it off. */
 	enabled?: boolean;
-	/** The unofficial Claude OAuth usage endpoint; `MFW_USAGE_CLAUDE_OAUTH=0` also turns it off. */
-	claudeOauth?: boolean;
+	/** Where the Claude weekly meter gets its observed `rate_limit_event`s; without one it reads "unknown". */
+	claudeObserver?: RateLimitObserver;
 	/** Replace the probes entirely (tests). */
 	probes?: readonly UsageProbe[];
 }
@@ -76,7 +76,7 @@ export function fixtureUsageProbes(path: string): UsageProbe[] {
 
 /**
  * The probes for the harnesses mfw knows. A probe whose CLI is not installed
- * or not signed in reports itself unavailable and stays hidden.
+ * reports itself unavailable and stays hidden.
  */
 export function defaultUsageProbes(
 	cfg: UsageConfig | undefined,
@@ -85,16 +85,13 @@ export function defaultUsageProbes(
 	if (cfg?.probes) return [...cfg.probes];
 	if (env.MFW_USAGE_FIXTURE) return fixtureUsageProbes(env.MFW_USAGE_FIXTURE);
 	const probes: UsageProbe[] = [];
-	const claudeOauth =
-		cfg?.claudeOauth !== false && env.MFW_USAGE_CLAUDE_OAUTH !== "0";
-	if (claudeOauth) {
-		const claude = claudeUsageProbe({ env });
-		probes.push({
-			...claude,
-			available: async () =>
-				(await whichBin("claude", env)) !== null && (await claude.available()),
-		});
-	}
+	// No token read and no vendor endpoint: the weekly meter is whatever the
+	// CLI's own `rate_limit_event`s said, or unknown.
+	const claude = claudeWeeklyProbe({ observer: cfg?.claudeObserver });
+	probes.push({
+		...claude,
+		available: async () => (await whichBin("claude", env)) !== null,
+	});
 	const codex = codexUsageProbe();
 	probes.push({
 		...codex,

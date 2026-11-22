@@ -3,10 +3,9 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-	CLAUDE_USAGE_URL,
-	claudeUsageProbe,
-	parseClaudeUsage,
-} from "../src/usage/claude-usage.ts";
+	claudeWeeklyProbe,
+	RateLimitObserver,
+} from "../src/usage/claude-weekly.ts";
 import {
 	type CodexRpcTransport,
 	codexUsageProbe,
@@ -20,8 +19,6 @@ const fixture = (name: string): unknown =>
 		readFileSync(join(import.meta.dir, "fixtures/usage", name), "utf8"),
 	);
 
-const SECRET = "sk-ant-oat01-SECRET-TOKEN-VALUE";
-
 describe("windowLabel", () => {
 	test("minutes, hours, days", () => {
 		expect(windowLabel(45)).toBe("45m");
@@ -32,162 +29,77 @@ describe("windowLabel", () => {
 	});
 });
 
-describe("parseClaudeUsage", () => {
-	test("reads the limits list: session, weekly, scoped weekly", () => {
-		const w = parseClaudeUsage(fixture("claude-oauth-usage.json"));
-		expect(w.map((x) => [x.label, x.usedPercent, x.windowMinutes])).toEqual([
-			["5h", 21, 300],
-			["7d", 16, 10_080],
-			["7d Fable", 0, 10_080],
-		]);
-		expect(w[0]?.resetsAt).toBe(Date.parse("2026-10-12T13:39:59.569755+00:00"));
-		expect(w[0]?.source).toBe("claude-oauth-usage");
+describe("claudeWeeklyProbe", () => {
+	const run = (obs?: RateLimitObserver) =>
+		claudeWeeklyProbe({ observer: obs }).run(new AbortController().signal);
+
+	test("unknown with an empty ledger: no window, never 0%", async () => {
+		expect((await run()).windows).toEqual([]);
+		expect((await run(new RateLimitObserver())).windows).toEqual([]);
 	});
 
-	test("falls back to the flat fields when limits is absent", () => {
-		const body = fixture("claude-oauth-usage.json") as Record<string, unknown>;
-		const { limits: _drop, ...flat } = body;
-		const w = parseClaudeUsage({
-			...flat,
-			seven_day_sonnet: {
-				utilization: 55.5,
-				resets_at: "2026-10-19T00:00:00Z",
-			},
+	test("a percentage after an observed event", async () => {
+		const o = new RateLimitObserver(() => 1_000);
+		o.observe({
+			status: "allowed_warning",
+			limited: false,
+			resetsAt: 9_000_000,
+			utilization: 0.83,
 		});
-		expect(w.map((x) => [x.label, x.usedPercent])).toEqual([
-			["5h", 21],
-			["7d", 16],
-			["7d Sonnet", 55.5],
-		]);
-	});
-
-	test("clamps out of range percents", () => {
-		const w = parseClaudeUsage({
-			limits: [{ kind: "session", percent: 140, resets_at: null }],
+		const { windows } = await run(o);
+		expect(windows).toHaveLength(1);
+		expect(windows[0]).toMatchObject({
+			label: "7d",
+			usedPercent: 83,
+			resetsAt: 9_000_000_000,
+			windowMinutes: 10_080,
+			source: "claude-rate-limit-event",
 		});
-		expect(w[0]?.usedPercent).toBe(100);
-		expect(w[0]?.resetsAt).toBeNull();
 	});
 
-	test("an unknown shape is an error, not an empty meter", () => {
-		expect(() => parseClaudeUsage({ hello: 1 })).toThrow(UsageProbeError);
-		expect(() => parseClaudeUsage(null)).toThrow(UsageProbeError);
-		expect(() => parseClaudeUsage({ limits: [{ kind: "mystery" }] })).toThrow(
-			UsageProbeError,
-		);
+	test("a refusal is 100% until its reset, then unknown again", async () => {
+		let now = 1_000;
+		const o = new RateLimitObserver(() => now);
+		o.observe({
+			status: "rejected",
+			limited: true,
+			resetsAt: 5_000_000,
+			utilization: null,
+		});
+		expect((await run(o)).windows[0]?.usedPercent).toBe(100);
+		now = 5_000_000_000;
+		expect((await run(o)).windows).toEqual([]);
+	});
+
+	test("a heartbeat without a number changes nothing", async () => {
+		const o = new RateLimitObserver(() => 1_000);
+		o.observe({
+			status: "allowed",
+			limited: false,
+			resetsAt: null,
+			utilization: null,
+		});
+		expect((await run(o)).windows).toEqual([]);
 	});
 });
 
-describe("claudeUsageProbe", () => {
-	const creds = (over: Record<string, unknown> = {}) =>
-		JSON.stringify({
-			claudeAiOauth: {
-				accessToken: SECRET,
-				refreshToken: "refresh-SECRET",
-				expiresAt: 2_000_000,
-				subscriptionType: "max",
-				...over,
-			},
-		});
-	const json = (status: number, body: unknown) =>
-		new Response(JSON.stringify(body), { status });
-
-	test("sends the bearer token and returns windows plus the plan", async () => {
-		let seen: { url: string; headers: Record<string, string> } | null = null;
-		const probe = claudeUsageProbe({
-			home: "/nowhere",
-			env: {},
-			now: () => 1_000_000,
-			readFile: async () => creds(),
-			fetch: async (url, init) => {
-				seen = { url, headers: init.headers as Record<string, string> };
-				return json(200, fixture("claude-oauth-usage.json"));
-			},
-		});
-		expect(await probe.available()).toBe(true);
-		const r = await probe.run(new AbortController().signal);
-		expect(r.accountLabel).toBe("max");
-		expect(r.windows).toHaveLength(3);
-		expect(seen).not.toBeNull();
-		const s = seen as unknown as {
-			url: string;
-			headers: Record<string, string>;
-		};
-		expect(s.url).toBe(CLAUDE_USAGE_URL);
-		expect(s.headers.authorization).toBe(`Bearer ${SECRET}`);
-		// The token is in the request only, never in what the probe returns.
-		expect(JSON.stringify(r)).not.toContain("SECRET");
+describe("defaultUsageProbes", () => {
+	test("claude is present but unknown by default; no OAuth switch remains", async () => {
+		const probes = defaultUsageProbes(undefined, { PATH: "" });
+		expect(probes.map((p) => p.provider)).toEqual(["claude-cli", "codex-cli"]);
+		// Not installed: hidden.
+		expect(await probes[0]?.available()).toBe(false);
+		expect(await probes[1]?.available()).toBe(false);
 	});
 
-	test("not signed in, expired and rejected logins are permanent errors without the token", async () => {
-		const run = (read: () => Promise<string>, status = 200) =>
-			claudeUsageProbe({
-				env: {},
-				home: "/x",
-				now: () => 1_000_000,
-				readFile: read,
-				fetch: async () => json(status, {}),
-			}).run(new AbortController().signal);
-
-		const missing = await run(async () => {
-			throw new Error("ENOENT");
-		}).catch((e) => e);
-		expect(missing).toBeInstanceOf(UsageProbeError);
-		expect(missing.permanent).toBe(true);
-
-		const expired = await run(async () => creds({ expiresAt: 5 })).catch(
-			(e) => e,
-		);
-		expect(expired.message).toContain("expired");
-		expect(expired.permanent).toBe(true);
-		expect(expired.message).not.toContain("SECRET");
-
-		const rejected = await run(async () => creds(), 401).catch((e) => e);
-		expect(rejected.permanent).toBe(true);
-		expect(rejected.message).not.toContain("SECRET");
-	});
-
-	test("a network failure message never carries the request", async () => {
-		const probe = claudeUsageProbe({
-			env: {},
-			home: "/x",
-			now: () => 1,
-			readFile: async () => creds(),
-			fetch: async () => {
-				throw new Error(`connect failed with Bearer ${SECRET}`);
-			},
-		});
-		const e = await probe.run(new AbortController().signal).catch((x) => x);
-		expect(e).toBeInstanceOf(UsageProbeError);
-		expect(e.message).not.toContain("SECRET");
-	});
-
-	test("429 and 5xx are transient", async () => {
-		for (const status of [429, 503]) {
-			const probe = claudeUsageProbe({
-				env: {},
-				home: "/x",
-				now: () => 1,
-				readFile: async () => creds(),
-				fetch: async () => json(status, {}),
-			});
-			const e = await probe.run(new AbortController().signal).catch((x) => x);
-			expect(e.permanent).toBe(false);
-		}
-	});
-
-	test("CLAUDE_CONFIG_DIR picks the credential file", async () => {
-		let path = "";
-		const probe = claudeUsageProbe({
-			env: { CLAUDE_CONFIG_DIR: "/cfg/claude" },
-			home: "/home/x",
-			readFile: async (p) => {
-				path = p;
-				throw new Error("nope");
-			},
-		});
-		expect(await probe.available()).toBe(false);
-		expect(path).toBe("/cfg/claude/.credentials.json");
+	test("the codex availability check does not open auth.json", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "mfw-test-usage-bin-"));
+		const bin = join(dir, "codex");
+		writeFileSync(bin, "#!/bin/sh\n", { mode: 0o755 });
+		expect(await codexUsageProbe({ command: bin }).available()).toBe(true);
+		expect(
+			await codexUsageProbe({ command: join(dir, "missing") }).available(),
+		).toBe(false);
 	});
 });
 
