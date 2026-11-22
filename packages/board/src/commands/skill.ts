@@ -1,16 +1,37 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
 	ALL_TOOLS,
 	detect,
 	fileState,
 	findProjectRoot,
+	legacyPath,
 	parseTargets,
 	plan,
 	type Scope,
 	type ToolId,
 } from "./skill-targets.ts";
 import { CliError, type Command, UsageError } from "./types.ts";
+
+/** Pre-rename skill copies next to the planned installs; report only. */
+function legacyCopies(
+	entries: { tool: ToolId; path: string }[],
+): { tool: ToolId; path: string }[] {
+	return entries
+		.map((e) => ({ tool: e.tool, path: legacyPath(e.path) }))
+		.filter((l) => existsSync(l.path));
+}
+
+function reportLegacy(
+	entries: { tool: ToolId; path: string }[],
+	json: boolean,
+): void {
+	if (json) return;
+	for (const l of legacyCopies(entries))
+		console.log(
+			`legacy ${l.tool} ${l.path} (old skill name; mfw-board never deletes it, remove it yourself)`,
+		);
+}
 
 /**
  * Copies the packaged SKILL.md (Agent Skills format) into each selected agent
@@ -41,7 +62,11 @@ export const skill: Command = {
 		if (!selected) throw new UsageError();
 
 		if (verb === "status") {
-			const rows = plan(selected, scope, cwd, env).map((e) => {
+			const entries = plan(selected, scope, cwd, env);
+			const legacy = new Map(
+				legacyCopies(entries).map((l) => [l.tool, l.path]),
+			);
+			const rows = entries.map((e) => {
 				const detected = detect(e.tool, env);
 				const state = fileState(e.coveredBy ?? e.path, packaged);
 				return {
@@ -51,6 +76,7 @@ export const skill: Command = {
 					path: e.path,
 					state,
 					coveredBy: e.coveredBy ?? null,
+					...(legacy.has(e.tool) ? { legacy: legacy.get(e.tool) } : {}),
 				};
 			});
 			rows.sort(
@@ -64,6 +90,7 @@ export const skill: Command = {
 					console.log(
 						`${r.tool} ${r.detected ? "detected" : "not detected"} ${r.path} ${r.state}${r.coveredBy ? ` (covered by ${r.coveredBy})` : ""}`,
 					);
+				reportLegacy(entries, false);
 			}
 			return;
 		}
@@ -73,7 +100,8 @@ export const skill: Command = {
 				"no supported agent tool detected (supported: claude, codex, opencode, pi); pass --target <claude,codex,opencode,pi|all>",
 			);
 		if (scope === "project") console.error(`project root: ${cwd}`);
-		for (const e of plan(selected, scope, cwd, env)) {
+		const entries = plan(selected, scope, cwd, env);
+		for (const e of entries) {
 			if (e.coveredBy) {
 				console.log(`covered ${e.tool} by ${e.coveredBy}`);
 				continue;
@@ -90,5 +118,6 @@ export const skill: Command = {
 				`${args.dryRun ? "would install" : "installed"} ${e.tool} -> ${e.path}`,
 			);
 		}
+		reportLegacy(entries, ctx.json);
 	},
 };

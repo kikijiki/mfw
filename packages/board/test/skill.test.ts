@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { LEGACY_SKILL_DIR } from "../src/commands/skill-targets.ts";
 
 const CLI = join(import.meta.dir, "../src/cli.ts");
 // Installed copies have the checkout placeholder filled in with the real path.
@@ -27,7 +28,7 @@ interface Sandbox {
 	bin: string;
 }
 function sandbox(): Sandbox {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "mfwb-skill-")));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "mfw-board-skill-")));
 	roots.push(root);
 	const s = {
 		root,
@@ -73,7 +74,7 @@ async function run(
 	return { stdout: stdout.trim(), stderr: stderr.trim(), code };
 }
 
-const skillPath = (base: string) => join(base, "mfwb", "SKILL.md");
+const skillPath = (base: string) => join(base, "mfw-board", "SKILL.md");
 const has = (p: string) => existsSync(p);
 
 describe("skill install: detection and targets", () => {
@@ -372,5 +373,36 @@ describe("skill install: idempotence, dry-run, status", () => {
 		writeFileSync(c, "changed");
 		const t = await run(s, ["skill", "status", "--target", "claude"]);
 		expect(t.stdout).toBe(`claude detected ${c} stale`);
+	});
+});
+
+describe("skill status: legacy name", () => {
+	test("reports a planted old-name skill, never deletes or rewrites it", async () => {
+		const s = sandbox();
+		fakeExe(s, "codex");
+		const legacy = join(s.cwd, ".agents/skills", LEGACY_SKILL_DIR, "SKILL.md");
+		mkdirSync(join(s.cwd, ".agents/skills", LEGACY_SKILL_DIR), {
+			recursive: true,
+		});
+		writeFileSync(legacy, "old skill\n");
+		const r = await run(s, ["skill", "status", "--target", "codex"]);
+		expect(r.code).toBe(0);
+		expect(r.stdout).toContain(`legacy codex ${legacy} (old skill name;`);
+		const j = JSON.parse(
+			(await run(s, ["--json", "skill", "status", "--target", "codex"])).stdout,
+		);
+		expect(j[0].legacy).toBe(legacy);
+		// install reports it too, and still leaves it alone.
+		const i = await run(s, ["skill", "install"]);
+		expect(i.stdout).toContain(`legacy codex ${legacy}`);
+		expect(readFileSync(legacy, "utf8")).toBe("old skill\n");
+		expect(has(skillPath(join(s.cwd, ".agents/skills")))).toBe(true);
+	});
+
+	test("nothing is said when no legacy skill exists", async () => {
+		const s = sandbox();
+		fakeExe(s, "codex");
+		const r = await run(s, ["skill", "status", "--target", "codex"]);
+		expect(r.stdout).not.toContain("legacy");
 	});
 });

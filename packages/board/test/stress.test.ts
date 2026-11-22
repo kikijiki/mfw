@@ -35,7 +35,7 @@ const BOARD = [
 
 const dirs: string[] = [];
 async function tmp(): Promise<string> {
-	const d = await realpath(await mkdtemp(join(tmpdir(), "mfwb-stress-")));
+	const d = await realpath(await mkdtemp(join(tmpdir(), "mfw-board-stress-")));
 	dirs.push(d);
 	await writeFile(join(d, "board.yaml"), BOARD);
 	await mkdir(join(d, "tasks"));
@@ -45,7 +45,7 @@ afterEach(async () => {
 	for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
 });
 
-async function mfwb(cwd: string, args: string[], stdin?: string) {
+async function mfwBoard(cwd: string, args: string[], stdin?: string) {
 	const p = Bun.spawn(["bun", "run", CLI, ...args], {
 		cwd,
 		stdin: stdin === undefined ? "ignore" : new TextEncoder().encode(stdin),
@@ -98,7 +98,7 @@ describe("load", () => {
 		const d = await tmp();
 		await generate(d, 1500);
 		const t0 = performance.now();
-		const r = await mfwb(d, ["repair"]);
+		const r = await mfwBoard(d, ["repair"]);
 		const ms = performance.now() - t0;
 		expect(r.stdout).toBe("nothing to repair");
 		expect(ms).toBeLessThan(8000);
@@ -115,10 +115,10 @@ describe("load", () => {
 				"children: [TK-1]\n",
 			),
 		);
-		const r = await mfwb(d, ["repair", "--json"]);
+		const r = await mfwBoard(d, ["repair", "--json"]);
 		const out = JSON.parse(r.stdout) as { repaired: { id: string }[] };
 		expect(out.repaired.map((c) => c.id)).toEqual(["TK-3"]);
-		expect((await mfwb(d, ["repair"])).stdout).toBe("nothing to repair");
+		expect((await mfwBoard(d, ["repair"])).stdout).toBe("nothing to repair");
 	}, 60_000);
 
 	test("list and check finish on 1500 cards", async () => {
@@ -126,7 +126,7 @@ describe("load", () => {
 		await generate(d, 1500);
 		for (const cmd of [["list"], ["check", "--board-only"]]) {
 			const t0 = performance.now();
-			const r = await mfwb(d, cmd);
+			const r = await mfwBoard(d, cmd);
 			expect(r.code === 0 || r.code === 1).toBe(true);
 			expect(performance.now() - t0).toBeLessThan(20_000);
 		}
@@ -134,16 +134,18 @@ describe("load", () => {
 
 	test("parallel creates under one parent keep children exact", async () => {
 		const d = await tmp();
-		await mfwb(d, ["create", "title=epic"]);
+		await mfwBoard(d, ["create", "title=epic"]);
 		const runs = await Promise.all(
 			Array.from({ length: 12 }, (_, i) =>
-				mfwb(d, ["create", `title=k${i}`, "parent=TK-1"]),
+				mfwBoard(d, ["create", `title=k${i}`, "parent=TK-1"]),
 			),
 		);
 		expect(runs.every((r) => r.code === 0)).toBe(true);
-		const kids = JSON.parse((await mfwb(d, ["show", "--json", "TK-1"])).stdout);
+		const kids = JSON.parse(
+			(await mfwBoard(d, ["show", "--json", "TK-1"])).stdout,
+		);
 		expect(JSON.stringify(kids)).toContain("TK-13");
-		expect((await mfwb(d, ["repair"])).stdout).toBe("nothing to repair");
+		expect((await mfwBoard(d, ["repair"])).stdout).toBe("nothing to repair");
 	}, 120_000);
 });
 
@@ -161,34 +163,34 @@ describe("edge cases", () => {
 			"null",
 		];
 		for (const title of titles) {
-			const r = await mfwb(d, ["create", "--", `title=${title}`]);
+			const r = await mfwBoard(d, ["create", "--", `title=${title}`]);
 			expect(r.code).toBe(0);
 		}
 		for (let i = 0; i < titles.length; i++) {
 			const doc = JSON.parse(
-				(await mfwb(d, ["show", "--json", `TK-${i + 1}`])).stdout,
+				(await mfwBoard(d, ["show", "--json", `TK-${i + 1}`])).stdout,
 			);
 			expect(JSON.stringify(doc)).toContain(
 				JSON.stringify(titles[i]).slice(1, -1),
 			);
 		}
 		const body = `${"line ---\n".repeat(20_000)}\n---\nfrontmatter lookalike\n`;
-		const big = await mfwb(
+		const big = await mfwBoard(
 			d,
 			["create", "title=big", "--body-file", "-"],
 			body,
 		);
 		expect(big.code).toBe(0);
-		const shown = await mfwb(d, ["show", "TK-9"]);
+		const shown = await mfwBoard(d, ["show", "TK-9"]);
 		expect(shown.stdout).toContain("frontmatter lookalike");
 		const tags = Array.from({ length: 300 }, (_, i) => `t${i}`).join(",");
-		expect((await mfwb(d, ["create", "title=tags", `tags=${tags}`])).code).toBe(
-			0,
-		);
+		expect(
+			(await mfwBoard(d, ["create", "title=tags", `tags=${tags}`])).code,
+		).toBe(0);
 		const deps = Array.from({ length: 200 }, (_, i) => `TK-${(i % 9) + 1}`);
 		expect(
 			(
-				await mfwb(d, [
+				await mfwBoard(d, [
 					"create",
 					"title=deps",
 					`depends_on=${[...new Set(deps)].join(",")}`,
@@ -199,33 +201,34 @@ describe("edge cases", () => {
 
 	test("--body-file errors, --help and delete refusals", async () => {
 		const d = await tmp();
-		await mfwb(d, ["create", "title=a"]);
-		await mfwb(d, ["create", "title=b", "parent=TK-1", "depends_on=TK-1"]);
+		await mfwBoard(d, ["create", "title=a"]);
+		await mfwBoard(d, ["create", "title=b", "parent=TK-1", "depends_on=TK-1"]);
 		expect(
-			(await mfwb(d, ["create", "--body-file", "/nonexistent"])).code,
+			(await mfwBoard(d, ["create", "--body-file", "/nonexistent"])).code,
 		).toBe(2);
 		expect(
-			(await mfwb(d, ["create", "--body", "x", "--body-file", "-"], "y")).code,
+			(await mfwBoard(d, ["create", "--body", "x", "--body-file", "-"], "y"))
+				.code,
 		).toBe(2);
-		const help = await mfwb(d, ["create", "--help"]);
+		const help = await mfwBoard(d, ["create", "--help"]);
 		expect(help.code).toBe(0);
 		expect(help.stdout).toContain("--body-file");
-		expect((await mfwb(d, ["--help"])).code).toBe(0);
-		expect((await mfwb(d, ["delete", "TK-1"])).code).toBe(1); // has children
-		expect((await mfwb(d, ["delete", "TK-9"])).code).toBe(1); // missing
-		expect((await mfwb(d, ["delete", "TK-2"])).code).toBe(0);
-		expect((await mfwb(d, ["delete", "TK-1"])).code).toBe(0);
-		expect((await mfwb(d, ["list"])).stdout).toBe("");
+		expect((await mfwBoard(d, ["--help"])).code).toBe(0);
+		expect((await mfwBoard(d, ["delete", "TK-1"])).code).toBe(1); // has children
+		expect((await mfwBoard(d, ["delete", "TK-9"])).code).toBe(1); // missing
+		expect((await mfwBoard(d, ["delete", "TK-2"])).code).toBe(0);
+		expect((await mfwBoard(d, ["delete", "TK-1"])).code).toBe(0);
+		expect((await mfwBoard(d, ["list"])).stdout).toBe("");
 	}, 60_000);
 
 	test("delete refuses a card another card depends on", async () => {
 		const d = await tmp();
-		await mfwb(d, ["create", "title=a"]);
-		await mfwb(d, ["create", "title=b", "depends_on=TK-1"]);
-		const r = await mfwb(d, ["delete", "TK-1"]);
+		await mfwBoard(d, ["create", "title=a"]);
+		await mfwBoard(d, ["create", "title=b", "depends_on=TK-1"]);
+		const r = await mfwBoard(d, ["delete", "TK-1"]);
 		expect(r.code).toBe(1);
 		expect(r.stderr).toContain("TK-2");
-		expect((await mfwb(d, ["list"])).stdout.split("\n").length).toBe(2);
+		expect((await mfwBoard(d, ["list"])).stdout.split("\n").length).toBe(2);
 	}, 60_000);
 });
 

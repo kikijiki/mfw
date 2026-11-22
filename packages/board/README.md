@@ -1,17 +1,17 @@
-# mfwb: the board CLI
+# mfw-board: the board CLI
 
-`mfwb` operates a **board**: markdown documents (tasks, specs, ADRs, anything the
+`mfw-board` (also run as `mfw board`) operates a **board**: markdown documents (tasks, specs, ADRs, anything the
 board defines) with YAML frontmatter, kept as plain files on disk. It is the only
 board CLI; `@mfw/board-core` is the library behind it (locks, atomic writes,
 validation) and has no binary. No daemon is needed, and it is safe to run while the
 mfw daemon works on the same board: both go through the same per-document locks.
 
 ```sh
-bun /path/to/mfw/packages/board/src/cli.ts <command> ...   # or `mfwb` where a wrapper puts it on PATH
+bun /path/to/mfw/packages/board/src/cli.ts <command> ...   # or `mfw-board` / `mfw board` where it is on PATH
 ```
 
 The agent skill (`skill/SKILL.md`) is the compact version of this file for coding
-agents; install it with `mfwb skill install`.
+agents; install it with `mfw board skill install`.
 
 ## Concepts
 
@@ -104,7 +104,7 @@ list, the items of a checklist, or a scalar's value.
 | `severity` | `error` (default) or `advisory` |
 | `message` | template with `{id}`, `{text}`, `{field}`, `{rule}` |
 
-`mfwb check` reports every violation. An **error** rule is also a write gate: a
+`mfw board check` reports every violation. An **error** rule is also a write gate: a
 create, update, row or checklist edit, or transition that would introduce a
 violation is refused, nothing is written, and the offending items are listed. A
 document that already violates a rule stays editable; only new violations block.
@@ -176,27 +176,27 @@ Exit codes: 0 ok; 1 the command failed (for `check`: an error issue); 2 usage er
 
 | Command | What it does |
 | --- | --- |
-| `mfwb list [--type t] [--json] [field=a\|b ...] [field~a\|b ...]` | Documents of a type. `field=a\|b`: equals a or b; `field~a\|b`: list contains. Filters AND together. |
-| `mfwb show [--type t] [--json] <id>` | One document: frontmatter and body. |
-| `mfwb check [<id>] [--rule a,b] [--under id] [--board-only] [--root name=path] [--strict] [--json]` | Runs every rule and prints each issue as `severity rule subject: message`; `--board-only` skips rules that read outside the board (`refs`), `--root` repoints a `roots` entry for this run. Built-in rules: `document`, `id`, `reference`, `hierarchy`, `cycle`, `owns-glob`, `exemptions` (always errors), `unreachable` and `conflicts` (error unless `builtins:` in `board.yaml` says `advisory` or `off`), `inert-exemption` (advisory). Exit 1 on an error issue (advisory ones only with `--strict`), 3 if a check cannot run. `<id>` limits output to one document, `--under` to a subtree, `--rule` to named rules. `--under` reports only issues on documents in the subtree and skips the `refs` rules (their issues name a file and line, never a document), so it does not scan the code roots. |
-| `mfwb check --list [--json]` | The rules, their severity and what they read. |
+| `mfw board list [--type t] [--json] [field=a\|b ...] [field~a\|b ...]` | Documents of a type. `field=a\|b`: equals a or b; `field~a\|b`: list contains. Filters AND together. |
+| `mfw board show [--type t] [--json] <id>` | One document: frontmatter and body. |
+| `mfw board check [<id>] [--rule a,b] [--under id] [--board-only] [--root name=path] [--strict] [--json]` | Runs every rule and prints each issue as `severity rule subject: message`; `--board-only` skips rules that read outside the board (`refs`), `--root` repoints a `roots` entry for this run. Built-in rules: `document`, `id`, `reference`, `hierarchy`, `cycle`, `owns-glob`, `exemptions` (always errors), `unreachable` and `conflicts` (error unless `builtins:` in `board.yaml` says `advisory` or `off`), `inert-exemption` (advisory). Exit 1 on an error issue (advisory ones only with `--strict`), 3 if a check cannot run. `<id>` limits output to one document, `--under` to a subtree, `--rule` to named rules. `--under` reports only issues on documents in the subtree and skips the `refs` rules (their issues name a file and line, never a document), so it does not scan the code roots. |
+| `mfw board check --list [--json]` | The rules, their severity and what they read. |
 
 ### Create and edit
 
 | Command | What it does |
 | --- | --- |
-| `mfwb create [--type t] [--id id] [--body text] [field=value ...]` | New document with the next id. `list` fields take comma-separated values, `json` fields a JSON literal (a `json` list a JSON array). |
-| `mfwb update [--type t] <id> [--base-rev n] [--body text] [field=value ...]` | Change fields or body. `--base-rev` fails the write if the document changed since you read it. Writes that would close a dependency cycle through an `acyclic` field are refused. |
-| `mfwb append\|prepend <id> <field> <value...>` | Add to a list field (enum/ref lists refuse duplicates). |
-| `mfwb insert <id> <field> <index> <value...>` | Insert into a list at a 0-based index. |
-| `mfwb remove <id> <field> <value> [--if-present]` | Remove the first occurrence. |
-| `mfwb move <id> <field> <from> <to>` | Reorder a list item. |
-| `mfwb inc\|dec <id> <field> [n]` | Add to or subtract from a number (unset counts as 0). |
-| `mfwb toggle <id> <field>` | Flip a boolean. |
-| `mfwb unset <id> <field>` | Clear an optional field (a list becomes empty). |
-| `mfwb row <id> <field> add '<json>' \| set <rowId> '<json>' \| remove <rowId>` | Edit rows of a `json` list keyed by `id`. |
-| `mfwb note <id> [--section name] <text>` | Append a timestamped entry under `## Progress` (or the named section). |
-| `mfwb checklist <id> <field> add <text>` | Checklist fields: add an item (ids `c1`, `c2`, ... are assigned). Also `toggle\|done\|undone\|remove <selector>` and `edit <selector> <new text>`; a selector is an item id or a unique text prefix. |
+| `mfw board create [--type t] [--id id] [--body text] [field=value ...]` | New document with the next id. `list` fields take comma-separated values, `json` fields a JSON literal (a `json` list a JSON array). |
+| `mfw board update [--type t] <id> [--base-rev n] [--body text] [field=value ...]` | Change fields or body. `--base-rev` fails the write if the document changed since you read it. Writes that would close a dependency cycle through an `acyclic` field are refused. |
+| `mfw board append\|prepend <id> <field> <value...>` | Add to a list field (enum/ref lists refuse duplicates). |
+| `mfw board insert <id> <field> <index> <value...>` | Insert into a list at a 0-based index. |
+| `mfw board remove <id> <field> <value> [--if-present]` | Remove the first occurrence. |
+| `mfw board move <id> <field> <from> <to>` | Reorder a list item. |
+| `mfw board inc\|dec <id> <field> [n]` | Add to or subtract from a number (unset counts as 0). |
+| `mfw board toggle <id> <field>` | Flip a boolean. |
+| `mfw board unset <id> <field>` | Clear an optional field (a list becomes empty). |
+| `mfw board row <id> <field> add '<json>' \| set <rowId> '<json>' \| remove <rowId>` | Edit rows of a `json` list keyed by `id`. |
+| `mfw board note <id> [--section name] <text>` | Append a timestamped entry under `## Progress` (or the named section). |
+| `mfw board checklist <id> <field> add <text>` | Checklist fields: add an item (ids `c1`, `c2`, ... are assigned). Also `toggle\|done\|undone\|remove <selector>` and `edit <selector> <new text>`; a selector is an item id or a unique text prefix. |
 
 The field operations run under the document's lock on a fresh read, so two agents
 appending to one list both land. All take `--type`, `--base-rev`, `--json`. Text that
@@ -206,20 +206,20 @@ starts with `--` goes after a bare `--`.
 
 | Command | What it does |
 | --- | --- |
-| `mfwb reparent [--type t] [--json] <id> <parentId\|->` | Move a document under another (`-` clears the parent). Both sides stay in sync; refusals (cycle, depth, rules) exit 1 and write nothing. |
-| `mfwb delete [--type t] [--json] <id>` | Delete a document and drop it from its parent's `children`. Refused (exit 1, nothing written) while it has children or another document lists it in `depends_on`. |
-| `mfwb repair [--json]` | Rebuild every parent's `children` from the children's `parent` fields (reads the board once; only parents whose list is wrong are locked and rewritten, so a consistent board is a read-only no-op). Use after editing parents by hand. Any write touching a parent does this for that parent too. |
+| `mfw board reparent [--type t] [--json] <id> <parentId\|->` | Move a document under another (`-` clears the parent). Both sides stay in sync; refusals (cycle, depth, rules) exit 1 and write nothing. |
+| `mfw board delete [--type t] [--json] <id>` | Delete a document and drop it from its parent's `children`. Refused (exit 1, nothing written) while it has children or another document lists it in `depends_on`. |
+| `mfw board repair [--json]` | Rebuild every parent's `children` from the children's `parent` fields (reads the board once; only parents whose list is wrong are locked and rewritten, so a consistent board is a read-only no-op). Use after editing parents by hand. Any write touching a parent does this for that parent too. |
 
 ### Workflow: what is ready, what to schedule
 
 | Command | What it does |
 | --- | --- |
-| `mfwb ready [--type t] [--under id] [--json] [--unblocks] [field=a\|b ...]` | Documents that can start: status in `queued` and every dependency (`depends_on` plus hierarchy children) finished. `--unblocks` adds how many open documents each one frees. |
-| `mfwb levels [--under id] [--format md\|tsv\|json]` | Each document's level: the longest dependency chain below it. Level 0 starts now, level 1 after those, and so on. |
-| `mfwb view board [--type t] [--under id] [--format md\|tsv\|json]` | Counts per type and status, with the status class. |
-| `mfwb graph [--under id] [--format mermaid\|dot\|json] [--all]` | The dependency graph (arrows run dependency to dependent; children dashed; ready highlighted). Finished documents only with `--all`. |
-| `mfwb plan [--under id] [--max n] [--json]` | A conflict-free batch of ready documents to start in parallel: ranked by what they unblock, skipping any whose file scope overlaps work in progress or an earlier pick (reasons listed). Needs `ownership` to avoid file clashes; without it nothing conflicts. When nothing can start it lists the in-progress work blocking the most tasks and what becomes ready when it finishes. |
-| `mfwb conflicts [--type t] [--json]` | Live documents whose file scopes overlap with nothing ordering them (`check` fails on them). |
+| `mfw board ready [--type t] [--under id] [--json] [--unblocks] [field=a\|b ...]` | Documents that can start: status in `queued` and every dependency (`depends_on` plus hierarchy children) finished. `--unblocks` adds how many open documents each one frees. |
+| `mfw board levels [--under id] [--format md\|tsv\|json]` | Each document's level: the longest dependency chain below it. Level 0 starts now, level 1 after those, and so on. |
+| `mfw board view board [--type t] [--under id] [--format md\|tsv\|json]` | Counts per type and status, with the status class. |
+| `mfw board graph [--under id] [--format mermaid\|dot\|json] [--all]` | The dependency graph (arrows run dependency to dependent; children dashed; ready highlighted). Finished documents only with `--all`. |
+| `mfw board plan [--under id] [--max n] [--json]` | A conflict-free batch of ready documents to start in parallel: ranked by what they unblock, skipping any whose file scope overlaps work in progress or an earlier pick (reasons listed). Needs `ownership` to avoid file clashes; without it nothing conflicts. When nothing can start it lists the in-progress work blocking the most tasks and what becomes ready when it finishes. |
+| `mfw board conflicts [--type t] [--json]` | Live documents whose file scopes overlap with nothing ordering them (`check` fails on them). |
 
 File scopes are opt-in (`ownership: {field, exemptions?}` on a type). The exemptions
 file lets two documents share files on purpose: `append_only` globs, and `pairs` of
@@ -227,14 +227,14 @@ file lets two documents share files on purpose: `append_only` globs, and `pairs`
 
 ### Transition verbs
 
-The `transitions:` of a type become commands: `mfwb <verb> <id> [<text>] [--type t]
+The `transitions:` of a type become commands: `mfw board <verb> <id> [<text>] [--type t]
 [--date YYYY-MM-DD] [--commit] [--push] [--json]`. Examples with the config above:
 
 ```sh
-mfwb start ABC-12                       # todo -> doing, checked atomically under the lock
-mfwb done ABC-12 "landed in abc123"     # text is required exactly when the verb declares `arg`
-mfwb done ABC-12 "backfill" --date 2026-09-30   # a verb's `date` field is today; backdate explicitly
-mfwb done ABC-12 "..." --commit         # then commit ONLY that document's file
+mfw board start ABC-12                       # todo -> doing, checked atomically under the lock
+mfw board done ABC-12 "landed in abc123"     # text is required exactly when the verb declares `arg`
+mfw board done ABC-12 "backfill" --date 2026-09-30   # a verb's `date` field is today; backdate explicitly
+mfw board done ABC-12 "..." --commit         # then commit ONLY that document's file
 ```
 
 `--commit` commits just that file (other changes stay out); `--push` implies it and
@@ -245,29 +245,29 @@ with the file untouched. A parent cannot finish while a child is open.
 
 | Command | What it does |
 | --- | --- |
-| `mfwb claim <id> [--run id] [--worktree path] [--lease-ms n] [--from status]` | Bind a ready task to a run and worktree under one lock, checking dependencies and file-scope overlap with active tasks. Does not change status. |
-| `mfwb release <id> --run <id>` | Unbind it. Transitions into a finished or parked status release it too. |
+| `mfw board claim <id> [--run id] [--worktree path] [--lease-ms n] [--from status]` | Bind a ready task to a run and worktree under one lock, checking dependencies and file-scope overlap with active tasks. Does not change status. |
+| `mfw board release <id> --run <id>` | Unbind it. Transitions into a finished or parked status release it too. |
 
 ### The skill
 
 | Command | What it does |
 | --- | --- |
-| `mfwb skill install [--global] [--here] [--target list] [--dry-run]` | Copy the mfwb skill into detected agent tools (claude, codex, opencode, pi), at the git root (`--here`: the current directory) or per user (`--global`). Skips a tool that already reads another install. |
-| `mfwb shim install [--dir dir] [--dry-run]` | Write an `mfwb` launcher (a two-line `sh` script that runs this checkout's CLI under bun) into `dir`, default `~/.local/bin`, so `mfwb` is on PATH for scripts. Run it once as `bun packages/board/src/cli.ts shim install`. Never overwrites a file it did not write; re-running is a no-op. |
-| `mfwb shim status [--dir dir]` | Whether the launcher is installed, outdated (the checkout moved) or missing. |
-| `mfwb skill status [--global] [--target list]` | Where it is installed and whether it is current. |
+| `mfw board skill install [--global] [--here] [--target list] [--dry-run]` | Copy the mfw board skill into detected agent tools (claude, codex, opencode, pi), at the git root (`--here`: the current directory) or per user (`--global`). Skips a tool that already reads another install. |
+| `mfw board shim install [--dir dir] [--dry-run]` | Write an `mfw-board` launcher (a two-line `sh` script that runs this checkout's CLI under bun) into `dir`, default `~/.local/bin`, so `mfw-board` is on PATH for scripts. Run it once as `bun packages/board/src/cli.ts shim install`. Never overwrites a file it did not write; re-running is a no-op. |
+| `mfw board shim status [--dir dir]` | Whether the launcher is installed, outdated (the checkout moved) or missing. |
+| `mfw board skill status [--global] [--target list]` | Where it is installed and whether it is current. Also run by `skill install`: it lists a leftover skill copy under the pre-rename directory name as `legacy ...` and never deletes it; remove it yourself. |
 
 ## Typical flow
 
 ```sh
-mfwb ready --unblocks            # what can start, and what finishing it frees
-mfwb plan --max 4                # a batch that will not collide
-mfwb claim ABC-12                # optional: bind it to your worktree
-mfwb start ABC-12
-mfwb note ABC-12 "found the cause"
-mfwb checklist ABC-12 acceptance done c2
-mfwb done ABC-12 "landed in abc123" --commit
-mfwb graph --under ABC-3 > plan.mmd
+mfw board ready --unblocks            # what can start, and what finishing it frees
+mfw board plan --max 4                # a batch that will not collide
+mfw board claim ABC-12                # optional: bind it to your worktree
+mfw board start ABC-12
+mfw board note ABC-12 "found the cause"
+mfw board checklist ABC-12 acceptance done c2
+mfw board done ABC-12 "landed in abc123" --commit
+mfw board graph --under ABC-3 > plan.mmd
 ```
 
-`create` and `update` take the body from `--body <text>` or `--body-file <path>` (`-` reads stdin), which avoids argv limits and shell quoting for long bodies. `mfwb --help` and `mfwb <command> --help` print usage and exit 0; for `create`/`update` they also list each field's allowed values.
+`create` and `update` take the body from `--body <text>` or `--body-file <path>` (`-` reads stdin), which avoids argv limits and shell quoting for long bodies. `mfw board --help` and `mfw board <command> --help` print usage and exit 0; for `create`/`update` they also list each field's allowed values.

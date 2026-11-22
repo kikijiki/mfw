@@ -7,7 +7,7 @@ const root = resolve(import.meta.dir, "../../..");
 describe("packaged listener safety", () => {
 	test("plain systemd binds loopback and documented host controls are real", async () => {
 		const [service, homeManager, readme] = await Promise.all([
-			readFile(resolve(root, "packaging/mfw.service"), "utf8"),
+			readFile(resolve(root, "packaging/mfw-server.service"), "utf8"),
 			readFile(resolve(root, "packaging/mfw.home-manager.nix"), "utf8"),
 			readFile(resolve(root, "README.md"), "utf8"),
 		]);

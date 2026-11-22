@@ -229,7 +229,7 @@ How it works, in `tools/screenshots/`:
   relative times ("34m ago") on every run.
 - Seeding: repositories are real git history with merge commits and review
   branches; projects are attached through `system.addProject` over tRPC; the
-  board (tasks, parents, dependencies, ADRs) is written with `mfwb`; the run
+  board (tasks, parents, dependencies, ADRs) is written with `mfw board`; the run
   history is written through the db package's own writers (`appendEvent`, which
   derives the span timeline, `recordSpend`, the brain tables as
   `BrainActionService.act` writes them), offline and in time order, because a

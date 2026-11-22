@@ -34,18 +34,18 @@ const BOARD = [
 
 const dirs: string[] = [];
 async function board(): Promise<string> {
-	const d = await realpath(await mkdtemp(join(tmpdir(), "mfwb-ops-")));
+	const d = await realpath(await mkdtemp(join(tmpdir(), "mfw-board-ops-")));
 	dirs.push(d);
 	await mkdir(d, { recursive: true });
 	await writeFile(join(d, "board.yaml"), BOARD);
-	await mfwb(d, ["create", "title=a"]);
+	await mfwBoard(d, ["create", "title=a"]);
 	return d;
 }
 afterEach(async () => {
 	for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
 });
 
-async function mfwb(cwd: string, args: string[]) {
+async function mfwBoard(cwd: string, args: string[]) {
 	const e: Record<string, string | undefined> = { ...process.env };
 	delete e.MFW_BOARD;
 	const p = Bun.spawn(["bun", "run", CLI, ...args], {
@@ -63,37 +63,38 @@ async function mfwb(cwd: string, args: string[]) {
 }
 
 async function fields(d: string): Promise<Record<string, unknown>> {
-	const r = await mfwb(d, ["show", "--json", "TK-1"]);
+	const r = await mfwBoard(d, ["show", "--json", "TK-1"]);
 	return JSON.parse(r.stdout).fields;
 }
 
 describe("list commands", () => {
 	test("append / prepend / insert / move / remove", async () => {
 		const d = await board();
-		expect((await mfwb(d, ["append", "TK-1", "labels", "b", "c"])).code).toBe(
-			0,
-		);
-		await mfwb(d, ["prepend", "TK-1", "labels", "a"]);
-		await mfwb(d, ["insert", "TK-1", "labels", "1", "x=y"]);
+		expect(
+			(await mfwBoard(d, ["append", "TK-1", "labels", "b", "c"])).code,
+		).toBe(0);
+		await mfwBoard(d, ["prepend", "TK-1", "labels", "a"]);
+		await mfwBoard(d, ["insert", "TK-1", "labels", "1", "x=y"]);
 		expect((await fields(d)).labels).toEqual(["a", "x=y", "b", "c"]);
-		await mfwb(d, ["move", "TK-1", "labels", "0", "3"]);
-		await mfwb(d, ["remove", "TK-1", "labels", "x=y"]);
+		await mfwBoard(d, ["move", "TK-1", "labels", "0", "3"]);
+		await mfwBoard(d, ["remove", "TK-1", "labels", "x=y"]);
 		expect((await fields(d)).labels).toEqual(["b", "c", "a"]);
-		const r = await mfwb(d, ["remove", "TK-1", "labels", "zzz"]);
+		const r = await mfwBoard(d, ["remove", "TK-1", "labels", "zzz"]);
 		expect(r.code).toBe(1);
 		expect(r.stderr).toContain("not in 'labels'");
 		expect(
-			(await mfwb(d, ["remove", "TK-1", "labels", "zzz", "--if-present"])).code,
+			(await mfwBoard(d, ["remove", "TK-1", "labels", "zzz", "--if-present"]))
+				.code,
 		).toBe(0);
 	});
 
 	test("--json output and --base-rev conflict", async () => {
 		const d = await board();
-		const r = await mfwb(d, ["append", "TK-1", "labels", "a", "--json"]);
+		const r = await mfwBoard(d, ["append", "TK-1", "labels", "a", "--json"]);
 		const j = JSON.parse(r.stdout);
 		expect(j.fields.labels).toEqual(["a"]);
 		expect(j.rev).toBe(2);
-		const bad = await mfwb(d, [
+		const bad = await mfwBoard(d, [
 			"append",
 			"TK-1",
 			"labels",
@@ -107,35 +108,35 @@ describe("list commands", () => {
 
 	test("refuses hierarchy fields and unknown fields; usage on missing args", async () => {
 		const d = await board();
-		const r = await mfwb(d, ["append", "TK-1", "children", "TK-1"]);
+		const r = await mfwBoard(d, ["append", "TK-1", "children", "TK-1"]);
 		expect(r.code).toBe(1);
 		expect(r.stderr).toContain("hierarchy");
-		expect((await mfwb(d, ["append", "TK-1", "nope", "x"])).stderr).toContain(
-			"no field 'nope'",
-		);
-		expect((await mfwb(d, ["append", "TK-1", "labels"])).code).toBe(2);
+		expect(
+			(await mfwBoard(d, ["append", "TK-1", "nope", "x"])).stderr,
+		).toContain("no field 'nope'");
+		expect((await mfwBoard(d, ["append", "TK-1", "labels"])).code).toBe(2);
 	});
 });
 
 describe("scalar commands", () => {
 	test("inc / dec / toggle / unset", async () => {
 		const d = await board();
-		await mfwb(d, ["inc", "TK-1", "points"]);
-		await mfwb(d, ["inc", "TK-1", "points", "5"]);
-		await mfwb(d, ["dec", "TK-1", "points", "2"]);
+		await mfwBoard(d, ["inc", "TK-1", "points"]);
+		await mfwBoard(d, ["inc", "TK-1", "points", "5"]);
+		await mfwBoard(d, ["dec", "TK-1", "points", "2"]);
 		expect((await fields(d)).points).toBe(4);
-		await mfwb(d, ["toggle", "TK-1", "urgent"]);
+		await mfwBoard(d, ["toggle", "TK-1", "urgent"]);
 		expect((await fields(d)).urgent).toBe(true);
-		await mfwb(d, ["unset", "TK-1", "points"]);
+		await mfwBoard(d, ["unset", "TK-1", "points"]);
 		expect((await fields(d)).points).toBeNull();
-		expect((await mfwb(d, ["inc", "TK-1", "title"])).code).toBe(1);
+		expect((await mfwBoard(d, ["inc", "TK-1", "title"])).code).toBe(1);
 	});
 });
 
 describe("checklist command", () => {
 	test("add prints the item id; toggle/done/undone/edit/remove", async () => {
 		const d = await board();
-		const a = await mfwb(d, [
+		const a = await mfwBoard(d, [
 			"checklist",
 			"TK-1",
 			"acceptance",
@@ -145,7 +146,7 @@ describe("checklist command", () => {
 		]);
 		expect(a.code).toBe(0);
 		expect(a.stdout).toContain("added c1");
-		const j = await mfwb(d, [
+		const j = await mfwBoard(d, [
 			"checklist",
 			"TK-1",
 			"acceptance",
@@ -154,10 +155,10 @@ describe("checklist command", () => {
 			"--json",
 		]);
 		expect(JSON.parse(j.stdout).itemId).toBe("c2");
-		await mfwb(d, ["checklist", "TK-1", "acceptance", "toggle", "c1"]);
-		await mfwb(d, ["checklist", "TK-1", "acceptance", "done", "ship"]);
-		await mfwb(d, ["checklist", "TK-1", "acceptance", "undone", "ship"]);
-		await mfwb(d, [
+		await mfwBoard(d, ["checklist", "TK-1", "acceptance", "toggle", "c1"]);
+		await mfwBoard(d, ["checklist", "TK-1", "acceptance", "done", "ship"]);
+		await mfwBoard(d, ["checklist", "TK-1", "acceptance", "undone", "ship"]);
+		await mfwBoard(d, [
 			"checklist",
 			"TK-1",
 			"acceptance",
@@ -169,7 +170,7 @@ describe("checklist command", () => {
 			{ id: "c1", text: "write tests", done: true },
 			{ id: "c2", text: "release it", done: false },
 		]);
-		await mfwb(d, ["checklist", "TK-1", "acceptance", "remove", "c1"]);
+		await mfwBoard(d, ["checklist", "TK-1", "acceptance", "remove", "c1"]);
 		expect(((await fields(d)).acceptance as unknown[]).length).toBe(1);
 		const raw = await readFile(join(d, "tasks", "TK-1.md"), "utf8");
 		expect(raw).toContain("  - id: c2\n    text: release it\n    done: false");
@@ -177,9 +178,9 @@ describe("checklist command", () => {
 
 	test("ambiguous and missing selectors list candidates", async () => {
 		const d = await board();
-		await mfwb(d, ["checklist", "TK-1", "acceptance", "add", "write a"]);
-		await mfwb(d, ["checklist", "TK-1", "acceptance", "add", "write b"]);
-		const amb = await mfwb(d, [
+		await mfwBoard(d, ["checklist", "TK-1", "acceptance", "add", "write a"]);
+		await mfwBoard(d, ["checklist", "TK-1", "acceptance", "add", "write b"]);
+		const amb = await mfwBoard(d, [
 			"checklist",
 			"TK-1",
 			"acceptance",
@@ -190,29 +191,36 @@ describe("checklist command", () => {
 		expect(amb.stderr).toContain('c1 "write a"');
 		expect(amb.stderr).toContain('c2 "write b"');
 		expect(
-			(await mfwb(d, ["checklist", "TK-1", "acceptance", "toggle", "zzz"]))
+			(await mfwBoard(d, ["checklist", "TK-1", "acceptance", "toggle", "zzz"]))
 				.stderr,
 		).toContain("no checklist item");
 		expect(
-			(await mfwb(d, ["checklist", "TK-1", "acceptance", "frobnicate", "x"]))
-				.code,
+			(
+				await mfwBoard(d, [
+					"checklist",
+					"TK-1",
+					"acceptance",
+					"frobnicate",
+					"x",
+				])
+			).code,
 		).toBe(2);
 	});
 
 	test("create with checklist value syntax", async () => {
 		const d = await board();
-		await mfwb(d, ["create", "title=b", "acceptance=x,y"]);
-		const r = await mfwb(d, ["show", "--json", "TK-2"]);
+		await mfwBoard(d, ["create", "title=b", "acceptance=x,y"]);
+		const r = await mfwBoard(d, ["show", "--json", "TK-2"]);
 		expect(JSON.parse(r.stdout).fields.acceptance).toEqual([
 			{ id: "c1", text: "x", done: false },
 			{ id: "c2", text: "y", done: false },
 		]);
-		await mfwb(d, [
+		await mfwBoard(d, [
 			"create",
 			"title=c",
 			'acceptance=[{"text":"q","done":true}]',
 		]);
-		const r3 = await mfwb(d, ["show", "--json", "TK-3"]);
+		const r3 = await mfwBoard(d, ["show", "--json", "TK-3"]);
 		expect(JSON.parse(r3.stdout).fields.acceptance).toEqual([
 			{ id: "c1", text: "q", done: true },
 		]);
@@ -222,10 +230,10 @@ describe("checklist command", () => {
 describe("note and row commands", () => {
 	test("note appends a timestamped entry under --section", async () => {
 		const d = await board();
-		await mfwb(d, ["note", "TK-1", "did", "a", "thing"]);
-		await mfwb(d, ["note", "TK-1", "--section", "Decisions", "chose X"]);
+		await mfwBoard(d, ["note", "TK-1", "did", "a", "thing"]);
+		await mfwBoard(d, ["note", "TK-1", "--section", "Decisions", "chose X"]);
 		const body = JSON.parse(
-			(await mfwb(d, ["show", "--json", "TK-1"])).stdout,
+			(await mfwBoard(d, ["show", "--json", "TK-1"])).stdout,
 		).body;
 		expect(body).toMatch(
 			/^## Progress\n\n### \d{4}-\d\d-\d\dT[\d:]+Z - did a thing\n\n## Decisions\n\n### [\d\-T:Z]+ - chose X$/,
@@ -234,27 +242,27 @@ describe("note and row commands", () => {
 
 	test("row add / set / remove", async () => {
 		const d = await board();
-		await mfwb(d, ["row", "TK-1", "log", "add", '{"id":"r1","n":1}']);
-		await mfwb(d, ["row", "TK-1", "log", "set", "r1", '{"n":2}']);
+		await mfwBoard(d, ["row", "TK-1", "log", "add", '{"id":"r1","n":1}']);
+		await mfwBoard(d, ["row", "TK-1", "log", "set", "r1", '{"n":2}']);
 		expect((await fields(d)).log).toEqual([{ id: "r1", n: 2 }]);
-		const bad = await mfwb(d, ["row", "TK-1", "log", "add", '{"n":1}']);
+		const bad = await mfwBoard(d, ["row", "TK-1", "log", "add", '{"n":1}']);
 		expect(bad.code).toBe(1);
 		expect(bad.stderr).toContain("missing required");
 		expect(
-			(await mfwb(d, ["row", "TK-1", "log", "add", "{nope"])).stderr,
+			(await mfwBoard(d, ["row", "TK-1", "log", "add", "{nope"])).stderr,
 		).toContain("valid JSON");
-		await mfwb(d, ["row", "TK-1", "log", "remove", "r1"]);
+		await mfwBoard(d, ["row", "TK-1", "log", "remove", "r1"]);
 		expect((await fields(d)).log).toEqual([]);
-		expect((await mfwb(d, ["row", "TK-1", "labels", "add", "{}"])).code).toBe(
-			1,
-		);
+		expect(
+			(await mfwBoard(d, ["row", "TK-1", "labels", "add", "{}"])).code,
+		).toBe(1);
 	});
 });
 
 describe("verbs", () => {
 	test("usage lists the new commands; a transition cannot reuse their names", async () => {
 		const d = await board();
-		const u = await mfwb(d, ["bogus"]);
+		const u = await mfwBoard(d, ["bogus"]);
 		for (const v of [
 			"append",
 			"prepend",
@@ -280,15 +288,16 @@ describe("verbs", () => {
 
 describe("argument parsing", () => {
 	async function bodyOf(d: string): Promise<string> {
-		return JSON.parse((await mfwb(d, ["show", "--json", "TK-1"])).stdout).body;
+		return JSON.parse((await mfwBoard(d, ["show", "--json", "TK-1"])).stdout)
+			.body;
 	}
 
 	test("-- makes the rest positional text (note, checklist add)", async () => {
 		const d = await board();
-		const n = await mfwb(d, ["note", "TK-1", "--", "--weird text a=b ~c"]);
+		const n = await mfwBoard(d, ["note", "TK-1", "--", "--weird text a=b ~c"]);
 		expect(n.code).toBe(0);
 		expect(await bodyOf(d)).toContain("--weird text a=b ~c");
-		const c = await mfwb(d, [
+		const c = await mfwBoard(d, [
 			"checklist",
 			"TK-1",
 			"acceptance",
@@ -303,7 +312,7 @@ describe("argument parsing", () => {
 
 	test("an unknown flag without -- is a usage error that hints at --", async () => {
 		const d = await board();
-		const r = await mfwb(d, ["note", "TK-1", "--weird"]);
+		const r = await mfwBoard(d, ["note", "TK-1", "--weird"]);
 		expect(r.code).toBe(2);
 		expect(r.stderr).toContain("--weird");
 		expect(r.stderr).toContain("bare --");
@@ -311,7 +320,7 @@ describe("argument parsing", () => {
 
 	test("= and ~ operands reach note text intact", async () => {
 		const d = await board();
-		expect((await mfwb(d, ["note", "TK-1", "x=1", "y~2"])).code).toBe(0);
+		expect((await mfwBoard(d, ["note", "TK-1", "x=1", "y~2"])).code).toBe(0);
 		expect(await bodyOf(d)).toContain("x=1 y~2");
 	});
 
@@ -324,7 +333,7 @@ describe("argument parsing", () => {
 			["--base-rev", "1.5"],
 			["--lease-ms", "abc"],
 		] as const) {
-			const r = await mfwb(d, ["note", "TK-1", flag, v, "t"]);
+			const r = await mfwBoard(d, ["note", "TK-1", flag, v, "t"]);
 			expect(r.code).toBe(2);
 			expect(r.stderr).toContain(`${flag} needs a non-negative integer`);
 		}

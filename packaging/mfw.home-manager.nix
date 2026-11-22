@@ -1,4 +1,4 @@
-# mfw: home-manager systemd user service.
+# mfw-server: home-manager systemd user service (unit `mfw-server`).
 #
 # A per-user service (mfw needs your home, your tmux, and your Claude
 # subscription auth). The single TanStack Start app is one Bun process: it boots
@@ -63,7 +63,7 @@
     # above with `export HOST=0.0.0.0; exec ${pkgs.bun}/bin/bun run ${out}`.
   '';
 in {
-  systemd.user.services.mfw = {
+  systemd.user.services.mfw-server = {
     Unit = {
       Description = "mfw: local autonomous project orchestrator (tailnet-only)";
       After = ["network-online.target" "tailscaled.service"];
@@ -89,7 +89,7 @@ in {
       # runs, which then finalized as "session ended without recording an exit".
       # `process` signals only the daemon.
       #
-      # Trade-off: `systemctl --user stop mfw` leaves running agents alive. Stop
+      # Trade-off: `systemctl --user stop mfw-server` leaves running agents alive. Stop
       # them from the UI, or `tmux -L mfw kill-server` to clear them by hand.
       KillMode = "process";
 

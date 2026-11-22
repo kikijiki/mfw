@@ -29,7 +29,7 @@ afterEach(async () => {
 	for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
 });
 
-async function mfwb(cwd: string, args: string[]) {
+async function mfwBoard(cwd: string, args: string[]) {
 	const e: Record<string, string | undefined> = { ...process.env };
 	delete e.MFW_BOARD;
 	const p = Bun.spawn(["bun", "run", CLI, ...args], {
@@ -58,7 +58,7 @@ async function board(
 	shares: string | undefined = "pairs: []\n",
 	yaml = BOARD,
 ) {
-	const d = await realpath(await mkdtemp(join(tmpdir(), "mfwb-sch-")));
+	const d = await realpath(await mkdtemp(join(tmpdir(), "mfw-board-sch-")));
 	dirs.push(d);
 	await writeFile(join(d, "board.yaml"), yaml);
 	if (shares !== undefined) await writeFile(join(d, "shares.yaml"), shares);
@@ -66,7 +66,7 @@ async function board(
 		const args = ["create", `title=${s.title}`, `status=${s.status ?? "todo"}`];
 		if (s.deps) args.push(`depends_on=${s.deps.join(",")}`);
 		if (s.owns) args.push(`owns=${s.owns.join(",")}`);
-		expect((await mfwb(d, args)).code).toBe(0);
+		expect((await mfwBoard(d, args)).code).toBe(0);
 	}
 	return d;
 }
@@ -84,16 +84,16 @@ const SEEDS: Seed[] = [
 describe("graph", () => {
 	test("mermaid by default, dot and json on request, finished hidden unless --all", async () => {
 		const d = await board(SEEDS);
-		const m = await mfwb(d, ["graph"]);
+		const m = await mfwBoard(d, ["graph"]);
 		expect(m.code).toBe(0);
 		expect(m.stdout).toContain("graph LR");
 		expect(m.stdout).toContain("TK_2 --> TK_3");
 		expect(m.stdout).not.toContain("TK_1[");
-		expect((await mfwb(d, ["graph", "--all"])).stdout).toContain("TK_1[");
-		expect((await mfwb(d, ["graph", "--format", "dot"])).stdout).toContain(
+		expect((await mfwBoard(d, ["graph", "--all"])).stdout).toContain("TK_1[");
+		expect((await mfwBoard(d, ["graph", "--format", "dot"])).stdout).toContain(
 			'"TK-2" -> "TK-3"',
 		);
-		const j = JSON.parse((await mfwb(d, ["graph", "--json"])).stdout);
+		const j = JSON.parse((await mfwBoard(d, ["graph", "--json"])).stdout);
 		expect(j.nodes.map((n: { id: string }) => n.id)).toEqual([
 			"TK-2",
 			"TK-3",
@@ -101,19 +101,19 @@ describe("graph", () => {
 			"TK-5",
 			"TK-6",
 		]);
-		expect((await mfwb(d, ["graph", "--format", "svg"])).code).toBe(2);
+		expect((await mfwBoard(d, ["graph", "--format", "svg"])).code).toBe(2);
 	});
 });
 
 describe("ready --unblocks", () => {
 	test("shows how much each ready document frees; json always carries it", async () => {
 		const d = await board(SEEDS);
-		const r = await mfwb(d, ["ready", "--unblocks"]);
+		const r = await mfwBoard(d, ["ready", "--unblocks"]);
 		expect(r.stdout.split("\n")).toEqual([
 			"TK-2 todo deps: TK-1 unblocks: 2",
 			"TK-6 todo deps: - unblocks: 0",
 		]);
-		const j = JSON.parse((await mfwb(d, ["ready", "--json"])).stdout);
+		const j = JSON.parse((await mfwBoard(d, ["ready", "--json"])).stdout);
 		expect(j[0]).toMatchObject({ id: "TK-2", unblocks: 2, chain: 1 });
 	});
 });
@@ -121,7 +121,7 @@ describe("ready --unblocks", () => {
 describe("plan", () => {
 	test("picks by impact and skips what collides with work in progress", async () => {
 		const d = await board(SEEDS);
-		const r = await mfwb(d, ["plan"]);
+		const r = await mfwBoard(d, ["plan"]);
 		expect(r.code).toBe(0);
 		expect(r.stdout).toContain("start together (1):");
 		expect(r.stdout).toContain(
@@ -131,7 +131,7 @@ describe("plan", () => {
 			"TK-6: overlaps TK-5 (in progress) on src/z/file.ts ~ src/z/**",
 		);
 		expect(r.stdout).toContain("in progress: TK-5");
-		const j = JSON.parse((await mfwb(d, ["plan", "--json"])).stdout);
+		const j = JSON.parse((await mfwBoard(d, ["plan", "--json"])).stdout);
 		expect(j.picked.map((p: { id: string }) => p.id)).toEqual(["TK-2"]);
 		expect(j.skipped[0].id).toBe("TK-6");
 	});
@@ -143,13 +143,13 @@ describe("plan", () => {
 			{ title: "c", deps: ["TK-1"] },
 			{ title: "d", deps: ["TK-2"] },
 		]);
-		const r = await mfwb(d, ["plan"]);
+		const r = await mfwBoard(d, ["plan"]);
 		expect(r.stdout).toContain("nothing to start");
 		expect(r.stdout).toContain("blocking the most work:");
 		expect(r.stdout).toContain(
 			"TK-1: 3 waiting; ready once it finishes: TK-2, TK-3",
 		);
-		const j = JSON.parse((await mfwb(d, ["plan", "--json"])).stdout);
+		const j = JSON.parse((await mfwBoard(d, ["plan", "--json"])).stdout);
 		expect(j.blockers).toEqual([
 			{ id: "TK-1", unblocks: 3, next: ["TK-2", "TK-3"] },
 		]);
@@ -159,11 +159,11 @@ describe("plan", () => {
 		const shares =
 			"pairs:\n  - cards: [TK-5, TK-6]\n    paths: [src/z/**, src/z/file.ts]\n    ruling: agreed\n";
 		const d = await board(SEEDS, shares);
-		const r = await mfwb(d, ["plan"]);
+		const r = await mfwBoard(d, ["plan"]);
 		expect(r.stdout).toContain("start together (2):");
-		const capped = await mfwb(d, ["plan", "--max", "1"]);
+		const capped = await mfwBoard(d, ["plan", "--max", "1"]);
 		expect(capped.stdout).toContain("TK-6: over --max 1");
-		expect((await mfwb(d, ["plan", "--max", "x"])).code).toBe(2);
+		expect((await mfwBoard(d, ["plan", "--max", "x"])).code).toBe(2);
 	});
 });
 
@@ -174,15 +174,15 @@ describe("conflicts", () => {
 			{ title: "b", owns: ["src/x/y.ts"] },
 			{ title: "c", owns: ["src/x/y.ts"], deps: ["TK-1"] }, // ordered after a: fine
 		]);
-		const r = await mfwb(d, ["conflicts"]);
+		const r = await mfwBoard(d, ["conflicts"]);
 		expect(r.code).toBe(0);
 		expect(r.stdout).toContain("TK-1 <-> TK-2: src/x/** ~ src/x/y.ts");
-		const c = await mfwb(d, ["check", "--rule", "conflicts"]);
+		const c = await mfwBoard(d, ["check", "--rule", "conflicts"]);
 		expect(c.code).toBe(1);
 		expect(c.stdout).toContain("error conflicts task TK-1");
 		expect(c.stdout).toContain("TK-2");
 		expect(r.stdout).not.toContain("TK-1 <-> TK-3");
-		const j = JSON.parse((await mfwb(d, ["conflicts", "--json"])).stdout);
+		const j = JSON.parse((await mfwBoard(d, ["conflicts", "--json"])).stdout);
 		expect(j.ok).toBe(false);
 		expect(j.conflicts.length).toBe(2);
 	});
@@ -198,7 +198,7 @@ describe("conflicts", () => {
 			],
 			shares,
 		);
-		const r = await mfwb(d, ["conflicts"]);
+		const r = await mfwBoard(d, ["conflicts"]);
 		expect(r.code).toBe(0);
 		expect(r.stdout).toContain("protect nothing");
 		expect(r.stdout).toContain("TK-1 <-> TK-3");
@@ -213,7 +213,7 @@ describe("conflicts", () => {
 			"",
 		);
 		const d = await board([{ title: "a" }], "", yaml);
-		const r = await mfwb(d, ["conflicts"]);
+		const r = await mfwBoard(d, ["conflicts"]);
 		expect(r.code).toBe(2);
 		expect(r.stderr).toContain("ownership:");
 	});
@@ -223,7 +223,7 @@ describe("exemptions file", () => {
 	test("a declared but missing file is a board error (exit 3)", async () => {
 		const d = await board(SEEDS);
 		await rm(join(d, "shares.yaml"));
-		const r = await mfwb(d, ["conflicts"]);
+		const r = await mfwBoard(d, ["conflicts"]);
 		expect(r.code).toBe(3);
 		expect(r.stderr).toContain("shares.yaml");
 	});
@@ -235,7 +235,7 @@ describe("check and file scopes", () => {
 			[{ title: "a", owns: ["/abs/path"] }],
 			"pairs:\n  - cards: [TK-1, TK-9]\n    paths: [a]\n",
 		);
-		const r = await mfwb(d, ["check"]);
+		const r = await mfwBoard(d, ["check"]);
 		expect(r.code).toBe(1);
 		expect(r.stdout).toContain("owns-glob");
 		expect(r.stdout).toContain("owns '/abs/path'");
@@ -245,6 +245,6 @@ describe("check and file scopes", () => {
 
 	test("a clean scoped board passes the check", async () => {
 		const d = await board([{ title: "a", owns: ["src/**"] }], "pairs: []\n");
-		expect((await mfwb(d, ["check"])).code).toBe(0);
+		expect((await mfwBoard(d, ["check"])).code).toBe(0);
 	});
 });

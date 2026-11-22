@@ -17,13 +17,13 @@ let loaded: MfwProject | undefined;
 let configFlag: string | undefined;
 
 /**
- * mfwb: the board CLI. This file is only the dispatcher (global flags, board
+ * mfw-board: the board CLI. This file is only the dispatcher (global flags, board
  * discovery, command lookup, usage); every command lives in `commands/`.
  */
 
 function usageText(project?: MfwProject): string {
 	const lines = [
-		"usage: mfwb [--config <board.yaml>] [--json] <command> ...   (mfwb <command> --help for one command)",
+		"usage: mfw-board [--config <board.yaml>] [--json] <command> ...   (mfw-board <command> --help for one command)",
 		"",
 	];
 	for (const c of commands) for (const u of c.usage) lines.push(`  ${u}`);

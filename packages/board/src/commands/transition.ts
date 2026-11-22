@@ -98,7 +98,7 @@ function transitionCommand(verb: string): Command {
 					throw new CliError(
 						wanted
 							? `no document '${wanted}' in the types that declare '${verb}' (${declaring.map(([t]) => t).join(", ")})`
-							: `usage: mfwb ${verb} <id> [<text>]`,
+							: `usage: mfw-board ${verb} <id> [<text>]`,
 						wanted ? 1 : 2,
 					);
 				}
@@ -106,7 +106,7 @@ function transitionCommand(verb: string): Command {
 			const [id, ...rest] = args.rest;
 			if (!id || rest.length > 1) {
 				throw new CliError(
-					`usage: mfwb ${verb} <id> [<text>] [--type <type>] [--date YYYY-MM-DD] [--commit] [--push] (quote text that has spaces)`,
+					`usage: mfw-board ${verb} <id> [<text>] [--type <type>] [--date YYYY-MM-DD] [--commit] [--push] (quote text that has spaces)`,
 					2,
 				);
 			}

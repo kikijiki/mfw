@@ -12,7 +12,7 @@ import { delimiter, join, resolve } from "node:path";
 import { CliError, type Command, UsageError } from "./types.ts";
 
 /** First line after the shebang; `install` only ever overwrites a file that has it. */
-const MARKER = "# mfwb-shim (written by `mfwb shim install`)";
+const MARKER = "# mfw-board-shim (written by `mfw-board shim install`)";
 
 const cliPath = () => resolve(import.meta.dir, "../cli.ts");
 
@@ -60,14 +60,14 @@ const dirOnPath = (dir: string): boolean =>
 		.some((e) => real(e) === real(dir));
 
 /**
- * Puts a stable `mfwb` on PATH: a two-line `sh` script that execs this
+ * Puts a stable `mfw-board` on PATH: a two-line `sh` script that execs this
  * checkout's CLI under bun. Like `skill install` it is a plain file write, it
  * never replaces a file it did not write, and re-running it is a no-op.
  */
 export const shim: Command = {
 	name: "shim",
 	usage: [
-		"shim install [--dir <dir>] [--dry-run]   (write an `mfwb` launcher into <dir>, default ~/.local/bin)",
+		"shim install [--dir <dir>] [--dry-run]   (write an `mfw-board` launcher into <dir>, default ~/.local/bin)",
 		"shim status [--dir <dir>]",
 	],
 	needsBoard: false,
@@ -88,7 +88,7 @@ export const shim: Command = {
 		const dir = resolve(
 			args.dir ?? join(process.env.HOME || homedir(), ".local/bin"),
 		);
-		const path = join(dir, "mfwb");
+		const path = join(dir, "mfw-board");
 		const state = stateOf(path);
 		const onPath = dirOnPath(dir);
 		if (verb === "status") {
@@ -104,14 +104,14 @@ export const shim: Command = {
 		}
 		if (state === "foreign") {
 			throw new CliError(
-				`${path} exists and was not written by mfwb; move it or pass --dir`,
+				`${path} exists and was not written by mfw-board; move it or pass --dir`,
 			);
 		}
 		if (state === "installed") {
 			console.log(`up-to-date ${path}`);
 		} else {
 			if (!args.dryRun) {
-				// Temp file + rename: a concurrent `mfwb` never sees a partial or
+				// Temp file + rename: a concurrent `mfw-board` never sees a partial or
 				// non-executable script, and rename replaces rather than follows.
 				const tmp = `${path}.${process.pid}.tmp`;
 				try {

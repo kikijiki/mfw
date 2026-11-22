@@ -14,13 +14,13 @@ import { isMap, isScalar, parseDocument } from "yaml";
  * Acceptance criteria are the task type's `acceptance` frontmatter field, a
  * board-core `checklist` (`{id, text, done}` items). That makes them subject
  * to the board's own `rules:` (a `forbid: {done: false}` done gate, a
- * `must_not_match` naming lint) and editable with `mfwb checklist`, same as
+ * `must_not_match` naming lint) and editable with `mfw board checklist`, same as
  * any other board's checklist.
  *
  * Why a checklist and not `type: json` rows carrying a `result` key: a
  * checklist item's `done` is exactly what `forbid` tests on a checklist, its
  * text is what `must_match`/`must_not_match` test without a `key:`, ids are
- * assigned and shapes validated by board-core, and `mfwb checklist` already
+ * assigned and shapes validated by board-core, and `mfw board checklist` already
  * edits it. Rows would buy a tri-state `result` the daemon has no use for
  * (an `unmet` or `uncertain` verdict is simply `done: false`) at the cost of
  * a row schema the daemon would have to validate itself. Per-criterion

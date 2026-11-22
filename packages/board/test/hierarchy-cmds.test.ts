@@ -30,7 +30,7 @@ afterEach(async () => {
 	for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
 });
 
-async function mfwb(cwd: string, args: string[]) {
+async function mfwBoard(cwd: string, args: string[]) {
 	const e: Record<string, string | undefined> = { ...process.env };
 	delete e.MFW_BOARD;
 	const p = Bun.spawn(["bun", "run", CLI, ...args], {
@@ -48,11 +48,11 @@ async function mfwb(cwd: string, args: string[]) {
 }
 
 async function board(titles = 0): Promise<string> {
-	const d = await realpath(await mkdtemp(join(tmpdir(), "mfwb-h-")));
+	const d = await realpath(await mkdtemp(join(tmpdir(), "mfw-board-h-")));
 	dirs.push(d);
 	await writeFile(join(d, "board.yaml"), BOARD);
 	for (let i = 1; i <= titles; i++) {
-		expect((await mfwb(d, ["create", `title=t${i}`])).code).toBe(0);
+		expect((await mfwBoard(d, ["create", `title=t${i}`])).code).toBe(0);
 	}
 	return d;
 }
@@ -66,13 +66,13 @@ async function put(d: string, id: string, extra = "", status = "todo") {
 }
 
 const getFields = async (d: string, id: string) =>
-	JSON.parse((await mfwb(d, ["show", id, "--json"])).stdout).fields;
+	JSON.parse((await mfwBoard(d, ["show", id, "--json"])).stdout).fields;
 
 describe("check exit codes and --json", () => {
 	test("ok", async () => {
 		const d = await board(2);
-		expect((await mfwb(d, ["check"])).stdout).toBe("ok");
-		const j = await mfwb(d, ["check", "--json"]);
+		expect((await mfwBoard(d, ["check"])).stdout).toBe("ok");
+		const j = await mfwBoard(d, ["check", "--json"]);
 		expect(j.code).toBe(0);
 		expect(JSON.parse(j.stdout)).toEqual({ ok: true, issues: [] });
 	});
@@ -109,9 +109,9 @@ describe("check exit codes and --json", () => {
 		test(`${kind} fails the check`, async () => {
 			const d = await board();
 			await setup(d);
-			const r = await mfwb(d, ["check"]);
+			const r = await mfwBoard(d, ["check"]);
 			expect(r.code).toBe(1);
-			const j = await mfwb(d, ["check", "--json"]);
+			const j = await mfwBoard(d, ["check", "--json"]);
 			expect(j.code).toBe(1);
 			const out = JSON.parse(j.stdout);
 			expect(out.ok).toBe(false);
@@ -131,7 +131,7 @@ describe("check exit codes and --json", () => {
 		const d = await board();
 		await put(d, "TK-1", "depends_on: [TK-2, TK-99]\n");
 		await put(d, "TK-2", "depends_on: [TK-1]\n");
-		const j = await mfwb(d, ["check", "--json"]);
+		const j = await mfwBoard(d, ["check", "--json"]);
 		expect(j.code).toBe(1);
 		const kinds = new Set(
 			JSON.parse(j.stdout).issues.map((i: { rule: string }) => i.rule),
@@ -141,54 +141,54 @@ describe("check exit codes and --json", () => {
 	});
 
 	test("no board and bad board.yaml exit 3", async () => {
-		const d = await realpath(await mkdtemp(join(tmpdir(), "mfwb-h-")));
+		const d = await realpath(await mkdtemp(join(tmpdir(), "mfw-board-h-")));
 		dirs.push(d);
-		expect((await mfwb(d, ["check"])).code).toBe(3);
+		expect((await mfwBoard(d, ["check"])).code).toBe(3);
 		await writeFile(join(d, "board.yaml"), "types: [not, a, map\n");
-		expect((await mfwb(d, ["check"])).code).toBe(3);
+		expect((await mfwBoard(d, ["check"])).code).toBe(3);
 	});
 });
 
 describe("hierarchy through create / update / reparent", () => {
 	test("create parent=<id> and update parent=<id> sync the children list", async () => {
 		const d = await board(2);
-		expect((await mfwb(d, ["create", "title=kid", "parent=TK-1"])).code).toBe(
-			0,
-		);
+		expect(
+			(await mfwBoard(d, ["create", "title=kid", "parent=TK-1"])).code,
+		).toBe(0);
 		expect((await getFields(d, "TK-1")).children).toEqual(["TK-3"]);
-		expect((await mfwb(d, ["update", "TK-3", "parent=TK-2"])).code).toBe(0);
+		expect((await mfwBoard(d, ["update", "TK-3", "parent=TK-2"])).code).toBe(0);
 		expect((await getFields(d, "TK-1")).children ?? []).toEqual([]);
 		expect((await getFields(d, "TK-2")).children).toEqual(["TK-3"]);
-		expect((await mfwb(d, ["check"])).code).toBe(0);
+		expect((await mfwBoard(d, ["check"])).code).toBe(0);
 	});
 
 	test("reparent moves, clears with '-', and supports --json", async () => {
 		const d = await board(3);
-		expect((await mfwb(d, ["reparent", "TK-3", "TK-1"])).code).toBe(0);
-		const j = await mfwb(d, ["reparent", "TK-3", "TK-2", "--json"]);
+		expect((await mfwBoard(d, ["reparent", "TK-3", "TK-1"])).code).toBe(0);
+		const j = await mfwBoard(d, ["reparent", "TK-3", "TK-2", "--json"]);
 		expect(j.code).toBe(0);
 		expect(JSON.parse(j.stdout).fields.parent).toBe("TK-2");
 		expect((await getFields(d, "TK-2")).children).toEqual(["TK-3"]);
-		expect((await mfwb(d, ["reparent", "TK-3", "-"])).code).toBe(0);
+		expect((await mfwBoard(d, ["reparent", "TK-3", "-"])).code).toBe(0);
 		expect((await getFields(d, "TK-3")).parent ?? "").toBe("");
 		expect((await getFields(d, "TK-2")).children ?? []).toEqual([]);
-		expect((await mfwb(d, ["check"])).code).toBe(0);
+		expect((await mfwBoard(d, ["check"])).code).toBe(0);
 	});
 
 	test("reparent errors carry the HierarchyError code and exit 1", async () => {
 		const d = await board(3);
-		await mfwb(d, ["reparent", "TK-2", "TK-1"]);
-		const cyc = await mfwb(d, ["reparent", "TK-1", "TK-2"]);
+		await mfwBoard(d, ["reparent", "TK-2", "TK-1"]);
+		const cyc = await mfwBoard(d, ["reparent", "TK-1", "TK-2"]);
 		expect(cyc.code).toBe(1);
 		expect(cyc.stderr).toContain("(cycle)");
-		const nf = await mfwb(d, ["reparent", "TK-3", "TK-99"]);
+		const nf = await mfwBoard(d, ["reparent", "TK-3", "TK-99"]);
 		expect(nf.code).toBe(1);
 		expect(nf.stderr).toContain("parent-not-found");
-		await mfwb(d, ["reparent", "TK-3", "TK-2"]);
-		await mfwb(d, ["create", "title=deep", "parent=TK-3"]);
-		const deep = await mfwb(d, ["create", "title=deeper", "parent=TK-4"]);
+		await mfwBoard(d, ["reparent", "TK-3", "TK-2"]);
+		await mfwBoard(d, ["create", "title=deep", "parent=TK-3"]);
+		const deep = await mfwBoard(d, ["create", "title=deeper", "parent=TK-4"]);
 		expect(deep.code).not.toBe(0);
-		expect((await mfwb(d, ["reparent", "TK-3"])).code).toBe(2);
+		expect((await mfwBoard(d, ["reparent", "TK-3"])).code).toBe(2);
 	});
 });
 
@@ -198,27 +198,27 @@ describe("repair", () => {
 		await put(d, "TK-1");
 		await put(d, "TK-2", "parent: TK-1\n");
 		await put(d, "TK-3", "parent: TK-1\n");
-		expect((await mfwb(d, ["check"])).code).toBe(1);
-		const r = await mfwb(d, ["repair"]);
+		expect((await mfwBoard(d, ["check"])).code).toBe(1);
+		const r = await mfwBoard(d, ["repair"]);
 		expect(r.code).toBe(0);
 		expect(r.stdout).toContain(
 			"repaired task TK-1: children [] -> [TK-2, TK-3]",
 		);
 		expect((await getFields(d, "TK-1")).children).toEqual(["TK-2", "TK-3"]);
-		expect((await mfwb(d, ["check"])).code).toBe(0);
-		expect((await mfwb(d, ["repair"])).stdout).toBe("nothing to repair");
-		const j = await mfwb(d, ["repair", "--json"]);
+		expect((await mfwBoard(d, ["check"])).code).toBe(0);
+		expect((await mfwBoard(d, ["repair"])).stdout).toBe("nothing to repair");
+		const j = await mfwBoard(d, ["repair", "--json"]);
 		expect(JSON.parse(j.stdout)).toEqual({ repaired: [] });
 	});
 
 	test("a board without a hierarchy section exits 2", async () => {
-		const d = await realpath(await mkdtemp(join(tmpdir(), "mfwb-h-")));
+		const d = await realpath(await mkdtemp(join(tmpdir(), "mfw-board-h-")));
 		dirs.push(d);
 		await writeFile(
 			join(d, "board.yaml"),
 			"mfw: 1\ntypes:\n  task:\n    layout: flat\n    dir: tasks\n    id: { strategy: own-sequence, key: TK }\n    fields:\n      title: {}\n",
 		);
-		const r = await mfwb(d, ["repair"]);
+		const r = await mfwBoard(d, ["repair"]);
 		expect(r.code).toBe(2);
 		expect(r.stderr).toContain("no hierarchy");
 	});

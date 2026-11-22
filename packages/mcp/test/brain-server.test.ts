@@ -56,7 +56,7 @@ async function connect(client: MfwClient) {
 	return c;
 }
 
-describe("mfw-mcp --brain", () => {
+describe("mfw mcp --brain", () => {
 	test("exposes every read tool, set_plan, note and every act tool", async () => {
 		const { client } = fakeClient();
 		const c = await connect(client);

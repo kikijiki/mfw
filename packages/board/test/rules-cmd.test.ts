@@ -41,7 +41,7 @@ afterEach(async () => {
 	for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
 });
 
-async function mfwb(cwd: string, args: string[]) {
+async function mfwBoard(cwd: string, args: string[]) {
 	const e: Record<string, string | undefined> = { ...process.env };
 	delete e.MFW_BOARD;
 	const p = Bun.spawn(["bun", "run", CLI, ...args], {
@@ -59,12 +59,12 @@ async function mfwb(cwd: string, args: string[]) {
 }
 
 async function board(rows: unknown[] = []) {
-	const d = await realpath(await mkdtemp(join(tmpdir(), "mfwb-rul-")));
+	const d = await realpath(await mkdtemp(join(tmpdir(), "mfw-board-rul-")));
 	dirs.push(d);
 	await writeFile(join(d, "board.yaml"), BOARD);
 	const args = ["create", "title=t"];
 	if (rows.length > 0) args.push(`acceptance=${JSON.stringify(rows)}`);
-	expect((await mfwb(d, args)).code).toBe(0);
+	expect((await mfwBoard(d, args)).code).toBe(0);
 	return d;
 }
 
@@ -75,27 +75,27 @@ const PENDING = [
 describe("field rules at the command line", () => {
 	test("the done verb refuses and lists the offending row ids", async () => {
 		const d = await board(PENDING);
-		const r = await mfwb(d, ["done", "TK-1", "shipped"]);
+		const r = await mfwBoard(d, ["done", "TK-1", "shipped"]);
 		expect(r.code).toBe(1);
 		expect(r.stderr).toContain("done-resolved");
 		expect(r.stderr).toContain("SC-1");
 		expect(r.stderr).toContain("--override done-resolved");
 		const shown = JSON.parse(
-			(await mfwb(d, ["show", "TK-1", "--json"])).stdout,
+			(await mfwBoard(d, ["show", "TK-1", "--json"])).stdout,
 		);
 		expect(shown.fields.status).toBe("todo");
 	});
 
 	test("so does `update status=done`", async () => {
 		const d = await board(PENDING);
-		const r = await mfwb(d, ["update", "TK-1", "status=done"]);
+		const r = await mfwBoard(d, ["update", "TK-1", "status=done"]);
 		expect(r.code).toBe(1);
 		expect(r.stderr).toContain("SC-1");
 	});
 
 	test("resolving the row first lets it through", async () => {
 		const d = await board(PENDING);
-		const set = await mfwb(d, [
+		const set = await mfwBoard(d, [
 			"row",
 			"TK-1",
 			"acceptance",
@@ -104,12 +104,12 @@ describe("field rules at the command line", () => {
 			'{"id":"SC-1","text":"turns red when reverted","result":"pass"}',
 		]);
 		expect(set.code).toBe(0);
-		expect((await mfwb(d, ["done", "TK-1", "shipped"])).code).toBe(0);
+		expect((await mfwBoard(d, ["done", "TK-1", "shipped"])).code).toBe(0);
 	});
 
 	test("--override passes the write and says so on stderr", async () => {
 		const d = await board(PENDING);
-		const r = await mfwb(d, [
+		const r = await mfwBoard(d, [
 			"done",
 			"TK-1",
 			"shipped",
@@ -119,7 +119,7 @@ describe("field rules at the command line", () => {
 		expect(r.code).toBe(0);
 		expect(r.stderr).toContain("override: done-resolved on task TK-1");
 		// check still reports it
-		const c = await mfwb(d, ["check"]);
+		const c = await mfwBoard(d, ["check"]);
 		expect(c.code).toBe(1);
 		expect(c.stdout).toContain("error done-resolved task TK-1");
 	});
@@ -127,37 +127,43 @@ describe("field rules at the command line", () => {
 	test("--override of an unknown or advisory rule is a usage error", async () => {
 		const d = await board(PENDING);
 		expect(
-			(await mfwb(d, ["done", "TK-1", "x", "--override", "nope"])).code,
+			(await mfwBoard(d, ["done", "TK-1", "x", "--override", "nope"])).code,
 		).toBe(2);
-		const adv = await mfwb(d, ["done", "TK-1", "x", "--override", "no-red"]);
+		const adv = await mfwBoard(d, [
+			"done",
+			"TK-1",
+			"x",
+			"--override",
+			"no-red",
+		]);
 		expect(adv.code).toBe(2);
 		expect(adv.stderr).toContain("advisory");
 	});
 
 	test("check rejects --override: it always reports every violation", async () => {
 		const d = await board();
-		expect((await mfwb(d, ["check", "--override", "done-resolved"])).code).toBe(
-			2,
-		);
+		expect(
+			(await mfwBoard(d, ["check", "--override", "done-resolved"])).code,
+		).toBe(2);
 	});
 
 	test("advisory rules print, pass, and fail under --strict", async () => {
 		const d = await board([
 			{ id: "SC-1", text: "plain assertion", result: "pass" },
 		]);
-		const r = await mfwb(d, ["check"]);
+		const r = await mfwBoard(d, ["check"]);
 		expect(r.code).toBe(0);
 		expect(r.stdout).toContain("advisory no-red task TK-1: acceptance SC-1");
-		expect((await mfwb(d, ["check", "--strict"])).code).toBe(1);
+		expect((await mfwBoard(d, ["check", "--strict"])).code).toBe(1);
 		expect(
-			(await mfwb(d, ["check", "--rule", "no-red", "TK-1"])).stdout,
+			(await mfwBoard(d, ["check", "--rule", "no-red", "TK-1"])).stdout,
 		).toContain("no-red");
 	});
 
 	test("check --list includes the configured rules", async () => {
 		const d = await board();
 		const r = JSON.parse(
-			(await mfwb(d, ["check", "--list", "--json"])).stdout,
+			(await mfwBoard(d, ["check", "--list", "--json"])).stdout,
 		) as {
 			id: string;
 			kind: string;

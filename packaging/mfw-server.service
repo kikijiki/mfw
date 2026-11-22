@@ -1,8 +1,8 @@
 # mfw daemon: systemd user service.
-# Install:  cp packaging/mfw.service ~/.config/systemd/user/
+# Install:  cp packaging/mfw-server.service ~/.config/systemd/user/
 #           systemctl --user daemon-reload
-#           systemctl --user enable --now mfw
-# Logs:     journalctl --user -u mfw -f
+#           systemctl --user enable --now mfw-server
+# Logs:     journalctl --user -u mfw-server -f
 [Unit]
 Description=mfw: local autonomous project orchestrator
 After=network.target
@@ -26,7 +26,7 @@ Environment=HOST=127.0.0.1
 # that: every restart killed the in-flight runs, and they finalized as
 # "session ended without recording an exit". `process` signals only the daemon.
 #
-# Trade-off: `systemctl --user stop mfw` now leaves running agents alive. Stop
+# Trade-off: `systemctl --user stop mfw-server` now leaves running agents alive. Stop
 # them from the UI first, or `tmux -L mfw kill-server` to clear them by hand.
 KillMode=process
 

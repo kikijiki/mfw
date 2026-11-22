@@ -29,7 +29,7 @@ afterEach(async () => {
 	for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
 });
 
-async function mfwb(cwd: string, args: string[]) {
+async function mfwBoard(cwd: string, args: string[]) {
 	const p = Bun.spawn([process.execPath, "run", CLI, ...args], {
 		cwd,
 		stdout: "pipe",
@@ -44,7 +44,7 @@ async function mfwb(cwd: string, args: string[]) {
 }
 
 async function board(): Promise<string> {
-	const d = await realpath(await mkdtemp(join(tmpdir(), "mfwb-under-")));
+	const d = await realpath(await mkdtemp(join(tmpdir(), "mfw-board-under-")));
 	dirs.push(d);
 	await writeFile(join(d, "board.yaml"), BOARD);
 	await mkdir(join(d, "tasks"));
@@ -62,8 +62,8 @@ async function board(): Promise<string> {
 describe("check --under", () => {
 	test("reports exactly the full run's issues on the subtree", async () => {
 		const d = await board();
-		const full = await mfwb(d, ["check", "--board-only", "--json"]);
-		const under = await mfwb(d, ["check", "--under", "TK-1", "--json"]);
+		const full = await mfwBoard(d, ["check", "--board-only", "--json"]);
+		const under = await mfwBoard(d, ["check", "--under", "TK-1", "--json"]);
 		const inSubtree = (
 			JSON.parse(full.stdout).issues as { id: string | null }[]
 		).filter((i) => i.id === "TK-1" || i.id === "TK-2");
@@ -74,23 +74,25 @@ describe("check --under", () => {
 
 	test("does not touch the refs roots, so a missing root cannot fail it", async () => {
 		const d = await board();
-		const whole = await mfwb(d, ["check"]);
+		const whole = await mfwBoard(d, ["check"]);
 		expect(whole.code).toBe(3); // the refs root is missing
-		const under = await mfwb(d, ["check", "--under", "TK-1", "--json"]);
+		const under = await mfwBoard(d, ["check", "--under", "TK-1", "--json"]);
 		expect(under.code).toBe(1); // the dangling dependency, not the environment
 		expect(JSON.parse(under.stdout).scans).toBeUndefined();
 	});
 
 	test("says so when the selected rules are all refs rules", async () => {
 		const d = await board();
-		const r = await mfwb(d, ["check", "--under", "TK-1", "--rule", "held"]);
+		const r = await mfwBoard(d, ["check", "--under", "TK-1", "--rule", "held"]);
 		expect(r.code).toBe(0);
 		expect(r.stderr).toContain("skips them");
 	});
 
 	test("a bad --under or id fails fast with exit 2", async () => {
 		const d = await board();
-		expect((await mfwb(d, ["check", "--under", "TK-404"])).code).toBe(2);
-		expect((await mfwb(d, ["check", "TK-404", "--board-only"])).code).toBe(2);
+		expect((await mfwBoard(d, ["check", "--under", "TK-404"])).code).toBe(2);
+		expect((await mfwBoard(d, ["check", "TK-404", "--board-only"])).code).toBe(
+			2,
+		);
 	});
 });

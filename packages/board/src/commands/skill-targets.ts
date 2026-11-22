@@ -33,7 +33,7 @@ interface ToolSpec {
 	exe: string;
 	/** The tool's global config directory (also used for detection). */
 	configDir: (env: Env) => string;
-	/** Where we install for this tool (a skills root; `mfwb/SKILL.md` goes below). */
+	/** Where we install for this tool (a skills root; `mfw-board/SKILL.md` goes below). */
 	native: Root;
 	/** Other skills roots the tool also reads. */
 	alsoReads: Root[];
@@ -94,13 +94,25 @@ export function findProjectRoot(cwd: string): string {
 	}
 }
 
+/**
+ * The skill directory this tool used before the rename to `mfw-board`. It is
+ * only ever detected and reported, never written or deleted; this constant is
+ * the one place the old name may still appear.
+ */
+export const LEGACY_SKILL_DIR = "mfwb";
+
+/** Where an old-name skill copy would sit: a sibling of the current install. */
+export function legacyPath(installed: string): string {
+	return join(dirname(dirname(installed)), LEGACY_SKILL_DIR, "SKILL.md");
+}
+
 export function installPath(
 	tool: ToolId,
 	scope: Scope,
 	cwd: string,
 	env: Env,
 ): string {
-	return join(TOOLS[tool].native(scope, cwd, env), "mfwb", "SKILL.md");
+	return join(TOOLS[tool].native(scope, cwd, env), "mfw-board", "SKILL.md");
 }
 
 function isExecutable(p: string): boolean {
@@ -144,7 +156,7 @@ export function plan(
 		const spec = TOOLS[tool];
 		const path = installPath(tool, scope, cwd, env);
 		const reads = [spec.native, ...spec.alsoReads].map((r) =>
-			join(r(scope, cwd, env), "mfwb", "SKILL.md"),
+			join(r(scope, cwd, env), "mfw-board", "SKILL.md"),
 		);
 		const coveredBy = reads.find((p) => planned.has(p));
 		if (coveredBy) entries.push({ tool, path, coveredBy });

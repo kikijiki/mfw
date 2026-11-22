@@ -6,7 +6,7 @@ import {
 import type { MfwClient } from "./client.ts";
 
 /**
- * `mfw-mcp --brain <sessionId>`: the project brain's tools. Every call goes to
+ * `mfw mcp --brain <sessionId>`: the project brain's tools. Every call goes to
  * the daemon's `brain.*` procedures; this process holds no state of its own
  * and no credential. Read tools are queries, act tools are mutations that the
  * daemon validates against the real invariants, records, and executes (a

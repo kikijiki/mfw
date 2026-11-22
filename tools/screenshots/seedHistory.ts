@@ -12,7 +12,7 @@
  * would be minutes old instead of days. Writing rows through the same
  * writers, offline and in time order, gives the full history with controlled
  * timestamps and costs. The board itself (tasks, ADRs) is written through
- * `mfwb`, and the daemon still reads and supervises everything at boot.
+ * `mfw board`, and the daemon still reads and supervises everything at boot.
  */
 
 import { randomUUID } from "node:crypto";

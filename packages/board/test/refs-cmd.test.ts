@@ -10,7 +10,7 @@ afterEach(async () => {
 	for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
 });
 
-async function mfwb(cwd: string, args: string[]) {
+async function mfwBoard(cwd: string, args: string[]) {
 	const e: Record<string, string | undefined> = { ...process.env };
 	delete e.MFW_BOARD;
 	const p = Bun.spawn(["bun", "run", CLI, ...args], {
@@ -51,7 +51,7 @@ const BOARD = (extra = "") =>
 	].join("\n");
 
 async function setup(files: Record<string, string>, yaml = BOARD()) {
-	const d = await realpath(await mkdtemp(join(tmpdir(), "mfwb-ref-")));
+	const d = await realpath(await mkdtemp(join(tmpdir(), "mfw-board-ref-")));
 	dirs.push(d);
 	await writeFile(join(d, "board.yaml"), yaml);
 	for (const [title, status] of [
@@ -59,7 +59,8 @@ async function setup(files: Record<string, string>, yaml = BOARD()) {
 		["finished", "done"],
 	] as const) {
 		expect(
-			(await mfwb(d, ["create", `title=${title}`, `status=${status}`])).code,
+			(await mfwBoard(d, ["create", `title=${title}`, `status=${status}`]))
+				.code,
 		).toBe(0);
 	}
 	for (const [p, text] of Object.entries(files)) {
@@ -75,7 +76,7 @@ describe("refs", () => {
 			"src/a.rs": "// ok\nfn a() {} // held for TK-1\n",
 			"src/b.rs": "x\n// held for TK-2 and held for TK-9\n",
 		});
-		const r = await mfwb(d, ["check"]);
+		const r = await mfwBoard(d, ["check"]);
 		expect(r.code).toBe(1);
 		expect(r.stdout).toContain(
 			"error held-markers code/src/b.rs:2: refers to TK-2, which is done (allowed: todo, doing)",
@@ -92,7 +93,7 @@ describe("refs", () => {
 			{ "src/a.rs": "held for TK-1x\nheld for TK-123\nheld for FOO-7\n" },
 			yaml,
 		);
-		const r = await mfwb(d, ["check", "--json"]);
+		const r = await mfwBoard(d, ["check", "--json"]);
 		const msgs = JSON.parse(r.stdout).issues.map(
 			(i: { message: string }) => i.message,
 		);
@@ -103,20 +104,22 @@ describe("refs", () => {
 
 	test("--board-only skips it; --rule selects it", async () => {
 		const d = await setup({ "src/a.rs": "held for TK-2\n" });
-		expect((await mfwb(d, ["check", "--board-only"])).code).toBe(0);
-		expect((await mfwb(d, ["check", "--rule", "held-markers"])).code).toBe(1);
+		expect((await mfwBoard(d, ["check", "--board-only"])).code).toBe(0);
+		expect((await mfwBoard(d, ["check", "--rule", "held-markers"])).code).toBe(
+			1,
+		);
 	});
 
 	test("a missing root is exit 3 (not an issue); --root and MFWB_ROOT_CODE repoint it", async () => {
 		const d = await setup({ "src/a.rs": "held for TK-1\n" });
 		await rm(join(d, "code"), { recursive: true });
-		const gone = await mfwb(d, ["check"]);
+		const gone = await mfwBoard(d, ["check"]);
 		expect(gone.code).toBe(3);
 		expect(gone.stderr).toContain("--root code=<path>");
-		expect((await mfwb(d, ["check", "--board-only"])).code).toBe(0);
+		expect((await mfwBoard(d, ["check", "--board-only"])).code).toBe(0);
 		await mkdir(join(d, "elsewhere", "src"), { recursive: true });
 		await writeFile(join(d, "elsewhere", "src", "a.rs"), "held for TK-2\n");
-		const flag = await mfwb(d, ["check", "--root", "code=elsewhere"]);
+		const flag = await mfwBoard(d, ["check", "--root", "code=elsewhere"]);
 		expect(flag.code).toBe(1);
 		expect(flag.stdout).toContain("TK-2");
 	});
@@ -130,7 +133,7 @@ describe("refs", () => {
 		});
 		const g = Bun.spawnSync(["git", "init", "-q"], { cwd: join(d, "code") });
 		expect(g.exitCode).toBe(0);
-		const r = await mfwb(d, ["check"]);
+		const r = await mfwBoard(d, ["check"]);
 		expect(r.stdout).not.toContain("ignored.rs");
 		expect(r.stdout).toContain(
 			"advisory held-markers code/src/blob.rs: not scanned (binary)",
@@ -140,10 +143,10 @@ describe("refs", () => {
 
 	test("config errors: undeclared root, no (?<id>) group, status not a value", async () => {
 		const bad = async (from: string, to: string) => {
-			const d = await realpath(await mkdtemp(join(tmpdir(), "mfwb-ref-")));
+			const d = await realpath(await mkdtemp(join(tmpdir(), "mfw-board-ref-")));
 			dirs.push(d);
 			await writeFile(join(d, "board.yaml"), BOARD().replace(from, to));
-			return mfwb(d, ["check"]);
+			return mfwBoard(d, ["check"]);
 		};
 		expect((await bad("root: code", "root: nowhere")).code).toBe(3);
 		expect((await bad("(?<id>TK-\\d+)", "TK-\\d+")).code).toBe(3);

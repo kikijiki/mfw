@@ -8,25 +8,25 @@ mfw is three things that fit together. You can use the first on its own.
 
 | Part | What it is | Use it to |
 | --- | --- | --- |
-| [**Board tool**](#1-the-board-tool-mfwb) (`mfwb`) | A command-line tool for a folder of task files | Keep and query a project's tasks and decisions, see what is ready to work on, plan work that can run in parallel |
+| [**Board tool**](#1-the-board-tool-mfw-board) (`mfw-board`) | A command-line tool for a folder of task files | Keep and query a project's tasks and decisions, see what is ready to work on, plan work that can run in parallel |
 | [**Daemon**](#2-the-daemon) | A background engine | Run agents on ready tasks automatically, verify their work and merge it |
 | [**Web UI**](#3-the-web-ui) | A website served from your machine | Watch and steer everything: the board, running agents, reviews |
 
 ```
   you ──► Web UI ──► Daemon ──► coding agents working in git
               │         │
-              └─────────┴──► Board: plain task files in a folder  ◄── mfwb (CLI)
+              └─────────┴──► Board: plain task files in a folder  ◄── mfw-board (CLI)
 ```
 
 ![The board: a grid of task cards for every status, with agents and the brain's decisions](docs/screenshots/board-dark-1440x900.png)
 
 More screenshots [below, in the web UI section](#3-the-web-ui).
 
-## 1. The board tool (`mfwb`)
+## 1. The board tool (`mfw-board`)
 
 A **board** is a folder of plain text files (markdown): one file per task, plus
 files for specs and design decisions. There is no database to keep in sync, and
-the files live in git like the rest of your project. `mfwb` is the tool for
+the files live in git like the rest of your project. `mfw-board` (also run as `mfw board`) is the tool for
 working with them from the terminal. It needs no server and works on its own.
 
 What you can do with it:
@@ -34,24 +34,24 @@ What you can do with it:
 - **Create and update tasks**, with typed fields, checklists and notes. Edits are
   safe when several people or agents change the same file at once.
 - **See what is ready:** tasks whose dependencies are all finished.
-- **Plan parallel work:** `mfwb plan` picks a batch of ready tasks that will not
-  step on each other's files. `mfwb graph` draws the dependency graph.
+- **Plan parallel work:** `mfw board plan` picks a batch of ready tasks that will not
+  step on each other's files. `mfw board graph` draws the dependency graph.
 - **Move tasks along** with the steps your board defines (`start`, `done`, ...),
   optionally committing just that task's file.
 - **Validate** the whole board: broken links, duplicate ids, dependency cycles.
 
 ```sh
-mfwb list status=planned           # find tasks
-mfwb ready                         # what can start now
-mfwb plan --max 4                  # a batch that will not collide
-mfwb start ABC-12                  # begin a task
-mfwb done ABC-12 "landed"          # finish it
+mfw board list status=planned           # find tasks
+mfw board ready                         # what can start now
+mfw board plan --max 4                  # a batch that will not collide
+mfw board start ABC-12                  # begin a task
+mfw board done ABC-12 "landed"          # finish it
 ```
 
 How a board looks (which fields exist, how ids are numbered, which steps are
 allowed) is defined in one `board.yaml` file, so the same tool fits very
 different projects. Every command is explained in
-[packages/board/README.md](packages/board/README.md). `mfwb skill install` also
+[packages/board/README.md](packages/board/README.md). `mfw board skill install` also
 teaches your coding agents (Claude Code, Codex, opencode, pi) how to use it.
 
 ## 2. The daemon
@@ -108,7 +108,7 @@ The web UI runs on your machine and shows:
 so there is still only one source of truth. Add it to any MCP-capable agent:
 
 ```json
-{ "mcpServers": { "mfw": { "command": "bun", "args": ["run", "packages/mcp/src/main.ts"] } } }
+{ "mcpServers": { "mfw": { "command": "bun", "args": ["run", "packages/cli/src/main.ts", "mcp"] } } }
 ```
 
 It offers tools to list and read tasks, see the dependency graph, create, edit
@@ -155,8 +155,8 @@ with your permissions, so the listener must not be reachable from the LAN.
 
 ### Run it as a service
 
-- **systemd (user):** copy [`packaging/mfw.service`](./packaging/mfw.service) to
-  `~/.config/systemd/user/`, then `systemctl --user enable --now mfw`.
+- **systemd (user):** copy [`packaging/mfw-server.service`](./packaging/mfw-server.service) to
+  `~/.config/systemd/user/`, then `systemctl --user enable --now mfw-server`.
 - **NixOS / home-manager:** import
   [`packaging/mfw.home-manager.nix`](./packaging/mfw.home-manager.nix).
 
@@ -185,12 +185,13 @@ a local SQLite database. The board itself is always just files.
 ```
 packages/
   board-core/  the board engine (library): documents, locks, validation, workflow
-  board/       mfwb, the board CLI, and the agent skill
+  board/       mfw-board, the board CLI, and the agent skill
   core/        shared types and task-graph logic
   db/          database schema and event log
   daemon/      the daemon: scheduler, agent runs, verification, merging
   api/         the typed API between the UI and the daemon
-  mcp/         the MCP server for agents
+  mcp/         the MCP server for agents (run as `mfw mcp`)
+  cli/         `mfw`, the dispatcher: `mfw board`, `mfw mcp`, `mfw server`, `mfw version`
 apps/
   start/       the app: web UI + API, boots the daemon
 packaging/     systemd and NixOS service files

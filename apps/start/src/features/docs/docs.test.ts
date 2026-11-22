@@ -147,7 +147,7 @@ describe("source grouping and hints", () => {
 		expect(editHint({ path: "docs/a.md" }, "dir")).toContain("docs/a.md");
 		expect(editHint({ type: "adr", path: "adrs/x.md" }, "board")).toBe("");
 		expect(editHint({ type: "spec", path: "specs/x.md" }, "board")).toContain(
-			"mfwb",
+			"mfw board",
 		);
 	});
 

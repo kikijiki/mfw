@@ -39,7 +39,7 @@ ${extraTypes}`;
 }
 
 const dirs: string[] = [];
-async function tmp(prefix = "mfwb-tr-"): Promise<string> {
+async function tmp(prefix = "mfw-board-tr-"): Promise<string> {
 	const d = await realpath(await mkdtemp(join(tmpdir(), prefix)));
 	dirs.push(d);
 	return d;
@@ -48,7 +48,7 @@ afterEach(async () => {
 	for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
 });
 
-async function mfwb(cwd: string, args: string[]) {
+async function mfwBoard(cwd: string, args: string[]) {
 	const e: Record<string, string | undefined> = { ...process.env };
 	delete e.MFW_BOARD;
 	const p = Bun.spawn(["bun", "run", CLI, ...args], {
@@ -69,7 +69,7 @@ async function mfwb(cwd: string, args: string[]) {
 async function fixture(opts: { yaml?: string; status?: string } = {}) {
 	const dir = await tmp();
 	await writeFile(join(dir, "board.yaml"), opts.yaml ?? board());
-	const r = await mfwb(dir, [
+	const r = await mfwBoard(dir, [
 		"create",
 		"--type",
 		"task",
@@ -96,7 +96,7 @@ function initRepo(dir: string): void {
 describe("transition verbs", () => {
 	test("start moves status", async () => {
 		const { dir, file } = await fixture();
-		const r = await mfwb(dir, ["start", "TK-001"]);
+		const r = await mfwBoard(dir, ["start", "TK-001"]);
 		expect(r.code).toBe(0);
 		expect(r.stdout).toContain("doing");
 		expect(await readFile(file, "utf8")).toContain("status: doing");
@@ -104,7 +104,7 @@ describe("transition verbs", () => {
 
 	test("transition text after -- may start with -- and contain = and ~", async () => {
 		const { dir, file } = await fixture();
-		const r = await mfwb(dir, ["done", "TK-001", "--", "--odd a=b ~c"]);
+		const r = await mfwBoard(dir, ["done", "TK-001", "--", "--odd a=b ~c"]);
 		expect(r.code).toBe(0);
 		expect(await readFile(file, "utf8")).toContain("--odd a=b ~c");
 	});
@@ -116,7 +116,7 @@ describe("transition verbs", () => {
 			["start", undefined, false],
 		] as const) {
 			const { dir } = await fixture();
-			const c = await mfwb(dir, [
+			const c = await mfwBoard(dir, [
 				"claim",
 				"TK-001",
 				"--run",
@@ -126,7 +126,7 @@ describe("transition verbs", () => {
 			]);
 			expect(c.code).toBe(0);
 			const args = [verb, "TK-001", ...(text ? [text] : [])];
-			expect((await mfwb(dir, args)).code).toBe(0);
+			expect((await mfwBoard(dir, args)).code).toBe(0);
 			const lease = JSON.parse(
 				await readFile(join(dir, "state", "tasks", "TK-001.json"), "utf8"),
 			);
@@ -136,9 +136,9 @@ describe("transition verbs", () => {
 
 	test("done requires text, sets outcome and today's date", async () => {
 		const { dir, file } = await fixture();
-		const bad = await mfwb(dir, ["done", "TK-001"]);
+		const bad = await mfwBoard(dir, ["done", "TK-001"]);
 		expect(bad.code).toBe(2);
-		const r = await mfwb(dir, ["done", "TK-001", "shipped a=b it"]);
+		const r = await mfwBoard(dir, ["done", "TK-001", "shipped a=b it"]);
 		expect(r.code).toBe(0);
 		const raw = await readFile(file, "utf8");
 		expect(raw).toContain("status: done");
@@ -149,7 +149,7 @@ describe("transition verbs", () => {
 	test("text is forbidden when the verb takes none", async () => {
 		const { dir, file } = await fixture();
 		const before = await readFile(file, "utf8");
-		const r = await mfwb(dir, ["start", "TK-001", "why"]);
+		const r = await mfwBoard(dir, ["start", "TK-001", "why"]);
 		expect(r.code).toBe(2);
 		expect(r.stderr).toContain("takes no argument");
 		expect(await readFile(file, "utf8")).toBe(before);
@@ -157,9 +157,11 @@ describe("transition verbs", () => {
 
 	test("defer then reopen clears the gate", async () => {
 		const { dir, file } = await fixture();
-		expect((await mfwb(dir, ["defer", "TK-001", "needs infra"])).code).toBe(0);
+		expect((await mfwBoard(dir, ["defer", "TK-001", "needs infra"])).code).toBe(
+			0,
+		);
 		expect(await readFile(file, "utf8")).toContain("needs infra");
-		expect((await mfwb(dir, ["reopen", "TK-001"])).code).toBe(0);
+		expect((await mfwBoard(dir, ["reopen", "TK-001"])).code).toBe(0);
 		const raw = await readFile(file, "utf8");
 		expect(raw).not.toContain("deferred"); // back to the default, elided
 		expect(raw).not.toContain("needs infra");
@@ -168,7 +170,7 @@ describe("transition verbs", () => {
 	test("precondition failure exits 1 and leaves the file byte-identical", async () => {
 		const { dir, file } = await fixture();
 		const before = await readFile(file, "utf8");
-		const r = await mfwb(dir, ["reopen", "TK-001"]);
+		const r = await mfwBoard(dir, ["reopen", "TK-001"]);
 		expect(r.code).toBe(1);
 		expect(r.stderr).toContain("expected status deferred, got planned");
 		expect(await readFile(file, "utf8")).toBe(before);
@@ -176,13 +178,13 @@ describe("transition verbs", () => {
 
 	test("missing document exits nonzero", async () => {
 		const { dir } = await fixture();
-		const r = await mfwb(dir, ["start", "TK-999"]);
+		const r = await mfwBoard(dir, ["start", "TK-999"]);
 		expect(r.code).not.toBe(0);
 	});
 
 	test("--json prints the document JSON", async () => {
 		const { dir } = await fixture();
-		const r = await mfwb(dir, ["--json", "start", "TK-001"]);
+		const r = await mfwBoard(dir, ["--json", "start", "TK-001"]);
 		expect(r.code).toBe(0);
 		const j = JSON.parse(r.stdout);
 		expect(j.id).toBe("TK-001");
@@ -191,7 +193,7 @@ describe("transition verbs", () => {
 
 	test("unknown verb prints usage listing the declared verbs, exit 2", async () => {
 		const { dir } = await fixture();
-		const r = await mfwb(dir, ["frobnicate", "TK-001"]);
+		const r = await mfwBoard(dir, ["frobnicate", "TK-001"]);
 		expect(r.code).toBe(2);
 		expect(r.stderr).toContain("start <id>");
 		expect(r.stderr).toContain("planned -> doing");
@@ -202,13 +204,13 @@ describe("transition verbs", () => {
 
 	test("the date is never scanned from the text; --date sets it explicitly", async () => {
 		const { dir, file } = await fixture();
-		const r = await mfwb(dir, ["done", "TK-001", "landed 2025-03-04"]);
+		const r = await mfwBoard(dir, ["done", "TK-001", "landed 2025-03-04"]);
 		expect(r.code).toBe(0);
 		expect(await readFile(file, "utf8")).toContain(
 			`closed: ${new Date().toISOString().slice(0, 10)}`,
 		);
 		const f2 = await fixture();
-		const ok = await mfwb(f2.dir, [
+		const ok = await mfwBoard(f2.dir, [
 			"done",
 			"TK-001",
 			"backfilled",
@@ -219,7 +221,7 @@ describe("transition verbs", () => {
 		expect(ok.code).toBe(0);
 		expect(await readFile(f2.file, "utf8")).toContain("closed: 2025-03-04");
 		const f3 = await fixture();
-		const bad = await mfwb(f3.dir, [
+		const bad = await mfwBoard(f3.dir, [
 			"done",
 			"TK-001",
 			"x",
@@ -228,7 +230,7 @@ describe("transition verbs", () => {
 		]);
 		expect(bad.code).toBe(2);
 		expect(bad.stderr).toContain("real calendar date");
-		const none = await mfwb(f3.dir, [
+		const none = await mfwBoard(f3.dir, [
 			"start",
 			"TK-001",
 			"--date",
@@ -247,22 +249,22 @@ describe("transition verbs", () => {
       title: {}
 `;
 		const { dir } = await fixture({ yaml: board("", second) });
-		const r = await mfwb(dir, ["start", "NT-1", "--type", "note"]);
+		const r = await mfwBoard(dir, ["start", "NT-1", "--type", "note"]);
 		expect(r.code).toBe(2);
 		expect(r.stderr).toBe(
 			"type 'note' does not declare the 'start' transition (declared by: task)",
 		);
-		const bad = await mfwb(dir, ["done", "TK-001", "a", "b"]);
+		const bad = await mfwBoard(dir, ["done", "TK-001", "a", "b"]);
 		expect(bad.code).toBe(2);
 		expect(bad.stderr.split("\n")).toHaveLength(1);
-		expect(bad.stderr).toContain("usage: mfwb done <id> [<text>]");
+		expect(bad.stderr).toContain("usage: mfw-board done <id> [<text>]");
 	});
 
 	test("usage without a board shows only static commands", async () => {
 		const dir = await tmp();
-		const r = await mfwb(dir, ["frobnicate"]);
+		const r = await mfwBoard(dir, ["frobnicate"]);
 		expect(r.code).toBe(3);
-		const r2 = await mfwb(dir, []);
+		const r2 = await mfwBoard(dir, []);
 		expect(r2.code).toBe(2);
 		expect(r2.stderr).toContain("list");
 		expect(r2.stderr).not.toContain("transition verbs");
@@ -282,13 +284,13 @@ describe("transition verbs", () => {
 `;
 		const { dir } = await fixture({ yaml: board("", second) });
 		// the id says which document is meant: no --type needed
-		const ok = await mfwb(dir, ["start", "TK-001"]);
+		const ok = await mfwBoard(dir, ["start", "TK-001"]);
 		expect(ok.code).toBe(0);
-		const none = await mfwb(dir, ["start", "NT-9"]);
+		const none = await mfwBoard(dir, ["start", "NT-9"]);
 		expect(none.code).toBe(1);
 		expect(none.stderr).toContain("no document 'NT-9'");
 		// a verb only one type declares needs no --type
-		expect((await mfwb(dir, ["done", "TK-001", "x"])).code).toBe(0);
+		expect((await mfwBoard(dir, ["done", "TK-001", "x"])).code).toBe(0);
 	});
 });
 
@@ -301,7 +303,7 @@ describe("--commit / --push", () => {
 		await writeFile(join(dir, "other.txt"), "dirty\n");
 		git(dir, "add", "other.txt"); // staged and unrelated
 		await writeFile(join(dir, "untracked.txt"), "x\n");
-		const r = await mfwb(dir, ["done", "TK-001", "all good", "--commit"]);
+		const r = await mfwBoard(dir, ["done", "TK-001", "all good", "--commit"]);
 		expect(r.code).toBe(0);
 		expect(git(dir, "log", "-1", "--format=%s")).toBe("task: TK-001: all good");
 		expect(git(dir, "show", "--name-only", "--format=", "HEAD")).toBe(
@@ -314,10 +316,10 @@ describe("--commit / --push", () => {
 	test("an untracked document is added and committed; verb used when no text; 60 char cap", async () => {
 		const { dir } = await fixture();
 		initRepo(dir);
-		const r = await mfwb(dir, ["start", "TK-001", "--commit"]);
+		const r = await mfwBoard(dir, ["start", "TK-001", "--commit"]);
 		expect(r.code).toBe(0);
 		expect(git(dir, "log", "-1", "--format=%s")).toBe("task: TK-001: start");
-		await mfwb(dir, ["done", "TK-001", "x".repeat(100), "--commit"]);
+		await mfwBoard(dir, ["done", "TK-001", "x".repeat(100), "--commit"]);
 		expect(git(dir, "log", "-1", "--format=%s")).toBe(
 			`task: TK-001: ${"x".repeat(60)}`,
 		);
@@ -327,21 +329,21 @@ describe("--commit / --push", () => {
 		const yaml = board("    commit: { prefix: tasks }\n");
 		const { dir } = await fixture({ yaml });
 		initRepo(dir);
-		const r = await mfwb(dir, ["start", "TK-001", "--commit"]);
+		const r = await mfwBoard(dir, ["start", "TK-001", "--commit"]);
 		expect(r.code).toBe(0);
 		expect(git(dir, "log", "-1", "--format=%s")).toBe("tasks: TK-001: start");
 	});
 
 	test("--push pushes to a local bare repo", async () => {
 		const { dir } = await fixture();
-		const bare = await tmp("mfwb-bare-");
+		const bare = await tmp("mfw-board-bare-");
 		git(bare, "init", "-q", "--bare", "-b", "main");
 		initRepo(dir);
 		git(dir, "add", "-A");
 		git(dir, "commit", "-qm", "init");
 		git(dir, "remote", "add", "origin", bare);
 		git(dir, "push", "-q", "-u", "origin", "main");
-		const r = await mfwb(dir, ["start", "TK-001", "--push"]);
+		const r = await mfwBoard(dir, ["start", "TK-001", "--push"]);
 		expect(r.code).toBe(0);
 		expect(git(bare, "log", "-1", "--format=%s", "main")).toBe(
 			"task: TK-001: start",
@@ -353,7 +355,7 @@ describe("--commit / --push", () => {
 		initRepo(dir); // no remote
 		git(dir, "add", "-A");
 		git(dir, "commit", "-qm", "init");
-		const r = await mfwb(dir, ["start", "TK-001", "--push"]);
+		const r = await mfwBoard(dir, ["start", "TK-001", "--push"]);
 		expect(r.code).toBe(1);
 		expect(r.stderr).toContain("git push failed");
 		expect(r.stderr).toContain("was transitioned");
@@ -363,7 +365,7 @@ describe("--commit / --push", () => {
 	test("--commit outside a git tree errors but the transition applied", async () => {
 		// A bare tmp dir is outside any repo (os tmpdir is not in a work tree).
 		const { dir, file } = await fixture();
-		const r = await mfwb(dir, ["start", "TK-001", "--commit"]);
+		const r = await mfwBoard(dir, ["start", "TK-001", "--commit"]);
 		expect(r.code).toBe(1);
 		expect(r.stderr).toContain("not inside a git work tree");
 		expect(r.stderr).toContain("was transitioned");
@@ -376,8 +378,8 @@ describe("concurrency", () => {
 		const { dir, file } = await fixture();
 		await mkdir(dir, { recursive: true });
 		const [a, b] = await Promise.all([
-			mfwb(dir, ["done", "TK-001", "first"]),
-			mfwb(dir, ["done", "TK-001", "second"]),
+			mfwBoard(dir, ["done", "TK-001", "first"]),
+			mfwBoard(dir, ["done", "TK-001", "second"]),
 		]);
 		const codes = [a.code, b.code].sort();
 		expect(codes).toEqual([0, 1]);

@@ -1,24 +1,24 @@
 ---
-name: mfwb
-description: "Operate a markdown board (tasks, specs, ADRs, any config-defined document types) from the terminal with mfwb, no daemon required. Use when the user asks to list, show, create, update or check documents, find what is ready to work on, start/finish/defer a task (config-declared transitions), edit list fields or checklists, manage parent/child hierarchy, claim a task for a worktree, or install this skill. Do not edit board files by hand with Read/Edit/Write - mfwb goes through the real lock + validation path those tools skip."
+name: mfw-board
+description: "Operate a markdown board (tasks, specs, ADRs, any config-defined document types) from the terminal with mfw board, no daemon required. Use when the user asks to list, show, create, update or check documents, find what is ready to work on, start/finish/defer a task (config-declared transitions), edit list fields or checklists, manage parent/child hierarchy, claim a task for a worktree, or install this skill. Do not edit board files by hand with Read/Edit/Write - mfw board goes through the real lock + validation path those tools skip."
 ---
 
-# mfwb: the board CLI
+# mfw-board: the board CLI
 
 A plain CLI over the same `@mfw/board`/`@mfw/board-core` store the daemon
 uses - same locks, same validation, same files. It needs no daemon running;
 it's also perfectly safe to run **while** the daemon is attached to the same
 project, since both go through the same per-document and named locks.
 
-Typical flow on a board with workflow config: `mfwb ready` (what can start) ->
-optionally `mfwb claim <id>` (bind it to your worktree) -> `mfwb start <id>` ->
-`mfwb note` / `mfwb checklist` as you work -> `mfwb done <id> "<outcome>"`.
+Typical flow on a board with workflow config: `mfw board ready` (what can start) ->
+optionally `mfw board claim <id>` (bind it to your worktree) -> `mfw board start <id>` ->
+`mfw board note` / `mfw board checklist` as you work -> `mfw board done <id> "<outcome>"`.
 
 ## Are you inside an agent run's worktree right now?
 
 **If you are an agent executing a task dispatched by mfw itself, stop - this
 skill is not for you.** The board (`board.yaml`, `tasks/`, `adrs/`) is deliberately not in
-your sparse-checked-out worktree, `mfwb` will fail to even find a board
+your sparse-checked-out worktree, `mfw board` will fail to even find a board
 there, and if it somehow succeeded, mfw discards board edits made from a task
 branch before merging (see your `.mfw/AGENTS.md`). Report via `MFW_REPORT.json`
 instead. This skill is for a human, or an assistant working in the main
@@ -26,7 +26,7 @@ checkout (or a separate docs checkout), operating the board directly.
 
 ## Finding the board
 
-Gitignore-style: starting at `$PWD` and then each parent up to `/`, `mfwb`
+Gitignore-style: starting at `$PWD` and then each parent up to `/`, `mfw board`
 checks for `board.yaml`; the first directory with a hit wins (the nearest
 board, so nested boards work). The board root (where locks and state live) is
 the directory containing the `board.yaml` found. A board still in the old
@@ -36,7 +36,7 @@ Overrides, strongest first: `--config <path-to-board.yaml>` (before or after
 the command name), then the `MFW_BOARD=<path-to-board.yaml>` env var, then the
 search. With no board found it lists what it searched and exits 3.
 
-`mfwb` is the only board CLI; `@mfw/board-core` is a library only (no binary).
+`mfw board` (the `mfw-board` executable) is the only board CLI; `@mfw/board-core` is a library only (no binary).
 
 Not on `PATH` by default. Invoke it as:
 
@@ -44,8 +44,8 @@ Not on `PATH` by default. Invoke it as:
 bun <mfw-checkout>/packages/board/src/cli.ts <command> ...
 # or, from the mfw repo:
 bun run --cwd packages/board src/cli.ts <command> ...
-# or, if linked (packages/daemon/node_modules/.bin/mfwb exists in this repo):
-./packages/daemon/node_modules/.bin/mfwb <command> ...
+# or, if linked (packages/daemon/node_modules/.bin/mfw-board exists in this repo):
+./packages/daemon/node_modules/.bin/mfw-board <command> ...
 ```
 
 ## Commands
@@ -106,29 +106,29 @@ Field names and values come from the board's
 
 ```sh
 # everything in backlog
-mfwb list status=backlog
+mfw board list status=backlog
 
 # one task, full frontmatter + body
-mfwb show MFW-42
+mfw board show MFW-42
 
 # a new task, straight to ready
-mfwb create --body "## Goal
+mfw board create --body "## Goal
 Do the thing." \
   title="add the thing" priority=high status=ready \
   verification='{"verifier":"deterministic","checks":[{"files_exist":["src/thing.ts"]}]}'
 
 # edit a field (optimistic concurrency: --base-rev from a prior show/create)
-mfwb update MFW-42 --base-rev 3 priority=critical
+mfw board update MFW-42 --base-rev 3 priority=critical
 
 # an ADR
-mfwb create --type adr --body "## Decision
+mfw board create --type adr --body "## Decision
 ..." title="use X for Y" status=accepted
 
 # check the whole board: schema, ids, references, hierarchy, cycles, readiness, file scopes
-mfwb check
-mfwb check TK-12                 # only issues about (or involving) one document
-mfwb check --rule unreachable    # only some rules (see `mfwb check --list`)
-mfwb check --json   # {ok, issues: [{rule, severity, type, id, path, message, related?}]}
+mfw board check
+mfw board check TK-12                 # only issues about (or involving) one document
+mfw board check --rule unreachable    # only some rules (see `mfw board check --list`)
+mfw board check --json   # {ok, issues: [{rule, severity, type, id, path, message, related?}]}
 ```
 
 ### Exit codes
@@ -182,13 +182,13 @@ genuinely different documents (task vs spec vs ADR), not for task kinds.
 The two sides are kept in sync by the library: set only `parent` (via
 `create ... parent=<id>`, `update <id> parent=<id>`, or `reparent`) and the
 parent's `children` list is rewritten under the same lock; `children` is not
-written directly. `mfwb reparent <id> <parentId>` moves a document; `-` clears
+written directly. `mfw board reparent <id> <parentId>` moves a document; `-` clears
 its parent. A refused change (cycle, max-depth, rule violation, unknown parent,
 ...) exits 1 with `reparent failed (<code>): ...` and writes nothing.
 Any write that touches a parent also rewrites its `children` from the
 children's own `parent` fields, so a list desynced by a hand edit heals itself.
 After editing parents by hand (or adopting a hierarchy over existing documents),
-run `mfwb repair` once: it rebuilds every parent's `children` from the `parent`
+run `mfw board repair` once: it rebuilds every parent's `children` from the `parent`
 fields (existing order kept, stale ids dropped, missing ones appended in id
 order) and prints each parent it changed; `check` then reports anything
 repair cannot fix (dangling or disallowed parents, cycles).
@@ -200,7 +200,7 @@ terminal. A child that `depends_on` its own parent is a dependency cycle
 
 ### `skill install` - get this document into your agent tools
 
-Copies this exact file (Agent Skills format: `<skills-dir>/mfwb/SKILL.md`) into
+Copies this exact file (Agent Skills format: `<skills-dir>/mfw-board/SKILL.md`) into
 each selected tool's skills directory. Targets: `claude`, `codex`, `opencode`,
 `pi`. `--target <list>` takes a comma list, `all`, or `detected` (default:
 tools whose executable is on `PATH` or whose global config dir exists; none
@@ -224,30 +224,30 @@ opencode, and a tool whose readable locations already hold a planned install is
 reported `covered <tool> by <path>` instead of getting a second copy.
 
 It always overwrites the destination with the packaged copy, never merges, and
-reports `installed` / `up-to-date` / `covered` per tool. Re-run after an `mfwb`
+reports `installed` / `up-to-date` / `covered` per tool. Re-run after an `mfw board`
 upgrade. `--dry-run` prints the plan and writes nothing.
 
 ```sh
-mfwb skill install                          # detected tools, this project
-mfwb skill install --global --target all    # every tool, this machine
-mfwb skill install --here                   # use the cwd, not the git root
-mfwb skill install --dry-run
-mfwb skill status [--global] [--target <list>]   # <tool> <detected|not detected> <path> <installed|missing|stale>
-mfwb --json skill status                    # [{tool, detected, scope, path, state, coveredBy}]
+mfw board skill install                          # detected tools, this project
+mfw board skill install --global --target all    # every tool, this machine
+mfw board skill install --here                   # use the cwd, not the git root
+mfw board skill install --dry-run
+mfw board skill status [--global] [--target <list>]   # <tool> <detected|not detected> <path> <installed|missing|stale>
+mfw board --json skill status                    # [{tool, detected, scope, path, state, coveredBy, legacy?}]
 ```
 
-### Transition verbs - `mfwb <verb> <id> [<text>]`
+### Transition verbs - `mfw board <verb> <id> [<text>]`
 
 Boards declare workflow transitions in `board.yaml` (`transitions:` per type);
-each verb is a first-class command, listed in `mfwb` usage when a board is found.
+each verb is a first-class command, listed in `mfw board` usage when a board is found.
 
 ```sh
-mfwb start MFW-42                       # from -> to, checked atomically under the lock
-mfwb done MFW-42 "shipped in abc123"    # text is required exactly when the verb declares `arg`
-mfwb done MFW-42 "..." --date 2026-10-03   # explicit date for the verb's `date` field (default: today, UTC)
-mfwb done MFW-42 "..." --commit         # then commit ONLY that document file
-mfwb defer MFW-42 "needs infra" --push  # --push implies --commit, then `git push`
-mfwb --json start MFW-42                # document as JSON
+mfw board start MFW-42                       # from -> to, checked atomically under the lock
+mfw board done MFW-42 "shipped in abc123"    # text is required exactly when the verb declares `arg`
+mfw board done MFW-42 "..." --date 2026-10-03   # explicit date for the verb's `date` field (default: today, UTC)
+mfw board done MFW-42 "..." --commit         # then commit ONLY that document file
+mfw board defer MFW-42 "needs infra" --push  # --push implies --commit, then `git push`
+mfw board --json start MFW-42                # document as JSON
 ```
 
 A verb's `date: <field>` stamps today's date (UTC); dates are never read out of the text, so to backdate pass `--date YYYY-MM-DD` (a real calendar date, only on verbs that declare `date`). If several types declare the verb, pass `--type`; `--type` naming a type that does not declare it is a one-line error (exit 2). A wrong current status exits 1
@@ -267,16 +267,16 @@ under one lock). Claiming is **optional** and does **not change the task's
 status**: it only binds the task to a run and a worktree.
 
 ```sh
-mfwb claim MFW-42                        # run id generated, worktree = cwd's git toplevel (else cwd)
-mfwb claim MFW-42 --run my-run-1 --worktree /path/to/wt
-mfwb release MFW-42 --run my-run-1       # unbinds only; status is untouched
+mfw board claim MFW-42                        # run id generated, worktree = cwd's git toplevel (else cwd)
+mfw board claim MFW-42 --run my-run-1 --worktree /path/to/wt
+mfw board release MFW-42 --run my-run-1       # unbinds only; status is untouched
 ```
 
 `claim` prints the document and `run: <id>`; it exits 1 with an explanation if
 the task isn't in `--from` status (default `ready`), is already claimed, a
 dependency isn't done (when the type declares `statusClasses`: not terminal, counting hierarchy children, the same rule as `ready`), or another active task's `owns` glob overlaps this
 one's. `release` exits 1 if the run id doesn't match who holds the binding.
-Change status with a transition verb (`mfwb start <id>`, ...) or `update status=...`.
+Change status with a transition verb (`mfw board start <id>`, ...) or `update status=...`.
 `start` is a plain transition: it does NOT check ownership overlap (`claim` is
 the optional guard). A transition into a terminal or parked status releases
 the claim binding, so no `release` is needed after `done`/`defer`.
@@ -294,22 +294,22 @@ dependencies (`depends_on` plus hierarchy children) are terminal. Ready does
 not mean done.
 
 ```sh
-mfwb ready [--type t] [--under id] [--json] [--unblocks] [field=a|b ...]   # "<id> <status> deps: <a,b|-> [unblocks: n] | <ready.columns values>"
-mfwb levels [--under id] [--format md|tsv|json]   # id, level, status, title; level = longest dependency chain
-mfwb view board [--type t] [--under id] [--format md|tsv|json]   # counts per type/status (+class)
+mfw board ready [--type t] [--under id] [--json] [--unblocks] [field=a|b ...]   # "<id> <status> deps: <a,b|-> [unblocks: n] | <ready.columns values>"
+mfw board levels [--under id] [--format md|tsv|json]   # id, level, status, title; level = longest dependency chain
+mfw board view board [--type t] [--under id] [--format md|tsv|json]   # counts per type/status (+class)
 ```
 
 `ready --unblocks` adds how many open documents transitively wait on each ready
 one; `--json` rows always carry `unblocks`, `chain` (the longest chain behind it)
-and every field. `ready` exits 2 if no type declares `statusClasses`; `mfwb check` reports a live document that can never become ready (rule `unreachable`).
+and every field. `ready` exits 2 if no type declares `statusClasses`; `mfw board check` reports a live document that can never become ready (rule `unreachable`).
 `--under` needs a `hierarchy` section. Unknown view names exit 2 and list the valid ones.
 
 ### `graph` / `plan` / `conflicts` - decide what to schedule
 
 ```sh
-mfwb graph [--under id] [--format mermaid|dot|json] [--all]   # dependency graph
-mfwb plan [--under id] [--max n] [--json]                     # a conflict-free batch to start together
-mfwb conflicts [--type t] [--json]                            # file-scope overlaps among live documents
+mfw board graph [--under id] [--format mermaid|dot|json] [--all]   # dependency graph
+mfw board plan [--under id] [--max n] [--json]                     # a conflict-free batch to start together
+mfw board conflicts [--type t] [--json]                            # file-scope overlaps among live documents
 ```
 
 `graph` draws every open document (finished ones only with `--all`): arrows run
@@ -363,15 +363,15 @@ values, types, patterns, ref targets must exist). Hierarchy `parent`/`children`
 are refused (use `reparent`).
 
 ```sh
-mfwb append|prepend <id> <field> <value...>      # list fields; enum/ref lists refuse duplicates
-mfwb insert <id> <field> <index> <value...>      # 0-based
-mfwb remove <id> <field> <value> [--if-present]  # first occurrence; error if absent unless --if-present
-mfwb move <id> <field> <from> <to>
-mfwb inc|dec <id> <field> [n]                    # number (default 1; unset counts as 0)
-mfwb toggle <id> <field>                         # boolean
-mfwb unset <id> <field>                          # optional field (a list becomes empty)
-mfwb row <id> <field> add '<json>' | set <rowId> '<json>' | remove <rowId>   # type: json lists, rows keyed by "id"
-mfwb note <id> [--section <name>] <text>         # "### <UTC time> - text" under "## Progress" (or --section)
+mfw board append|prepend <id> <field> <value...>      # list fields; enum/ref lists refuse duplicates
+mfw board insert <id> <field> <index> <value...>      # 0-based
+mfw board remove <id> <field> <value> [--if-present]  # first occurrence; error if absent unless --if-present
+mfw board move <id> <field> <from> <to>
+mfw board inc|dec <id> <field> [n]                    # number (default 1; unset counts as 0)
+mfw board toggle <id> <field>                         # boolean
+mfw board unset <id> <field>                          # optional field (a list becomes empty)
+mfw board row <id> <field> add '<json>' | set <rowId> '<json>' | remove <rowId>   # type: json lists, rows keyed by "id"
+mfw board note <id> [--section <name>] <text>         # "### <UTC time> - text" under "## Progress" (or --section)
 ```
 
 **Checklists** (`acceptance: {type: checklist, optional: true}` in `board.yaml`)
@@ -379,9 +379,9 @@ hold `{id, text, done}` items in frontmatter; ids (`c1`, `c2`, ...) are assigned
 by the tool. Create with `acceptance=a,b,c` or `acceptance='[{"text":"x","done":true}]'`.
 
 ```sh
-mfwb checklist <id> <field> add <text>        # prints "added c3"
-mfwb checklist <id> <field> toggle|done|undone|remove <selector>
-mfwb checklist <id> <field> edit <selector> <new text>
+mfw board checklist <id> <field> add <text>        # prints "added c3"
+mfw board checklist <id> <field> toggle|done|undone|remove <selector>
+mfw board checklist <id> <field> edit <selector> <new text>
 ```
 
 A `<selector>` is an item id (`c3`) or a text prefix matching exactly one item;
@@ -414,7 +414,7 @@ Everything project-specific lives in the board's `board.yaml` (`mfw: 1` plus
   `forbid: {result: pending}` flags rows of a `json` list / checklist items holding that value;
   `must_match`/`must_not_match` test a text (`key` names the row key). `when` limits it to documents
   whose fields hold those values. `severity: error` (default) also **refuses writes** that would add a
-  violation (the refusal lists the item ids); `advisory` only shows in `mfwb check`. A document that
+  violation (the refusal lists the item ids); `advisory` only shows in `mfw board check`. A document that
   already violates stays editable. Let a write through on purpose with `--override <rule>` (any write).
 - **roots / refs (top level):** `roots: {code: ../../repo}` names directories outside the board;
   `refs: [{id, root, paths: [globs], pattern: 'held for (?<id>TK-\d+)', to: task, status?: [values],
@@ -433,6 +433,6 @@ Everything project-specific lives in the board's `board.yaml` (`mfw: 1` plus
 
 - No scheduling, no agent dispatch, no worktrees, no merging - that's the
   daemon (`packages/daemon`, run via `bun run start`/the `mfw` systemd
-  service). `mfwb` only reads and writes board documents (and claim bindings).
+  service). `mfw board` only reads and writes board documents (and claim bindings).
 - No comments/review state (that's still daemon+SQLite, not board-core
   documents).

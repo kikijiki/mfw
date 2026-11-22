@@ -322,7 +322,7 @@ async function main(): Promise<number> {
 	await attach.stop();
 	lap("attach", t);
 
-	// 3. the board: tasks and ADRs through mfwb --------------------------------
+	// 3. the board: tasks and ADRs through mfw board --------------------------------
 	t = Date.now();
 	for (const s of seeded) {
 		const boardYaml = join(s.built.boardRoot, "board.yaml");
@@ -362,7 +362,7 @@ async function main(): Promise<number> {
 			const id = /^task ([A-Z][A-Z0-9]*-\d+)/m.exec(r.out)?.[1];
 			if (r.code !== 0 || !id)
 				throw new Error(
-					`mfwb create failed for '${task.title}': ${r.err || r.out}`,
+					`mfw board create failed for '${task.title}': ${r.err || r.out}`,
 				);
 			s.taskIds.set(task.alias, id);
 		}
@@ -378,7 +378,7 @@ async function main(): Promise<number> {
 				`date=${adr.date}`,
 			]);
 			if (r.code !== 0)
-				throw new Error(`mfwb create adr failed: ${r.err || r.out}`);
+				throw new Error(`mfw board create adr failed: ${r.err || r.out}`);
 		}
 		log(`  board ${s.project.name}: ${s.taskIds.size} tasks`);
 	}

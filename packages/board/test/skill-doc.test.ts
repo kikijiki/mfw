@@ -9,20 +9,20 @@ const SKILL = readFileSync(
 );
 
 /** Verb alternatives that start a line of a usage/example block, e.g.
- * `mfwb append|prepend <id> ...` or a bare `list [--type ...]` in the command
- * listing: first token after an optional `mfwb` (and global flags). */
+ * `mfw board append|prepend <id> ...` or a bare `list [--type ...]` in the command
+ * listing: first token after an optional `mfw board` (and global flags). */
 function documentedVerbs(doc: string): Set<string> {
 	const verbs = new Set<string>();
 	for (const raw of doc.split("\n")) {
 		let tokens = raw.trim().replace(/^#\s*/, "").split(/\s+/);
-		if (tokens[0] === "mfwb") tokens = tokens.slice(1);
+		if (tokens[0] === "mfw" && tokens[1] === "board") tokens = tokens.slice(2);
 		while (tokens[0]?.startsWith("--")) tokens = tokens.slice(2);
 		for (const v of (tokens[0] ?? "").split("|")) verbs.add(v);
 	}
 	return verbs;
 }
 
-describe("the mfwb skill document stays in step with the CLI", () => {
+describe("the mfw-board skill document stays in step with the CLI", () => {
 	test("every registered command is documented", () => {
 		const documented = documentedVerbs(SKILL);
 		const missing = commands
@@ -34,7 +34,7 @@ describe("the mfwb skill document stays in step with the CLI", () => {
 	test("frontmatter is valid Agent Skills metadata", () => {
 		const m = /^---\nname: (\S+)\ndescription: "([^"]+)"\n---\n/.exec(SKILL);
 		expect(m).not.toBeNull();
-		expect(m?.[1]).toBe("mfwb");
+		expect(m?.[1]).toBe("mfw-board");
 		// The Agent Skills format caps the description at 1024 characters.
 		expect((m?.[2] ?? "").length).toBeLessThanOrEqual(1024);
 	});

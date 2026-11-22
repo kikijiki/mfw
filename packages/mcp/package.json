@@ -4,9 +4,6 @@
 	"author": "Matteo Bernacchia <dev@kikijiki.com>",
 	"license": "MIT",
 	"type": "module",
-	"bin": {
-		"mfw-mcp": "src/main.ts"
-	},
 	"main": "src/main.ts",
 	"dependencies": {
 		"@mfw/api": "workspace:*",

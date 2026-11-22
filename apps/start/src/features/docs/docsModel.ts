@@ -163,7 +163,7 @@ export function editHint(
 		return `Read-only here: edit ${entry.path} in your editor.`;
 	}
 	if (entry.type === "adr") return "";
-	return `Read-only here: edit with \`mfwb\` or in your editor (${entry.path}).`;
+	return `Read-only here: edit with \`mfw board\` or in your editor (${entry.path}).`;
 }
 
 /** The repository-relative file for "Open in Files", or null when the document sits in a separate board folder. */

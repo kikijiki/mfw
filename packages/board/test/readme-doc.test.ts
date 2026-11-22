@@ -9,12 +9,12 @@ const README = readFileSync(
 	"utf8",
 ).replace(/\\\|/g, "|");
 
-describe("the mfwb README explains every command", () => {
-	test("each registered command appears as `mfwb <name>`", () => {
+describe("the mfw-board README explains every command", () => {
+	test("each registered command appears as `mfw board <name>`", () => {
 		const missing = commands
 			.map((c) => c.name)
 			.filter((name) => {
-				const re = new RegExp(`\`mfwb (?:[a-z|]+\\|)?${name}(?:\\||\\b)`);
+				const re = new RegExp(`\`mfw board (?:[a-z|]+\\|)?${name}(?:\\||\\b)`);
 				return !re.test(README);
 			});
 		expect(missing).toEqual([]);

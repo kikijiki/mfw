@@ -10,7 +10,7 @@ afterEach(async () => {
 	for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
 });
 
-async function mfwb(cwd: string, args: string[]) {
+async function mfwBoard(cwd: string, args: string[]) {
 	const e: Record<string, string | undefined> = { ...process.env };
 	delete e.MFW_BOARD;
 	const p = Bun.spawn(["bun", "run", CLI, ...args], {
@@ -58,7 +58,7 @@ async function setup(
 	cards: [string, string][],
 	opts: { ledger?: string; waived?: string; yaml?: string } = {},
 ) {
-	const d = await realpath(await mkdtemp(join(tmpdir(), "mfwb-cov-")));
+	const d = await realpath(await mkdtemp(join(tmpdir(), "mfw-board-cov-")));
 	dirs.push(d);
 	await writeFile(join(d, "board.yaml"), opts.yaml ?? YAML);
 	if (opts.ledger !== "")
@@ -67,7 +67,7 @@ async function setup(
 	for (const [i, [closes, status]] of cards.entries()) {
 		const args = ["create", `title=c${i + 1}`, `status=${status}`];
 		if (closes) args.push(`closes=${closes}`);
-		expect((await mfwb(d, args)).code).toBe(0);
+		expect((await mfwBoard(d, args)).code).toBe(0);
 	}
 	return d;
 }
@@ -78,7 +78,7 @@ describe("coverage", () => {
 			["R9", "todo"],
 			["R2", "done"],
 		]);
-		const r = await mfwb(d, ["check"]);
+		const r = await mfwBoard(d, ["check"]);
 		expect(r.code).toBe(0);
 		expect(r.stdout).toContain(
 			"coverage ledger: 2 open of 3 row(s), 2 covered, 0 waived",
@@ -87,7 +87,7 @@ describe("coverage", () => {
 
 	test("an uncovered row is an error at its table line", async () => {
 		const d = await setup([["R9", "todo"]]);
-		const r = await mfwb(d, ["check"]);
+		const r = await mfwBoard(d, ["check"]);
 		expect(r.code).toBe(1);
 		expect(r.stdout).toContain(
 			"error ledger ledger.tsv:3: R2 is closed by no document, expected exactly 1",
@@ -104,7 +104,7 @@ describe("coverage", () => {
 				waived: "id\treason\nR1\tlater\nR2\tlater\n",
 			},
 		);
-		const r = await mfwb(d, ["check", "--json"]);
+		const r = await mfwBoard(d, ["check", "--json"]);
 		const issues = JSON.parse(r.stdout).issues as {
 			message: string;
 			severity: string;
@@ -116,7 +116,7 @@ describe("coverage", () => {
 
 	test("a missing table is exit 3, not an issue", async () => {
 		const d = await setup([["R9", "todo"]], { ledger: "" });
-		const r = await mfwb(d, ["check"]);
+		const r = await mfwBoard(d, ["check"]);
 		expect(r.code).toBe(3);
 		expect(r.stderr).toContain("ledger.tsv");
 	});
@@ -125,10 +125,10 @@ describe("coverage", () => {
 		const a = await setup([], {
 			yaml: YAML.replace("field: closes,", "field: title,"),
 		});
-		expect((await mfwb(a, ["check"])).code).toBe(3);
+		expect((await mfwBoard(a, ["check"])).code).toBe(3);
 		const b = await setup([], {
 			yaml: YAML.replace("[todo, doing, done]", "[todo, nope]"),
 		});
-		expect((await mfwb(b, ["check"])).code).toBe(3);
+		expect((await mfwBoard(b, ["check"])).code).toBe(3);
 	});
 });

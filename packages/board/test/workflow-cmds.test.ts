@@ -34,7 +34,7 @@ const HBOARD = `${BOARD.replace(
 
 const dirs: string[] = [];
 async function tmp(): Promise<string> {
-	const d = await realpath(await mkdtemp(join(tmpdir(), "mfwb-wf-")));
+	const d = await realpath(await mkdtemp(join(tmpdir(), "mfw-board-wf-")));
 	dirs.push(d);
 	return d;
 }
@@ -42,7 +42,7 @@ afterEach(async () => {
 	for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
 });
 
-async function mfwb(cwd: string, args: string[]) {
+async function mfwBoard(cwd: string, args: string[]) {
 	const e: Record<string, string | undefined> = { ...process.env };
 	delete e.MFW_BOARD;
 	const p = Bun.spawn(["bun", "run", CLI, ...args], {
@@ -77,7 +77,7 @@ async function board(seeds: Seed[], boardYaml = BOARD): Promise<string> {
 		if (s.deps) args.push(`depends_on=${s.deps.join(",")}`);
 		if (s.agent) args.push(`agent=${s.agent}`);
 		if (s.parent) args.push(`parent=${s.parent}`);
-		const r = await mfwb(d, args);
+		const r = await mfwBoard(d, args);
 		expect(r.code).toBe(0);
 	}
 	return d;
@@ -108,7 +108,7 @@ const TREE: Seed[] = [
 describe("ready", () => {
 	test("lists only queued + unblocked, sorted, with columns", async () => {
 		const d = await board(SEEDS);
-		const r = await mfwb(d, ["ready"]);
+		const r = await mfwBoard(d, ["ready"]);
 		expect(r.code).toBe(0);
 		expect(r.stdout.split("\n")).toEqual([
 			"TK-2 todo deps: TK-1 | alice -",
@@ -118,7 +118,7 @@ describe("ready", () => {
 
 	test("--json shape", async () => {
 		const d = await board(SEEDS);
-		const r = await mfwb(d, ["ready", "--json"]);
+		const r = await mfwBoard(d, ["ready", "--json"]);
 		const rows = JSON.parse(r.stdout) as Record<string, unknown>[];
 		// every declared field rides along, so callers can filter on any of them
 		expect(rows.map(({ fields, unblocks, chain, ...rest }) => rest)).toEqual([
@@ -145,14 +145,14 @@ describe("ready", () => {
 
 	test("field filters work like list's: field=a|b and field~a|b", async () => {
 		const d = await board(SEEDS);
-		expect((await mfwb(d, ["ready", "agent=alice"])).stdout).toBe(
+		expect((await mfwBoard(d, ["ready", "agent=alice"])).stdout).toBe(
 			"TK-2 todo deps: TK-1 | alice -",
 		);
-		expect((await mfwb(d, ["ready", "agent=alice|bob"])).stdout).toContain(
+		expect((await mfwBoard(d, ["ready", "agent=alice|bob"])).stdout).toContain(
 			"TK-2",
 		);
-		expect((await mfwb(d, ["ready", "agent=nobody"])).stdout).toBe("");
-		const j = await mfwb(d, ["ready", "--json", "title=seven"]);
+		expect((await mfwBoard(d, ["ready", "agent=nobody"])).stdout).toBe("");
+		const j = await mfwBoard(d, ["ready", "--json", "title=seven"]);
 		expect((JSON.parse(j.stdout) as { id: string }[]).map((r) => r.id)).toEqual(
 			["TK-7"],
 		);
@@ -160,24 +160,26 @@ describe("ready", () => {
 
 	test("a bare number for a keyed id gets a did-you-mean hint", async () => {
 		const d = await board(SEEDS);
-		const r = await mfwb(d, ["show", "2"]);
+		const r = await mfwBoard(d, ["show", "2"]);
 		expect(r.code).toBe(1);
 		expect(r.stderr).toBe("task '2' not found (did you mean TK-2?)");
-		expect((await mfwb(d, ["show", "99"])).stderr).toBe("task '99' not found");
+		expect((await mfwBoard(d, ["show", "99"])).stderr).toBe(
+			"task '99' not found",
+		);
 	});
 
 	test("--type restricts candidates; unknown type fails", async () => {
 		const d = await board(SEEDS);
-		expect((await mfwb(d, ["ready", "--type", "task"])).stdout).toContain(
+		expect((await mfwBoard(d, ["ready", "--type", "task"])).stdout).toContain(
 			"TK-2",
 		);
-		const r = await mfwb(d, ["ready", "--type", "nope"]);
+		const r = await mfwBoard(d, ["ready", "--type", "nope"]);
 		expect(r.code).toBe(2);
 	});
 
 	test("empty result is exit 0 with no output", async () => {
 		const d = await board([{ title: "x", status: "done" }]);
-		const r = await mfwb(d, ["ready"]);
+		const r = await mfwBoard(d, ["ready"]);
 		expect(r).toEqual({ stdout: "", stderr: "", code: 0 });
 	});
 
@@ -194,65 +196,65 @@ describe("ready", () => {
 			"      status: { values: [todo, done], default: todo }",
 		].join("\n");
 		const d = await board([], plain);
-		const r = await mfwb(d, ["ready"]);
+		const r = await mfwBoard(d, ["ready"]);
 		expect(r.code).toBe(2);
 		expect(r.stderr).toContain("statusClasses");
 	});
 
 	test("--under without hierarchy errors clearly", async () => {
 		const d = await board(SEEDS);
-		const r = await mfwb(d, ["ready", "--under", "TK-1"]);
+		const r = await mfwBoard(d, ["ready", "--under", "TK-1"]);
 		expect(r.code).toBe(2);
 		expect(r.stderr).toContain("hierarchy");
 	});
 
 	test("--under limits to descendants", async () => {
 		const d = await board(TREE, HBOARD);
-		const all = await mfwb(d, ["ready"]);
+		const all = await mfwBoard(d, ["ready"]);
 		expect(all.stdout.split("\n").map((l) => l.split(" ")[0])).toEqual([
 			"TK-4",
 			"TK-5",
 		]);
-		const r = await mfwb(d, ["ready", "--under", "TK-1"]);
+		const r = await mfwBoard(d, ["ready", "--under", "TK-1"]);
 		expect(r.code).toBe(0);
 		expect(r.stdout.split("\n").map((l) => l.split(" ")[0])).toEqual(["TK-4"]);
-		expect((await mfwb(d, ["ready", "--under", "TK-99"])).code).toBe(2);
+		expect((await mfwBoard(d, ["ready", "--under", "TK-99"])).code).toBe(2);
 	});
 
 	test("a parent is ready only once all its children are terminal", async () => {
 		const d = await board(TREE, HBOARD);
 		const ids = async () =>
-			(await mfwb(d, ["ready"])).stdout
+			(await mfwBoard(d, ["ready"])).stdout
 				.split("\n")
 				.map((l) => l.split(" ")[0])
 				.filter(Boolean);
 		expect(await ids()).toEqual(["TK-4", "TK-5"]);
-		await mfwb(d, ["update", "TK-4", "status=done"]);
+		await mfwBoard(d, ["update", "TK-4", "status=done"]);
 		expect(await ids()).toEqual(["TK-3", "TK-5"]);
-		await mfwb(d, ["update", "TK-3", "status=done"]);
+		await mfwBoard(d, ["update", "TK-3", "status=done"]);
 		expect(await ids()).toEqual(["TK-1", "TK-5"]);
 	});
 
 	test("a child depending on its own parent is a cycle", async () => {
 		const d = await board(TREE, HBOARD);
-		const u = await mfwb(d, ["update", "TK-3", "depends_on=TK-1"]);
+		const u = await mfwBoard(d, ["update", "TK-3", "depends_on=TK-1"]);
 		expect(u.code).toBe(0);
-		const v = await mfwb(d, ["check", "--rule", "cycle"]);
+		const v = await mfwBoard(d, ["check", "--rule", "cycle"]);
 		expect(v.code).toBe(1);
 		expect(v.stdout).toContain("dependency cycle");
-		const c = await mfwb(d, ["check", "--rule", "unreachable"]);
+		const c = await mfwBoard(d, ["check", "--rule", "unreachable"]);
 		expect(c.code).toBe(1);
 		expect(c.stdout).toContain("can never become ready");
 	});
 
 	test("check unreachable: a parked dependency blocks a live document", async () => {
 		const d = await board(SEEDS);
-		const r = await mfwb(d, ["check", "--rule", "unreachable"]);
+		const r = await mfwBoard(d, ["check", "--rule", "unreachable"]);
 		expect(r.code).toBe(1);
 		expect(r.stdout).toBe(
 			"error unreachable task TK-6: can never become ready: unresolved dependencies TK-5",
 		);
-		const j = await mfwb(d, ["check", "--rule", "unreachable", "--json"]);
+		const j = await mfwBoard(d, ["check", "--rule", "unreachable", "--json"]);
 		expect(j.code).toBe(1);
 		const out = JSON.parse(j.stdout);
 		expect(out.ok).toBe(false);
@@ -274,7 +276,7 @@ describe("ready", () => {
 				"---\ndepends_on: [TK-99]\n",
 			),
 		);
-		const r = await mfwb(d, ["check", "--rule", "unreachable"]);
+		const r = await mfwBoard(d, ["check", "--rule", "unreachable"]);
 		expect(r.code).toBe(1);
 		expect(r.stdout).toContain(
 			"TK-2: can never become ready: unresolved dependencies TK-99",
@@ -287,10 +289,10 @@ describe("ready", () => {
 			{ title: "b", deps: ["TK-1"] },
 			{ title: "c", deps: ["TK-2"] },
 		]);
-		const r = await mfwb(d, ["check", "--rule", "unreachable"]);
+		const r = await mfwBoard(d, ["check", "--rule", "unreachable"]);
 		expect(r.code).toBe(0);
 		expect(r.stdout).toBe("ok");
-		const j = await mfwb(d, ["check", "--rule", "unreachable", "--json"]);
+		const j = await mfwBoard(d, ["check", "--rule", "unreachable", "--json"]);
 		expect(JSON.parse(j.stdout)).toEqual({ ok: true, issues: [] });
 	});
 });
@@ -298,7 +300,7 @@ describe("ready", () => {
 describe("levels", () => {
 	test("md table sorted by level then id", async () => {
 		const d = await board(SEEDS);
-		const r = await mfwb(d, ["levels"]);
+		const r = await mfwBoard(d, ["levels"]);
 		expect(r.code).toBe(0);
 		expect(r.stdout.split("\n")).toEqual([
 			"| id | level | status | title |",
@@ -315,12 +317,12 @@ describe("levels", () => {
 
 	test("tsv and json formats", async () => {
 		const d = await board(SEEDS);
-		const t = await mfwb(d, ["levels", "--format", "tsv"]);
+		const t = await mfwBoard(d, ["levels", "--format", "tsv"]);
 		const lines = t.stdout.split("\n");
 		expect(lines[0]).toBe("id\tlevel\tstatus\ttitle");
 		expect(lines.at(-1)).toBe("TK-3\t2\ttodo\tthree");
 		const j = JSON.parse(
-			(await mfwb(d, ["levels", "--format", "json"])).stdout,
+			(await mfwBoard(d, ["levels", "--format", "json"])).stdout,
 		);
 		expect(j[0]).toEqual({
 			id: "TK-1",
@@ -329,12 +331,18 @@ describe("levels", () => {
 			title: "one",
 		});
 		expect(j).toHaveLength(7);
-		expect((await mfwb(d, ["levels", "--format", "xml"])).code).toBe(2);
+		expect((await mfwBoard(d, ["levels", "--format", "xml"])).code).toBe(2);
 	});
 
 	test("--under limits rows to descendants", async () => {
 		const d = await board(TREE, HBOARD);
-		const r = await mfwb(d, ["levels", "--under", "TK-1", "--format", "tsv"]);
+		const r = await mfwBoard(d, [
+			"levels",
+			"--under",
+			"TK-1",
+			"--format",
+			"tsv",
+		]);
 		expect(r.code).toBe(0);
 		expect(r.stdout.split("\n")).toEqual([
 			"id\tlevel\tstatus\ttitle",
@@ -348,7 +356,7 @@ describe("levels", () => {
 describe("view", () => {
 	test("board counts per type and status, with class and total", async () => {
 		const d = await board(SEEDS);
-		const r = await mfwb(d, ["view", "board"]);
+		const r = await mfwBoard(d, ["view", "board"]);
 		expect(r.code).toBe(0);
 		expect(r.stdout.split("\n")).toEqual([
 			"| type | status | class | count |",
@@ -363,11 +371,19 @@ describe("view", () => {
 
 	test("tsv, json, --type", async () => {
 		const d = await board(SEEDS);
-		const t = await mfwb(d, ["view", "board", "--format", "tsv"]);
+		const t = await mfwBoard(d, ["view", "board", "--format", "tsv"]);
 		expect(t.stdout.split("\n")[0]).toBe("type\tstatus\tclass\tcount");
 		const j = JSON.parse(
-			(await mfwb(d, ["view", "board", "--type", "task", "--format", "json"]))
-				.stdout,
+			(
+				await mfwBoard(d, [
+					"view",
+					"board",
+					"--type",
+					"task",
+					"--format",
+					"json",
+				])
+			).stdout,
 		);
 		expect(j.at(-1)).toEqual({
 			type: "total",
@@ -379,17 +395,17 @@ describe("view", () => {
 
 	test("--under without hierarchy errors; unknown view exits 2", async () => {
 		const d = await board(SEEDS);
-		const u = await mfwb(d, ["view", "board", "--under", "TK-1"]);
+		const u = await mfwBoard(d, ["view", "board", "--under", "TK-1"]);
 		expect(u.code).toBe(2);
 		expect(u.stderr).toContain("hierarchy");
-		const r = await mfwb(d, ["view", "nope"]);
+		const r = await mfwBoard(d, ["view", "nope"]);
 		expect(r.code).toBe(2);
 		expect(r.stderr).toContain("valid views: board");
 	});
 
 	test("--under counts descendants", async () => {
 		const d = await board(TREE, HBOARD);
-		const r = await mfwb(d, ["view", "board", "--under", "TK-1"]);
+		const r = await mfwBoard(d, ["view", "board", "--under", "TK-1"]);
 		expect(r.code).toBe(0);
 		expect(r.stdout.split("\n")).toEqual([
 			"| type | status | class | count |",

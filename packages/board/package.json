@@ -10,7 +10,7 @@
 		"./*": "./src/*.ts"
 	},
 	"bin": {
-		"mfwb": "src/cli.ts"
+		"mfw-board": "src/cli.ts"
 	},
 	"dependencies": {
 		"@mfw/board-core": "workspace:*",
