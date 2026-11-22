@@ -272,10 +272,17 @@ export class AgentHost {
 		// .envrc trust gate: load direnv only if the worktree's .envrc is byte-identical
 		// to the primary checkout's, closing the prompt-injection → direnv-allow → RCE chain.
 		const rootEnvrc = join(spec.projectRoot, ".envrc");
+		// Trust is recorded in a throwaway data dir, never in the real HOME (security
+		// review X14), and the gate runs in the pinned bash that evaluates `export bash`.
 		const envrcGate = [
 			`if [ -f .envrc ] && command -v direnv >/dev/null 2>&1 && cmp -s .envrc ${q(rootEnvrc)}; then`,
-			"  direnv allow . >/dev/null 2>&1",
-			'  eval "$(direnv export bash 2>/dev/null)"',
+			'  _mfw_dx=$(mktemp -d 2>/dev/null) || _mfw_dx=""',
+			'  if [ -n "$_mfw_dx" ]; then',
+			'    XDG_DATA_HOME="$_mfw_dx" direnv allow . >/dev/null 2>&1',
+			'    eval "$(XDG_DATA_HOME="$_mfw_dx" direnv export bash 2>/dev/null)"',
+			'    rm -rf "$_mfw_dx"',
+			"  fi",
+			"  unset _mfw_dx",
 			"fi",
 		].join("\n");
 
