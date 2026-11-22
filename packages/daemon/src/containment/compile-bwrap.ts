@@ -1,0 +1,527 @@
+/**
+ * Compile a SandboxProfile into the Tier 1 launch command (design "Tier 1
+ * bwrap profile"):
+ *
+ *   systemd-run --user --scope ... -- env -i bwrap <flags> -- <command>
+ *
+ * Pure over {@link CompileHost}, so the argv can be snapshotted anywhere. It
+ * never degrades: a host or profile it cannot enforce gets a refusal with the
+ * fix, and there is no unsandboxed or partial result.
+ *
+ * Mount order matters. Everything that needs a mount point on the root tmpfs
+ * is created first, then `--remount-ro /`, then the workspace, caches and
+ * fleet config, which keep their own access mode.
+ *
+ * bwrap follows a bind source that is a symlink, so every profile source must
+ * already be its own real path. The caller passes the seccomp bytes returned
+ * here as the child's fd 3.
+ */
+
+import { posix } from "node:path";
+import { egressClientEnv } from "./egress-env.ts";
+import type {
+	Arch,
+	BwrapValue,
+	Check,
+	SystemdUserValue,
+	UsernsValue,
+} from "./host-caps.ts";
+import { planLimits } from "./limits.ts";
+import { effectiveLimits, type SandboxProfile } from "./profile.ts";
+import {
+	DISABLE_USERNS_BWRAP_ARGS,
+	generateSeccompProgram,
+	SECCOMP_BWRAP_ARGS,
+	SeccompUnsupportedError,
+} from "./seccomp.ts";
+import { type ToolchainPlan, toolchainBwrapArgs } from "./toolchain.ts";
+
+/** Sandbox-side layout. Owned here, never configurable. */
+export const SANDBOX_PATHS = {
+	home: "/sandbox/agent",
+	workspace: "/work",
+	gitDir: "/git",
+	scratch: "/scratch",
+	caches: "/cache",
+	fleet: "/fleet",
+	egress: "/run/mfw/egress",
+} as const;
+
+const FLEET_ENV = { claude: "CLAUDE_CONFIG_DIR", codex: "CODEX_HOME" } as const;
+
+/** PATH when the profile declares no toolchain: nothing resolves. */
+const EMPTY_PATH = "/nonexistent";
+
+export interface CompileHost {
+	caps: {
+		userns: Check<UsernsValue>;
+		bwrap: Check<BwrapValue>;
+		systemd: Check<SystemdUserValue>;
+		arch: Check<Arch>;
+	};
+	/** Absolute: `env -i` leaves no PATH to find bwrap with. */
+	bwrapPath: string;
+	envPath: string;
+	systemdRunPath: string;
+	toolchain: ToolchainPlan;
+	/** The real home and `$MFW_HOME`: never bound, whole or through an ancestor. */
+	home: string;
+	mfwHome: string;
+	/** Host directories that profile sources must sit strictly inside. */
+	allowedRoots: readonly string[];
+	/** `realpath`, or null when the path does not exist. */
+	realpath(path: string): string | null;
+	/** Scope unit name, without `.scope`. */
+	unit?: string;
+}
+
+export type CompileRefusalCode =
+	| "host_unsupported"
+	| "invalid_command"
+	| "invalid_host"
+	| "toolchain_unresolved"
+	| "path_denied"
+	| "path_not_canonical"
+	| "path_outside_roots"
+	| "bind_overlap";
+
+export interface CompileRefusal {
+	ok: false;
+	code: CompileRefusalCode;
+	reason: string;
+	fix: string;
+}
+
+export interface CompiledSandbox {
+	ok: true;
+	/** The full command, starting at `systemd-run`. */
+	argv: string[];
+	/** Pass as the child's fd 3. */
+	seccomp: Buffer;
+	/** The environment set inside the sandbox, for the audit trail. */
+	env: Record<string, string>;
+	cwd: string;
+}
+
+export type CompileResult = CompiledSandbox | CompileRefusal;
+
+const refuse = (
+	code: CompileRefusalCode,
+	reason: string,
+	fix: string,
+): CompileRefusal => ({ ok: false, code, reason, fix });
+
+function under(path: string, dir: string): boolean {
+	return path === dir || path.startsWith(`${dir}/`);
+}
+
+function overlaps(a: string, b: string): boolean {
+	return under(a, b) || under(b, a);
+}
+
+interface SourceBind {
+	label: string;
+	source: string;
+	writable: boolean;
+}
+
+/** Every host path the profile asks to expose. */
+function profileSources(profile: SandboxProfile): SourceBind[] {
+	const fs = profile.filesystem;
+	const out: SourceBind[] = [];
+	if (fs?.workspace) {
+		const writable = fs.workspace.access === "rw";
+		out.push({ label: "workspace", source: fs.workspace.source, writable });
+		if (fs.workspace.gitDir) {
+			out.push({ label: "gitDir", source: fs.workspace.gitDir, writable });
+		}
+	}
+	for (const c of fs?.caches ?? []) {
+		out.push({
+			label: `cache ${c.name}`,
+			source: c.source,
+			writable: c.access === "rw",
+		});
+	}
+	if (fs?.fleetConfig) {
+		out.push({
+			label: "fleet config",
+			source: fs.fleetConfig.source,
+			writable: fs.fleetConfig.writable.length > 0,
+		});
+	}
+	if (profile.network?.mode === "proxy") {
+		out.push({
+			label: "egress socket dir",
+			source: profile.network.socketDir,
+			writable: false,
+		});
+	}
+	return out;
+}
+
+function checkHost(host: CompileHost): CompileRefusal | null {
+	for (const check of [
+		host.caps.userns,
+		host.caps.bwrap,
+		host.caps.systemd,
+		host.caps.arch,
+	]) {
+		if (!check.ok) {
+			return refuse(
+				"host_unsupported",
+				check.detail,
+				check.fix ?? "run `mfw doctor`",
+			);
+		}
+	}
+	for (const [name, p] of [
+		["bwrapPath", host.bwrapPath],
+		["envPath", host.envPath],
+		["systemdRunPath", host.systemdRunPath],
+		["home", host.home],
+		["mfwHome", host.mfwHome],
+	] as const) {
+		if (!p.startsWith("/") || posix.normalize(p) !== p || p === "/") {
+			return refuse(
+				"invalid_host",
+				`${name} must be a canonical absolute path, got ${p}`,
+				"resolve the path before compiling",
+			);
+		}
+	}
+	return null;
+}
+
+/** The protected locations, both as given and with symlinks resolved. */
+function protectedRoots(host: CompileHost): string[] {
+	const out = new Set([host.home, host.mfwHome]);
+	for (const p of [host.home, host.mfwHome]) {
+		const real = host.realpath(p);
+		if (real) out.add(real);
+	}
+	return [...out];
+}
+
+function checkSources(
+	profile: SandboxProfile,
+	host: CompileHost,
+): CompileRefusal | null {
+	const sources = profileSources(profile);
+	const deny = profile.filesystem?.deny ?? [];
+	const guarded = protectedRoots(host);
+
+	for (const root of host.allowedRoots) {
+		if (host.realpath(root) !== root) {
+			return refuse(
+				"path_not_canonical",
+				`allowed root ${root} is not its own real path`,
+				"pass resolved allowed roots",
+			);
+		}
+		const hit = guarded.find((g) => under(g, root));
+		if (hit) {
+			return refuse(
+				"path_denied",
+				`allowed root ${root} contains the protected path ${hit}`,
+				"allow only per-run directories",
+			);
+		}
+	}
+
+	for (const s of sources) {
+		const denied = deny.find((d) => overlaps(s.source, d));
+		if (denied) {
+			return refuse(
+				"path_denied",
+				`${s.label} ${s.source} overlaps the denied path ${denied}`,
+				"remove the bind or the deny entry",
+			);
+		}
+		const hit = guarded.find((g) => under(g, s.source));
+		if (hit) {
+			return refuse(
+				"path_denied",
+				`${s.label} ${s.source} contains the protected path ${hit}`,
+				"bind a per-run directory instead",
+			);
+		}
+		if (!host.allowedRoots.some((r) => s.source !== r && under(s.source, r))) {
+			return refuse(
+				"path_outside_roots",
+				`${s.label} ${s.source} is outside the allowed roots`,
+				"place it under a per-run directory",
+			);
+		}
+		if (host.realpath(s.source) !== s.source) {
+			return refuse(
+				"path_not_canonical",
+				`${s.label} ${s.source} is missing or reached through a symlink`,
+				"create it and pass its real path",
+			);
+		}
+	}
+
+	// A read-only bind and a writable alias of the same tree would defeat the
+	// read-only mount, so any overlap involving a writable bind is refused.
+	for (let i = 0; i < sources.length; i++) {
+		for (let j = i + 1; j < sources.length; j++) {
+			const a = sources[i] as SourceBind;
+			const b = sources[j] as SourceBind;
+			if ((a.writable || b.writable) && overlaps(a.source, b.source)) {
+				return refuse(
+					"bind_overlap",
+					`${a.label} ${a.source} overlaps ${b.label} ${b.source}`,
+					"use separate directories",
+				);
+			}
+		}
+	}
+
+	const fleet = profile.filesystem?.fleetConfig;
+	if (fleet) {
+		for (const rel of fleet.writable) {
+			const full = posix.join(fleet.source, rel);
+			if (host.realpath(full) !== full) {
+				return refuse(
+					"path_not_canonical",
+					`fleet directory ${full} is missing or reached through a symlink`,
+					"create it as a real directory",
+				);
+			}
+		}
+	}
+	return null;
+}
+
+function checkToolchain(
+	profile: SandboxProfile,
+	host: CompileHost,
+): CompileRefusal | null {
+	const declared = profile.filesystem?.toolchain?.binaries;
+	if (!declared) return null;
+	const resolved = new Set(host.toolchain.resolved.map((b) => b.name));
+	for (const name of declared) {
+		if (!resolved.has(name)) {
+			const why = host.toolchain.unresolved.find((u) => u.name === name);
+			return refuse(
+				"toolchain_unresolved",
+				`binary ${name} is unavailable: ${why?.reason ?? "not in the plan"}`,
+				"install it in a known toolchain root or remove it from the profile",
+			);
+		}
+	}
+	const deny = profile.filesystem?.deny ?? [];
+	const guarded = protectedRoots(host);
+	// Toolchain roots legitimately sit inside the real home, never inside MFW_HOME.
+	const homes = new Set([host.home, host.realpath(host.home)]);
+	for (const b of host.toolchain.binds) {
+		const denied = deny.find((d) => overlaps(b.path, d));
+		if (denied) {
+			return refuse(
+				"path_denied",
+				`toolchain bind ${b.path} overlaps the denied path ${denied}`,
+				"remove the deny entry or the binary",
+			);
+		}
+		const hit = guarded.find((g) => under(g, b.path));
+		if (hit) {
+			return refuse(
+				"path_denied",
+				`toolchain bind ${b.path} contains the protected path ${hit}`,
+				"move the protected path out of the toolchain root",
+			);
+		}
+		const inside = guarded.find((g) => !homes.has(g) && under(b.path, g));
+		if (inside) {
+			return refuse(
+				"path_denied",
+				`toolchain bind ${b.path} is inside ${inside}`,
+				"install the toolchain outside MFW_HOME",
+			);
+		}
+	}
+	return null;
+}
+
+function buildEnv(
+	profile: SandboxProfile,
+	host: CompileHost,
+): Record<string, string> {
+	const home = SANDBOX_PATHS.home;
+	const declared = profile.filesystem?.toolchain !== undefined;
+	const pathDirs = declared ? host.toolchain.pathDirs : [];
+	const env: Record<string, string> = {
+		PATH: pathDirs.length > 0 ? pathDirs.join(":") : EMPTY_PATH,
+		HOME: home,
+		USER: "agent",
+		LOGNAME: "agent",
+		TERM: "dumb",
+		LANG: "C.UTF-8",
+		TMPDIR: "/tmp",
+		XDG_CACHE_HOME: `${home}/.cache`,
+		XDG_CONFIG_HOME: `${home}/.config`,
+		XDG_DATA_HOME: `${home}/.local/share`,
+		XDG_STATE_HOME: `${home}/.local/state`,
+		GIT_CONFIG_GLOBAL: "/dev/null",
+		GIT_CONFIG_NOSYSTEM: "1",
+	};
+	const fs = profile.filesystem;
+	if (fs?.workspace?.gitDir) {
+		env.GIT_DIR = SANDBOX_PATHS.gitDir;
+		env.GIT_WORK_TREE = SANDBOX_PATHS.workspace;
+	}
+	if (fs?.fleetConfig) {
+		env[FLEET_ENV[fs.fleetConfig.cli]] =
+			`${SANDBOX_PATHS.fleet}/${fs.fleetConfig.cli}`;
+	}
+	if (profile.network?.mode === "proxy") Object.assign(env, egressClientEnv());
+	// The schema rejects reserved names; the spread order is a second guard.
+	return { ...(profile.process?.env ?? {}), ...env };
+}
+
+function buildMounts(
+	profile: SandboxProfile,
+	host: CompileHost,
+): { before: string[]; after: string[] } {
+	const fs = profile.filesystem;
+	const before: string[] = [
+		"--proc",
+		"/proc",
+		"--dev",
+		"/dev",
+		"--tmpfs",
+		"/tmp",
+		"--tmpfs",
+		"/run",
+		"--tmpfs",
+		"/run/user",
+		"--perms",
+		"0700",
+		"--tmpfs",
+		SANDBOX_PATHS.home,
+	];
+	if (fs?.toolchain) before.push(...toolchainBwrapArgs(host.toolchain));
+	if (fs?.scratch) before.push("--tmpfs", SANDBOX_PATHS.scratch);
+
+	const after: string[] = [];
+	const mount = (access: "ro" | "rw", src: string, dest: string) => {
+		before.push("--dir", dest);
+		after.push(access === "rw" ? "--bind" : "--ro-bind", src, dest);
+	};
+	if (fs?.workspace) {
+		mount(fs.workspace.access, fs.workspace.source, SANDBOX_PATHS.workspace);
+		if (fs.workspace.gitDir) {
+			mount(fs.workspace.access, fs.workspace.gitDir, SANDBOX_PATHS.gitDir);
+		}
+	}
+	for (const c of fs?.caches ?? []) {
+		mount(c.access, c.source, `${SANDBOX_PATHS.caches}/${c.name}`);
+	}
+	if (fs?.fleetConfig) {
+		const dest = `${SANDBOX_PATHS.fleet}/${fs.fleetConfig.cli}`;
+		mount("ro", fs.fleetConfig.source, dest);
+		// Sorted, so a parent is mounted before its children.
+		for (const rel of [...fs.fleetConfig.writable].sort()) {
+			after.push(
+				"--bind",
+				posix.join(fs.fleetConfig.source, rel),
+				posix.join(dest, rel),
+			);
+		}
+	}
+	if (profile.network?.mode === "proxy") {
+		mount("ro", profile.network.socketDir, SANDBOX_PATHS.egress);
+	}
+	return { before, after };
+}
+
+/** Compile a parsed profile and a command into the launch argv, or refuse. */
+export function compileBwrap(
+	profile: SandboxProfile,
+	command: readonly string[],
+	host: CompileHost,
+): CompileResult {
+	const bad = command.length === 0 || command[0] === "";
+	if (bad || command.some((a) => a.includes("\0"))) {
+		return refuse(
+			"invalid_command",
+			"the command is empty or contains NUL",
+			"pass a non-empty argv",
+		);
+	}
+
+	const refusal =
+		checkHost(host) ??
+		checkSources(profile, host) ??
+		checkToolchain(profile, host);
+	if (refusal) return refusal;
+
+	let seccomp: Buffer;
+	try {
+		seccomp = generateSeccompProgram(
+			host.caps.arch.value === "x86_64" ? "x64" : host.caps.arch.value,
+		);
+	} catch (err) {
+		if (!(err instanceof SeccompUnsupportedError)) throw err;
+		return refuse(
+			"host_unsupported",
+			err.message,
+			"run autonomous work on an x86_64 host",
+		);
+	}
+
+	let limits: ReturnType<typeof planLimits>;
+	try {
+		limits = planLimits(
+			host.caps.systemd,
+			{ ...effectiveLimits(profile), unit: host.unit },
+			host.systemdRunPath,
+		);
+	} catch (err) {
+		if (!(err instanceof RangeError)) throw err;
+		return refuse("invalid_host", err.message, "pass a valid scope unit name");
+	}
+	if (!limits.ok) {
+		return refuse("host_unsupported", limits.reason, limits.fix);
+	}
+
+	const env = buildEnv(profile, host);
+	const cwd = profile.filesystem?.workspace
+		? SANDBOX_PATHS.workspace
+		: SANDBOX_PATHS.home;
+	const { before, after } = buildMounts(profile, host);
+	const setenv = Object.keys(env)
+		.sort()
+		.flatMap((k) => ["--setenv", k, env[k] as string]);
+
+	return {
+		ok: true,
+		argv: [
+			...limits.argv,
+			host.envPath,
+			"-i",
+			host.bwrapPath,
+			"--unshare-all",
+			"--unshare-user",
+			...DISABLE_USERNS_BWRAP_ARGS,
+			"--die-with-parent",
+			"--new-session",
+			"--cap-drop",
+			"ALL",
+			...SECCOMP_BWRAP_ARGS,
+			...before,
+			"--remount-ro",
+			"/",
+			...after,
+			...setenv,
+			"--chdir",
+			cwd,
+			"--",
+			...command,
+		],
+		seccomp,
+		env,
+		cwd,
+	};
+}
