@@ -57,3 +57,10 @@
 	backdrop-filter: none;
 	background: color-mix(in srgb, var(--mfw-bg-inset) 72%, transparent);
 }
+
+/* A docked or sheet inspector is narrow: display-size titles would truncate at once. */
+:root[data-theme]:not([data-theme="classic"])
+	[data-presentation]:not([data-presentation="page"])
+	.mfw-title {
+	--mfw-title-size: 17px;
+}

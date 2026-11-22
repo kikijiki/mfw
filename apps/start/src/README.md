@@ -23,7 +23,8 @@ backing procedures, allowed search params) and owns every link target via
 | `lib/trpc.ts` | tRPC v11 client for `AppRouter`, `TRPCProvider`/`useTRPC`/`useTRPCClient`, `makeQueryClient()`, `RouterInputs`/`RouterOutputs`/`YieldOf` |
 | `lib/live.ts` | `useLiveChannel()`, `applyEvent()`, `LiveContext`/`useLive()` |
 | `lib/toast.tsx` | `ToastProvider`, `useToast()`, `useMutationToast()`, `toastBus`, `humanizeError()` |
-| `lib/theme.ts` | `useTheme()` (theme + density → `data-theme`/`data-density`) and `useDarkClassSync()` |
+| `lib/theme.ts` | `useTheme()` (light/dark + density → `data-mode`/`data-density`) and `useDarkClassSync()` |
+| `themes/` | the temporary theme preview: `registry.ts`, one CSS file per theme, the pre-paint script and the switcher; `themes/README.md` says how to keep one and delete the rest |
 | `lib/keyboard.ts` | the ONE shortcut registry (ui.md §8): `useKeyBindings`, `activeBindings`, `describeKey`; a key like `g h` is a two-key sequence (`matchSequence`, 1.5s window), and `handleKeyDown`/`registerScope` drive it without a DOM in tests |
 | `lib/flowPatch.ts` | pure patches `applyEvent` applies to the Flow caches: `insertRun`, `patchRunState`, `patchRunActivity`, `patchTaskStatus` over `flow.tree`/`flow.live` nodes (rollups included), and `applySpanChange`/`spanChangesFor` for the `flow.spans` live edge |
 | `lib/nodeRef.ts` | the node ref grammar (`task:MFW-41`, `run:…`, `sub:<run>/<call>`, `decision:512`, `brain`...): `parseNodeRef`, `formatNodeRef`, `nodeRef.*` builders |
@@ -295,20 +296,21 @@ manage their own scrolling use `<Page className="h-full">` over a `<Scroller>`.
 
 Two switches drive two different things, and both are needed:
 
-- `--mfw-*` tokens key off **`data-theme`** on `<html>` (absent = follow the OS).
+- `--mfw-*` tokens key off **`data-mode`** on `<html>` (absent = follow the OS).
+  **`data-theme`** names the visual theme (`themes/`).
 - The shadcn primitives' `dark:` utilities compile to a selector under
   **`.dark`**, because `styles.css` declares
   `@custom-variant dark (&:is(.dark *))`.
 
 `useDarkClassSync()` (`lib/theme.ts`, called from `__root.tsx`) is the bridge:
-a MutationObserver on `data-theme` plus the OS media query keeps the class in
+a MutationObserver on `data-mode` plus the OS media query keeps the class in
 step with the attribute. Without it every button paints for the wrong theme.
 
 The *first frame* is handled by a synchronous inline script in `<head>` that
-reads `localStorage` and sets `data-theme`, `data-density` and the class before
-the body paints. The storage keys are duplicated between that script and
-`lib/theme.ts` (the script cannot import); each side has a comment pointing at
-the other.
+(`themes/bootstrap.ts`, carrying the CSP nonce) reads the URL and `localStorage`
+and sets `data-theme`, `data-mode`, `data-density` and the class before the body
+paints. The storage keys are duplicated between that script and `lib/theme.ts`
+(the script cannot import); each side has a comment pointing at the other.
 
 Set the preference with `useTheme()`, never by writing the attribute or the
 class by hand.
@@ -478,7 +480,7 @@ these names.
 - helper classes: `.mfw-v2` (root wrapper), `.mfw-num` (tabular mono),
   `.mfw-focus`, `.mfw-pulse`, `.mfw-skeleton`
 
-Theme resolution: no `data-theme` → follow the OS; `data-theme="light|dark"`
+Mode resolution: no `data-mode` → follow the OS; `data-mode="light|dark"`
 wins in both directions. The pre-paint bootstrap is done; see "Theme" above.
 
 ---
