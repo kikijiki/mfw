@@ -87,7 +87,7 @@ export function FleetPage() {
 	return (
 		<Page className="h-full">
 			<PageHeader
-				title="Fleet"
+				title="Capacity"
 				meta="Where agents run and what they cost: hosts, harness accounts, providers and budgets, with the runs on each."
 				actions={
 					<div className="flex flex-wrap gap-2">

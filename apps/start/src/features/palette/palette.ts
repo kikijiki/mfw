@@ -33,7 +33,7 @@ export function nodeTarget(project: string, ref: NodeRef): string {
 export function navCommands(project: string | null): PaletteCommand[] {
 	const out: PaletteCommand[] = [
 		{ id: "go-home", label: "Go to Home", keys: "g h", to: href.home() },
-		{ id: "go-fleet", label: "Go to Fleet", keys: "g l", to: href.fleet() },
+		{ id: "go-fleet", label: "Go to Capacity", keys: "g l", to: href.fleet() },
 	];
 	if (project) {
 		out.push(

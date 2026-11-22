@@ -17,10 +17,10 @@ function between(source: string, start: string, end: string): string {
 }
 
 describe("machine navigation", () => {
-	test("keeps one Fleet entry fixed above Projects", () => {
+	test("keeps one Capacity entry fixed above Projects", () => {
 		const sidebar = between(shell, "function Sidebar", "function Divider");
 		expect(shell).toContain(
-			'{ label: "Fleet", to: href.fleet(), icon: Boxes }',
+			'{ label: "Capacity", to: href.fleet(), icon: Boxes }',
 		);
 		// The four pages Fleet replaced have no entry of their own.
 		for (const label of ["Models", "Resources", "RunPod", "OpenRouter"]) {
@@ -82,11 +82,11 @@ describe("machine navigation", () => {
 		).toBeLessThan(sidebar.indexOf("{PRIMARY_NAV.map"));
 	});
 
-	test("mobile is exactly Home, Fleet, More", () => {
+	test("mobile is exactly Home, Capacity, More", () => {
 		const mobile = between(shell, "const MOBILE_NAV", "function Sidebar");
 		const tabBar = between(shell, "function TabBar", "function MobileHeader");
 		expect(mobile.match(/label: /g)).toHaveLength(2);
-		for (const label of ["Home", "Fleet"]) {
+		for (const label of ["Home", "Capacity"]) {
 			expect(mobile).toContain(`label: "${label}"`);
 		}
 		expect(tabBar).toContain(">More</span>");
