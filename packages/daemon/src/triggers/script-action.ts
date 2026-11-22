@@ -3,6 +3,7 @@ import type { Logger } from "../log.ts";
 import { runProc } from "../proc.ts";
 import { createRunWorkspace } from "../run-workspace/factory.ts";
 import type { RunWorkspaceHandle } from "../run-workspace/run-workspace.ts";
+import { requireHostTool } from "../sandbox.ts";
 import { signalOf } from "../verifier.ts";
 import type {
 	TriggerActionHandler,
@@ -142,7 +143,7 @@ async function runScript(
 		// it, so exitCode/signalCode describe it directly. For multi-statement
 		// `run` (`foo && bar`) sh forks and a crash shows as sh's 128+signal exit.
 		// Harmless here: a crash and a non-zero exit both mean "delivery failed".
-		const result = await runProc(["sh", "-c", action.run], {
+		const result = await runProc([requireHostTool("sh"), "-c", action.run], {
 			cwd,
 			env,
 			timeoutMs: action.timeoutMs,

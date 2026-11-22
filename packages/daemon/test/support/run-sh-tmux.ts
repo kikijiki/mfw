@@ -8,7 +8,11 @@ import type { AgentTmuxRunner } from "../../src/agent-host.ts";
  * go signal, optionally delayed per session (to widen a race window in tests).
  * Everything else succeeds silently.
  */
-export function runShTmux(goDelayMs: Record<string, number> = {}): {
+export function runShTmux(
+	goDelayMs: Record<string, number> = {},
+	/** Extra environment for the pane command, merged over the test process's own. */
+	env: Record<string, string> = {},
+): {
 	runner: AgentTmuxRunner;
 	procs: Map<string, Subprocess<"pipe", "ignore", "ignore">>;
 } {
@@ -27,7 +31,8 @@ export function runShTmux(goDelayMs: Record<string, number> = {}): {
 			const command = args[args.length - 1] as string;
 			procs.set(
 				name,
-				spawn(["sh", "-c", command], {
+				spawn(["/bin/sh", "-c", command], {
+					env: { ...process.env, ...env },
 					stdin: "pipe",
 					stdout: "ignore",
 					stderr: "ignore",

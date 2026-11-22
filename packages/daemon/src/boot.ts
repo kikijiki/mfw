@@ -31,6 +31,7 @@ import {
 	effectiveAssistance,
 	effectiveReview,
 	FALLBACK_MERGE_CHECKS,
+	isolationConfigProblem,
 	loadConfig,
 	mutateConfig,
 	normalizeRoot,
@@ -1361,7 +1362,30 @@ export async function attachProject(
 		mergeQueue,
 		admission,
 		budgets,
+		isolationIssue: () => {
+			const detail = isolationConfigProblem({
+				agentIsolation: cfg.agentIsolation,
+				approvalMode: cfg.approvalMode,
+			});
+			return detail
+				? {
+						detail,
+						fix: 'Set agentIsolation to "bwrap" (the default) in this project\'s entry in $MFW_HOME/config.json, or set approvalMode to "interactive".',
+					}
+				: null;
+		},
 	});
+	if (
+		isolationConfigProblem({
+			agentIsolation: cfg.agentIsolation,
+			approvalMode: cfg.approvalMode,
+		})
+	) {
+		plog.warn(
+			{ project: cfg.name },
+			'agentIsolation "none" without interactive approvals: autonomous dispatch is refused for this project',
+		);
+	}
 	sessions.dismissInboxItem = (itemId) => inbox.dismiss(itemId);
 	const review = new ReviewService({
 		handle,
@@ -2467,6 +2491,8 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 					}
 				};
 				assertConfigAvailable(await loadConfig(home));
+				const isolationProblem = isolationConfigProblem(cfg);
+				if (isolationProblem) throw new Error(isolationProblem);
 				// `template` only shapes a new board.yaml; it is not project config.
 				const { template, ...stored } = cfg;
 				if (template && !getBoardTemplate(template)) {

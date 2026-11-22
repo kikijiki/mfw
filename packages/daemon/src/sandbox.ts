@@ -159,6 +159,38 @@ export function pinnedTool(name: string): string | null {
 	return path;
 }
 
+/**
+ * A pinned host tool, or a refusal. Used where a missing tool must stop the
+ * operation rather than fall back to a `PATH` lookup an agent can steer
+ * (security review X8).
+ */
+export function requireHostTool(name: string): string {
+	const path = pinnedTool(name);
+	if (!path) {
+		throw new SandboxUnavailableError(`${name} is not on a trusted PATH`);
+	}
+	return path;
+}
+
+/**
+ * The sandbox's `PATH` for the agent: the trusted entries first, then every
+ * other entry of the daemon's `PATH`. An entry an agent can write (in `$HOME`,
+ * `/tmp`) can therefore never shadow a trusted tool, so a run cannot plant a
+ * binary that the next run starts with its secrets (security review X7).
+ */
+export function agentSandboxPath(pathVar: string | undefined): string {
+	const trusted = trustedPathEntries(pathVar);
+	const rest = (pathVar ?? "")
+		.split(":")
+		.filter((e) => e.startsWith("/") && !trusted.includes(e));
+	return [...new Set([...trusted, ...rest])].join(":");
+}
+
+/** The host-only control directory (`run.sh`, secret FIFOs, exit records): masked in every sandbox. */
+export function controlRootPath(uid: number = process.getuid?.() ?? 0): string {
+	return join(tmpdir(), `mfw-control-${uid}`);
+}
+
 let cachedSafePath: { pathVar: string | undefined; value: string } | undefined;
 
 /** `PATH` for host-side shells: trusted entries only. */
@@ -294,6 +326,77 @@ export function probeScriptFor(
 	});
 }
 
+interface SandboxPlan {
+	core: string[];
+	/** Names handed over by value (never `PATH`); the values come from the launching shell. */
+	names: string[];
+	/** The probe, then `PATH` switched to the agent's, then `cmd`. */
+	inner: (cmd: string) => string;
+	/** Absolute pinned paths. */
+	envPath: string;
+	shell: string;
+	/** What the probe and the shell itself see: trusted entries only. */
+	trustedPath: string;
+}
+
+/**
+ * The one place a sandbox invocation is built, for a real launch and for the
+ * preflight probe alike, so the probe cannot pass with binds a launch does not
+ * have (security review X13).
+ */
+function planSandbox(o: {
+	cwd: string;
+	runDir: string;
+	isolation: BwrapIsolation;
+	passEnv: readonly string[];
+	readOnly?: readonly string[];
+	env?: NodeJS.ProcessEnv;
+}): SandboxPlan {
+	const bwrapPath = pinnedTool("bwrap");
+	const envPath = pinnedTool("env");
+	const shell = pinnedTool("bash");
+	if (!bwrapPath || !envPath || !shell) {
+		throw new SandboxUnavailableError(
+			"bwrap, env or bash is not on a trusted PATH",
+		);
+	}
+	const env = o.env ?? process.env;
+	const control = controlRootPath();
+	// The control directory holds run scripts and exit records: always masked.
+	const isolation: BwrapIsolation = {
+		...o.isolation,
+		hidePaths: [
+			...new Set([
+				...o.isolation.hidePaths,
+				...(existsSync(control) ? [control] : []),
+			]),
+		],
+	};
+	const masks = maskedRuntimePaths(env);
+	const names = [...new Set([...SANDBOX_ENV_ALLOWLIST, ...o.passEnv])].filter(
+		(n) => n !== "PATH",
+	);
+	const core = bwrapCore({
+		bwrapPath,
+		cwd: o.cwd,
+		runDir: o.runDir,
+		isolation,
+		masks,
+		readOnly: o.readOnly,
+	});
+	const agentPath = agentSandboxPath(env.PATH);
+	return {
+		core,
+		names,
+		envPath,
+		shell,
+		trustedPath: safeHostPath(),
+		inner: (cmd) =>
+			// The probe runs with the trusted `PATH` only; the agent's `PATH` is set after it.
+			`${probeScriptFor(isolation, [...names, "PATH"], masks)}\nPATH=${q(agentPath)}; export PATH\n${cmd}`,
+	};
+}
+
 /**
  * Wrap a shell command in `bwrap`: host filesystem read-only, `$HOME`
  * re-bound read-write, `isolation.hidePaths` and the runtime and tmux dirs
@@ -302,8 +405,10 @@ export function probeScriptFor(
  *
  * The returned text is a bash fragment for `run.sh`. Environment VALUES are
  * read from the shell at run time, so secrets handed over by the FIFO never
- * appear in the script. `--die-with-parent` ties the sandbox to `run.sh` so a
- * killed run leaks no `bwrap` process. Network is shared.
+ * appear in the script, and they reach `bwrap` through an inherited pipe
+ * (`--args`), never its argv, where any local user could read them from
+ * `/proc/<pid>/cmdline` (security review X6). `--die-with-parent` ties the
+ * sandbox to `run.sh` so a killed run leaks no `bwrap` process. Network is shared.
  */
 export function wrapWithBwrap(
 	cmd: string,
@@ -313,36 +418,23 @@ export function wrapWithBwrap(
 	passEnv: readonly string[] = [],
 	extra: { readOnly?: readonly string[] } = {},
 ): string {
-	const bwrapPath = pinnedTool("bwrap");
-	const envPath = pinnedTool("env");
-	if (!bwrapPath || !envPath) {
-		throw new SandboxUnavailableError("bwrap is not on a trusted PATH");
-	}
-	const masks = maskedRuntimePaths();
-	// PATH is handled apart: run.sh keeps a trusted host PATH for itself and
-	// hands the daemon's full PATH to the sandbox as MFW_SANDBOX_PATH.
-	const names = [...new Set([...SANDBOX_ENV_ALLOWLIST, ...passEnv])].filter(
-		(n) => n !== "PATH",
-	);
-	const core = bwrapCore({
-		bwrapPath,
+	const plan = planSandbox({
 		cwd,
 		runDir,
 		isolation,
-		masks,
+		passEnv,
 		readOnly: extra.readOnly,
 	});
-	const inner = `${probeScriptFor(isolation, [...names, "PATH"], masks)}\n${cmd}`;
 	return [
 		"_mfw_env=()",
 		`_mfw_env+=(--setenv ${PROBE_SENTINEL} 1)`,
-		`for _n in ${names.join(" ")}; do`,
+		`for _n in ${plan.names.join(" ")}; do`,
 		// biome-ignore lint/suspicious/noTemplateCurlyInString: bash indirect expansion, not a JS template
 		'  if [ -n "${!_n+x}" ]; then _mfw_env+=(--setenv "$_n" "${!_n}"); fi',
 		"done",
-		// biome-ignore lint/suspicious/noTemplateCurlyInString: bash default expansion
-		'_mfw_env+=(--setenv PATH "${MFW_SANDBOX_PATH-$PATH}")',
-		`${q(envPath)} -i PATH="$PATH" ${core.map(q).join(" ")} "\${_mfw_env[@]}" -- sh -c ${q(inner)}`,
+		`_mfw_env+=(--setenv PATH ${q(plan.trustedPath)})`,
+		// The values ride a pipe made by a builtin, so no process ever has them in its argv.
+		`${q(plan.envPath)} -i PATH="$PATH" ${plan.core.map(q).join(" ")} --args 3 -- ${q(plan.shell)} -c ${q(plan.inner(cmd))} 3< <(printf '%s\\0' "\${_mfw_env[@]}")`,
 	].join("\n");
 }
 
@@ -388,29 +480,37 @@ export async function probeSandbox(
 	}
 	const env = opts.env ?? process.env;
 	const scratch = tmpdir();
-	const masks = maskedRuntimePaths(env);
-	const core = bwrapCore({
-		bwrapPath,
-		cwd: scratch,
-		runDir: scratch,
-		isolation,
-		masks,
-	});
-	const envPath = pinnedTool("env");
-	if (!envPath) return { ok: false, detail: "env is not on a trusted PATH" };
+	let plan: SandboxPlan;
+	try {
+		plan = planSandbox({
+			cwd: scratch,
+			runDir: scratch,
+			isolation,
+			passEnv: [],
+			env,
+		});
+	} catch (error) {
+		return {
+			ok: false,
+			detail: error instanceof Error ? error.message : String(error),
+		};
+	}
 	const argv = [
-		envPath,
+		plan.envPath,
 		"-i",
-		`PATH=${env.PATH ?? "/usr/bin:/bin"}`,
-		...core,
-		...cleanEnvSetenvArgs(env, SANDBOX_ENV_ALLOWLIST),
+		`PATH=${plan.trustedPath}`,
+		...plan.core,
+		...cleanEnvSetenvArgs(env, plan.names),
+		"--setenv",
+		"PATH",
+		plan.trustedPath,
 		"--setenv",
 		PROBE_SENTINEL,
 		"1",
 		"--",
-		"sh",
+		plan.shell,
 		"-c",
-		`${probeScriptFor(isolation, SANDBOX_ENV_ALLOWLIST, masks)}\ntrue`,
+		plan.inner("true"),
 	];
 	let result: SandboxProbeResult;
 	try {
