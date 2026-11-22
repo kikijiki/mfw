@@ -634,6 +634,45 @@ describe("StepRunner v2: finalization end to end", () => {
 		await env.cleanup();
 	});
 
+	test("a claude run's rate_limit events feed the weekly-meter observer; other providers' do not", async () => {
+		const env = await makeEnv();
+		const seen: unknown[] = [];
+		const runner = env.makeRunner({
+			claudeRateLimits: { observe: (o) => void seen.push(o) },
+		});
+		const events = ev({
+			type: "rate_limit",
+			status: "allowed_warning",
+			limited: false,
+			resetsAt: 1_900_000_000,
+			utilization: 0.8,
+		});
+		for (const providerId of ["claude-cli", "codex-cli"]) {
+			const wt = await addWorktree(env.root, `obs-${providerId}`);
+			const runId = ulid();
+			const taskId = await claimedTask(env, runId, { title: providerId });
+			const run = await seedRun(env, {
+				kind: "task",
+				runId,
+				taskId,
+				wt,
+				providerId,
+				events,
+				exit: "exit:0",
+			});
+			await runner.finalize(run.id);
+		}
+		expect(seen).toEqual([
+			{
+				status: "allowed_warning",
+				limited: false,
+				resetsAt: 1_900_000_000,
+				utilization: 0.8,
+			},
+		]);
+		await env.cleanup();
+	});
+
 	test("(e) failed verification settles verify_failed with the failing checks: no replan call, no block, no ping (T17)", async () => {
 		const env = await makeEnv();
 		env.brain.enabled = true;
