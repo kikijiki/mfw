@@ -340,6 +340,25 @@ describe("attributes and LFS", () => {
 		expect(r.lfs.pointers).toContain("b/real.bin");
 	});
 
+	test("a truncated pointer scan is a flag, not a refusal", async () => {
+		const files: TreeSpec = {
+			...BASE_FILES,
+			"a/one.txt": `${"x".repeat(150)}\n`,
+			"a/two.txt": `${"y".repeat(150)}\n`,
+		};
+		const s = await setup(BASE_FILES, files);
+		const r = await inspectResult({
+			host: s.host,
+			repo: s.repo,
+			baseSha: s.baseSha,
+			headRef: HEAD,
+			limits: { maxPointerCandidates: 1 },
+		});
+		expect(r.lfs.pointerScanTruncated).toBe(true);
+		expect(codes(r.findings, "flag")).toEqual(["pointer_scan_truncated"]);
+		expect(r.refused).toBe(false);
+	});
+
 	test("refuses a special file over the size cap instead of skipping it", async () => {
 		const s = await setup(BASE_FILES, {
 			...BASE_FILES,

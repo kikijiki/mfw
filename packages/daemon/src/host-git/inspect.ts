@@ -46,7 +46,8 @@ export type FindingCode =
 	| "mode_change"
 	| "lfs"
 	| "base_missing"
-	| "too_large";
+	| "too_large"
+	| "pointer_scan_truncated";
 
 export interface Finding {
 	severity: FindingSeverity;
@@ -485,6 +486,12 @@ async function scanLfs(
 	);
 	if (candidates.length > lim.maxPointerCandidates) {
 		lfs.pointerScanTruncated = true;
+		findings.push({
+			severity: "flag",
+			code: "pointer_scan_truncated",
+			ref: o.headRef,
+			detail: `${candidates.length} small blobs, only the first ${lim.maxPointerCandidates} were scanned for LFS pointers`,
+		});
 	}
 	const scan = candidates.slice(0, lim.maxPointerCandidates);
 	for (let i = 0; i < scan.length; i += POINTER_CHUNK) {
