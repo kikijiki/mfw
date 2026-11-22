@@ -74,6 +74,7 @@ async function startHarness(
 		limits?: Parameters<typeof startEgressProxy>[0]["limits"];
 		sni?: boolean;
 		gate?: ReturnType<typeof createConnectionGate>;
+		resolve?: (host: string) => Promise<readonly string[]>;
 	} = {},
 ): Promise<Harness> {
 	const dir = await mkdtemp(join(tmpdir(), "egp-"));
@@ -89,12 +90,14 @@ async function startHarness(
 		runId: "run-1",
 		socketPath: join(dir, "e.sock"),
 		allow: opts.allow ?? ["allowed.test", "allowed.test:8443"],
-		resolve: async (host) => {
-			resolved.push(host);
-			const a = dns[host];
-			if (!a) throw new Error("NXDOMAIN");
-			return a;
-		},
+		resolve:
+			opts.resolve ??
+			(async (host) => {
+				resolved.push(host);
+				const a = dns[host.replace(/\.$/, "")];
+				if (!a) throw new Error("NXDOMAIN");
+				return a;
+			}),
 		connect: (ip) => {
 			dialled.push(ip);
 			return net.connect({ host: "127.0.0.1", port: backend.port });
@@ -102,7 +105,7 @@ async function startHarness(
 		log: (e) => log.push(e),
 		limits: opts.limits,
 		sni: opts.sni,
-		gate: opts.gate,
+		gate: opts.gate ?? createConnectionGate(1000),
 	});
 	cleanups.push(async () => {
 		await proxy.close();
@@ -391,9 +394,13 @@ describe("egress proxy: tunnels", () => {
 		r.socket.end();
 		await new Promise((res) => setTimeout(res, 150));
 		expect(h.dialled).toEqual([PUBLIC_IP]);
-		expect(h.resolved).toEqual(["allowed.test"]); // resolved exactly once
+		// Resolved exactly once, as a fully-qualified name so the host's DNS search
+		// domains are never appended.
+		expect(h.resolved).toEqual(["allowed.test."]);
 		expect(Buffer.concat(h.backend.received).toString()).toBe("ping");
-		const allow = h.log.find((e) => e.decision === "ALLOW");
+		const allow = h.log.find(
+			(e) => e.decision === "ALLOW" && e.phase === "close",
+		);
 		expect(allow).toMatchObject({
 			runId: "run-1",
 			host: "allowed.test",
@@ -484,6 +491,7 @@ describe("egress proxy: tunnels", () => {
 		const dir = h.dir;
 		const dialled: string[] = [];
 		const p = await startEgressProxy({
+			gate: createConnectionGate(1000),
 			runId: "r",
 			socketPath: join(dir, "rb.sock"),
 			allow: ["rebind.test"],
@@ -528,6 +536,7 @@ describe("egress proxy: tunnels", () => {
 		const dir = await mkdtemp(join(tmpdir(), "egp-"));
 		const log: EgressLogEntry[] = [];
 		const p = await startEgressProxy({
+			gate: createConnectionGate(1000),
 			runId: "r",
 			socketPath: join(dir, "e.sock"),
 			allow: ["a.test"],
@@ -551,6 +560,7 @@ describe("egress proxy: tunnels", () => {
 	test("a throwing log sink does not take the proxy down", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "egp-"));
 		const p = await startEgressProxy({
+			gate: createConnectionGate(1000),
 			runId: "r",
 			socketPath: join(dir, "e.sock"),
 			allow: ["a.test"],
@@ -645,6 +655,96 @@ describe("egress proxy: limits", () => {
 		expect(again.text).toContain("200 Connection Established");
 	});
 
+	test("a resolver that never answers is cut off with 504 and frees its slot", async () => {
+		const gate = createConnectionGate(5);
+		const h = await startHarness({
+			gate,
+			limits: { resolveMs: 150 },
+			resolve: () => new Promise(() => {}),
+		});
+		const r = await raw(
+			h.proxy.socketPath,
+			connectLine("allowed.test:443"),
+			1500,
+		);
+		expect(r.text).toContain("504");
+		expect(r.text).toContain("mfw-egress-denied: dns-timeout");
+		expect(r.closedAtMs).not.toBeNull();
+		expect(r.closedAtMs as number).toBeLessThan(1000);
+		for (let i = 0; i < 30 && gate.active > 0; i++)
+			await new Promise((res) => setTimeout(res, 20));
+		expect(gate.active).toBe(0);
+		expect(h.log.some((e) => e.decision === "DENY" && e.status === 504)).toBe(
+			true,
+		);
+	});
+
+	test("an open tunnel is logged as ALLOW before it closes", async () => {
+		const h = await startHarness();
+		const r = await raw(
+			h.proxy.socketPath,
+			connectLine("allowed.test:443"),
+			150,
+			true,
+		);
+		expect(r.text).toContain("200 Connection Established");
+		const open = h.log.filter((e) => e.decision === "ALLOW");
+		expect(open).toHaveLength(1);
+		expect(open[0]).toMatchObject({
+			phase: "open",
+			host: "allowed.test",
+			port: 443,
+			ip: PUBLIC_IP,
+			bytesUp: 0,
+			bytesDown: 0,
+		});
+		r.socket.destroy();
+		await new Promise((res) => setTimeout(res, 150));
+		const all = h.log.filter((e) => e.decision === "ALLOW");
+		expect(all.map((e) => (e.decision === "ALLOW" ? e.phase : ""))).toEqual([
+			"open",
+			"close",
+		]);
+	});
+
+	test("a tunnel is closed at its maximum lifetime even when it is busy", async () => {
+		const h = await startHarness({ limits: { maxTunnelMs: 300 } });
+		const r = await raw(
+			h.proxy.socketPath,
+			connectLine("allowed.test:443"),
+			100,
+			true,
+		);
+		const started = Date.now();
+		// Keep it busy so the idle timeout never fires.
+		const timer = setInterval(() => r.socket.write("x"), 50);
+		const closed = await new Promise<boolean>((resolve) => {
+			r.socket.on("close", () => resolve(true));
+			setTimeout(() => resolve(false), 1500);
+		});
+		clearInterval(timer);
+		expect(closed).toBe(true);
+		expect(Date.now() - started).toBeLessThan(1200);
+		await new Promise((res) => setTimeout(res, 100));
+		const close = h.log.find(
+			(e) => e.decision === "ALLOW" && e.phase === "close",
+		);
+		expect(close).toBeDefined();
+	});
+
+	test("a proxy without a global connection gate refuses to start", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "egp-"));
+		cleanups.push(() => rm(dir, { recursive: true, force: true }));
+		await expect(
+			startEgressProxy({
+				runId: "run-1",
+				socketPath: join(dir, "e.sock"),
+				allow: ["allowed.test"],
+				// Simulates a JS caller that ignores the type.
+			} as unknown as Parameters<typeof startEgressProxy>[0]),
+		).rejects.toThrow(/gate/);
+	});
+
 	test("the global gate is shared across proxies", async () => {
 		const gate = createConnectionGate(2);
 		const a = await startHarness({ gate });
@@ -664,6 +764,7 @@ describe("egress proxy: limits", () => {
 	test("upstream connect timeout is 504", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "egp-"));
 		const p = await startEgressProxy({
+			gate: createConnectionGate(1000),
 			runId: "r",
 			socketPath: join(dir, "e.sock"),
 			allow: ["a.test"],

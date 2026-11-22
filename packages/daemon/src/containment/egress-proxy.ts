@@ -34,6 +34,11 @@ import {
 export type EgressLogEntry =
 	| {
 			decision: "ALLOW";
+			/**
+			 * `open` is logged when the tunnel is established (byte counts are
+			 * zero), `close` when it ends, with the totals.
+			 */
+			phase: "open" | "close";
 			runId: string;
 			host: string;
 			port: number;
@@ -65,6 +70,10 @@ export interface EgressLimits {
 	/** A tunnel with no traffic in either direction is closed after this. */
 	idleMs: number;
 	upstreamConnectMs: number;
+	/** A tunnel is closed this long after it opened, however busy it is. */
+	maxTunnelMs: number;
+	/** Total deadline for DNS resolution of an allowlisted name. */
+	resolveMs: number;
 	/** Concurrent client connections to this run's proxy. */
 	maxConnectionsPerRun: number;
 }
@@ -73,6 +82,8 @@ export const DEFAULT_EGRESS_LIMITS: EgressLimits = {
 	headerDeadlineMs: 5_000,
 	idleMs: 60_000,
 	upstreamConnectMs: 5_000,
+	resolveMs: 5_000,
+	maxTunnelMs: 60 * 60_000,
 	maxConnectionsPerRun: 64,
 };
 
@@ -111,7 +122,11 @@ export interface EgressProxyOptions {
 	clock?: EgressClock;
 	log?: (entry: EgressLogEntry) => void;
 	limits?: Partial<EgressLimits>;
-	gate?: ConnectionGate;
+	/**
+	 * The global connection cap, shared by every run's proxy. Required: a proxy
+	 * with no global cap is a way to exhaust the daemon's file descriptors.
+	 */
+	gate: ConnectionGate;
 	/** Rule 11: the ClientHello SNI must equal the CONNECT host. Off by default. */
 	sni?: boolean;
 	/** Upstream dialer, given the pinned IP. Default `net.connect`. */
@@ -167,6 +182,9 @@ export async function startEgressProxy(
 	if (Buffer.byteLength(opts.socketPath) > UNIX_PATH_MAX) {
 		throw new Error(`egress socket path exceeds ${UNIX_PATH_MAX} bytes`);
 	}
+	if (!opts.gate) {
+		throw new Error("egress proxy requires a global connection gate");
+	}
 	const allow = buildAllowlist(opts.allow);
 	const limits: EgressLimits = { ...DEFAULT_EGRESS_LIMITS, ...opts.limits };
 	const resolve = opts.resolve ?? defaultResolver;
@@ -218,7 +236,7 @@ export async function startEgressProxy(
 			client.destroy();
 			return;
 		}
-		if (gate && !gate.acquire()) {
+		if (!gate.acquire()) {
 			denyLog(deny(429, "limit-global"));
 			client.destroy();
 			return;
@@ -226,7 +244,7 @@ export async function startEgressProxy(
 		sockets.add(client);
 		client.once("close", () => {
 			sockets.delete(client);
-			gate?.release();
+			gate.release();
 		});
 		client.on("error", () => client.destroy());
 		handle(client).catch(() => client.destroy());
@@ -253,7 +271,13 @@ export async function startEgressProxy(
 			respondDeny(client, refused);
 			return;
 		}
-		const pinned = await resolvePinned(target.host, resolve);
+		const pinned = await withDeadline(
+			// Fully qualified: the policy keeps the normalised name, but the
+			// resolver must not retry it under the host's DNS search domains.
+			resolvePinned(`${target.host}.`, resolve),
+			limits.resolveMs,
+			deny(504, "dns-timeout"),
+		);
 		if (!pinned.ok) {
 			denyLog(pinned, target);
 			respondDeny(client, pinned);
@@ -288,8 +312,10 @@ export async function startEgressProxy(
 		const finish = (): void => {
 			if (logged) return;
 			logged = true;
+			clearTimeout(lifetime);
 			log({
 				decision: "ALLOW",
+				phase: "close",
 				runId: opts.runId,
 				host: target.host,
 				port: target.port,
@@ -300,6 +326,9 @@ export async function startEgressProxy(
 				at: started,
 			});
 		};
+		// A busy or slow keep-alive tunnel must not live forever.
+		const lifetime = setTimeout(() => teardown(), limits.maxTunnelMs);
+		lifetime.unref();
 		const teardown = (): void => {
 			client.destroy();
 			upstream.destroy();
@@ -337,6 +366,19 @@ export async function startEgressProxy(
 			client.resume();
 		};
 
+		// Visible while open, and survives a daemon crash that skips the close.
+		log({
+			decision: "ALLOW",
+			phase: "open",
+			runId: opts.runId,
+			host: target.host,
+			port: target.port,
+			ip,
+			bytesUp: 0,
+			bytesDown: 0,
+			durationMs: 0,
+			at: started,
+		});
 		client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
 		if (!opts.sni) {
 			startPiping(pipelined);
@@ -404,6 +446,27 @@ export async function startEgressProxy(
 			await rm(opts.socketPath, { force: true });
 		},
 	};
+}
+
+/** Race `work` against a deadline; the loser's result is dropped. */
+function withDeadline<T, D>(
+	work: Promise<T>,
+	ms: number,
+	onTimeout: D,
+): Promise<T | D> {
+	return new Promise((resolveRace, rejectRace) => {
+		const timer = setTimeout(() => resolveRace(onTimeout), ms);
+		work.then(
+			(v) => {
+				clearTimeout(timer);
+				resolveRace(v);
+			},
+			(e) => {
+				clearTimeout(timer);
+				rejectRace(e);
+			},
+		);
+	});
 }
 
 type HeadResult =
