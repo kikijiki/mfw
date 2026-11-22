@@ -268,7 +268,7 @@ export function bwrapCore(o: BwrapCoreOptions): string[] {
 	return tokens;
 }
 
-function probeScriptFor(
+export function probeScriptFor(
 	isolation: BwrapIsolation,
 	allowedEnv: readonly string[],
 	masks: readonly string[],
