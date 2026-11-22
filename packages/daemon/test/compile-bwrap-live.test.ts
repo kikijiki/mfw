@@ -10,7 +10,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
 	type CompiledSandbox,
 	type CompileHost,
@@ -46,6 +46,8 @@ import {
  * unit layer.
  */
 
+const REPO = resolve(import.meta.dir, "../../..");
+const FIXTURES = join(REPO, ".live-sandbox");
 const BWRAP = Bun.which("bwrap");
 const ENV = Bun.which("env");
 const TOOLS = ["sh", "rm", "find", "touch", "cat", "ls", "grep", "readlink"];
@@ -74,7 +76,14 @@ function liveSkipReason(): string | null {
 }
 
 const skip = liveSkipReason();
-if (skip) console.log(`[compile-bwrap-live] skipped: ${skip}`);
+// CI sets this where the live layer must run, so a broken host cannot pass by skipping.
+const required = process.env.MFW_REQUIRE_LIVE_SANDBOX === "1";
+if (skip && !required) console.log(`[compile-bwrap-live] skipped: ${skip}`);
+if (skip && required) {
+	test("the live sandbox suite is required here", () => {
+		throw new Error(`MFW_REQUIRE_LIVE_SANDBOX is set, but ${skip}`);
+	});
+}
 
 const pass = <T>(value: T): Check<T> => ({
 	ok: true,
@@ -90,7 +99,8 @@ let work: string;
 const CANARY = "documents/precious.txt";
 
 beforeEach(() => {
-	root = realpathSync(mkdtempSync(join(import.meta.dir, ".live-sandbox-")));
+	mkdirSync(FIXTURES, { recursive: true });
+	root = realpathSync(mkdtempSync(join(FIXTURES, "run-")));
 	home = join(root, "fake-home");
 	work = join(root, "mfw/runs/r1/work");
 	mkdirSync(join(home, dirname(CANARY)), { recursive: true });
@@ -251,6 +261,13 @@ function canaryIntact(): void {
 		"not a real key\n",
 	);
 }
+
+test("fixtures live outside the source tree, in an ignored directory", () => {
+	expect(root.startsWith(`${FIXTURES}/`)).toBe(true);
+	expect(readFileSync(join(REPO, ".gitignore"), "utf8")).toContain(
+		"/.live-sandbox/",
+	);
+});
 
 describe.skipIf(skip !== null)("compiled profile under bwrap", () => {
 	test("isolates the process", () => {
