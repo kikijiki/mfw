@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { getOrchestrator } from "~/server/orchestrator";
+import { checkRequest } from "~/server/request-guard";
 
 /**
  * Raw bytes of an image or SVG inside a doc source, for `<img>` in the Docs
@@ -22,7 +23,9 @@ const text = (status: number, message: string) =>
 export const Route = createFileRoute("/api/docs/$project/$sourceId/$")({
 	server: {
 		handlers: {
-			GET: async ({ params }) => {
+			GET: async ({ params, request }) => {
+				const refused = checkRequest(request);
+				if (refused) return refused;
 				const orchestrator = await getOrchestrator();
 				let svc: ReturnType<typeof orchestrator.get>;
 				try {

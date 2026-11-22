@@ -2,6 +2,7 @@ import { appRouter } from "@mfw/api";
 import { createFileRoute } from "@tanstack/react-router";
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { getOrchestrator } from "~/server/orchestrator";
+import { checkRequest } from "~/server/request-guard";
 
 /**
  * The tRPC mount. `endpoint` must carry the build-time base path (tRPC strips
@@ -10,6 +11,8 @@ import { getOrchestrator } from "~/server/orchestrator";
 const endpoint = `${import.meta.env.BASE_URL}api/trpc`.replace(/\/{2,}/g, "/");
 
 const handler = async (req: Request) => {
+	const refused = checkRequest(req);
+	if (refused) return refused;
 	const orchestrator = await getOrchestrator();
 	return fetchRequestHandler({
 		endpoint,

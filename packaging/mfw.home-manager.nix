@@ -77,6 +77,11 @@ in {
         "PATH=${binPath}:${config.home.profileDirectory}/bin:/run/current-system/sw/bin"
         "MFW_HOME=%h/.local/share/mfw"
         "PORT=7777"
+        # Required when you open the UI by the tailnet name or IP: the app
+        # refuses any Host that is not loopback or listed here (comma separated,
+        # host or host:port; a bare host matches any port). Add your tailnet
+        # MagicDNS name and IP, for example "MFW_ALLOWED_HOSTS=mybox.tail1234.ts.net,100.64.0.1".
+        # "MFW_ALLOWED_HOSTS=..."
       ];
       ExecStartPre = "${buildIfMissing}";
       ExecStart = "${startTailscaleBound}";

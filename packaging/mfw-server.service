@@ -19,6 +19,11 @@ RestartSec=2
 Environment=MFW_HOME=%h/.local/share/mfw
 Environment=PORT=7777
 Environment=HOST=127.0.0.1
+# The app refuses requests whose Host is not loopback (localhost, 127.0.0.1,
+# [::1]) and whose Origin does not match the Host. To reach it by another name
+# (a tailnet host, a reverse proxy), list it, comma separated, host or host:port;
+# a bare host matches any port. Without this the UI is locked out on that name.
+#Environment=MFW_ALLOWED_HOSTS=mybox.tail1234.ts.net
 
 # Agent runs are detached tmux sessions that are meant to survive a daemon
 # restart, the supervisor re-adopts them on boot. The default KillMode of
