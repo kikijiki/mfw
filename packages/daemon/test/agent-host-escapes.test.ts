@@ -13,7 +13,11 @@ import { join } from "node:path";
 import { AgentHost } from "../src/agent-host.ts";
 import { SecretEnvironment } from "../src/execution-environment.ts";
 import { runProc } from "../src/proc.ts";
-import { bwrapAvailable, probeSandbox } from "../src/sandbox.ts";
+import {
+	bwrapAvailable,
+	controlRootPath,
+	probeSandbox,
+} from "../src/sandbox.ts";
 import { runShTmux } from "./support/run-sh-tmux.ts";
 import { TEST_TMUX_SOCKET } from "./support/tmux-test-socket.ts";
 
@@ -119,17 +123,28 @@ describe("G2: another run cannot reach or poison the secret FIFO", () => {
 const fs = require("node:fs");
 const path = require("node:path");
 const root = ${JSON.stringify(root)};
+const controlRoot = ${JSON.stringify(controlRootPath())};
 const out = ${JSON.stringify(join(aRun, "loot"))};
+const armed = ${JSON.stringify(join(aRun, "attacker-armed"))};
+const done = ${JSON.stringify(join(aRun, "victim-launched"))};
 const t0 = Date.now();
+fs.writeFileSync(armed, "1");
 (async () => {
-  while (Date.now() - t0 < 12000) {
+  // Poll until the victim's launch has settled (the test writes \`done\`);
+  // 12 s is only the backstop if that never happens.
+  while (!fs.existsSync(done) && Date.now() - t0 < 12000) {
     let found = null;
-    try {
-      for (const d of fs.readdirSync(root)) {
-        if (d.startsWith("mfw-driver-secret-")) found = path.join(root, d);
-      }
-    } catch {}
+    // The secret directory lives under the host control root, one level
+    // below the temp dir; a sandbox that fails to mask it shows up here.
+    for (const dir of [root, controlRoot]) {
+      try {
+        for (const d of fs.readdirSync(dir)) {
+          if (d.startsWith("mfw-driver-secret-")) found = path.join(dir, d);
+        }
+      } catch {}
+    }
     if (found) {
+      fs.writeFileSync(out + ".found", found);
       try { ${attackerBody} } catch (e) { fs.appendFileSync(out + ".err", String(e)); }
       return;
     }
@@ -140,7 +155,15 @@ const t0 = Date.now();
 		);
 		const victim = join(base, "victim.ts");
 		await writeFile(victim, "process.exit(0);");
-		const { runner, procs } = runShTmux({ mfw_vic: 3_000 });
+		// The victim starts only once the attacker is polling, so the attacker
+		// is always there to see the secret directory appear.
+		const armed = join(aRun, "attacker-armed");
+		const { runner, procs } = runShTmux({
+			mfw_vic: async () => {
+				for (let i = 0; i < 1_000 && !(await exists(armed)); i++)
+					await Bun.sleep(10);
+			},
+		});
 		const host = new AgentHost(undefined, { tmuxRunner: runner });
 		const common = {
 			projectRoot: base,
@@ -174,7 +197,10 @@ const t0 = Date.now();
 				(e) => e as Error,
 			);
 		await launched;
+		await writeFile(join(aRun, "victim-launched"), "1");
 		await Promise.all([...procs.values()].map((p) => p.exited));
+		// The attack must have run: an attacker that never saw the secret
+		// directory would "fail" to steal anything for the wrong reason.
 		return { aRun, loot: join(aRun, "loot") };
 	}
 

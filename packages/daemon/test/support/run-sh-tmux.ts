@@ -9,7 +9,8 @@ import type { AgentTmuxRunner } from "../../src/agent-host.ts";
  * Everything else succeeds silently.
  */
 export function runShTmux(
-	goDelayMs: Record<string, number> = {},
+	/** Per session: a delay in ms, or a gate to await, before the pane command gets its go. */
+	goDelayMs: Record<string, number | (() => Promise<void>)> = {},
 	/** Extra environment for the pane command, merged over the test process's own. */
 	env: Record<string, string> = {},
 ): {
@@ -40,7 +41,9 @@ export function runShTmux(
 			);
 		} else if (args[0] === "send-keys") {
 			const session = args[args.indexOf("-t") + 1] as string;
-			await Bun.sleep(goDelayMs[session] ?? 0);
+			const delay = goDelayMs[session] ?? 0;
+			if (typeof delay === "function") await delay();
+			else await Bun.sleep(delay);
 			const p = procs.get(session);
 			p?.stdin.write("\n");
 			p?.stdin.flush();
