@@ -12,29 +12,16 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { readProtectedBoardPaths } from "./board-layout.ts";
 import { git, gitOk } from "./git.ts";
+import type {
+	OwnedRunWorkspace,
+	RunWorkspaceHandle,
+	WipArchive,
+	WorktreeReportIdentity,
+} from "./run-workspace/run-workspace.ts";
 
-export interface Worktree {
-	path: string;
-	branch: string;
-	baseSha: string;
-}
-
-export interface OwnedWorktree extends Worktree {
-	runId: string;
-}
-
-/** A run's work saved on a plain branch by `WorktreeManager.archiveWip`. */
-export interface WipArchive {
-	/** Short branch name, `wip/<task>-<run>` (a `-<n>` suffix if taken). */
-	ref: string;
-	sha: string;
-	/** False when an identical archive already existed. */
-	created: boolean;
-}
-
-export type WorktreeReportIdentity =
-	| { state: "absent" }
-	| { state: "present"; sha256: string };
+export type Worktree = RunWorkspaceHandle;
+export type OwnedWorktree = OwnedRunWorkspace;
+export type { WipArchive, WorktreeReportIdentity };
 
 interface WorktreeContentOptions {
 	/** Exact worktree report state committed by ingest_report. */
