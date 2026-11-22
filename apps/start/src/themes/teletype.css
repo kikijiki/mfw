@@ -113,3 +113,13 @@
 	border: 2px solid var(--mfw-border-strong);
 	transition: none;
 }
+
+/* Mono runs wide: tighter controls keep desktop toolbars on one line. Phones keep their larger targets. */
+@media (min-width: 768px) {
+	:root[data-theme="teletype"] [data-slot="select-trigger"],
+	:root[data-theme="teletype"] [data-slot="input"],
+	:root[data-theme="teletype"] [data-slot="button"] {
+		font-size: 12px;
+		letter-spacing: -0.02em;
+	}
+}

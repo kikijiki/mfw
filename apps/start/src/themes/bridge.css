@@ -43,6 +43,8 @@
 }
 :root[data-theme]:not([data-theme="classic"]).dark {
 	color-scheme: dark;
+	/* The primitives also fill with this at 30%, so it cannot be a bright rule colour. */
+	--input: color-mix(in srgb, var(--mfw-fg) 18%, transparent);
 }
 
 :root[data-theme]:not([data-theme="classic"]) .mfw-title {
