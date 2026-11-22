@@ -4350,42 +4350,47 @@ export async function openHostResourceStore(
 		}
 
 		const now = (options.now ?? Date.now)();
+		// One write transaction, taken up front: reading first and upgrading to a
+		// write in autocommit gives a process that lost the race a stale-snapshot
+		// SQLITE_BUSY that no amount of retrying clears, so concurrent opens
+		// (two daemons starting together) failed after the whole busy budget.
 		const meta = await retryBusy(async () => {
-			let current = await one(
-				client,
-				"SELECT * FROM host_meta WHERE singleton=1",
-			);
-			if (!current) {
-				const hostId = randomUUID();
-				await execute(
-					client,
-					`INSERT INTO host_meta(singleton,host_id,coordinator_id,kernel_boot_id,process_boot_id,generation,next_fence,created_at,updated_at)
+			const tx = await client.transaction("write");
+			try {
+				let current = await one(
+					tx,
+					"SELECT * FROM host_meta WHERE singleton=1",
+				);
+				if (!current) {
+					await execute(
+						tx,
+						`INSERT INTO host_meta(singleton,host_id,coordinator_id,kernel_boot_id,process_boot_id,generation,next_fence,created_at,updated_at)
 				 VALUES(1,?,?,?,?,0,1,?,?)`,
-					[
-						hostId,
-						randomUUID(),
-						options.kernelBootId,
-						options.processBootId,
-						now,
-						now,
-					],
-				);
-				current = await one(
-					client,
-					"SELECT * FROM host_meta WHERE singleton=1",
-				);
-			} else {
-				await execute(
-					client,
-					"UPDATE host_meta SET kernel_boot_id=?,process_boot_id=?,updated_at=? WHERE singleton=1",
-					[options.kernelBootId, options.processBootId, now],
-				);
-				current = await one(
-					client,
-					"SELECT * FROM host_meta WHERE singleton=1",
-				);
+						[
+							randomUUID(),
+							randomUUID(),
+							options.kernelBootId,
+							options.processBootId,
+							now,
+							now,
+						],
+					);
+				} else {
+					await execute(
+						tx,
+						"UPDATE host_meta SET kernel_boot_id=?,process_boot_id=?,updated_at=? WHERE singleton=1",
+						[options.kernelBootId, options.processBootId, now],
+					);
+				}
+				current = await one(tx, "SELECT * FROM host_meta WHERE singleton=1");
+				await tx.commit();
+				return current;
+			} catch (error) {
+				if (!tx.closed) await tx.rollback().catch(() => {});
+				throw error;
+			} finally {
+				tx.close();
 			}
-			return current;
 		}, timeout);
 		if (!meta)
 			throw new HostStoreError("could not initialize host identity", "CORRUPT");
