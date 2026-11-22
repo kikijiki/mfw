@@ -135,7 +135,7 @@ describe("toolchain discovery", () => {
 				`${home}/.cargo/bin`,
 				`${home}/.bun`,
 				`${home}/.local/bin`,
-				`${home}/.nvm`,
+				`${home}/.nvm/versions`,
 			]),
 		);
 		for (const bad of [
@@ -182,6 +182,98 @@ describe("toolchain discovery", () => {
 		expect(paths(plan)).not.toContain("/users/u/private");
 	});
 
+	test("X11: a toolchain root planted as a symlink into credentials is refused, not bound", async () => {
+		const root = await fixture();
+		const home = "/users/u";
+		await writeFile(join(root, "k"), "");
+		await mkdir(join(root, home, ".ssh"), { recursive: true });
+		await writeFile(join(root, home, ".ssh/id_ed25519"), "KEY");
+		await mkdir(join(root, home, ".claude"), { recursive: true });
+		await mkdir(join(root, home, ".cargo"), { recursive: true });
+		await mkdir(join(root, home, ".local"), { recursive: true });
+		await link(root, `${home}/.bun`, `${home}/.ssh`);
+		await link(root, `${home}/.rustup`, `${home}/.claude`);
+		await link(root, `${home}/.cargo/bin`, `${home}/.cargo`);
+		await link(root, `${home}/.local/bin`, `${home}`);
+		await link(root, `${home}/.nvm`, "/users");
+		const plan = discoverToolchain({
+			home,
+			binaries: ["/users/u/.bun/id_ed25519"],
+			path: "/usr/bin",
+			root,
+		});
+		const p = paths(plan);
+		for (const bad of [".bun", ".rustup", ".cargo/bin", ".local/bin", ".nvm"])
+			expect(p.some((x) => x.startsWith(`${home}/${bad}`))).toBe(false);
+		expect(plan.resolved).toEqual([]);
+		const names = plan.unresolved.map((u) => u.name);
+		expect(names).toEqual(
+			expect.arrayContaining(["~/.bun", "~/.rustup", "~/.cargo/bin"]),
+		);
+		for (const u of plan.unresolved) expect(u.reason.length).toBeGreaterThan(0);
+	});
+
+	test("X11: a link into a writable or credential dir is refused even for a named binary", async () => {
+		const root = await fixture();
+		const home = "/users/u";
+		await exe(root, `${home}/.aws/tool`);
+		await link(root, `${home}/.bun`, `${home}/.aws`);
+		const plan = discoverToolchain({
+			home,
+			binaries: ["tool"],
+			path: `${home}/.bun`,
+			root,
+		});
+		expect(plan.resolved).toEqual([]);
+		expect(plan.unresolved[0]?.name).toBe("tool");
+		expect(paths(plan)).not.toContain(`${home}/.bun`);
+		expect(paths(plan)).not.toContain(`${home}/.aws`);
+	});
+
+	test("X11: a root whose link points at a symlinked credential dir is refused", async () => {
+		const root = await fixture();
+		const home = "/users/u";
+		await mkdir(join(root, "mnt/secrets"), { recursive: true });
+		await link(root, `${home}/.ssh`, "/mnt/secrets");
+		await link(root, `${home}/.bun`, "/mnt/secrets");
+		const plan = discoverToolchain({ home, binaries: [], path: "", root });
+		expect(paths(plan)).not.toContain(`${home}/.bun`);
+		expect(plan.unresolved.map((u) => u.name)).toContain("~/.bun");
+	});
+
+	test("X11: uv and nvm bind only their version and interpreter dirs, never their credential files", async () => {
+		const root = await fixture();
+		const home = "/users/u";
+		await mkdir(join(root, home, ".nvm/versions/node"), { recursive: true });
+		await writeFile(join(root, home, ".nvm/.npmrc"), "token");
+		await mkdir(join(root, home, ".local/share/uv/python"), {
+			recursive: true,
+		});
+		await mkdir(join(root, home, ".local/share/uv/credentials"), {
+			recursive: true,
+		});
+		await writeFile(
+			join(root, home, ".local/share/uv/credentials/credentials.toml"),
+			"token",
+		);
+		const plan = discoverToolchain({ home, binaries: [], path: "", root });
+		const p = paths(plan);
+		expect(p).toContain(`${home}/.nvm/versions`);
+		expect(p).toContain(`${home}/.local/share/uv/python`);
+		expect(p).not.toContain(`${home}/.nvm`);
+		expect(p).not.toContain(`${home}/.local/share/uv`);
+	});
+
+	test("X11: a home-manager style .nix-profile link into the store still binds", async () => {
+		const root = await fixture();
+		const home = "/users/u";
+		await mkdir(join(root, "nix/store/abc-profile/bin"), { recursive: true });
+		await link(root, `${home}/.nix-profile`, "/nix/store/abc-profile");
+		const plan = discoverToolchain({ home, binaries: [], path: "", root });
+		expect(paths(plan)).toContain(`${home}/.nix-profile`);
+		expect(plan.unresolved).toEqual([]);
+	});
+
 	test("a binary outside every known root is unresolved", async () => {
 		const root = await fixture();
 		await exe(root, "opt/vendor/bin/tool");
@@ -217,7 +309,7 @@ describe("toolchain discovery", () => {
 			expect(args[i + 1]).toBe(args[i + 2]);
 		}
 		expect(paths(plan).filter((p) => p.startsWith("/usr/"))).toEqual([]);
-		expect(paths(plan)).toContain("/users/u/.local/share/uv");
+		expect(paths(plan)).toContain("/users/u/.local/share/uv/tools");
 	});
 
 	test("a relative or PATH-less name never resolves, and relative PATH entries are ignored", async () => {

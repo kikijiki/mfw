@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/git.ts";
+import { pinnedTool } from "../src/sandbox.ts";
 import {
 	buildRunner,
 	describeVerificationEnvironment,
@@ -38,6 +39,9 @@ describe("verifier v2: checks", () => {
 		expect(bad.passed).toBe(false);
 		expect(bad.checks[0]?.detail).toContain("boom");
 		expect(bad.checks[0]?.exitCode).toBe(2);
+		expect(bad.checks[0]?.failureClass).toBe("agent");
+		expect(bad.failureClass).toBe("agent");
+		expect(ok.failureClass).toBeNull();
 		await rm(root, { recursive: true, force: true });
 	});
 
@@ -50,6 +54,8 @@ describe("verifier v2: checks", () => {
 		);
 		expect(r.passed).toBe(false);
 		expect(r.checks[0]?.classification).toBe("timeout");
+		expect(r.checks[0]?.failureClass).toBe("timeout");
+		expect(r.failureClass).toBe("timeout");
 		await rm(root, { recursive: true, force: true });
 	}, 20_000);
 
@@ -259,16 +265,20 @@ describe("verifier v2: hardening", () => {
 
 	/** `checkPrefix` (e.g. `"direnv exec ."`, `"nix develop -c"`) is the only way into the dev environment; mfw never inspects `.envrc` itself. */
 	test("checkPrefix is the only thing that enters an environment, no detection", () => {
-		expect(buildRunner({})("echo hi")).toEqual(["sh", "-c", "echo hi"]);
+		expect(buildRunner({})("echo hi")).toEqual([
+			pinnedTool("sh") as string,
+			"-c",
+			"echo hi",
+		]);
 		const argv = buildRunner({ checkPrefix: "direnv exec ." })("echo hi");
-		expect(argv[0]).toBe("sh");
+		expect(argv[0]).toBe(pinnedTool("sh") as string);
 		expect(argv[2]).toContain("direnv exec . sh -c");
 	});
 
 	test("checkPrefix is quoted, so a check cannot break out of it", () => {
 		const runner = buildRunner({ checkPrefix: "env FOO=bar" });
 		const argv = runner("echo 'quoted; rm -rf /'");
-		expect(argv[0]).toBe("sh");
+		expect(argv[0]).toBe(pinnedTool("sh") as string);
 		// the check text is a single quoted argument to the inner sh
 		expect(argv[2]).toContain("env FOO=bar sh -c ");
 		expect(argv[2]).toContain("'\\''");
@@ -280,7 +290,7 @@ describe("verifier v2: hardening", () => {
 			checkPrefix: "direnv exec . bwrap --ro-bind / / --",
 		})("make test");
 		expect(argv).toEqual([
-			"sh",
+			pinnedTool("sh") as string,
 			"-c",
 			"direnv exec . bwrap --ro-bind / / -- sh -c 'make test'",
 		]);

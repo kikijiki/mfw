@@ -95,6 +95,7 @@ const SYSTEM_ROOTS = [
 ] as const;
 
 const NIX_STORE = "/nix/store";
+const NIX_ROOTS = [NIX_STORE, "/nix/var/nix/profiles"] as const;
 
 /** Profile symlink trees that point into the store; bound only when a binary resolves into the store through them. */
 const NIX_PROFILE_ROOTS = [
@@ -106,16 +107,21 @@ const NIX_PROFILE_ROOTS = [
 /**
  * HOME toolchain roots, relative to HOME. Each holds installed tools, not
  * credentials: `~/.cargo` is bound only at `bin` (it also holds
- * `credentials.toml`), and `~/.local` only at `bin` and the named share dirs.
+ * `credentials.toml`), `~/.local` only at `bin` and the named share dirs, uv
+ * only at its interpreter and tool dirs (it keeps `credentials/` beside
+ * them) and nvm only at `versions` (`.nvm/.npmrc` may hold a token). A root
+ * that is a symlink is bound only when it resolves into the Nix store or
+ * profiles; otherwise it is refused (see `homeRootRefusal`).
  */
 export const HOME_TOOLCHAIN_ROOTS = [
 	".local/bin",
 	".local/share/claude",
-	".local/share/uv",
+	".local/share/uv/python",
+	".local/share/uv/tools",
 	".bun",
 	".rustup",
 	".cargo/bin",
-	".nvm",
+	".nvm/versions",
 	".nix-profile",
 ] as const;
 
@@ -132,6 +138,9 @@ const HOME_NEVER = [
 	".cargo/credentials.toml",
 	".npmrc",
 	".git-credentials",
+	".docker",
+	".kube",
+	".local/share/keyrings",
 ];
 
 type Fs = {
@@ -148,8 +157,10 @@ function makeFs(root: string): Fs {
 }
 
 function isDir(fs: Fs, p: string): boolean {
+	const real = realpathIn(fs, p);
+	if (!real) return false;
 	try {
-		return statSync(fs.host(p)).isDirectory();
+		return statSync(fs.host(real)).isDirectory();
 	} catch {
 		return false;
 	}
@@ -228,6 +239,36 @@ function homeRootOf(home: string, path: string): string | null {
 function forbiddenHomePath(home: string, path: string): boolean {
 	if (path === home || home.startsWith(`${path}/`) || path === "/") return true;
 	return HOME_NEVER.some((rel) => under(path, posix.join(home, rel)));
+}
+
+/**
+ * Why a HOME toolchain root must not be bound, or null when it is safe. The
+ * check is on the resolved path, because bwrap follows the source symlink:
+ * an agent-writable HOME can hold `~/.bun -> ~/.ssh`. A root must resolve to
+ * itself (a link is allowed only into the Nix store or profiles), and the
+ * resolved path must neither be, contain nor sit inside a credential or
+ * writable location, taken both lexically and after resolution.
+ */
+function homeRootRefusal(fs: Fs, home: string, root: string): string | null {
+	const real = realpathIn(fs, root);
+	if (real === null) return `${root} is a dangling or looping link`;
+	if (real !== root && !NIX_ROOTS.some((r) => under(real, r))) {
+		return `${root} resolves to ${real}, outside the toolchain root`;
+	}
+	// HOME itself is protected only against binding it or an ancestor; roots
+	// legitimately live below it.
+	if (real === "/" || under(home, real)) {
+		return `${root} resolves to ${real}, which contains HOME`;
+	}
+	for (const rel of HOME_NEVER) {
+		const abs = posix.join(home, rel);
+		for (const bad of [abs, realpathIn(fs, abs)]) {
+			if (bad && (under(real, bad) || under(bad, real))) {
+				return `${root} resolves to ${real}, which overlaps the protected location ${bad}`;
+			}
+		}
+	}
+	return null;
 }
 
 /** Find a binary name on PATH, or accept an absolute path. */
@@ -317,8 +358,14 @@ export function discoverToolchain(opts: ToolchainOptions): ToolchainPlan {
 				}
 			} else if (under(loc, home)) {
 				const rootDir = homeRootOf(home, loc);
+				const rootRefusal =
+					rootDir && !forbiddenHomePath(home, rootDir)
+						? homeRootRefusal(fs, home, rootDir)
+						: null;
 				if (!rootDir || forbiddenHomePath(home, rootDir)) {
 					refusal = `${loc} is in HOME outside the known toolchain roots`;
+				} else if (rootRefusal) {
+					refusal = rootRefusal;
 				} else {
 					planned.push({
 						path: rootDir,
@@ -345,7 +392,13 @@ export function discoverToolchain(opts: ToolchainOptions): ToolchainPlan {
 	// shims keep working), the FHS roots on non-Nix hosts, the /etc set.
 	for (const rel of HOME_TOOLCHAIN_ROOTS) {
 		const abs = posix.join(home, rel);
-		if (!forbiddenHomePath(home, abs) && isDir(fs, abs)) {
+		if (forbiddenHomePath(home, abs) || !exists(fs, abs)) continue;
+		const why = homeRootRefusal(fs, home, abs);
+		if (why) {
+			unresolved.push({ name: `~/${rel}`, reason: why });
+			continue;
+		}
+		if (isDir(fs, abs)) {
 			add({
 				path: abs,
 				source: "home",

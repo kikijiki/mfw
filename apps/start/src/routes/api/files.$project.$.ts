@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { getOrchestrator } from "~/server/orchestrator";
+import { checkRequest } from "~/server/request-guard";
 
 /**
  * Raw bytes of an image for `<img>` in the Files and Repo viewers: from the
@@ -25,6 +26,8 @@ export const Route = createFileRoute("/api/files/$project/$")({
 	server: {
 		handlers: {
 			GET: async ({ params, request }) => {
+				const refused = checkRequest(request);
+				if (refused) return refused;
 				const orchestrator = await getOrchestrator();
 				let svc: ReturnType<typeof orchestrator.get>;
 				try {

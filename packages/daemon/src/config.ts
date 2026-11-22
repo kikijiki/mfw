@@ -256,7 +256,9 @@ const projectSchema = z.object({
 	/** Display options: a curated icon key or a 1-2 character mark, and a swatch key (`project-appearance.ts`). Absent = derived from the name. */
 	icon: z
 		.string()
-		.refine((v) => iconProblem(v) === null, { message: "invalid project icon" })
+		.refine((v) => iconProblem(v) === null, {
+			message: "invalid project icon",
+		})
 		.optional(),
 	color: z
 		.string()
@@ -325,6 +327,13 @@ const projectSchema = z.object({
 	 * at preflight (`sandbox_unavailable`), never silently unsandboxed.
 	 */
 	agentIsolation: z.enum(["none", "bwrap"]).optional(),
+	/**
+	 * Where a run's files live: a git `worktree` under the project (default),
+	 * or a private `clone` under `$MFW_HOME/workspaces` whose result the host
+	 * imports as a verified bundle (`run-workspace/clone-impl.ts`). Experimental
+	 * until the clone paths of the WIP, verifier and conflict-rebase work land.
+	 */
+	runWorkspace: z.enum(["worktree", "clone"]).optional(),
 	/** Failed expansion runs before a `draft` is marked failed (see `TaskService.recordDraftExpandFailure`). */
 	draftExpandMaxAttempts: z.number().int().positive().optional(),
 	/** Budget for draft expansion runs, separate from `maxConcurrent` like `maxConcurrentTriggers`. */
@@ -347,6 +356,23 @@ const projectSchema = z.object({
 		.array(z.string().regex(/^[A-Za-z0-9._-]+$/))
 		.optional(),
 });
+
+/**
+ * Why a project entry may not run autonomously without a sandbox, or null.
+ * Not part of the schema: an existing entry that violates it must not stop the
+ * daemon at boot (security review X5). It loads, its autonomous dispatch is
+ * refused with `sandbox_unavailable`, and it shows in the inbox. New and edited
+ * entries are checked with this before they are written.
+ */
+export function isolationConfigProblem(p: {
+	agentIsolation?: "none" | "bwrap";
+	approvalMode?: "autonomous" | "interactive";
+}): string | null {
+	if (p.agentIsolation === "none" && p.approvalMode !== "interactive") {
+		return 'agentIsolation "none" requires approvalMode "interactive": autonomous runs need a bwrap sandbox';
+	}
+	return null;
+}
 
 const configSchema = z.object({
 	projects: z.array(projectSchema).default([]),
@@ -387,6 +413,7 @@ export const PROJECT_DEFAULTS = {
 	pushOnMerge: true,
 	pushRemote: "origin",
 	agentIsolation: "bwrap",
+	runWorkspace: "worktree" as const,
 	// Enough to rule out a blip without leaving a draft unusable through an outage.
 	draftExpandMaxAttempts: 3,
 	// Read-only planning; should not serialize a capture burst.

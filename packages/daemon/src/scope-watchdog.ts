@@ -158,6 +158,28 @@ export async function changedFiles(
 	return { files, truncated: tracked.truncated || untracked.truncated };
 }
 
+/**
+ * Every path a fetched ref changed since `baseSha`, read in the trusted
+ * primary (clone runs, where the host never runs git in the workspace). `ref`
+ * is the quarantine ref of the run's branch or of its newest WIP snapshot, so
+ * it already holds staged, unstaged and untracked work. Throws on any git
+ * failure; the caller treats that as "no sample".
+ */
+export async function changedFilesInRef(
+	repoRoot: string,
+	baseSha: string,
+	ref: string,
+): Promise<{ files: string[]; truncated: boolean }> {
+	const diff = await gitList(
+		["diff", "--name-only", "--no-renames", "-z", `${baseSha}..${ref}`, "--"],
+		repoRoot,
+	);
+	const files = [...new Set(diff.paths)]
+		.filter((p) => !isBookkeeping(p))
+		.sort();
+	return { files, truncated: diff.truncated };
+}
+
 /** Classify a changed-file set against the run's and other tasks' `owns`. */
 export function assessScope(
 	files: readonly string[],

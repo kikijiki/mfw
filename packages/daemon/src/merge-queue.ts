@@ -6,6 +6,7 @@ import { engineKv, type MergeJobState, mergeJobs, runs } from "@mfw/db/schema";
 import { and, asc, eq, inArray, lt } from "drizzle-orm";
 import { readProtectedBoardPaths } from "./board-layout.ts";
 import { git } from "./git.ts";
+import { quarantineRef } from "./host-git/fetch.ts";
 import type { Logger } from "./log.ts";
 import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
 
@@ -65,13 +66,37 @@ export interface MergeQueueDeps {
 	projectRoot: string;
 	log: Logger;
 	/**
-	 * Re-run the task's DoD in the run worktree after a rebase. `crashed`
+	 * Re-run the task's DoD on the rebased branch (a disposable clone on clone
+	 * projects, the run worktree otherwise). `crashed`
 	 * mirrors `VerificationResult.crashed`: a check process died to a signal,
 	 * so `!passed` alone does not mean the rebase broke anything.
 	 */
 	reverify: (
 		job: MergeJobView,
 	) => Promise<{ passed: boolean; detail?: string; crashed?: boolean }>;
+	/**
+	 * Verify the merge commit itself (the integration worktree's HEAD, after
+	 * the board restore) before it lands, in a disposable host-owned clone.
+	 * Absent (worktree projects) means no pre-landing verification. A failure
+	 * parks the job as `reverify`.
+	 */
+	verifyMerge?: (
+		job: MergeJobView,
+		mergeSha: string,
+	) => Promise<{ passed: boolean; detail?: string; crashed?: boolean }>;
+	/**
+	 * Rebase a clone run's quarantine ref onto `onto` in a host-owned scratch
+	 * clone, moving the ref to the result on success. Absent (worktree
+	 * projects) means a clone run's conflict parks without a rebase.
+	 */
+	rebaseClone?: (
+		job: MergeJobView,
+		onto: string,
+	) => Promise<
+		| { ok: true }
+		| { ok: false; kind: "conflict"; paths: string[]; detail: string }
+		| { ok: false; kind: "error"; detail: string }
+	>;
 	/** Post-merge tail of the owning run's journal (release task → done, etc.). */
 	onMerged: (job: MergeJobView, sha: string) => Promise<void>;
 	/** Parked tail: settle `merge_parked` for the brain (task back to ready, run terminal, worktree preserved, job abandoned). */
@@ -344,33 +369,61 @@ export class MergeQueue {
 		await this.setState(job.id, "merging");
 		if (await this.tryMerge(job)) {
 			await this.restoreBoard(job, baseSha);
+			if (!(await this.mergeCommitPasses(job))) return "parked";
 			return this.finishMerged(job, baseSha);
 		}
 
-		// Conflict: rebase the RUN worktree onto the target, re-verify, retry once.
-		if (!job.worktreePath) {
-			await this.park(
-				job,
-				"merge conflict and no run worktree to rebase",
-				"conflict",
-			);
-			return "parked";
-		}
-		await this.setState(job.id, "rebasing");
-		const rebase = await git(["rebase", job.targetBranch], job.worktreePath);
-		if (rebase.exitCode !== 0) {
-			// Read conflicting paths before aborting; git's own advice is useless
-			// to the operator.
-			const paths = await this.conflictingPaths(job.worktreePath);
-			await git(["rebase", "--abort"], job.worktreePath);
-			await this.park(
-				job,
-				paths.length > 0
-					? `rebase conflict in ${paths.join(", ")}`
-					: `rebase conflict: ${tail(rebase.stderr)}`,
-				"conflict",
-			);
-			return "parked";
+		// Conflict: rebase the run onto the target, re-verify, retry once. A
+		// worktree run rebases in its own worktree; a clone run rebases in a
+		// host-owned scratch clone of its quarantine ref.
+		if ((await this.mergeSource(job)) !== job.branch) {
+			if (!this.deps.rebaseClone) {
+				await this.park(
+					job,
+					"merge conflict in a clone run and no scratch rebase is available",
+					"conflict",
+				);
+				return "parked";
+			}
+			await this.setState(job.id, "rebasing");
+			const rebased = await this.deps.rebaseClone(job, baseSha);
+			if (!rebased.ok) {
+				await this.park(
+					job,
+					rebased.kind === "conflict"
+						? rebased.paths.length > 0
+							? `rebase conflict in ${rebased.paths.join(", ")}`
+							: `rebase conflict: ${rebased.detail}`
+						: `rebase of the clone run failed: ${rebased.detail}`,
+					"conflict",
+				);
+				return "parked";
+			}
+		} else {
+			if (!job.worktreePath) {
+				await this.park(
+					job,
+					"merge conflict and no run worktree to rebase",
+					"conflict",
+				);
+				return "parked";
+			}
+			await this.setState(job.id, "rebasing");
+			const rebase = await git(["rebase", job.targetBranch], job.worktreePath);
+			if (rebase.exitCode !== 0) {
+				// Read conflicting paths before aborting; git's own advice is useless
+				// to the operator.
+				const paths = await this.conflictingPaths(job.worktreePath);
+				await git(["rebase", "--abort"], job.worktreePath);
+				await this.park(
+					job,
+					paths.length > 0
+						? `rebase conflict in ${paths.join(", ")}`
+						: `rebase conflict: ${tail(rebase.stderr)}`,
+					"conflict",
+				);
+				return "parked";
+			}
 		}
 
 		await this.setState(job.id, "reverifying");
@@ -395,6 +448,7 @@ export class MergeQueue {
 		await git(["reset", "--hard", "-q", baseSha], this.integrationDir);
 		if (await this.tryMerge(job)) {
 			await this.restoreBoard(job, baseSha);
+			if (!(await this.mergeCommitPasses(job))) return "parked";
 			return this.finishMerged(job, baseSha);
 		}
 		await this.park(job, "merge conflict persisted after rebase", "conflict");
@@ -509,10 +563,51 @@ export class MergeQueue {
 		this.deps.bus.publish([stored]);
 	}
 
+	/**
+	 * What to merge. A clone run's work reaches the primary only as the
+	 * host-verified quarantine ref (`refs/mfw/quarantine/<runId>`), so that is
+	 * read when it exists; a worktree run's branch lives in the primary itself.
+	 */
+	private async mergeSource(job: MergeJobView): Promise<string> {
+		const ref = quarantineRef(job.runId);
+		const found = await git(
+			["rev-parse", "--verify", "-q", `${ref}^{commit}`],
+			this.deps.projectRoot,
+		);
+		return found.exitCode === 0 ? ref : job.branch;
+	}
+
+	/**
+	 * Verify the merge commit before it lands (clone projects). Returns true
+	 * when the job may land; otherwise the job is parked.
+	 */
+	private async mergeCommitPasses(job: MergeJobView): Promise<boolean> {
+		if (!this.deps.verifyMerge) return true;
+		const sha = (
+			await git(["rev-parse", "HEAD"], this.integrationDir)
+		).stdout.trim();
+		await this.setState(job.id, "reverifying");
+		const verdict = await this.deps.verifyMerge(job, sha);
+		if (verdict.passed) {
+			await this.setState(job.id, "merging");
+			return true;
+		}
+		await this.park(
+			job,
+			verdict.crashed
+				? `a DoD check was killed by a signal twice in a row verifying the merge commit; not evidence the merge is bad: ${verdict.detail ?? ""}`
+				: `the merge commit failed verification: ${verdict.detail ?? ""}`,
+			"reverify",
+			verdict.crashed === true,
+		);
+		return false;
+	}
+
 	/** `git merge --no-ff` in the integration worktree; abort on failure. */
 	private async tryMerge(job: MergeJobView): Promise<boolean> {
 		const dir = this.integrationDir;
-		const r = await git(["merge", "--no-ff", "--no-edit", job.branch], dir);
+		const source = await this.mergeSource(job);
+		const r = await git(["merge", "--no-ff", "--no-edit", source], dir);
 		if (r.exitCode === 0) return true;
 		await git(["merge", "--abort"], dir);
 		return false;

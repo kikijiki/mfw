@@ -18,7 +18,7 @@ import { BrainHeaderChip, useBrainStates } from "../brain/BrainBadge";
 import { ProjectDispatchButton } from "../dispatch/DispatchControls";
 import { useInbox } from "../inbox/useInbox";
 import { ConnectedProjectAvatar } from "../projects/ProjectAvatar";
-import { projectNav } from "./projectNav";
+import { lensActive, projectNav } from "./projectNav";
 
 /**
  * Project chrome: the current project and its tabs. Each badge count comes
@@ -60,9 +60,7 @@ export function ProjectLayout({
 	).length;
 
 	const nav = projectNav(project, { triggersNeedingAttention });
-	const current = nav.lenses.find(
-		(tab) => !tab.disabled && isActive(pathname, tab.to),
-	);
+	const current = nav.lenses.find((tab) => lensActive(pathname, tab, isActive));
 	const overflowCurrent = nav.overflow.find((e) => isActive(pathname, e.to));
 	const overflowBadge = nav.overflow.reduce((n, e) => n + (e.badge ?? 0), 0);
 

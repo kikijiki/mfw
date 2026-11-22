@@ -19,10 +19,10 @@ import type { Logger } from "../log.ts";
 import { AdmissionHeldError } from "../project-dispatch-admission.ts";
 import { GlobalStopError, type GroupRunSpec } from "../run-engine.ts";
 import type { RunRegistry, RunRow } from "../run-registry.ts";
+import { createRunWorkspace } from "../run-workspace/factory.ts";
 import type { TaskService } from "../task-service.ts";
 import { TaskOwnershipHeldError } from "../tasks/index.ts";
 import type { VerificationPlan } from "../tasks/types.ts";
-import { WorktreeManager } from "../worktree.ts";
 import { clearAwaiting } from "./awaiting.ts";
 import {
 	type BoardRefusal,
@@ -1362,7 +1362,7 @@ export class BrainActionExecutor {
 	/** Save a loser's work to `wip/<task>-<run>`, then drop its worktree and keep its branch. */
 	private async archiveLoser(run: RunRow): Promise<boolean> {
 		if (!run.worktreePath || !run.branch || !run.baseSha) return false;
-		const wt = new WorktreeManager(this.deps.projectRoot);
+		const wt = createRunWorkspace(this.deps.projectRoot);
 		const handle = {
 			path: run.worktreePath,
 			branch: run.branch,
@@ -1372,7 +1372,7 @@ export class BrainActionExecutor {
 			(p) => p === run.worktreePath || p.endsWith(run.worktreePath as string),
 		);
 		if (!present) return false;
-		const archive = await wt.archiveWip(handle, {
+		const archive = await wt.archive(handle, {
 			runId: run.id,
 			taskId: run.taskId,
 		});

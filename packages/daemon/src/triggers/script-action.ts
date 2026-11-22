@@ -1,8 +1,10 @@
 import { headSha } from "../git.ts";
 import type { Logger } from "../log.ts";
 import { runProc } from "../proc.ts";
+import { createRunWorkspace } from "../run-workspace/factory.ts";
+import type { RunWorkspaceHandle } from "../run-workspace/run-workspace.ts";
+import { requireHostTool } from "../sandbox.ts";
 import { signalOf } from "../verifier.ts";
-import { WorktreeManager } from "../worktree.ts";
 import type {
 	TriggerActionHandler,
 	TriggerActionResult,
@@ -123,13 +125,13 @@ async function runScript(
 		env[name.toUpperCase()] = value;
 	}
 
-	const worktrees = new WorktreeManager(dispatch.projectRoot);
-	let worktree: Awaited<ReturnType<WorktreeManager["create"]>> | null = null;
+	const workspace = createRunWorkspace(dispatch.projectRoot);
+	let worktree: RunWorkspaceHandle | null = null;
 	let cwd = dispatch.projectRoot;
 	if (action.cwd === "worktree") {
 		// Hermetic, detached at the sha, but has no installed dependencies; hence
 		// `repo` (the primary checkout with `node_modules`/`.env`) is the default.
-		worktree = await worktrees.create(
+		worktree = await workspace.seed(
 			`trigger-${dispatch.deliveryId}`,
 			sha || "HEAD",
 		);
@@ -141,7 +143,7 @@ async function runScript(
 		// it, so exitCode/signalCode describe it directly. For multi-statement
 		// `run` (`foo && bar`) sh forks and a crash shows as sh's 128+signal exit.
 		// Harmless here: a crash and a non-zero exit both mean "delivery failed".
-		const result = await runProc(["sh", "-c", action.run], {
+		const result = await runProc([requireHostTool("sh"), "-c", action.run], {
 			cwd,
 			env,
 			timeoutMs: action.timeoutMs,
@@ -161,6 +163,6 @@ async function runScript(
 		};
 	} finally {
 		// Scratch worktree for one delivery: always removed, even if dirty.
-		if (worktree) await worktrees.remove(worktree);
+		if (worktree) await workspace.remove(worktree);
 	}
 }

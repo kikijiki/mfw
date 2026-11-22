@@ -634,6 +634,72 @@ describe("StepRunner v2: finalization end to end", () => {
 		await env.cleanup();
 	});
 
+	test("an auth failure holds the run's provider for the owner, with no retry and no attempt consumed", async () => {
+		const env = await makeEnv();
+		const holds: { key: string; until: number; reason: string }[] = [];
+		const runner = env.makeRunner({
+			providerHolds: {
+				hold: async (key, hold) => {
+					holds.push({ key, until: hold.until, reason: hold.reason });
+				},
+			},
+			projectName: "demo",
+		});
+		const wt = await addWorktree(env.root, "auth-failed");
+		const runId = ulid();
+		const taskId = await claimedTask(env, runId, { title: "logged out" });
+		const run = await seedRun(env, {
+			kind: "task",
+			runId,
+			taskId,
+			wt,
+			providerId: "codex-cli",
+			routing: { provider: "codex-cli", model: "m", holdKey: "codex-cli" },
+			events: ev({
+				type: "error",
+				message:
+					"Your access token could not be refreshed. Please run codex login again.",
+			}),
+			exit: "exit:1",
+		});
+		const before = Date.now();
+		await runner.finalize(run.id);
+		expect(holds).toHaveLength(1);
+		expect(holds[0]).toMatchObject({ key: "codex-cli", reason: "auth" });
+		// Held for a day, not for a reset time or the 15-minute fallback.
+		expect(holds[0]?.until).toBeGreaterThan(before + 23 * 3_600_000);
+		const task = await env.tasks.get(taskId);
+		expect(task?.status).toBe("ready");
+		expect(task?.attemptCount).toBe(0);
+		expect((await env.registry.get(run.id))?.outcome).toBe("rate_limited");
+		await env.cleanup();
+	});
+
+	test("auth wording in a run that exited cleanly is not a login failure", async () => {
+		const env = await makeEnv();
+		const holds: string[] = [];
+		const runner = env.makeRunner({
+			providerHolds: {
+				hold: async (key) => {
+					holds.push(key);
+				},
+			},
+			projectName: "demo",
+		});
+		const run = await seedRun(env, {
+			kind: "plan",
+			providerId: "codex-cli",
+			events: ev({
+				type: "text",
+				text: "the docs say: authentication failed means retry",
+			}),
+			exit: "exit:0",
+		});
+		await runner.finalize(run.id);
+		expect(holds).toEqual([]);
+		await env.cleanup();
+	});
+
 	test("a claude run's rate_limit events feed the weekly-meter observer; other providers' do not", async () => {
 		const env = await makeEnv();
 		const seen: unknown[] = [];

@@ -284,7 +284,7 @@ export function UsageRail({
 			<TipA
 				href={withBase(href.fleet())}
 				onClick={go}
-				tip="Open Fleet"
+				tip="Open Capacity"
 				tipSide="right"
 				className="mfw-focus no-underline"
 				style={{

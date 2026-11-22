@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -118,6 +118,32 @@ afterEach(async () => {
 	}
 	if (savedHome === undefined) delete process.env.MFW_HOME;
 	else process.env.MFW_HOME = savedHome;
+});
+
+describe("approvalMode on an agentIsolation none project (X5)", () => {
+	test("switching to autonomous is refused and nothing is written", async () => {
+		const env = await freshEnv();
+		await writeFile(
+			configPath(),
+			JSON.stringify({
+				projects: [
+					{
+						name: "demo",
+						root: "/tmp/demo",
+						agentIsolation: "none",
+						approvalMode: "interactive",
+					},
+				],
+			}),
+		);
+		await expect(
+			env.settings.update({ approvalMode: "autonomous" }),
+		).rejects.toThrow(/interactive/);
+		const [stored] = (await loadConfig()).projects;
+		expect(stored?.approvalMode).toBe("interactive");
+		// An unrelated edit never trips the rule.
+		await env.settings.update({ leaseMs: 70_000 });
+	});
 });
 
 describe("get", () => {

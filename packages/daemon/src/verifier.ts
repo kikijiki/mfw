@@ -1,7 +1,13 @@
 import { access } from "node:fs/promises";
 import { join } from "node:path";
+import {
+	type ActionableFailureClass,
+	classifyCheckFailure,
+} from "./failure-class.ts";
 import { git } from "./git.ts";
 import { runProc } from "./proc.ts";
+import type { VerifierClones } from "./run-workspace/verifier-clone.ts";
+import { requireHostTool } from "./sandbox.ts";
 import type { DefinitionOfDone, DoDCheck } from "./tasks/types.ts";
 
 /**
@@ -37,6 +43,8 @@ export interface CheckOutcome {
 	check: string;
 	ok: boolean;
 	classification?: FailureClass;
+	/** What can be done about the failure; set whenever `classification` is. */
+	failureClass?: ActionableFailureClass;
 	detail?: string;
 	/** The command's observed exit code. Only run checks have one; null means
 	 *  the wrapper itself was killed by a signal. */
@@ -53,6 +61,11 @@ export interface VerificationResult {
 	 * `passed` is true.
 	 */
 	crashed: boolean;
+	/**
+	 * The actionable class of the whole verification, the first failing
+	 * check's; null when it passed.
+	 */
+	failureClass?: ActionableFailureClass | null;
 }
 
 /**
@@ -86,6 +99,13 @@ export interface VerifyOptions {
 	envPolicy?: EnvPolicy;
 	/** Cancels the currently running check (preemptible background sweeps). */
 	signal?: AbortSignal;
+	/**
+	 * The commit `cwd` was checked out at, when `cwd` is a disposable
+	 * verification clone (`run-workspace/verifier-clone.ts`). A clone is
+	 * agent-influenced, so the `diff_against_base` check answers from this sha
+	 * and runs no git in it.
+	 */
+	candidateSha?: string;
 }
 
 const DEFAULT_CHECK_TIMEOUT_MS = 10 * 60_000;
@@ -241,8 +261,10 @@ export function buildRunner(
 	opts: VerifyOptions,
 ): (checkCmd: string) => string[] {
 	const prefix = opts.checkPrefix?.trim();
-	if (prefix) return (c) => ["sh", "-c", `${prefix} sh -c ${q(c)}`];
-	return (c) => ["sh", "-c", c];
+	// An absolute pinned `sh`, never a `PATH` lookup an agent can steer (security review X8).
+	const sh = requireHostTool("sh");
+	if (prefix) return (c) => [sh, "-c", `${prefix} sh -c ${q(c)}`];
+	return (c) => [sh, "-c", c];
 }
 
 export async function verify(
@@ -338,11 +360,17 @@ export async function verify(
 				checks.push({ check: label, ok: true });
 				continue;
 			}
-			const head = await git(["rev-parse", "HEAD"], cwd);
-			const dirty = await git(["status", "--porcelain"], cwd);
-			const changed =
-				(head.exitCode === 0 && head.stdout !== baseSha) ||
-				dirty.stdout.length > 0;
+			let changed: boolean;
+			if (opts.candidateSha !== undefined) {
+				// A clone holds exactly the candidate commit: nothing is uncommitted.
+				changed = opts.candidateSha !== baseSha;
+			} else {
+				const head = await git(["rev-parse", "HEAD"], cwd);
+				const dirty = await git(["status", "--porcelain"], cwd);
+				changed =
+					(head.exitCode === 0 && head.stdout !== baseSha) ||
+					dirty.stdout.length > 0;
+			}
 			checks.push(
 				changed
 					? { check: label, ok: true }
@@ -356,9 +384,36 @@ export async function verify(
 		}
 	}
 
+	for (const c of checks) {
+		if (!c.ok && c.classification)
+			c.failureClass = classifyCheckFailure(c.classification);
+	}
 	const failing = checks.filter((c) => !c.ok);
 	// Every failing check is a signal death: a verifier-side fact, not a code one.
 	const crashed =
 		failing.length > 0 && failing.every((c) => c.classification === "crashed");
-	return { passed: failing.length === 0, checks, crashed };
+	return {
+		passed: failing.length === 0,
+		checks,
+		crashed,
+		failureClass: failing[0]?.failureClass ?? null,
+	};
+}
+
+/**
+ * Verify a commit in a fresh, host-owned clone that is thrown away afterwards.
+ * `rev` is the run's quarantine tip, or the merge commit about to land; the
+ * checks never run in the run's workspace or the integration worktree.
+ */
+export async function verifyInClone(
+	clones: Pick<VerifierClones, "with">,
+	rev: string,
+	label: string,
+	dod: DefinitionOfDone,
+	baseSha: string,
+	opts: VerifyOptions = {},
+): Promise<VerificationResult> {
+	return clones.with(rev, label, (clone) =>
+		verify(clone.path, dod, baseSha, { ...opts, candidateSha: clone.sha }),
+	);
 }

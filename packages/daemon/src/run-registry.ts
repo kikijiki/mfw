@@ -1,4 +1,4 @@
-import { mkdir, open } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import {
 	isRunActivity,
@@ -43,6 +43,7 @@ import {
 } from "drizzle-orm";
 import type { SubagentFold } from "./agents/activity.ts";
 import { isBrainTurnRun } from "./brain-runtime/turn-run.ts";
+import { readRegularFile } from "./containment/safe-file.ts";
 import { writeRunSubagents } from "./run-subagents.ts";
 
 /**
@@ -1045,34 +1046,26 @@ export class RunRegistry {
 		// Resolve the id through the run table before it becomes a path segment.
 		if (!(await this.get(runId))) throw new Error(`unknown run ${runId}`);
 		const path = join(this.runDir(runId), file);
-		let fh: Awaited<ReturnType<typeof open>>;
-		try {
-			fh = await open(path, "r");
-		} catch {
-			return { chunk: "", size: 0, complete: true };
+		// The run dir is agent-writable: never follow a link out of it, never block on a
+		// FIFO, and only read a regular file (security review X9).
+		const read = await readRegularFile(path, 1024 * 1024, offset);
+		if (!read) return { chunk: "", size: 0, complete: true };
+		const { buffer: buf, size } = read;
+		const start = Math.min(Math.max(0, offset), size);
+		const bytesRead = buf.byteLength;
+		if (bytesRead === 0) return { chunk: "", size, complete: true };
+		let bytesReturned = bytesRead;
+		if (file === "events.jsonl" && start + bytesRead < size) {
+			// Don't end a capped read mid-JSONL-record (the next read would start
+			// mid-line). Fall back to the full buffer only for a giant malformed line.
+			const lastNewline = buf.subarray(0, bytesRead).lastIndexOf(0x0a);
+			if (lastNewline >= 0) bytesReturned = lastNewline + 1;
 		}
-		try {
-			const size = (await fh.stat()).size;
-			const start = Math.min(Math.max(0, offset), size);
-			const len = Math.min(size - start, 1024 * 1024);
-			if (len === 0) return { chunk: "", size, complete: true };
-			const buf = Buffer.alloc(len);
-			const { bytesRead } = await fh.read(buf, 0, len, start);
-			let bytesReturned = bytesRead;
-			if (file === "events.jsonl" && start + bytesRead < size) {
-				// Don't end a capped read mid-JSONL-record (the next read would start
-				// mid-line). Fall back to the full buffer only for a giant malformed line.
-				const lastNewline = buf.subarray(0, bytesRead).lastIndexOf(0x0a);
-				if (lastNewline >= 0) bytesReturned = lastNewline + 1;
-			}
-			return {
-				chunk: buf.subarray(0, bytesReturned).toString("utf8"),
-				// Next byte cursor; less than the file size when the 1 MiB cap hit.
-				size: start + bytesReturned,
-				complete: start + bytesReturned >= size,
-			};
-		} finally {
-			await fh.close();
-		}
+		return {
+			chunk: buf.subarray(0, bytesReturned).toString("utf8"),
+			// Next byte cursor; less than the file size when the 1 MiB cap hit.
+			size: start + bytesReturned,
+			complete: start + bytesReturned >= size,
+		};
 	}
 }

@@ -1,4 +1,5 @@
 import { runProc } from "./proc.ts";
+import { requireHostTool } from "./sandbox.ts";
 
 /** Thin git helper: run a git command in a cwd, capture stdout/exit. */
 export async function git(
@@ -8,7 +9,7 @@ export async function git(
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
 	// Git is fast and bounded; a hung invocation must not wedge a finalize
 	// step, so it inherits runProc's mandatory timeout.
-	const r = await runProc(["git", ...args], {
+	const r = await runProc([requireHostTool("git"), ...args], {
 		cwd,
 		...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
 	});

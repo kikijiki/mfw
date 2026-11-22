@@ -20,6 +20,11 @@ import type { RunExit } from "../agent-host.ts";
 import { finalActivity } from "../agents/activity.ts";
 import { adapterFor } from "../agents/adapter.ts";
 import { parseAgentEvents } from "../agents/events.ts";
+import {
+	AUTH_HOLD_MS,
+	AUTH_HOLD_REASON,
+	isAuthFailure,
+} from "../auth-failure.ts";
 import { git } from "../git.ts";
 import {
 	type CleanupResult,
@@ -41,7 +46,13 @@ import { parseRoutingRecord } from "../routing.ts";
 import { RunEventTail } from "../run-event-tail.ts";
 import type { BeginStepResult, RunRegistry, RunRow } from "../run-registry.ts";
 import {
+	createRunWorkspace,
+	createVerifierClones,
+} from "../run-workspace/factory.ts";
+import type { WorktreeReportIdentity } from "../run-workspace/run-workspace.ts";
+import {
 	changedFiles,
+	changedFilesInRef,
 	SCOPE_KILL_REASONS,
 	type ScopePolicy,
 } from "../scope-watchdog.ts";
@@ -56,8 +67,8 @@ import {
 	type EnvPolicy,
 	type VerificationResult,
 	verify,
+	verifyInClone,
 } from "../verifier.ts";
-import { WorktreeManager, type WorktreeReportIdentity } from "../worktree.ts";
 import {
 	type Directive,
 	type FinalizeCtx,
@@ -273,6 +284,8 @@ interface ClassifyResult {
 	exitCode?: number;
 	killReason?: string;
 	resetsAt?: number;
+	/** The CLI could not authenticate: held fleet-wide, never retried (`auth-failure.ts`). */
+	auth?: true;
 	/** Background jobs the transcript shows started and never seen to finish. */
 	background?: BackgroundJob[];
 }
@@ -866,7 +879,7 @@ export class StepRunner {
 		// Same ownership-aware policy as maintenance. MFW_REPORT.json is exempt
 		// only while it matches the identity recorded by ingest_report.
 		if (
-			await new WorktreeManager(this.deps.projectRoot).hasLocalChanges(
+			await createRunWorkspace(this.deps.projectRoot).hasLocalChanges(
 				{ path: wt },
 				{ reportIdentity },
 			)
@@ -1112,6 +1125,15 @@ export class StepRunner {
 		const exit = await this.deps.host.readExit(
 			this.deps.registry.runDir(run.id),
 		);
+		// A login problem ends the run non-zero with the CLI's own message at the
+		// tail. It rides the rate-limit path (hold, requeue without a repair
+		// attempt) but holds for the owner instead of a reset time.
+		let authFailed = false;
+		if (!limited && exit.kind === "exit" && exit.code !== 0) {
+			const rawTail = await this.readTail(run.id, "raw.log", TAIL_BYTES);
+			authFailed = isAuthFailure(rawTail) || isAuthFailure(eventsTail);
+			if (authFailed) limited = true;
+		}
 		const targetJournal = await this.deps.registry.targetJournal(run.id);
 		const lastCollectionFailure = targetJournal.findLast(
 			(entry) => entry.phase === "collect" && entry.status === "failed",
@@ -1148,6 +1170,7 @@ export class StepRunner {
 			...(exitCode !== null ? { exitCode } : {}),
 			...(killReason ? { killReason } : {}),
 			...(resetsAt !== null ? { resetsAt } : {}),
+			...(authFailed ? { auth: true as const } : {}),
 			...(background.length ? { background } : {}),
 		};
 	}
@@ -1198,8 +1221,14 @@ export class StepRunner {
 		const classify = built.results.get("classify") as
 			| ClassifyResult
 			| undefined;
-		const until = classify?.resetsAt ?? Date.now() + HOLD_FALLBACK_MS;
-		const value = { until, reason: `rate-limited run ${built.run.id}` };
+		const auth = classify?.auth === true;
+		const until = auth
+			? Date.now() + AUTH_HOLD_MS
+			: (classify?.resetsAt ?? Date.now() + HOLD_FALLBACK_MS);
+		const value = {
+			until,
+			reason: auth ? AUTH_HOLD_REASON : `rate-limited run ${built.run.id}`,
+		};
 		if (this.deps.providerHolds) {
 			const key =
 				parseRoutingRecord(built.run.routing)?.holdKey ??
@@ -1293,11 +1322,52 @@ export class StepRunner {
 		}
 		// Hardened verifier: scrubbed env, per-check timeouts, declared
 		// checkPrefix/envPolicy, no guessing at the project (see verifier.ts).
-		const runVerification = () =>
-			verify(run.worktreePath as string, dod, run.baseSha ?? "", {
-				checkPrefix: this.deps.checkPrefix,
-				envPolicy: this.deps.envPolicy,
+		const verifyOpts = {
+			checkPrefix: this.deps.checkPrefix,
+			envPolicy: this.deps.envPolicy,
+		};
+		// A clone's tree is agent-writable: the checks run in a disposable
+		// host-owned clone of the imported tip, never in the run's workspace.
+		const clones = createVerifierClones(this.deps.projectRoot);
+		let candidate: string | null = null;
+		if (clones) {
+			const imported = await createRunWorkspace(
+				this.deps.projectRoot,
+			).fetchResult({
+				path: run.worktreePath,
+				branch: run.branch ?? "",
+				baseSha: run.baseSha ?? "",
 			});
+			if (!imported.sha) {
+				return {
+					passed: false,
+					checks: [
+						{
+							check: "precondition",
+							ok: false,
+							detail: "the run left no imported result to verify",
+						},
+					],
+				};
+			}
+			candidate = imported.sha;
+		}
+		const runVerification = () =>
+			clones && candidate
+				? verifyInClone(
+						clones,
+						candidate,
+						run.id,
+						dod,
+						run.baseSha ?? "",
+						verifyOpts,
+					)
+				: verify(
+						run.worktreePath as string,
+						dod,
+						run.baseSha ?? "",
+						verifyOpts,
+					);
 		const result = this.deps.verification
 			? await this.deps.verification.foreground(runVerification)
 			: await runVerification();
@@ -1786,6 +1856,20 @@ export class StepRunner {
 		const { run } = built;
 		if (!run.branch) throw new Error("enqueue_merge: run has no branch");
 		const targetBranch = run.integrationBranch ?? "main";
+		// A clone's work reaches the primary only through the host's verified
+		// import; the merge queue reads that quarantine ref. Nothing to merge
+		// is a failed step, not an empty merge.
+		const workspace = createRunWorkspace(this.deps.projectRoot);
+		if (workspace.kind === "clone") {
+			const imported = await workspace.fetchResult({
+				path: run.worktreePath ?? workspace.paths(run.id).workPath,
+				branch: run.branch,
+				baseSha: run.baseSha ?? "",
+			});
+			if (!imported.sha) {
+				throw new Error("enqueue_merge: the run's result was not imported");
+			}
+		}
 		// Mark `merging` BEFORE the job is visible: otherwise the worker could
 		// finish the run first and this would drag a terminal run back to
 		// `merging`, where nothing revisits it and it holds a slot forever.
@@ -1852,7 +1936,7 @@ export class StepRunner {
 	private async archiveWip(built: Built): Promise<ArchiveWipResult> {
 		const { run } = built;
 		if (!run.branch || !run.baseSha) return { ref: null, sha: null };
-		const archive = await new WorktreeManager(this.deps.projectRoot).archiveWip(
+		const archive = await createRunWorkspace(this.deps.projectRoot).archive(
 			{
 				// No worktree: archiveWip saves the branch tip instead.
 				path: run.worktreePath ?? join(this.deps.projectRoot, ".mfw", "none"),
@@ -1888,13 +1972,30 @@ export class StepRunner {
 		const owns = task?.owns ?? [];
 		let files: string[] = [];
 		const wt = run.worktreePath;
+		const workspace = createRunWorkspace(this.deps.projectRoot);
 		const present =
 			wt !== null &&
 			(await access(wt).then(
 				() => true,
 				() => false,
 			));
-		if (present && wt && run.baseSha) {
+		if (workspace.kind === "clone" && run.baseSha) {
+			// No host git in a clone: diff the imported ref in the primary.
+			const imported = await workspace.fetchResult({
+				path: wt ?? workspace.paths(run.id).workPath,
+				branch: run.branch ?? "",
+				baseSha: run.baseSha,
+			});
+			if (imported.sha) {
+				files = (
+					await changedFilesInRef(
+						this.deps.projectRoot,
+						run.baseSha,
+						imported.ref,
+					)
+				).files;
+			}
+		} else if (present && wt && run.baseSha) {
 			files = (await changedFiles(wt, run.baseSha)).files;
 		} else if (run.branch && run.baseSha) {
 			const diff = await git(
@@ -1976,7 +2077,7 @@ export class StepRunner {
 				reason: "durable worktree ownership is incomplete",
 			};
 		}
-		await new WorktreeManager(this.deps.projectRoot).remove(
+		await createRunWorkspace(this.deps.projectRoot).remove(
 			{ path: wt, branch: run.branch, baseSha: run.baseSha },
 			{ force, reportIdentity },
 		);

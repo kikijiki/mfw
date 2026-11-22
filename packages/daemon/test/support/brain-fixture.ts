@@ -78,6 +78,10 @@ export async function brainFixture(
 		name: "brainy",
 		root,
 		integrationBranch: "main",
+		// Scripted agents and session files live in a temp dir that a real
+		// sandbox's private /tmp would hide; nothing here needs isolation.
+		agentIsolation: "none",
+		approvalMode: "interactive",
 		provider: {
 			id: "claude-cli",
 			type: "claude-cli",

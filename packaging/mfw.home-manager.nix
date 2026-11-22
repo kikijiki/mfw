@@ -33,8 +33,8 @@
 
   # bun is required; tmux hosts agent runs; git/bash/coreutils/direnv are used by
   # the per-run scripts. `claude` is found via the profile bin below. bubblewrap
-  # is optional, only used when a project sets `agentIsolation: "bwrap"`
-  # (MFW-33 item 3); its absence degrades runs to unsandboxed, not a failure.
+  # sandboxes agent runs (`agentIsolation: "bwrap"`, the default); without it
+  # autonomous runs are refused with a fix, never run unsandboxed.
   binPath = lib.makeBinPath [pkgs.bun pkgs.tmux pkgs.git pkgs.bash pkgs.coreutils pkgs.direnv pkgs.bubblewrap];
 
   # First boot self-builds when the Nitro output is missing; re-run
@@ -77,6 +77,11 @@ in {
         "PATH=${binPath}:${config.home.profileDirectory}/bin:/run/current-system/sw/bin"
         "MFW_HOME=%h/.local/share/mfw"
         "PORT=7777"
+        # Required when you open the UI by the tailnet name or IP: the app
+        # refuses any Host that is not loopback or listed here (comma separated,
+        # host or host:port; a bare host matches any port). Add your tailnet
+        # MagicDNS name and IP, for example "MFW_ALLOWED_HOSTS=mybox.tail1234.ts.net,100.64.0.1".
+        # "MFW_ALLOWED_HOSTS=..."
       ];
       ExecStartPre = "${buildIfMissing}";
       ExecStart = "${startTailscaleBound}";

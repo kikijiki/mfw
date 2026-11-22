@@ -42,6 +42,8 @@ export type InboxKind =
 	| "stalled"
 	/** A resource budget is exhausted: tasks that depend on it are held (`budgets.ts`). */
 	| "budget"
+	/** A provider login failed (`auth-failure.ts`): that provider is held fleet-wide until a person logs in again. */
+	| "auth_hold"
 	/** The brain's circuit is open (repeated failed turns); a person resets it. */
 	| "brain_stuck"
 	/** The brain asked for a person (`notify_human`, any kind but `fyi`). */
@@ -160,6 +162,8 @@ const SEVERITY: Record<InboxKind, InboxSeverity> = {
 	stalled: "attention",
 	// Only a person can raise the limit; the rest of the board keeps running.
 	budget: "attention",
+	// Only the owner can log the fleet dir in again; nothing retries meanwhile.
+	auth_hold: "critical",
 	// The brain cannot proceed on its own; dispatch continues on the fixed pipeline.
 	brain_stuck: "critical",
 	// Only a person can supply what the brain asked for.
@@ -212,6 +216,12 @@ export class InboxService {
 					}[]
 				>;
 			};
+			/** A project-level refusal that holds every autonomous dispatch (`agentIsolation: none` without interactive approvals). */
+			isolationIssue?: () => { detail: string; fix: string } | null;
+			/** Providers held for a failed login (`ProviderHoldStore` entries with reason `auth`). */
+			authHolds?: () => Promise<
+				{ key: string; since: number; until: number }[]
+			>;
 			admission?: {
 				issues(): Promise<
 					{
@@ -276,6 +286,19 @@ export class InboxService {
 		const db = this.deps.handle.db;
 		const project = this.deps.project;
 		const items: Omit<InboxItem, "ref" | "attention">[] = [];
+		const isolation = this.deps.isolationIssue?.();
+		if (isolation) {
+			items.push({
+				id: "admission:isolation",
+				project,
+				kind: "admission",
+				severity: "attention",
+				title: "autonomous dispatch is refused for this project",
+				detail: isolation.detail,
+				fix: isolation.fix,
+				ts: 0,
+			});
+		}
 		for (const issue of (await this.deps.admission?.issues()) ?? []) {
 			items.push({
 				id: `admission:${issue.id}`,
@@ -288,6 +311,19 @@ export class InboxService {
 				taskId: issue.taskId,
 				runId: issue.runId,
 				ts: issue.updatedAt.getTime(),
+			});
+		}
+
+		for (const h of (await this.deps.authHolds?.()) ?? []) {
+			items.push({
+				id: `auth_hold:${h.key}`,
+				project,
+				kind: "auth_hold",
+				severity: "critical",
+				title: `${h.key} login failed: dispatch to it is held`,
+				detail: `A run could not authenticate. Every task routed to ${h.key} waits, in every project, and nothing is retried; the hold lapses ${new Date(h.until).toISOString()} unless cleared.`,
+				fix: `Log the fleet's ${h.key} account in again with the vendor's own login, then clear the hold in Settings → Routing.`,
+				ts: h.since,
 			});
 		}
 
@@ -867,6 +903,7 @@ export const ATTENTION_BY_KIND: Record<InboxKind, AttentionClass> = {
 	approval_pending: "act",
 	stalled: "act",
 	budget: "act",
+	auth_hold: "act",
 	brain_stuck: "act",
 	brain_notice: "act",
 	// A run failed and was handled; read it, nothing to answer.

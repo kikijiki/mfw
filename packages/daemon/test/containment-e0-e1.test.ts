@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { AgentHost } from "../src/agent-host.ts";
 import { runProc } from "../src/proc.ts";
 import { bwrapAvailable, probeSandbox } from "../src/sandbox.ts";
+import { TEST_TMUX_SOCKET } from "./support/tmux-test-socket.ts";
 
 /**
  * G2a: the sandbox experiments' E0 (daemon environment) and E1 (tmux server
@@ -44,7 +45,7 @@ describe("E0/E1 reproductions", () => {
 		await mkdir(cwd, { recursive: true });
 		const canary = `canary-${Math.random().toString(36).slice(2)}`;
 		process.env.MFW_G2A_CANARY = canary;
-		const sock = process.env.MFW_TMUX_SOCKET || "mfw";
+		const sock = TEST_TMUX_SOCKET;
 		const host = new AgentHost();
 		const runId = `e${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
 		try {
@@ -155,6 +156,7 @@ process.exit(0);
 				model: "m",
 				initialMessage: "",
 				steer: false,
+				approvalMode: "interactive",
 			});
 			await waitExit(host, runDir);
 			expect(await readFile(join(runDir, "raw.log"), "utf8")).toContain(

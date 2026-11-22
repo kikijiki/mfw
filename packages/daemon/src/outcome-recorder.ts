@@ -8,6 +8,10 @@ import {
 } from "@mfw/db/outcomes";
 import { runs } from "@mfw/db/schema";
 import { and, eq, isNull } from "drizzle-orm";
+import {
+	type ActionableFailureClass,
+	classifyRunFailure,
+} from "./failure-class.ts";
 import type { Logger } from "./log.ts";
 
 /**
@@ -19,6 +23,10 @@ import type { Logger } from "./log.ts";
  *   later task edits never rewrite history; then open the chain's row.
  * - `run.state_changed` into a settled state (finalize terminals, the merge
  *   tail's `merged` / parked finish, `finalize_error`): re-fold the chain.
+ *
+ * A run that settles into a failure is also classified (`failure-class.ts`)
+ * and reported through `onFailureClass`, once per settle event; `unconfirmed`
+ * is reported too, so the consumer can leave it out of any failure count.
  *
  * Every write is an idempotent recompute (`@mfw/db/outcomes`), serialized
  * here so an older fold never lands after a newer one. Failures are logged
@@ -46,6 +54,15 @@ export interface OutcomeRecorderDeps {
 	bus: EventBus;
 	tasks: { get(id: string): Promise<OutcomeTaskFacts | null> };
 	log: Logger;
+	/** Called for every settled run that is not a clean finish. Errors are logged. */
+	onFailureClass?: (f: RunFailureClass) => void | Promise<void>;
+}
+
+export interface RunFailureClass {
+	runId: string;
+	taskId: string | null;
+	harness: string | null;
+	failureClass: ActionableFailureClass;
 }
 
 export class OutcomeRecorder {
@@ -93,6 +110,8 @@ export class OutcomeRecorder {
 			});
 		} else if (e.type === "run.state_changed" && SETTLED.has(e.payload.to)) {
 			const runId = e.runId;
+			const facts = e.payload;
+			this.enqueue("classify", () => this.classify(runId, facts));
 			this.enqueue("record", () =>
 				this.deps.handle.withTx(async (tx) => {
 					await recordAttemptOutcome(tx, runId);
@@ -101,6 +120,44 @@ export class OutcomeRecorder {
 				}),
 			);
 		}
+	}
+
+	private async classify(
+		runId: string,
+		facts: {
+			to: string;
+			exitCode?: number | null;
+			killReason?: string;
+			note?: string;
+		},
+	): Promise<void> {
+		if (!this.deps.onFailureClass) return;
+		const [row] = await this.deps.handle.db
+			.select({
+				taskId: runs.taskId,
+				harness: runs.harness,
+				providerId: runs.providerId,
+				outcome: runs.outcome,
+				killReason: runs.killReason,
+				exitCode: runs.exitCode,
+				note: runs.note,
+			})
+			.from(runs)
+			.where(eq(runs.id, runId));
+		const failureClass = classifyRunFailure({
+			state: facts.to,
+			outcome: row?.outcome,
+			killReason: facts.killReason ?? row?.killReason,
+			exitCode: facts.exitCode ?? row?.exitCode,
+			text: facts.note ?? row?.note,
+		});
+		if (!failureClass) return;
+		await this.deps.onFailureClass({
+			runId,
+			taskId: row?.taskId ?? null,
+			harness: row?.harness ?? row?.providerId ?? null,
+			failureClass,
+		});
 	}
 
 	private enqueue(what: string, fn: () => Promise<unknown>): void {

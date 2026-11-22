@@ -1,12 +1,15 @@
-import { join } from "node:path";
 import type { ProjectDbHandle } from "@mfw/db/client";
 import { appendEvent, type EventBus } from "@mfw/db/eventlog";
 import { git } from "./git.ts";
 import type { Logger } from "./log.ts";
 import type { RefusalFix } from "./refusal-fix.ts";
 import type { RunRegistry, RunRow } from "./run-registry.ts";
+import { createRunWorkspace } from "./run-workspace/factory.ts";
+import type {
+	RunWorkspace,
+	WipArchive,
+} from "./run-workspace/run-workspace.ts";
 import { runHoldsClaim, type TaskService } from "./task-service.ts";
-import { type WipArchive, WorktreeManager } from "./worktree.ts";
 
 /**
  * Lifecycle safety (backstage architecture.md, "Task lifecycle"): nothing a human does from the UI
@@ -84,7 +87,7 @@ export interface DiscardResult {
 }
 
 export class LifecycleService {
-	private readonly worktrees: WorktreeManager;
+	private readonly workspace: RunWorkspace;
 
 	constructor(
 		private readonly deps: {
@@ -97,7 +100,7 @@ export class LifecycleService {
 			log: Logger;
 		},
 	) {
-		this.worktrees = new WorktreeManager(deps.projectRoot);
+		this.workspace = createRunWorkspace(deps.projectRoot);
 	}
 
 	/**
@@ -174,7 +177,7 @@ export class LifecycleService {
 		if (!run.branch || !run.baseSha) {
 			return { runId, archive: null, removed: false };
 		}
-		const { archive, removed } = await this.worktrees.discard(
+		const { archive, removed } = await this.workspace.discard(
 			{
 				path: this.worktreePathOf(run),
 				branch: run.branch,
@@ -224,20 +227,20 @@ export class LifecycleService {
 		}
 		const results: DiscardResult[] = [];
 		for (const run of runs) {
-			const exists = await git(
-				["rev-parse", "--verify", "-q", `refs/heads/${run.branch}`],
-				this.deps.projectRoot,
-			);
-			const registered = (await this.worktrees.list()).includes(
-				this.worktreePathOf(run),
-			);
-			if (exists.exitCode !== 0 && !registered) continue;
+			const path = this.worktreePathOf(run);
+			const result = await this.workspace.fetchResult({
+				path,
+				branch: run.branch as string,
+				baseSha: run.baseSha ?? "",
+			});
+			const registered = (await this.workspace.list()).includes(path);
+			if (result.sha === null && !registered) continue;
 			results.push(await this.discardRun(run.id, "human", "task discarded"));
 		}
 		return results;
 	}
 
 	private worktreePathOf(run: RunRow): string {
-		return run.worktreePath ?? join(this.worktrees.dir, run.id);
+		return run.worktreePath ?? this.workspace.paths(run.id).workPath;
 	}
 }

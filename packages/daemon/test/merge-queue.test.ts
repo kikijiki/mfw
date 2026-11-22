@@ -22,7 +22,11 @@ import {
 import { eq } from "drizzle-orm";
 import { git, gitOk } from "../src/git.ts";
 import { silentLogger } from "../src/log.ts";
-import { type MergeJobView, MergeQueue } from "../src/merge-queue.ts";
+import {
+	type MergeJobView,
+	MergeQueue,
+	type MergeQueueDeps,
+} from "../src/merge-queue.ts";
 import { MFW_EXCLUDE } from "./fixtures/board.ts";
 
 interface Fixture {
@@ -53,6 +57,8 @@ async function fixture(
 	/** Runs inside `onMerged` before the job is recorded; stands in for the board commit `tasks.release` makes. */
 	onMergedTail?: (job: MergeJobView, sha: string) => Promise<void>,
 	selfRepairMainRed?: () => boolean,
+	verifyMerge?: MergeQueueDeps["verifyMerge"],
+	rebaseClone?: MergeQueueDeps["rebaseClone"],
 ): Promise<Fixture> {
 	const root = await mkdtemp(join(tmpdir(), "mfw-mq-"));
 	await git(["init", "-q", "-b", "main"], root);
@@ -90,6 +96,8 @@ async function fixture(
 		},
 		push,
 		selfRepairMainRed,
+		...(verifyMerge ? { verifyMerge } : {}),
+		...(rebaseClone ? { rebaseClone } : {}),
 	});
 
 	const makeBranchRun = async (
@@ -879,6 +887,74 @@ describe("MergeQueue v2, real git matrix", () => {
 	});
 });
 
+describe("the merge commit is verified before it lands", () => {
+	test("verifyMerge sees the merge commit, and a pass lets it land", async () => {
+		const seen: string[] = [];
+		const f = await fixture(
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			async (_job, sha) => {
+				seen.push(sha);
+				return { passed: true };
+			},
+		);
+		const runId = await f.makeBranchRun("mfw/v1", "a.txt", "hello\n");
+		await f.queue.enqueue({
+			runId,
+			taskId: "MFW-1",
+			branch: "mfw/v1",
+			targetBranch: "main",
+		});
+		expect(await f.queue.tick()).toBe("merged");
+		expect(seen).toEqual([f.merged[0]?.sha ?? ""]);
+		await f.cleanup();
+	});
+
+	test("a failing merge commit parks as reverify and the target ref does not move", async () => {
+		const f = await fixture(
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			async () => ({ passed: false, detail: "run: bun test" }),
+		);
+		const before = await gitOk(["rev-parse", "main"], f.root);
+		const runId = await f.makeBranchRun("mfw/v2", "a.txt", "hello\n");
+		await f.queue.enqueue({
+			runId,
+			taskId: "MFW-2",
+			branch: "mfw/v2",
+			targetBranch: "main",
+		});
+		expect(await f.queue.tick()).toBe("parked");
+		expect(await gitOk(["rev-parse", "main"], f.root)).toBe(before);
+		expect(f.merged.length).toBe(0);
+		const [row] = await f.handle.db
+			.select()
+			.from(mergeJobs)
+			.where(eq(mergeJobs.runId, runId));
+		expect(row?.state).toBe("parked");
+		expect(row?.error).toContain("failed verification");
+		expect(row?.error).toContain("bun test");
+		await f.cleanup();
+	});
+
+	test("without verifyMerge nothing changes for worktree projects", async () => {
+		const f = await fixture();
+		const runId = await f.makeBranchRun("mfw/v3", "a.txt", "hello\n");
+		await f.queue.enqueue({
+			runId,
+			taskId: "MFW-3",
+			branch: "mfw/v3",
+			targetBranch: "main",
+		});
+		expect(await f.queue.tick()).toBe("merged");
+		await f.cleanup();
+	});
+});
+
 describe("the primary checkout is never left inconsistent", () => {
 	test("a merge that WOULD clobber a local edit defers, and lands once committed", async () => {
 		// Ref, index and worktree must move together: a ref ahead of the working tree
@@ -1450,6 +1526,171 @@ describe("operator actions on a parked job", () => {
 		const job = await f.queue.byRun(runId);
 		expect(job?.state).toBe("queued");
 		expect(job?.error).toContain("verifier exploded");
+		await f.cleanup();
+	});
+});
+
+describe("a clone run is merged from its quarantine ref", () => {
+	/** A run whose only copy in the primary is `refs/mfw/quarantine/<runId>`, as after a host import. */
+	async function quarantined(
+		f: Fixture,
+		name: string,
+		file: string,
+		content: string,
+	): Promise<string> {
+		const runId = await f.makeBranchRun(name, file, content);
+		const tip = await gitOk(["rev-parse", name], f.root);
+		await gitOk(["update-ref", `refs/mfw/quarantine/${runId}`, tip], f.root);
+		const [row] = await f.handle.db
+			.select({ wt: runs.worktreePath })
+			.from(runs)
+			.where(eq(runs.id, runId));
+		await gitOk(["worktree", "remove", "--force", row?.wt as string], f.root);
+		await gitOk(["branch", "-D", name], f.root);
+		return runId;
+	}
+
+	test("the branch need not exist in the primary", async () => {
+		const f = await fixture();
+		const runId = await quarantined(f, "mfw/cl1", "c.txt", "clone\n");
+		await f.queue.enqueue({
+			runId,
+			branch: "mfw/cl1",
+			targetBranch: "main",
+		});
+		expect(await f.queue.tick()).toBe("merged");
+		expect((await git(["show", "main:c.txt"], f.root)).stdout).toBe("clone");
+		await f.cleanup();
+	});
+
+	test("a conflict parks, without a scratch rebase to run, instead of rebasing in the clone", async () => {
+		const f = await fixture();
+		const r1 = await f.makeBranchRun("mfw/t1", "base.txt", "from t1\n");
+		const r2 = await quarantined(f, "mfw/cl2", "base.txt", "base\nfrom cl2\n");
+		await f.queue.enqueue({
+			runId: r1,
+			branch: "mfw/t1",
+			targetBranch: "main",
+		});
+		await f.queue.enqueue({
+			runId: r2,
+			branch: "mfw/cl2",
+			targetBranch: "main",
+		});
+		expect(await f.queue.tick()).toBe("merged");
+		expect(await f.queue.tick()).toBe("parked");
+		const [ev] = await f.handle.db
+			.select()
+			.from(eventsTable)
+			.where(eq(eventsTable.type, "merge.parked"));
+		expect(String((ev?.payload as { reason: string }).reason)).toContain(
+			"no scratch rebase",
+		);
+		await f.cleanup();
+	});
+
+	test("a conflict rebases in a scratch clone, re-verifies the rebased tip and merges it", async () => {
+		const calls: string[] = [];
+		const seen: string[] = [];
+		let f: Fixture | undefined;
+		f = await fixture(
+			async () => {
+				seen.push(
+					await gitOk(
+						["rev-parse", "refs/mfw/quarantine/" + calls[0]],
+						f?.root as string,
+					),
+				);
+				return { passed: true };
+			},
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			async (job, onto) => {
+				calls.push(job.runId);
+				const root = f?.root as string;
+				// Stand-in for the scratch rebase: replay the run's commit on `onto`.
+				const q = `refs/mfw/quarantine/${job.runId}`;
+				const content = await gitOk(["show", `${q}:base.txt`], root);
+				expect(content).toContain("from cl2");
+				const tree = await gitOk(["rev-parse", `${onto}^{tree}`], root);
+				const c = await gitOk(
+					["commit-tree", tree, "-p", onto, "-m", "rebased"],
+					root,
+				);
+				await gitOk(["update-ref", q, c], root);
+				return { ok: true };
+			},
+		);
+		const r1 = await f.makeBranchRun("mfw/t1", "base.txt", "from t1\n");
+		const r2 = await (async () => {
+			const runId = await f.makeBranchRun(
+				"mfw/cl2",
+				"base.txt",
+				"base\nfrom cl2\n",
+			);
+			const tip = await gitOk(["rev-parse", "mfw/cl2"], f.root);
+			await gitOk(["update-ref", `refs/mfw/quarantine/${runId}`, tip], f.root);
+			return runId;
+		})();
+		await f.queue.enqueue({
+			runId: r1,
+			branch: "mfw/t1",
+			targetBranch: "main",
+		});
+		await f.queue.enqueue({
+			runId: r2,
+			branch: "mfw/cl2",
+			targetBranch: "main",
+		});
+		expect(await f.queue.tick()).toBe("merged");
+		expect(await f.queue.tick()).toBe("merged");
+		expect(calls).toEqual([r2]);
+		// The re-verify read the moved quarantine ref, and main holds its content.
+		expect(seen).toHaveLength(1);
+		expect(
+			(await git(["log", "--format=%s", "-1", seen[0] as string], f.root))
+				.stdout,
+		).toBe("rebased");
+		await f.cleanup();
+	});
+
+	test("a conflict the scratch rebase reports parks naming the paths", async () => {
+		const f = await fixture(
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			async () => ({
+				ok: false,
+				kind: "conflict",
+				paths: ["base.txt"],
+				detail: "",
+			}),
+		);
+		const r1 = await f.makeBranchRun("mfw/t1", "base.txt", "from t1\n");
+		const r2 = await quarantined(f, "mfw/cl2", "base.txt", "base\nfrom cl2\n");
+		await f.queue.enqueue({
+			runId: r1,
+			branch: "mfw/t1",
+			targetBranch: "main",
+		});
+		await f.queue.enqueue({
+			runId: r2,
+			branch: "mfw/cl2",
+			targetBranch: "main",
+		});
+		expect(await f.queue.tick()).toBe("merged");
+		expect(await f.queue.tick()).toBe("parked");
+		const [ev] = await f.handle.db
+			.select()
+			.from(eventsTable)
+			.where(eq(eventsTable.type, "merge.parked"));
+		expect((ev?.payload as { reason: string }).reason).toBe(
+			"rebase conflict in base.txt",
+		);
 		await f.cleanup();
 	});
 });

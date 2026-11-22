@@ -26,6 +26,7 @@ const base = {
 	allowedEnv: ["PATH", "HOME", "PWD", "SHLVL", "_"],
 	emptyDirs: [] as string[],
 	noSocketDirs: [] as string[],
+	checkPid1Environ: false,
 };
 
 function runProbe(script: string, env: Record<string, string>) {
@@ -48,13 +49,17 @@ describe("buildProbeScript (pure, run with sh)", () => {
 	const script = buildProbeScript(base);
 
 	test("passes with only allowlisted environment", async () => {
-		const r = await runProbe(script, { PATH: process.env.PATH ?? "" });
+		const r = await runProbe(script, {
+			PATH: process.env.PATH ?? "",
+			MFW_PROBE_SENTINEL: "1",
+		});
 		expect(r.exitCode).toBe(0);
 	});
 
 	test("a canary environment variable fails the probe with exit 78", async () => {
 		const r = await runProbe(script, {
 			PATH: process.env.PATH ?? "",
+			MFW_PROBE_SENTINEL: "1",
 			MFW_CANARY_E0: "daemon-secret",
 		});
 		expect(r.exitCode).toBe(PROBE_EXIT_CODE);
@@ -70,7 +75,7 @@ describe("buildProbeScript (pure, run with sh)", () => {
 			const full = join(dir, "full");
 			await mkdir(full);
 			await Bun.write(join(full, "credentials.json"), "{}");
-			const env = { PATH: process.env.PATH ?? "" };
+			const env = { PATH: process.env.PATH ?? "", MFW_PROBE_SENTINEL: "1" };
 			const ok = buildProbeScript({
 				...base,
 				emptyDirs: [empty, join(dir, "absent")],
@@ -94,7 +99,7 @@ describe("buildProbeScript (pure, run with sh)", () => {
 		try {
 			const r = await runProbe(
 				buildProbeScript({ ...base, noSocketDirs: [dir] }),
-				{ PATH: process.env.PATH ?? "" },
+				{ PATH: process.env.PATH ?? "", MFW_PROBE_SENTINEL: "1" },
 			);
 			expect(r.exitCode).toBe(PROBE_EXIT_CODE);
 			expect(r.stderr).toContain("unix socket");
@@ -118,7 +123,7 @@ describe("wrapWithBwrap flags (pure)", () => {
 			},
 			["MFW_RUN_ID"],
 		);
-		expect(w).toContain("env -i PATH=");
+		expect(w).toMatch(/\/env' -i PATH=/);
 		expect(w).toMatch(/'\/[^']*bwrap' '--die-with-parent'/);
 		expect(w).toContain("'--new-session'");
 		expect(w).toContain("'--clearenv'");
@@ -215,5 +220,109 @@ describe("probeSandbox in real bwrap", () => {
 		}
 		// MFW_CANARY_E0 is not allowlisted, so it never enters the sandbox.
 		expect(r).toEqual({ ok: true });
+	});
+});
+
+describe("pinned host tools (review G4)", () => {
+	test("a binary planted in a writable PATH entry is never selected", async () => {
+		const { mkdtemp, mkdir, writeFile, chmod, symlink } = await import(
+			"node:fs/promises"
+		);
+		const { pinnedToolIn, trustedPathEntries } = await import(
+			"../src/sandbox.ts"
+		);
+		const root = await mkdtemp(join(tmpdir(), "mfw-pin-"));
+		try {
+			const home = join(root, "home");
+			const planted = join(home, ".local", "bin");
+			const real = join(root, "system", "bin");
+			await mkdir(planted, { recursive: true });
+			await mkdir(real, { recursive: true });
+			for (const d of [planted, real]) {
+				await writeFile(join(d, "bwrap"), "#!/bin/sh\nexit 0\n");
+				await chmod(join(d, "bwrap"), 0o755);
+			}
+			// a profile link inside the writable root that points outside it is pinned to its target
+			await symlink(real, join(home, "profile-bin"));
+			const path = `${planted}:${join(home, "profile-bin")}:${real}`;
+			expect(pinnedToolIn("bwrap", path, [home])).toBe(join(real, "bwrap"));
+			expect(trustedPathEntries(path, [home])).toEqual([real]);
+			expect(pinnedToolIn("bwrap", planted, [home])).toBeNull();
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("the probe fails closed (review G6)", () => {
+	test("without its helpers on PATH it exits 78 instead of passing", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "mfw-g6-"));
+		try {
+			await Bun.write(join(dir, "credentials.json"), "{}");
+			const script = buildProbeScript({
+				...base,
+				emptyDirs: [dir],
+			});
+			// the report's reproduction: canary env and a non-empty masked dir, no helpers
+			const r = await runProc(
+				[
+					"env",
+					"-i",
+					"PATH=/nonexistent",
+					"MFW_CANARY_E0=x",
+					"MFW_PROBE_SENTINEL=1",
+					Bun.which("sh") ?? "/bin/sh",
+					"-c",
+					script,
+				],
+				{ timeoutMs: 10_000 },
+			);
+			expect(r.exitCode).toBe(PROBE_EXIT_CODE);
+			expect(r.stderr).toContain("required helper");
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("an environment listing without the sentinel fails", async () => {
+		const r = await runProbe(buildProbeScript(base), {
+			PATH: process.env.PATH ?? "",
+		});
+		expect(r.exitCode).toBe(PROBE_EXIT_CODE);
+		expect(r.stderr).toContain("sentinel");
+	});
+
+	test("the sentinel does not reach the driver", async () => {
+		const r = await runProbe(
+			`${buildProbeScript(base)}\nenv | grep -c MFW_PROBE_SENTINEL`,
+			{ PATH: process.env.PATH ?? "", MFW_PROBE_SENTINEL: "1" },
+		);
+		expect(r.stdout.trim()).toBe("0");
+	});
+});
+
+describe("the tmux socket dir is masked on a first launch (review G8)", () => {
+	test("an absent tmux dir is created 0700 so it enters the mask list", async () => {
+		const { ensureTmuxSocketDir } = await import("../src/sandbox.ts");
+		const { statSync } = await import("node:fs");
+		// a uid no one has: /tmp/tmux-<uid> does not exist yet
+		const uid = 2_000_000 + (process.pid % 1000);
+		const want = `/tmp/tmux-${uid}`;
+		try {
+			// the report's reproduction: before the launch, the dir is absent and unmasked
+			expect(maskedRuntimePaths({}, uid)).not.toContain(want);
+			ensureTmuxSocketDir({}, uid);
+			expect(statSync(want).mode & 0o777).toBe(0o700);
+			expect(maskedRuntimePaths({}, uid)).toContain(want);
+		} finally {
+			await rm(want, { recursive: true, force: true });
+		}
+	});
+
+	test("a mask nested in another mask is dropped", () => {
+		const exists = () => true;
+		expect(
+			maskedRuntimePaths({ TMUX_TMPDIR: "/run/user/7" }, 7, exists),
+		).toEqual(["/nix/var/nix/daemon-socket", "/run/user/7", "/tmp/tmux-7"]);
 	});
 });

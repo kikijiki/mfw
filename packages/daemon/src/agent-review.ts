@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,15 +8,21 @@ import type {
 	InferenceReply,
 } from "./brain.ts";
 import { claudeEnvelopeUsage } from "./brain.ts";
+import { PROBE_SENTINEL } from "./containment/minimal-probe.ts";
 import { git } from "./git.ts";
 import { type ProcOpts, type ProcResult, runProc } from "./proc.ts";
 import {
+	agentSandboxPath,
 	bwrapCore,
 	cleanEnvSetenvArgs,
+	controlRootPath,
 	maskedRuntimePaths,
+	pinnedTool,
+	probeScriptFor,
 	resolveBwrapPath,
 	SANDBOX_ENV_ALLOWLIST,
 	SandboxUnavailableError,
+	safeHostPath,
 } from "./sandbox.ts";
 
 /**
@@ -205,22 +212,53 @@ export class AgentReviewInference implements InferenceClient {
 			(p): p is string => typeof p === "string",
 		);
 		const env = process.env;
+		const control = controlRootPath();
+		const isolation = {
+			mode: "bwrap" as const,
+			// The host-only control dir is masked here too, wherever `TMPDIR` points (security review X15).
+			hidePaths: [
+				...(this.opts.hidePaths ?? []),
+				...(existsSync(control) ? [control] : []),
+			],
+		};
+		const masks = maskedRuntimePaths(env);
+		const envPath = pinnedTool("env");
+		const shellPath = pinnedTool("bash");
+		if (!envPath || !shellPath) {
+			throw new SandboxUnavailableError("env or bash is not on a trusted PATH");
+		}
 		return [
-			"env",
+			envPath,
 			"-i",
-			`PATH=${env.PATH ?? "/usr/bin:/bin"}`,
+			`PATH=${safeHostPath()}`,
 			...bwrapCore({
 				bwrapPath,
 				cwd: dir,
 				runDir: dir,
-				isolation: { mode: "bwrap", hidePaths: this.opts.hidePaths ?? [] },
+				isolation,
 				readOnly,
-				masks: maskedRuntimePaths(env),
+				masks,
 			}),
-			...cleanEnvSetenvArgs(env, SANDBOX_ENV_ALLOWLIST),
+			...cleanEnvSetenvArgs(
+				env,
+				SANDBOX_ENV_ALLOWLIST.filter((n) => n !== "PATH"),
+			),
+			// The probe runs with trusted entries only; the agent's PATH follows it (security review X7).
+			"--setenv",
+			"PATH",
+			safeHostPath(),
+			"--setenv",
+			PROBE_SENTINEL,
+			"1",
 			"--chdir",
 			dir,
 			"--",
+			// The same minimal probe a run gets, before the reviewer starts (review G9);
+			// a failed probe exits 78 and the reviewer never runs.
+			shellPath,
+			"-c",
+			`${probeScriptFor(isolation, SANDBOX_ENV_ALLOWLIST, masks)}\nPATH='${agentSandboxPath(env.PATH).replace(/'/g, `'\\''`)}'; export PATH\nexec "$@"`,
+			"reviewer",
 			...argv,
 		];
 	}

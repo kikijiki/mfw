@@ -12,7 +12,8 @@ import { AgentHost } from "./agent-host.ts";
 import { AgentReviewInference } from "./agent-review.ts";
 import { AdapterRegistry } from "./agents/adapter.ts";
 import { DEFAULT_PROVIDER_ID, providerConfigFor } from "./agents/catalogue.ts";
-import { boardRepoPaths, recordBoardLocation } from "./board-layout.ts";
+import { AUTH_HOLD_REASON } from "./auth-failure.ts";
+import { buildBoardLayoutRecord, recordBoardLocation } from "./board-layout.ts";
 import {
 	assertNoForeignTasksDir,
 	relocateLegacyBoard,
@@ -26,11 +27,13 @@ import {
 import { BrainRuntime, resolveBrainConfig } from "./brain-runtime/runtime.ts";
 import { BudgetService } from "./budgets.ts";
 import { ClarifyService, continuationTerminalError } from "./clarify.ts";
+import { CodexLane } from "./codex-lane.ts";
 import {
 	mfwHome as configuredMfwHome,
 	effectiveAssistance,
 	effectiveReview,
 	FALLBACK_MERGE_CHECKS,
+	isolationConfigProblem,
 	loadConfig,
 	mutateConfig,
 	normalizeRoot,
@@ -49,6 +52,7 @@ import { type CriticResult, StepRunner } from "./finalize/step-runner.ts";
 import { git } from "./git.ts";
 import { GlobalDispatch } from "./global-dispatch.ts";
 import { Health } from "./health.ts";
+import { quarantineRef } from "./host-git/fetch.ts";
 import type { HostObservationServiceOptions } from "./host-observation-service.ts";
 import {
 	createProductionHostProbeRuntime,
@@ -88,7 +92,7 @@ import { LifetimeManager } from "./lifetime.ts";
 import { createLocalExecutionTarget } from "./local-execution-target.ts";
 import { type Logger, rootLogger } from "./log.ts";
 import { Maintenance } from "./maintenance.ts";
-import { MergeQueue } from "./merge-queue.ts";
+import { type MergeJobView, MergeQueue } from "./merge-queue.ts";
 import { makeNotifier, type NotifyConfig } from "./notify.ts";
 import { OpenAICompatibleInference } from "./openai-compatible-inference.ts";
 import { OpenRouterAccountService } from "./openrouter-account-service.ts";
@@ -118,6 +122,12 @@ import {
 } from "./routing.ts";
 import { RunEngine } from "./run-engine.ts";
 import { RunRegistry } from "./run-registry.ts";
+import {
+	configureRunWorkspace,
+	createVerifierClones,
+	rebaseCloneOptions,
+} from "./run-workspace/factory.ts";
+import { rebaseQuarantineInScratch } from "./run-workspace/rebase-clone.ts";
 import {
 	RunPodAccountService,
 	type RunPodProviderClient,
@@ -162,7 +172,12 @@ import {
 } from "./usage/default-probes.ts";
 import { UsageMonitor, type UsageSubscription } from "./usage-monitor.ts";
 import { VerificationCoordinator } from "./verification-coordinator.ts";
-import { type EnvPolicy, verify } from "./verifier.ts";
+import {
+	type EnvPolicy,
+	type VerificationResult,
+	verify,
+	verifyInClone,
+} from "./verifier.ts";
 import { WorkspaceService } from "./workspace.ts";
 
 /**
@@ -230,6 +245,8 @@ export interface ProjectConfig {
 	pushRemote?: string;
 	/** Filesystem-isolate agent runs via `bwrap`. Defaults and fallback: see `config.ts`. */
 	agentIsolation?: "none" | "bwrap";
+	/** Where run files live; see `config.ts`. Defaults to `worktree`. */
+	runWorkspace?: "worktree" | "clone";
 	/** Failed expansion runs a draft tolerates before the bounded retry releases
 	 * it as its captured intent. Project merge checks remain inherited policy. */
 	draftExpandMaxAttempts?: number;
@@ -409,6 +426,8 @@ export async function attachProject(
 		runpod?: RunPodAccountService;
 		/** Registry SSH hosts; absent = no `ssh` target. */
 		hosts?: HostService;
+		/** Machine-wide Codex login concurrency (`codex-lane.ts`); absent = unlimited. */
+		codexLane?: CodexLane;
 		sshTransport?: BootOptions["sshTransport"];
 		credentials?: CredentialStore;
 		workloadGrants?: WorkloadSecretGrantStore;
@@ -495,7 +514,11 @@ export async function attachProject(
 		// The worktree sparse rules and the merge firewall read this.
 		await recordBoardLocation(
 			root,
-			boardRepoPaths(root, boardDir, boardConfig),
+			buildBoardLayoutRecord({
+				repoRoot: root,
+				boardFolder: boardDir,
+				config: boardConfig,
+			}),
 		);
 	} catch (error) {
 		handle.close();
@@ -559,6 +582,23 @@ export async function attachProject(
 		log: plog,
 	});
 	const host = new AgentHost(plog);
+	configureRunWorkspace(
+		root,
+		(cfg.runWorkspace ?? DEFAULTS.runWorkspace) === "clone"
+			? {
+					kind: "clone",
+					clone: {
+						workspaceRoot: join(opts.mfwHome, "workspaces"),
+						// Only a session tmux positively reports gone counts as dead.
+						assertProcessesDead: async (runId) => {
+							if ((await host.sessionLiveness(runId)) !== false) {
+								throw new Error(`run ${runId} is not confirmed stopped`);
+							}
+						},
+					},
+				}
+			: { kind: "worktree" },
+	);
 	const adapters = new AdapterRegistry();
 	const notifier = makeNotifier(cfg.notify, plog);
 	// Built before mergeQueue/maintenance/stepRunner, which raise sessions.
@@ -688,6 +728,22 @@ export async function attachProject(
 	let maintenance!: Maintenance;
 	let supervisor!: Supervisor;
 
+	const verifierClones = createVerifierClones(root);
+	// A crashed daemon may have left verification clones and their pins behind.
+	await verifierClones?.sweep().catch((e) => {
+		plog.warn({ err: e }, "verifier clone sweep failed");
+	});
+	const rebaseOpts = rebaseCloneOptions(root);
+	type MergeVerdict = { passed: boolean; detail?: string; crashed?: boolean };
+	const verdictOf = (result: VerificationResult): MergeVerdict => ({
+		passed: result.passed,
+		// Lets MergeQueue tell a crashed check from a real verification failure.
+		crashed: result.crashed,
+		detail: result.checks
+			.filter((c) => !c.ok)
+			.map((c) => c.check)
+			.join(", "),
+	});
 	const mergeQueue = new MergeQueue({
 		handle,
 		bus,
@@ -700,22 +756,64 @@ export async function attachProject(
 			const run = await registry.get(job.runId);
 			if (!run?.worktreePath || !run.baseSha)
 				return { passed: false, detail: "run worktree is gone" };
+			const opts = { checkPrefix: cfg.checkPrefix, envPolicy: cfg.envPolicy };
 			const result = await verification.foreground(() =>
-				verify(run.worktreePath as string, dod, run.baseSha as string, {
-					checkPrefix: cfg.checkPrefix,
-					envPolicy: cfg.envPolicy,
-				}),
+				verifierClones
+					? verifyInClone(
+							verifierClones,
+							quarantineRef(job.runId),
+							job.runId,
+							dod,
+							run.baseSha as string,
+							opts,
+						)
+					: verify(
+							run.worktreePath as string,
+							dod,
+							run.baseSha as string,
+							opts,
+						),
 			);
-			return {
-				passed: result.passed,
-				// Lets MergeQueue tell a crashed check from a real re-verify failure.
-				crashed: result.crashed,
-				detail: result.checks
-					.filter((c) => !c.ok)
-					.map((c) => c.check)
-					.join(", "),
-			};
+			return verdictOf(result);
 		},
+		// A clone run's conflict rebases in a host-owned scratch clone.
+		...(rebaseOpts
+			? {
+					rebaseClone: (job: MergeJobView, onto: string) =>
+						rebaseQuarantineInScratch(rebaseOpts, {
+							runId: job.runId,
+							targetBranch: job.targetBranch,
+							onto,
+						}),
+				}
+			: {}),
+		// Clone projects verify the merge commit itself, in a disposable clone,
+		// before the ref moves. Worktree projects keep today's behaviour.
+		...(verifierClones
+			? {
+					verifyMerge: async (
+						job: MergeJobView,
+						mergeSha: string,
+					): Promise<MergeVerdict> => {
+						const task = job.taskId ? await tasks.get(job.taskId) : null;
+						const dod = tasks.effectiveDod(task?.dod ?? null);
+						if (!dod) return { passed: true };
+						const run = await registry.get(job.runId);
+						if (!run?.baseSha) return { passed: true };
+						const result = await verification.foreground(() =>
+							verifyInClone(
+								verifierClones,
+								mergeSha,
+								`merge-${job.runId}`,
+								dod,
+								run.baseSha as string,
+								{ checkPrefix: cfg.checkPrefix, envPolicy: cfg.envPolicy },
+							),
+						);
+						return verdictOf(result);
+					},
+				}
+			: {}),
 		onMerged: async (job) => {
 			const mergedRun = await registry.get(job.runId);
 			if (job.taskId && mergedRun?.kind !== "repair") {
@@ -863,9 +961,19 @@ export async function attachProject(
 					(task.executionTarget === "local" &&
 						liveRouting.routing?.placement?.target === "ssh");
 				if (!wantsSsh) {
+					// A local Codex run on a ChatGPT login holds the one slot of its
+					// CODEX_HOME, so a second one waits in the host ledger.
+					const codexSlot =
+						task.executionTarget === "local" &&
+						opts.codexLane &&
+						primaryHarness(task, liveRouting) === "codex-cli"
+							? await opts.codexLane.requirement()
+							: null;
 					return {
 						kind: task.executionTarget,
-						requiresResources: task.requiresResources,
+						requiresResources: codexSlot
+							? [...(task.requiresResources ?? []), codexSlot]
+							: task.requiresResources,
 						localStagingResources: task.localStagingResources,
 					};
 				}
@@ -1361,7 +1469,34 @@ export async function attachProject(
 		mergeQueue,
 		admission,
 		budgets,
+		authHolds: async () =>
+			Object.entries(await providerHolds.active())
+				.filter(([, h]) => h.reason === AUTH_HOLD_REASON)
+				.map(([key, h]) => ({ key, since: h.since ?? 0, until: h.until })),
+		isolationIssue: () => {
+			const detail = isolationConfigProblem({
+				agentIsolation: cfg.agentIsolation,
+				approvalMode: cfg.approvalMode,
+			});
+			return detail
+				? {
+						detail,
+						fix: 'Set agentIsolation to "bwrap" (the default) in this project\'s entry in $MFW_HOME/config.json, or set approvalMode to "interactive".',
+					}
+				: null;
+		},
 	});
+	if (
+		isolationConfigProblem({
+			agentIsolation: cfg.agentIsolation,
+			approvalMode: cfg.approvalMode,
+		})
+	) {
+		plog.warn(
+			{ project: cfg.name },
+			'agentIsolation "none" without interactive approvals: autonomous dispatch is refused for this project',
+		);
+	}
 	sessions.dismissInboxItem = (itemId) => inbox.dismiss(itemId);
 	const review = new ReviewService({
 		handle,
@@ -2143,6 +2278,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 		log: log.child({ svc: "ssh-hosts" }),
 		...(opts.sshTransport ? { transport: opts.sshTransport } : {}),
 	});
+	const codexLane = new CodexLane({ ledger: hostResources });
 	const openrouter = new OpenRouterAccountService({
 		client:
 			opts.openrouterClient ??
@@ -2286,6 +2422,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 				afterAdmissionTransition: opts.afterAdmissionTransition,
 				runpod,
 				hosts,
+				codexLane,
 				sshTransport: opts.sshTransport,
 				credentials: credentialStore,
 				workloadGrants,
@@ -2467,6 +2604,8 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 					}
 				};
 				assertConfigAvailable(await loadConfig(home));
+				const isolationProblem = isolationConfigProblem(cfg);
+				if (isolationProblem) throw new Error(isolationProblem);
 				// `template` only shapes a new board.yaml; it is not project config.
 				const { template, ...stored } = cfg;
 				if (template && !getBoardTemplate(template)) {
@@ -2486,6 +2625,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 						afterAdmissionTransition: opts.afterAdmissionTransition,
 						runpod,
 						hosts,
+						codexLane,
 						sshTransport: opts.sshTransport,
 						credentials: credentialStore,
 						workloadGrants,

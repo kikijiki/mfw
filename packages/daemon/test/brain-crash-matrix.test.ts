@@ -472,6 +472,8 @@ describe("brain crash matrix: the action executor", () => {
 					name: "grp",
 					root: f.root,
 					integrationBranch: "main",
+					agentIsolation: "none",
+					approvalMode: "interactive",
 					brain: { routes: [{ provider: "claude-cli" }], maxTurnsPerDay: 0 },
 				},
 			],
