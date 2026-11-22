@@ -157,6 +157,9 @@ const cfg = (root: string): ProjectConfig => ({
 	name: "demo",
 	root,
 	integrationBranch: "main",
+	// Scripted agents, no sandbox: autonomy needs bwrap, so this fixture runs interactive.
+	agentIsolation: "none",
+	approvalMode: "interactive",
 	maxConcurrent: 2,
 	assistance: {
 		changeReview: "human",

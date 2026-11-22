@@ -62,6 +62,9 @@ function projectConfig(name: string, root: string): ProjectConfig {
 		name,
 		root,
 		integrationBranch: "main",
+		// Scripted agents, no sandbox: autonomy needs bwrap, so these fixtures run interactive.
+		agentIsolation: "none",
+		approvalMode: "interactive",
 		maxConcurrent: 4,
 		assistance: {
 			changeReview: "human",

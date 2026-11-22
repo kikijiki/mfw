@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentHost } from "../src/agent-host.ts";
-import { bwrapAvailable, wrapWithBwrap } from "../src/sandbox.ts";
+import { bwrapAvailable, pinnedTool, wrapWithBwrap } from "../src/sandbox.ts";
 
 /**
  * MFW-33 item 3: filesystem isolation.
@@ -26,7 +26,12 @@ async function waitFor(
 	throw new Error("waitFor timed out");
 }
 
-describe("wrapWithBwrap", () => {
+// wrapWithBwrap pins absolute tool paths, so it needs bwrap and env on a trusted PATH.
+const canWrap = Boolean(pinnedTool("bwrap") && pinnedTool("env"));
+if (!canWrap)
+	console.log("skip: wrapWithBwrap unit tests need bwrap on a trusted PATH");
+
+describe.skipIf(!canWrap)("wrapWithBwrap", () => {
 	test("hides paths AFTER the writable binds, so a hidden path under a writable one still overlays it", () => {
 		const wrapped = wrapWithBwrap("echo hi", "/work/wt", "/work/run", {
 			mode: "bwrap",
@@ -159,6 +164,7 @@ process.exit(0);
 			model: "test-model",
 			initialMessage: "",
 			steer: false,
+			approvalMode: "interactive",
 			// no isolation
 		});
 		await waitFor(async () => (await host.readExit(runDir)).kind === "exit");

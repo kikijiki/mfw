@@ -7,15 +7,19 @@ import type {
 	InferenceReply,
 } from "./brain.ts";
 import { claudeEnvelopeUsage } from "./brain.ts";
+import { PROBE_SENTINEL } from "./containment/minimal-probe.ts";
 import { git } from "./git.ts";
 import { type ProcOpts, type ProcResult, runProc } from "./proc.ts";
 import {
 	bwrapCore,
 	cleanEnvSetenvArgs,
 	maskedRuntimePaths,
+	pinnedTool,
+	probeScriptFor,
 	resolveBwrapPath,
 	SANDBOX_ENV_ALLOWLIST,
 	SandboxUnavailableError,
+	safeHostPath,
 } from "./sandbox.ts";
 
 /**
@@ -205,22 +209,40 @@ export class AgentReviewInference implements InferenceClient {
 			(p): p is string => typeof p === "string",
 		);
 		const env = process.env;
+		const isolation = {
+			mode: "bwrap" as const,
+			hidePaths: this.opts.hidePaths ?? [],
+		};
+		const masks = maskedRuntimePaths(env);
+		const envPath = pinnedTool("env");
+		if (!envPath) {
+			throw new SandboxUnavailableError("env is not on a trusted PATH");
+		}
 		return [
-			"env",
+			envPath,
 			"-i",
-			`PATH=${env.PATH ?? "/usr/bin:/bin"}`,
+			`PATH=${safeHostPath()}`,
 			...bwrapCore({
 				bwrapPath,
 				cwd: dir,
 				runDir: dir,
-				isolation: { mode: "bwrap", hidePaths: this.opts.hidePaths ?? [] },
+				isolation,
 				readOnly,
-				masks: maskedRuntimePaths(env),
+				masks,
 			}),
 			...cleanEnvSetenvArgs(env, SANDBOX_ENV_ALLOWLIST),
+			"--setenv",
+			PROBE_SENTINEL,
+			"1",
 			"--chdir",
 			dir,
 			"--",
+			// The same minimal probe a run gets, before the reviewer starts (review G9);
+			// a failed probe exits 78 and the reviewer never runs.
+			"sh",
+			"-c",
+			`${probeScriptFor(isolation, SANDBOX_ENV_ALLOWLIST, masks)}\nexec "$@"`,
+			"sh",
 			...argv,
 		];
 	}

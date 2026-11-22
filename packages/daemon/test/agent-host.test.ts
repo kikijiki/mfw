@@ -68,6 +68,7 @@ async function setup(
 		model: "test-model",
 		initialMessage: over.initialMessage ?? "",
 		steer: over.initialMessage === "wait-for-steer",
+		approvalMode: "interactive",
 	};
 	return {
 		base,

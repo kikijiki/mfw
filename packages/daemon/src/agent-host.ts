@@ -3,6 +3,8 @@ import {
 	access,
 	appendFile,
 	type FileHandle,
+	lstat,
+	mkdir,
 	mkdtemp,
 	open,
 	readFile,
@@ -21,8 +23,12 @@ import { runProc } from "./proc.ts";
 import {
 	type BwrapIsolation,
 	bwrapAvailable,
+	ensureTmuxSocketDir,
+	pinnedTool,
 	SANDBOX_ENV_ALLOWLIST,
 	SandboxUnavailableError,
+	safeHostPath,
+	underPrivateTmp,
 	wrapWithBwrap,
 } from "./sandbox.ts";
 
@@ -59,14 +65,38 @@ const TMUX_ENV_NAMES = [...SANDBOX_ENV_ALLOWLIST, "TMUX_TMPDIR"];
 /** The mfw tmux server is driven under `env -i`; per-run public values travel by `-e`. */
 function tmuxEnv(source: NodeJS.ProcessEnv = process.env): string[] {
 	return TMUX_ENV_NAMES.flatMap((n) => {
-		const v = source[n];
+		// The pane command goes through `$SHELL -c`, which would read the user's
+		// rc files (agent-writable): pin it to a plain sh (security review G3).
+		const v =
+			n === "PATH"
+				? safeHostPath()
+				: n === "SHELL"
+					? (pinnedTool("sh") ?? "/bin/sh")
+					: source[n];
 		return typeof v === "string" ? [`${n}=${v}`] : [];
 	});
 }
 
 async function tmux(args: string[]) {
+	// Absolute, pinned paths (security review G4): never a `PATH` lookup an agent can steer.
+	const env = pinnedTool("env");
+	const tmuxBin = pinnedTool("tmux");
+	if (!env || !tmuxBin) {
+		throw new SandboxUnavailableError("env or tmux is not on a trusted PATH");
+	}
 	return runProc(
-		["env", "-i", ...tmuxEnv(), "tmux", "-L", TMUX_SOCKET, ...args],
+		// `-f /dev/null`: never read `~/.tmux.conf`, which an agent can write (`run-shell`).
+		[
+			env,
+			"-i",
+			...tmuxEnv(),
+			tmuxBin,
+			"-f",
+			"/dev/null",
+			"-L",
+			TMUX_SOCKET,
+			...args,
+		],
 		{ timeoutMs: 10_000 },
 	);
 }
@@ -86,7 +116,7 @@ export interface AgentHostOptions {
 		bwrapAvailable: typeof bwrapAvailable;
 		wrapWithBwrap: typeof wrapWithBwrap;
 	};
-	/** Outside every worktree; defaults to the OS temporary directory. */
+	/** Where secret FIFOs are made; defaults to the host-only control directory. Must be private and is masked inside every sandbox. */
 	secretCarrierRoot?: string;
 	/** Bound for run.sh to open and acknowledge the FIFO reader. */
 	secretHandoffTimeoutMs?: number;
@@ -131,7 +161,7 @@ export interface LaunchSpec {
 
 export class AgentHost {
 	private readonly runTmux: AgentTmuxRunner;
-	private readonly secretCarrierRoot: string;
+	private readonly carrierRootOverride: string | null;
 	private readonly secretHandoffTimeoutMs: number;
 	private readonly secretHandoffWriter: AgentSecretHandoffWriter;
 	private readonly sandbox: NonNullable<AgentHostOptions["sandbox"]>;
@@ -139,7 +169,7 @@ export class AgentHost {
 	constructor(_log?: Logger, opts: AgentHostOptions = {}) {
 		this.runTmux = opts.tmuxRunner ?? tmux;
 		this.sandbox = opts.sandbox ?? { bwrapAvailable, wrapWithBwrap };
-		this.secretCarrierRoot = opts.secretCarrierRoot ?? tmpdir();
+		this.carrierRootOverride = opts.secretCarrierRoot ?? null;
 		this.secretHandoffTimeoutMs = opts.secretHandoffTimeoutMs ?? 5_000;
 		this.secretHandoffWriter =
 			opts.secretHandoffWriter ??
@@ -154,13 +184,47 @@ export class AgentHost {
 		}
 	}
 
+	/**
+	 * The host-only control directory: `run.sh` and the secret FIFOs live here,
+	 * never in the run dir (which the agent can write) and never where another
+	 * run can see them (security review G1/G2). It is masked inside every
+	 * sandbox. Created 0700 and verified: owned by us, not a symlink.
+	 */
+	private async controlRoot(): Promise<string> {
+		const uid = process.getuid?.() ?? 0;
+		const root = join(tmpdir(), `mfw-control-${uid}`);
+		await mkdir(root, { recursive: true, mode: 0o700 });
+		const st = await lstat(root);
+		if (
+			st.isSymbolicLink() ||
+			!st.isDirectory() ||
+			st.uid !== uid ||
+			(st.mode & 0o077) !== 0
+		) {
+			throw new Error(`control directory ${root} is not private to this user`);
+		}
+		return root;
+	}
+
 	session(runId: string): string {
 		return `mfw_${runId}`;
 	}
 
 	/** Launch the driver in a fresh detached tmux session. The run dir (and meta.json) must already exist (RunRegistry.create). */
 	async launch(spec: LaunchSpec): Promise<void> {
+		// The single choke point (security review G5): every launch path, task or
+		// not, lands here, so autonomy without isolation is refused here.
+		if (
+			(spec.approvalMode ?? "autonomous") === "autonomous" &&
+			!spec.isolation
+		) {
+			throw new SandboxUnavailableError(
+				"autonomous runs require a bwrap sandbox (agentIsolation is none)",
+			);
+		}
 		const dir = spec.runDir;
+		const control = await this.controlRoot();
+		const scriptPath = join(control, `run-${spec.runId}.sh`);
 		const rawLog = join(dir, "raw.log");
 		const exitPath = join(dir, "exit");
 
@@ -209,9 +273,11 @@ export class AgentHost {
 		].join("\n");
 
 		// Run the driver under bwrap when requested. Fail closed: a missing bwrap
-		// is a refusal, never a silent unsandboxed launch. Applies to the driver
-		// line only: direnv's export runs in the outer, unsandboxed shell, and
-		// only allowlisted names (plus this launch's own) reach the driver.
+		// is a refusal, never a silent unsandboxed launch. With a sandbox the
+		// direnv gate runs INSIDE it (security review G3: `~/.config/direnv/direnvrc`
+		// is agent-writable and must not be sourced by the host shell), after the
+		// probe, so its exports reach the driver and the allowlist still holds for
+		// everything inherited.
 		let driverCmd = `bun run ${q(spec.driverScript)} ${q(dir)}`;
 		if (spec.isolation) {
 			if (!(await this.sandbox.bwrapAvailable())) {
@@ -219,12 +285,33 @@ export class AgentHost {
 					"isolation requested but `bwrap` is not on PATH",
 				);
 			}
+			// Make sure the tmux socket dir exists so it is masked even on a first launch.
+			ensureTmuxSocketDir();
 			driverCmd = this.sandbox.wrapWithBwrap(
-				driverCmd,
+				`${envrcGate}\n${driverCmd}`,
 				spec.cwd,
 				dir,
-				spec.isolation,
+				{
+					...spec.isolation,
+					hidePaths: [
+						...spec.isolation.hidePaths,
+						control,
+						...(this.carrierRootOverride ? [this.carrierRootOverride] : []),
+					],
+				},
 				[...Object.keys(publicEnvironment), ...secretEnvironment.names()],
+				{
+					// `/tmp` is private per sandbox: what a run legitimately needs from
+					// there (its driver and the agent binaries) is bound back.
+					readOnly: [
+						spec.driverScript,
+						...[
+							...spec.agentArgv,
+							...(spec.bridgeArgv ?? []),
+							...(spec.providerArgv ?? []),
+						].filter((a) => a.startsWith("/")),
+					].filter(underPrivateTmp),
+				},
 			);
 		}
 
@@ -232,7 +319,10 @@ export class AgentHost {
 		// acknowledges its reader, then unlink. A crash leaves at worst an empty FIFO for the session trap.
 		const secretHandoff = secretEnvironment.isEmpty()
 			? null
-			: await this.prepareSecretHandoff(secretEnvironment);
+			: await this.prepareSecretHandoff(
+					secretEnvironment,
+					this.carrierRootOverride ?? control,
+				);
 		const secretGate = secretHandoff
 			? [
 					"secret_handoff_failed() {",
@@ -262,21 +352,33 @@ export class AgentHost {
 			: [];
 		const script = [
 			"#!/usr/bin/env bash",
+			// One brace group: bash parses it whole before running anything, so text
+			// appended to this file later is never executed (security review G1).
+			"{",
 			"set +e",
 			// The tmux server runs under `env -i`, so the pane's login shell rebuilds PATH from
 			// system defaults (on NixOS, dropping the daemon's toolchain). PATH is public: restore it.
-			`export PATH=${q(process.env.PATH ?? "/usr/bin:/bin")}`,
+			// With a sandbox, the shell itself keeps only trusted PATH entries (an agent can
+			// plant binaries in $HOME) and the full PATH goes to the sandbox (security review G4).
+			...(spec.isolation
+				? [
+						`MFW_SANDBOX_PATH=${q(process.env.PATH ?? "/usr/bin:/bin")}`,
+						`export PATH=${q(safeHostPath())}`,
+					]
+				: [`export PATH=${q(process.env.PATH ?? "/usr/bin:/bin")}`]),
 			"IFS= read -r _ 2>/dev/null  # wait for go signal",
 			`cd ${q(spec.cwd)} || { printf 'exit:1' > ${q(exitPath)}; exit 1; }`,
-			envrcGate,
+			...(spec.isolation ? [] : [envrcGate]),
 			...secretGate,
 			driverCmd,
 			"rc=$?",
 			// compare-and-skip: never overwrite an exit the kill path already wrote
 			`[ -f ${q(exitPath)} ] || printf 'exit:%s' "$rc" > ${q(exitPath)}`,
+			'exit "$rc"',
+			"}",
 			"",
 		].join("\n");
-		await writeFileAtomic(join(dir, "run.sh"), script);
+		await writeFileAtomic(scriptPath, script);
 
 		const name = this.session(spec.runId);
 		const args = [
@@ -296,7 +398,11 @@ export class AgentHost {
 		for (const [k, v] of Object.entries(spec.env ?? {})) {
 			if (v !== undefined && v !== null) args.push("-e", `${k}=${v}`);
 		}
-		args.push(`bash ${q(join(dir, "run.sh"))}`);
+		const bashBin = pinnedTool("bash");
+		if (!bashBin) {
+			throw new SandboxUnavailableError("bash is not on a trusted PATH");
+		}
+		args.push(`${q(bashBin)} ${q(scriptPath)}`);
 
 		// The tmux server exits with its last session; a dispatch in that window fails transiently. Retry briefly.
 		let r = await this.runTmux(args);
@@ -350,10 +456,9 @@ export class AgentHost {
 
 	private async prepareSecretHandoff(
 		secretEnvironment: SecretEnvironment,
+		controlRoot: string,
 	): Promise<SecretHandoff> {
-		const directory = await mkdtemp(
-			join(this.secretCarrierRoot, "mfw-driver-secret-"),
-		);
+		const directory = await mkdtemp(join(controlRoot, "mfw-driver-secret-"));
 		const fifoPath = join(directory, "environment.fifo");
 		const ackPath = join(directory, "reader-ready");
 		try {

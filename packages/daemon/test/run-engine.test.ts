@@ -152,6 +152,8 @@ async function fixture(
 		providerHolds: opts.providerHolds,
 		defaults: {
 			leaseMs: 60_000,
+			// no sandbox here: autonomy would be refused at launch
+			approvalMode: "interactive",
 		},
 		globalPaused: opts.globalPaused,
 		buildPrompt: {
