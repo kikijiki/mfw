@@ -40,6 +40,8 @@ import type {
 import { parseRoutingRecord } from "../routing.ts";
 import { RunEventTail } from "../run-event-tail.ts";
 import type { BeginStepResult, RunRegistry, RunRow } from "../run-registry.ts";
+import { createRunWorkspace } from "../run-workspace/factory.ts";
+import type { WorktreeReportIdentity } from "../run-workspace/run-workspace.ts";
 import {
 	changedFiles,
 	SCOPE_KILL_REASONS,
@@ -57,7 +59,6 @@ import {
 	type VerificationResult,
 	verify,
 } from "../verifier.ts";
-import { WorktreeManager, type WorktreeReportIdentity } from "../worktree.ts";
 import {
 	type Directive,
 	type FinalizeCtx,
@@ -866,7 +867,7 @@ export class StepRunner {
 		// Same ownership-aware policy as maintenance. MFW_REPORT.json is exempt
 		// only while it matches the identity recorded by ingest_report.
 		if (
-			await new WorktreeManager(this.deps.projectRoot).hasLocalChanges(
+			await createRunWorkspace(this.deps.projectRoot).hasLocalChanges(
 				{ path: wt },
 				{ reportIdentity },
 			)
@@ -1852,7 +1853,7 @@ export class StepRunner {
 	private async archiveWip(built: Built): Promise<ArchiveWipResult> {
 		const { run } = built;
 		if (!run.branch || !run.baseSha) return { ref: null, sha: null };
-		const archive = await new WorktreeManager(this.deps.projectRoot).archiveWip(
+		const archive = await createRunWorkspace(this.deps.projectRoot).archive(
 			{
 				// No worktree: archiveWip saves the branch tip instead.
 				path: run.worktreePath ?? join(this.deps.projectRoot, ".mfw", "none"),
@@ -1976,7 +1977,7 @@ export class StepRunner {
 				reason: "durable worktree ownership is incomplete",
 			};
 		}
-		await new WorktreeManager(this.deps.projectRoot).remove(
+		await createRunWorkspace(this.deps.projectRoot).remove(
 			{ path: wt, branch: run.branch, baseSha: run.baseSha },
 			{ force, reportIdentity },
 		);

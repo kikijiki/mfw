@@ -25,6 +25,7 @@ import {
 	type RunRegistry,
 	type RunRow,
 } from "./run-registry.ts";
+import { createRunWorkspace } from "./run-workspace/factory.ts";
 import type { RaiseInput } from "./session.ts";
 import type { TaskService } from "./task-service.ts";
 import type { DefinitionOfDone, DoDCheck } from "./tasks/types.ts";
@@ -36,7 +37,6 @@ import {
 	type VerifyOptions,
 	verify,
 } from "./verifier.ts";
-import { WorktreeManager } from "./worktree.ts";
 
 /**
  * Periodic housekeeping, driven by the scheduler's maintenance hook.
@@ -1439,7 +1439,7 @@ export class Maintenance {
 		}
 
 		// --- worktrees + branches ---
-		const wm = new WorktreeManager(this.deps.projectRoot);
+		const wm = createRunWorkspace(this.deps.projectRoot);
 		const liveStates = new Set<string>([
 			"starting",
 			"running",
@@ -1476,7 +1476,7 @@ export class Maintenance {
 		]);
 
 		// Git lists every repository worktree; only those with the durable identity
-		// from WorktreeManager.create() (`<repo>/worktrees/<runId>` on branch
+		// from RunWorkspace.seed() (`<repo>/worktrees/<runId>` on branch
 		// `mfw/<runId>`) are removable. The creator row supplies the base SHA, so
 		// manual/IDE/terminal-manager worktrees are never candidates.
 		const registered = new Set((await wm.list()).map((path) => resolve(path)));
@@ -1487,7 +1487,7 @@ export class Maintenance {
 		for (const run of allRuns) {
 			if (!run.worktreePath || !run.branch || !run.baseSha) continue;
 			const path = resolve(run.worktreePath);
-			if (path !== resolve(wm.dir, run.id)) continue;
+			if (path !== resolve(wm.paths(run.id).workPath)) continue;
 			if (run.branch !== `mfw/${run.id}`) continue;
 			if (!registered.has(path)) continue;
 			const durableOwner = await wm.ownership(path);

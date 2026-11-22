@@ -13,7 +13,11 @@ import type {
 	PrepareExecutionRequest,
 } from "./execution-target.ts";
 import { gitOk } from "./git.ts";
-import { type Worktree, WorktreeManager } from "./worktree.ts";
+import {
+	createRunWorkspace,
+	type WorkspacePort,
+	workspacePort,
+} from "./run-workspace/factory.ts";
 
 /** The tmux-shaped mechanics needed by the local adapter, kept out of RunEngine. */
 export interface LocalExecutionHost {
@@ -35,10 +39,7 @@ export interface LocalExecutionHost {
 	kill(runDir: string, runId: string, reason: string): Promise<void>;
 }
 
-export interface LocalWorktreePort {
-	create(runId: string, base?: string): Promise<Worktree>;
-	remove(worktree: Worktree): Promise<void>;
-}
+export type LocalWorktreePort = WorkspacePort;
 
 export interface LocalExecutionTargetDeps {
 	projectRoot: string;
@@ -55,7 +56,8 @@ export class LocalExecutionTarget implements ExecutionTarget {
 	private readonly worktrees: LocalWorktreePort;
 
 	constructor(private readonly deps: LocalExecutionTargetDeps) {
-		this.worktrees = deps.worktrees ?? new WorktreeManager(deps.projectRoot);
+		this.worktrees =
+			deps.worktrees ?? workspacePort(createRunWorkspace(deps.projectRoot));
 	}
 
 	async prepare(request: PrepareExecutionRequest): Promise<PreparedExecution> {
