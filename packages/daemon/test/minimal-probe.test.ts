@@ -299,3 +299,29 @@ describe("the probe fails closed (review G6)", () => {
 		expect(r.stdout.trim()).toBe("0");
 	});
 });
+
+describe("the tmux socket dir is masked on a first launch (review G8)", () => {
+	test("an absent tmux dir is created 0700 so it enters the mask list", async () => {
+		const { ensureTmuxSocketDir } = await import("../src/sandbox.ts");
+		const { statSync } = await import("node:fs");
+		// a uid no one has: /tmp/tmux-<uid> does not exist yet
+		const uid = 2_000_000 + (process.pid % 1000);
+		const want = `/tmp/tmux-${uid}`;
+		try {
+			// the report's reproduction: before the launch, the dir is absent and unmasked
+			expect(maskedRuntimePaths({}, uid)).not.toContain(want);
+			ensureTmuxSocketDir({}, uid);
+			expect(statSync(want).mode & 0o777).toBe(0o700);
+			expect(maskedRuntimePaths({}, uid)).toContain(want);
+		} finally {
+			await rm(want, { recursive: true, force: true });
+		}
+	});
+
+	test("a mask nested in another mask is dropped", () => {
+		const exists = () => true;
+		expect(
+			maskedRuntimePaths({ TMUX_TMPDIR: "/run/user/7" }, 7, exists),
+		).toEqual(["/run/user/7", "/tmp/tmux-7"]);
+	});
+});

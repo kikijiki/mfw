@@ -2,6 +2,7 @@ import {
 	accessSync,
 	existsSync,
 	constants as fsConstants,
+	mkdirSync,
 	realpathSync,
 	statSync,
 } from "node:fs";
@@ -185,11 +186,35 @@ export function maskedRuntimePaths(
 	uid: number = process.getuid?.() ?? 0,
 	exists: (p: string) => boolean = existsSync,
 ): string[] {
-	const candidates = [`/run/user/${uid}`, env.TMUX_TMPDIR, `/tmp/tmux-${uid}`];
+	const tmuxBase = env.TMUX_TMPDIR?.startsWith("/") ? env.TMUX_TMPDIR : "/tmp";
+	const candidates = [
+		`/run/user/${uid}`,
+		env.TMUX_TMPDIR,
+		join(tmuxBase, `tmux-${uid}`),
+		`/tmp/tmux-${uid}`,
+	];
 	const out = candidates.filter(
 		(p): p is string => typeof p === "string" && p.startsWith("/") && exists(p),
 	);
-	return [...new Set(out)];
+	const unique = [...new Set(out)];
+	// A mask inside another mask is redundant and would leave a mount point behind in the outer tmpfs.
+	return unique.filter((p) => !unique.some((o) => o !== p && within(p, o)));
+}
+
+/**
+ * Create the tmux socket directory (`$TMUX_TMPDIR/tmux-<uid>`, default under
+ * `/tmp`) with mode 0700 before masks are computed. On a first launch it does
+ * not exist yet, would be skipped by `maskedRuntimePaths`, and tmux would then
+ * create it where the sandbox can reach it (security review G8).
+ */
+export function ensureTmuxSocketDir(
+	env: NodeJS.ProcessEnv = process.env,
+	uid: number = process.getuid?.() ?? 0,
+): string {
+	const base = env.TMUX_TMPDIR?.startsWith("/") ? env.TMUX_TMPDIR : "/tmp";
+	const dir = join(base, `tmux-${uid}`);
+	mkdirSync(dir, { recursive: true, mode: 0o700 });
+	return dir;
 }
 
 export interface BwrapCoreOptions {

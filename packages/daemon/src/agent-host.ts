@@ -23,6 +23,7 @@ import { runProc } from "./proc.ts";
 import {
 	type BwrapIsolation,
 	bwrapAvailable,
+	ensureTmuxSocketDir,
 	pinnedTool,
 	SANDBOX_ENV_ALLOWLIST,
 	SandboxUnavailableError,
@@ -264,6 +265,8 @@ export class AgentHost {
 					"isolation requested but `bwrap` is not on PATH",
 				);
 			}
+			// Make sure the tmux socket dir exists so it is masked even on a first launch.
+			ensureTmuxSocketDir();
 			driverCmd = this.sandbox.wrapWithBwrap(
 				driverCmd,
 				spec.cwd,
