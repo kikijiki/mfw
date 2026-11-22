@@ -142,20 +142,34 @@ export function pinnedToolIn(
 	return null;
 }
 
-const pinned = new Map<string, string | null>();
+const pinned = new Map<string, { pathVar: string | undefined; path: string }>();
 
-/** Host tools (`bwrap`, `tmux`, `env`, `bash`) resolved once per process from a trusted `PATH`. */
+/**
+ * Host tools (`bwrap`, `tmux`, `env`, `bash`) resolved from a trusted `PATH`.
+ * A hit is remembered for as long as `PATH` is unchanged, so a launch cannot
+ * be redirected later by a planted binary; a miss is never remembered.
+ */
 export function pinnedTool(name: string): string | null {
-	if (!pinned.has(name)) pinned.set(name, pinnedToolIn(name, process.env.PATH));
-	return pinned.get(name) ?? null;
+	const pathVar = process.env.PATH;
+	const hit = pinned.get(name);
+	if (hit && hit.pathVar === pathVar) return hit.path;
+	const path = pinnedToolIn(name, pathVar);
+	if (path) pinned.set(name, { pathVar, path });
+	else pinned.delete(name);
+	return path;
 }
 
-let cachedSafePath: string | undefined;
+let cachedSafePath: { pathVar: string | undefined; value: string } | undefined;
 
 /** `PATH` for host-side shells: trusted entries only. */
 export function safeHostPath(): string {
-	cachedSafePath ??= trustedPathEntries(process.env.PATH).join(":");
-	return cachedSafePath;
+	const pathVar = process.env.PATH;
+	if (cachedSafePath && cachedSafePath.pathVar === pathVar) {
+		return cachedSafePath.value;
+	}
+	const value = trustedPathEntries(pathVar).join(":");
+	cachedSafePath = { pathVar, value };
+	return value;
 }
 
 /** The pinned absolute `bwrap` path, resolved once per process; null when absent. */
