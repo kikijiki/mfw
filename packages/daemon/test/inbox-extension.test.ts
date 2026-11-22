@@ -196,7 +196,12 @@ describe("inbox: ref and answer extension", () => {
 					"info:failed_run:failed_run:RUNF",
 				].sort((a, b) => a.localeCompare(b)),
 			);
-			expect(counts).toEqual({ total: 5, critical: 1, attention: 3 });
+			expect(counts).toEqual({
+				total: 5,
+				critical: 1,
+				attention: 3,
+				byClass: { act: 4, know: 1, ambient: 0 },
+			});
 		} finally {
 			await f.cleanup();
 		}
