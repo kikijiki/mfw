@@ -11,6 +11,7 @@ import {
 	type LivenessEvidence,
 	openHostResourceStore,
 } from "../src/host-resources/index.ts";
+import { useRealSqliteSync } from "./support/real-sqlite-sync.ts";
 
 const homes: string[] = [];
 const projectHandles: ProjectDbHandle[] = [];
@@ -56,6 +57,7 @@ async function coordinator(path: string, processBootId: string) {
 }
 
 describe("host resource store", () => {
+	useRealSqliteSync();
 	test("uses an independent FULL/WAL host database and stable home identity", async () => {
 		const path = await home();
 		const first = await openHostResourceStore(path, {

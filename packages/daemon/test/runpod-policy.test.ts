@@ -34,6 +34,7 @@ import {
 	RunPodPolicyError,
 	runPodShapeViolations,
 } from "../src/runpod-policy.ts";
+import { useRealSqliteSync } from "./support/real-sqlite-sync.ts";
 
 const homes: string[] = [];
 
@@ -400,6 +401,7 @@ describe("RunPod policy", () => {
 });
 
 describe("RunPod live-first account service", () => {
+	useRealSqliteSync();
 	test("serial concurrent duplicate provisioning adopts one Pod and creates once", async () => {
 		const provider = new InventoryProvider();
 		const account = await service(provider);

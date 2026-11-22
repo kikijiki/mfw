@@ -16,9 +16,14 @@ import { join } from "node:path";
  * 2. libsql hands the connection to each transaction and opens a fresh one
  *    afterwards, which silently reverts the per-connection
  *    `PRAGMA synchronous=NORMAL` that `openDbAt` sets to FULL: every commit
- *    after the first fsyncs the WAL. Open every connection with `synchronous=OFF`,
- *    except the host store's `host.db`, which promises FULL.
+ *    after the first fsyncs the WAL. Open every connection with `synchronous=OFF`.
+ *    A test that asserts a store's FULL promise sets `sqliteSync.off = false`
+ *    for its duration (`test/support/real-sqlite-sync.ts`).
  */
+const flags = globalThis as { __mfwTestSqliteSync?: { off: boolean } };
+const sqliteSync = flags.__mfwTestSqliteSync ?? { off: true };
+flags.__mfwTestSqliteSync = sqliteSync;
+
 const probe = await open("/dev/null", "r");
 const handleProto = Object.getPrototypeOf(probe) as {
 	sync: () => Promise<void>;
@@ -35,8 +40,7 @@ const Database = createRequire(libsqlPath)(libsqlPath);
 class UndurableDatabase extends Database {
 	constructor(...args: unknown[]) {
 		super(...args);
-		// The host store promises FULL durability and its tests assert it.
-		if (typeof args[0] === "string" && /(^|\/)host\.db$/.test(args[0])) return;
+		if (!sqliteSync.off) return;
 		try {
 			this.exec("PRAGMA synchronous=OFF");
 		} catch {
