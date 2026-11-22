@@ -22,7 +22,11 @@ import {
 import { eq } from "drizzle-orm";
 import { git, gitOk } from "../src/git.ts";
 import { silentLogger } from "../src/log.ts";
-import { type MergeJobView, MergeQueue } from "../src/merge-queue.ts";
+import {
+	type MergeJobView,
+	MergeQueue,
+	type MergeQueueDeps,
+} from "../src/merge-queue.ts";
 import { MFW_EXCLUDE } from "./fixtures/board.ts";
 
 interface Fixture {
@@ -53,6 +57,7 @@ async function fixture(
 	/** Runs inside `onMerged` before the job is recorded; stands in for the board commit `tasks.release` makes. */
 	onMergedTail?: (job: MergeJobView, sha: string) => Promise<void>,
 	selfRepairMainRed?: () => boolean,
+	verifyMerge?: MergeQueueDeps["verifyMerge"],
 ): Promise<Fixture> {
 	const root = await mkdtemp(join(tmpdir(), "mfw-mq-"));
 	await git(["init", "-q", "-b", "main"], root);
@@ -90,6 +95,7 @@ async function fixture(
 		},
 		push,
 		selfRepairMainRed,
+		...(verifyMerge ? { verifyMerge } : {}),
 	});
 
 	const makeBranchRun = async (
@@ -874,6 +880,74 @@ describe("MergeQueue v2, real git matrix", () => {
 		expect(await f.queue.resetInFlight()).toBe(1);
 		const [job] = await f.handle.db.select().from(mergeJobs);
 		expect(job?.state).toBe("queued");
+		expect(await f.queue.tick()).toBe("merged");
+		await f.cleanup();
+	});
+});
+
+describe("the merge commit is verified before it lands", () => {
+	test("verifyMerge sees the merge commit, and a pass lets it land", async () => {
+		const seen: string[] = [];
+		const f = await fixture(
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			async (_job, sha) => {
+				seen.push(sha);
+				return { passed: true };
+			},
+		);
+		const runId = await f.makeBranchRun("mfw/v1", "a.txt", "hello\n");
+		await f.queue.enqueue({
+			runId,
+			taskId: "MFW-1",
+			branch: "mfw/v1",
+			targetBranch: "main",
+		});
+		expect(await f.queue.tick()).toBe("merged");
+		expect(seen).toEqual([f.merged[0]?.sha ?? ""]);
+		await f.cleanup();
+	});
+
+	test("a failing merge commit parks as reverify and the target ref does not move", async () => {
+		const f = await fixture(
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			async () => ({ passed: false, detail: "run: bun test" }),
+		);
+		const before = await gitOk(["rev-parse", "main"], f.root);
+		const runId = await f.makeBranchRun("mfw/v2", "a.txt", "hello\n");
+		await f.queue.enqueue({
+			runId,
+			taskId: "MFW-2",
+			branch: "mfw/v2",
+			targetBranch: "main",
+		});
+		expect(await f.queue.tick()).toBe("parked");
+		expect(await gitOk(["rev-parse", "main"], f.root)).toBe(before);
+		expect(f.merged.length).toBe(0);
+		const [row] = await f.handle.db
+			.select()
+			.from(mergeJobs)
+			.where(eq(mergeJobs.runId, runId));
+		expect(row?.state).toBe("parked");
+		expect(row?.error).toContain("failed verification");
+		expect(row?.error).toContain("bun test");
+		await f.cleanup();
+	});
+
+	test("without verifyMerge nothing changes for worktree projects", async () => {
+		const f = await fixture();
+		const runId = await f.makeBranchRun("mfw/v3", "a.txt", "hello\n");
+		await f.queue.enqueue({
+			runId,
+			taskId: "MFW-3",
+			branch: "mfw/v3",
+			targetBranch: "main",
+		});
 		expect(await f.queue.tick()).toBe("merged");
 		await f.cleanup();
 	});
