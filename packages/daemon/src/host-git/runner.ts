@@ -99,15 +99,60 @@ export interface HostGitResult {
  * `flags` are exact; `valued` flags take `--name=value` (value is data, never
  * a program: none of these options execute their value).
  */
+interface OperandCtx {
+	host: HostGit;
+	/** The flags that were passed (exact allowlisted strings or `--name=value`). */
+	flags: string[];
+}
+
 interface SubcommandSpec {
 	flags?: string[];
 	valued?: string[];
 	/** Operands must follow a `--` (anything that may be a path or url). */
 	requireDashDash?: boolean;
+	/** Checks every operand. Absent means the subcommand takes none. */
+	operands?: (ops: string[], ctx: OperandCtx) => void;
 }
 
+const ID = "[A-Za-z0-9][A-Za-z0-9_-]{0,127}";
+/** The only refspecs HostGit builds, nothing wider: source in the bundle or throwaway repo, destination in refs/mfw. */
+const REFSPEC_SHAPES = [
+	new RegExp(`^\\+refs/heads/mfw/${ID}:refs/mfw/run/head$`),
+	new RegExp(`^\\+refs/heads/mfw-wip/${ID}/\\*:refs/mfw/run/wip/\\*$`),
+	new RegExp(`^\\+refs/mfw/run/head:refs/mfw/quarantine/${ID}$`),
+	new RegExp(`^\\+refs/mfw/run/wip/\\*:refs/mfw/quarantine-wip/${ID}/\\*$`),
+];
+/** Refs the host may create or delete: the quarantine namespaces, and nothing else. */
+const QUARANTINE_REF = new RegExp(
+	`^refs/mfw/quarantine(-wip)?/${ID}(/[A-Za-z0-9_-]{1,128}){0,8}$`,
+);
+const OBJECT_NAME = /^[A-Za-z0-9_/:^~@{}%.-]{1,300}$/;
+const REF_PATTERN = /^refs\/[A-Za-z0-9_/.*-]{0,300}$/;
+
+function refuse(msg: string): never {
+	throw new HostGitError("bad_argument", msg);
+}
+
+function eachOperand(ops: string[], re: RegExp, what: string): void {
+	for (const o of ops) {
+		if (o.startsWith("-") || !re.test(o)) {
+			refuse(`refusing ${what} operand ${JSON.stringify(o.slice(0, 80))}`);
+		}
+	}
+}
+
+const readOperands = (ops: string[]): void =>
+	eachOperand(ops, OBJECT_NAME, "object name");
+
 const SUBCOMMANDS: Record<string, SubcommandSpec> = {
-	init: { flags: ["--bare", "--quiet", "-q"], requireDashDash: true },
+	init: {
+		flags: ["--bare", "--quiet", "-q"],
+		requireDashDash: true,
+		operands: (ops, { host }) => {
+			if (ops.length !== 1) refuse("git init takes exactly one target");
+			host.assertScratchPath(ops[0] as string, "init target");
+		},
+	},
 	fetch: {
 		flags: [
 			"--no-tags",
@@ -121,19 +166,45 @@ const SUBCOMMANDS: Record<string, SubcommandSpec> = {
 			"-q",
 		],
 		requireDashDash: true,
+		operands: (ops, { host }) => {
+			if (ops.length < 2) refuse("git fetch needs a source and a refspec");
+			const [source, ...specs] = ops as [string, ...string[]];
+			// The source is a mfw-owned scratch file or throwaway repo, never a clone.
+			host.assertScratchPath(source, "fetch source");
+			if (isDirectory(source)) host.resolveGitDir(source);
+			for (const spec of specs) {
+				if (!REFSPEC_SHAPES.some((re) => re.test(spec))) {
+					refuse(`refusing refspec ${JSON.stringify(spec.slice(0, 120))}`);
+				}
+			}
+		},
 	},
-	"for-each-ref": { valued: ["--format", "--count", "--sort"] },
+	"for-each-ref": {
+		valued: ["--format", "--count", "--sort"],
+		operands: (ops) => eachOperand(ops, REF_PATTERN, "ref pattern"),
+	},
 	"rev-parse": {
 		flags: ["--verify", "--quiet", "-q", "--is-bare-repository", "--git-dir"],
+		operands: readOperands,
 	},
-	"cat-file": { flags: ["-e", "-t", "-s", "-p", "--batch-check", "--batch"] },
+	"cat-file": {
+		flags: ["-e", "-t", "-s", "-p", "--batch-check", "--batch"],
+		operands: readOperands,
+	},
 	"rev-list": {
 		flags: ["--count", "--objects", "--no-walk"],
 		valued: ["--max-count"],
+		operands: readOperands,
 	},
-	"show-ref": { flags: ["--verify", "--quiet", "--hash"] },
-	"merge-base": { flags: ["--is-ancestor"] },
-	"ls-tree": { flags: ["-r", "-z", "-l", "-t", "--name-only", "--full-tree"] },
+	"show-ref": {
+		flags: ["--verify", "--quiet", "--hash"],
+		operands: (ops) => eachOperand(ops, REF_PATTERN, "ref"),
+	},
+	"merge-base": { flags: ["--is-ancestor"], operands: readOperands },
+	"ls-tree": {
+		flags: ["-r", "-z", "-l", "-t", "--name-only", "--full-tree"],
+		operands: readOperands,
+	},
 	"diff-tree": {
 		flags: [
 			"-r",
@@ -146,11 +217,41 @@ const SUBCOMMANDS: Record<string, SubcommandSpec> = {
 			"--no-ext-diff",
 			"--no-textconv",
 		],
+		operands: readOperands,
 	},
 	// read-only: lets tests and the doctor show the effective config
-	config: { flags: ["--list", "--show-origin"] },
-	"update-ref": { flags: ["-d", "--no-deref"] },
+	config: {
+		flags: ["--list", "--show-origin"],
+		operands: (ops) => {
+			if (ops.length > 0)
+				refuse("git config takes no operands: it is read-only here");
+		},
+	},
+	"update-ref": {
+		flags: ["-d", "--no-deref"],
+		operands: (ops, { flags }) => {
+			const [ref, extra] = ops;
+			if (!ref || !QUARANTINE_REF.test(ref)) {
+				refuse(
+					`refusing to update ${JSON.stringify((ref ?? "").slice(0, 120))}: only the quarantine namespaces`,
+				);
+			}
+			const deleting = flags.includes("-d");
+			if (ops.length > 2 || (!deleting && ops.length !== 2))
+				refuse("bad update-ref operands");
+			if (extra !== undefined && !/^[0-9a-f]{40}$/.test(extra))
+				refuse("bad object id");
+		},
+	},
 };
+
+function isDirectory(p: string): boolean {
+	try {
+		return lstatSync(p).isDirectory();
+	} catch {
+		return false;
+	}
+}
 
 export const DEFAULT_MAX_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
 export const DEFAULT_MAX_CPU_SECONDS = 120;
@@ -211,6 +312,8 @@ export function assertLocalSource(source: string): void {
 export class HostGit {
 	readonly workspaceRoot: string;
 	readonly ownedRoots: string[];
+	/** Owned roots outside the workspace: the only places init and fetch may use. */
+	readonly scratchRoots: string[];
 	private readonly gitBin: string;
 	private readonly maxMemoryKiB: number;
 	private readonly maxCpuSeconds: number;
@@ -225,6 +328,9 @@ export class HostGit {
 			this.workspaceRoot,
 			...(opts.ownedRoots ?? []).map(resolveReal),
 		];
+		this.scratchRoots = (opts.ownedRoots ?? [])
+			.map(resolveReal)
+			.filter((r) => !isUnder(r, this.workspaceRoot));
 		this.gitBin = opts.gitBin ?? "git";
 		this.maxMemoryKiB = Math.floor(
 			(opts.maxMemoryBytes ?? DEFAULT_MAX_MEMORY_BYTES) / 1024,
@@ -288,6 +394,20 @@ export class HostGit {
 		];
 		if (opts.allowFile) c.push("-c", "protocol.file.allow=always");
 		return c;
+	}
+
+	/** An absolute path inside a scratch root, outside the workspace. */
+	assertScratchPath(p: string, what: string): void {
+		assertLocalSource(p);
+		if (this.isWorkspacePath(p)) {
+			throw new HostGitError(
+				"path_under_workspace",
+				`refusing ${what} under the workspace root`,
+			);
+		}
+		if (!this.scratchRoots.some((r) => isUnder(p, r))) {
+			refuse(`refusing ${what} outside the scratch roots`);
+		}
 	}
 
 	/** Refuse a path that is, or resolves into, the workspace root. */
@@ -396,6 +516,26 @@ export class HostGit {
 				);
 			}
 		}
+		const positional =
+			dd === -1
+				? args.slice(1).filter((a) => !a.startsWith("-"))
+				: [
+						...args.slice(1, dd).filter((a) => !a.startsWith("-")),
+						...args.slice(dd + 1),
+					];
+		if (
+			spec.requireDashDash &&
+			args.slice(1, dd).some((a) => !a.startsWith("-"))
+		) {
+			refuse(`git ${sub}: operands must follow "--"`);
+		}
+		if (!spec.operands && positional.length > 0) {
+			refuse(`git ${sub} takes no operands`);
+		}
+		spec.operands?.(positional, {
+			host: this,
+			flags: optionPart.filter((a) => a.startsWith("-")),
+		});
 		for (const a of args) {
 			if (a.includes("\0")) {
 				throw new HostGitError("bad_argument", "argument contains NUL");

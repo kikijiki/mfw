@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import {
 	chmod,
 	mkdir,
@@ -164,14 +165,23 @@ describe("HostGit allowlist", () => {
 		).toBe("bad_argument");
 	});
 
-	test("options after -- are data, allowlisted ones before it pass", async () => {
+	test("allowlisted flags and well-shaped operands pass", async () => {
 		const t = await fixture();
 		const h = hostFor(t);
 		expect(() =>
-			h.check(["fetch", "--no-tags", "--", "--upload-pack=x", "r"], {
-				cwd: t.primary,
-				repo: t.primary,
-			}),
+			h.check(
+				[
+					"fetch",
+					"--no-tags",
+					"--",
+					join(t.scratchRoot, "x.bundle"),
+					"+refs/mfw/run/head:refs/mfw/quarantine/run1",
+				],
+				{
+					cwd: t.primary,
+					repo: t.primary,
+				},
+			),
 		).not.toThrow();
 		expect(() =>
 			h.check(["for-each-ref", "--format=%(refname)", "refs/"], {
@@ -329,5 +339,117 @@ describe("HostGit repo resolution (security review H3)", () => {
 		// control: plain git below the symlinked .git discovers the clone and runs its fsmonitor
 		await plainGit(["status"], t.scratchRoot).catch(() => {});
 		expect((await readFile(t.canaryLog, "utf8")).length).toBeGreaterThan(0);
+	});
+});
+
+describe("HostGit operands (security review M3)", () => {
+	const refused = ["option_injection", "bad_argument", "path_under_workspace"];
+
+	test("config is read-only: writes and unsets are refused and change nothing", async () => {
+		const t = await fixture();
+		const h = hostFor(t);
+		const before = await plainGit(["config", "--local", "--list"], t.primary);
+		for (const args of [
+			["config", "core.sshCommand", "/evil"],
+			["config", "alias.x", "!/evil"],
+			["config", "unset", "core.bare"],
+			["config", "--list", "core.sshCommand"],
+		]) {
+			expect(refused).toContain(
+				await codeOf(h.run(args, { cwd: t.primary, repo: t.primary })),
+			);
+		}
+		expect(await plainGit(["config", "--local", "--list"], t.primary)).toBe(
+			before,
+		);
+		expect(
+			(await h.run(["config", "--list"], { cwd: t.primary, repo: t.primary }))
+				.exitCode,
+		).toBe(0);
+	});
+
+	test("update-ref only touches the quarantine namespaces", async () => {
+		const t = await fixture();
+		const h = hostFor(t);
+		const sha = await plainGit(["rev-parse", "HEAD"], t.primary);
+		for (const args of [
+			["update-ref", "-d", "refs/heads/main"],
+			["update-ref", "refs/heads/clobbered", sha],
+			["update-ref", "refs/mfw/base/x", sha],
+			["update-ref", "refs/mfw/quarantine/../../heads/main", sha],
+			["update-ref", "HEAD", sha],
+		]) {
+			expect(refused).toContain(
+				await codeOf(h.run(args, { cwd: t.primary, repo: t.primary })),
+			);
+		}
+		await plainGit(["rev-parse", "--verify", "refs/heads/main"], t.primary);
+		// control
+		await h.runOk(["update-ref", "refs/mfw/quarantine/run1", sha], {
+			cwd: t.primary,
+			repo: t.primary,
+		});
+		await h.runOk(["update-ref", "-d", "refs/mfw/quarantine/run1"], {
+			cwd: t.primary,
+			repo: t.primary,
+		});
+	});
+
+	test("init only creates repos under a scratch root", async () => {
+		const t = await fixture();
+		const h = hostFor(t);
+		for (const target of [
+			join(t.workspaceRoot, "planted.git"),
+			join(t.root, "elsewhere.git"),
+			"relative.git",
+		]) {
+			expect(refused).toContain(
+				await codeOf(
+					h.run(["init", "--bare", "--", target], { cwd: t.scratchRoot }),
+				),
+			);
+		}
+		expect(existsSync(join(t.workspaceRoot, "planted.git"))).toBe(false);
+		await h.runOk(["init", "--bare", "--", join(t.scratchRoot, "ok.git")], {
+			cwd: t.scratchRoot,
+		});
+	});
+
+	test("fetch sources are scratch repos or files, and refspecs have fixed shapes", async () => {
+		const t = await fixture();
+		const h = hostFor(t);
+		const opts = { cwd: t.primary, repo: t.primary, allowFile: true };
+		const ok = "+refs/mfw/run/head:refs/mfw/quarantine/run1";
+		for (const args of [
+			// straight from a workspace clone: the H1 path
+			["fetch", "--", t.clone, "+refs/heads/main:refs/stolen/main"],
+			["fetch", "--", join(t.clone, ".git"), ok],
+			// an arbitrary host repo
+			["fetch", "--", t.secret, ok],
+			// a scratch source, but a refspec that writes outside quarantine
+			["fetch", "--", t.scratchRoot, "+refs/mfw/run/head:refs/heads/clobbered"],
+			["fetch", "--", t.scratchRoot, "+refs/heads/*:refs/heads/*"],
+			[
+				"fetch",
+				"--",
+				t.scratchRoot,
+				"refs/mfw/run/head:refs/mfw/quarantine/run1",
+			],
+			[
+				"fetch",
+				"--",
+				t.scratchRoot,
+				"+refs/mfw/run/head:refs/mfw/quarantine/a/../b",
+			],
+			["fetch", "--", t.scratchRoot],
+		]) {
+			expect(refused).toContain(await codeOf(h.run(args, opts)));
+		}
+		const refsNow = await plainGit(
+			["for-each-ref", "--format=%(refname)"],
+			t.primary,
+		);
+		expect(refsNow).not.toContain("stolen");
+		expect(refsNow).not.toContain("clobbered");
 	});
 });
