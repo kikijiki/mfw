@@ -1,8 +1,45 @@
+import { resolve } from "node:path";
+import { CloneRunWorkspace, type CloneWorkspaceOptions } from "./clone-impl.ts";
 import type { RunWorkspace, RunWorkspaceHandle } from "./run-workspace.ts";
 import { WorktreeRunWorkspace } from "./worktree-impl.ts";
 
-/** The workspace implementation for a project. Worktrees are the only one so far. */
+export type RunWorkspaceKind = "worktree" | "clone";
+
+interface ProjectSetting {
+	kind: RunWorkspaceKind;
+	clone?: CloneWorkspaceOptions;
+}
+
+const settings = new Map<string, ProjectSetting>();
+
+/**
+ * Choose the implementation for a project (`runWorkspace` in its config).
+ * Called when the project attaches; every `createRunWorkspace` call for that
+ * root then follows it, so callers do not each read config. `clone` needs its
+ * options (workspace root and the liveness proof); without a registration a
+ * project uses worktrees.
+ */
+export function configureRunWorkspace(
+	projectRoot: string,
+	setting: ProjectSetting,
+): void {
+	if (setting.kind === "clone" && !setting.clone) {
+		throw new Error("runWorkspace clone needs its workspace options");
+	}
+	settings.set(resolve(projectRoot), setting);
+}
+
+/** Forget a project's setting (detach, and test cleanup). */
+export function clearRunWorkspace(projectRoot: string): void {
+	settings.delete(resolve(projectRoot));
+}
+
+/** The workspace implementation for a project: worktrees unless it is configured for clones. */
 export function createRunWorkspace(projectRoot: string): RunWorkspace {
+	const setting = settings.get(resolve(projectRoot));
+	if (setting?.kind === "clone" && setting.clone) {
+		return new CloneRunWorkspace(resolve(projectRoot), setting.clone);
+	}
 	return new WorktreeRunWorkspace(projectRoot);
 }
 
