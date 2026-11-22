@@ -189,7 +189,7 @@ export const REFUSAL_FIXES: Record<RefusalCode, FixFor> = {
 	}),
 	provider_held: (waitingFor) => ({
 		kind: "setting",
-		text: `Nothing to change: ${waitingFor[0] ?? "the provider"} is rate limited and dispatch resumes when the hold expires. To keep working meanwhile, add a fallback for this tier in Settings → Routing, unpin the task's provider, or clear the hold in Settings → Routing.`,
+		text: `Nothing to change: ${waitingFor[0] ?? "the provider"} is held (a rate limit, or a failed login: Settings → Routing shows which; a failed login needs the fleet account logged in again) and dispatch resumes when the hold expires or is cleared. To keep working meanwhile, add a fallback for this tier in Settings → Routing, unpin the task's provider, or clear the hold in Settings → Routing.`,
 	}),
 	budget_exhausted: (waitingFor) => ({
 		kind: "setting",

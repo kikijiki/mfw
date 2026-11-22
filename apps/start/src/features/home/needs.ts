@@ -66,6 +66,7 @@ export function needTarget(item: InboxItem): string {
 		case "followups":
 			return href.board(project);
 		case "budget":
+		case "auth_hold":
 			return href.projectSettings(project);
 	}
 }
