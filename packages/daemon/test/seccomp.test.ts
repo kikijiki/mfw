@@ -3,10 +3,14 @@ import { existsSync } from "node:fs";
 import {
 	AUDIT_ARCH_X86_64,
 	buildDenyProgram,
+	CLONE_NEWUSER,
+	DENIED_ARG_MASKS,
 	DENIED_SYSCALLS,
 	decodeProgram,
+	ENOSYS_SYSCALLS,
 	generateSeccompProgram,
 	SECCOMP_RET_ALLOW,
+	SECCOMP_RET_ERRNO_ENOSYS,
 	SECCOMP_RET_ERRNO_EPERM,
 	SECCOMP_RET_KILL_PROCESS,
 	SeccompUnsupportedError,
@@ -15,10 +19,10 @@ import {
 	X32_SYSCALL_BIT,
 } from "../src/containment/seccomp.ts";
 
-type Verdict = "allow" | "eperm" | "kill";
+type Verdict = "allow" | "eperm" | "enosys" | "kill";
 
 /** A tiny classic-BPF interpreter over the subset the generator emits. */
-function run(prog: SockFilter[], arch: number, nr: number): Verdict {
+function run(prog: SockFilter[], arch: number, nr: number, arg0 = 0): Verdict {
 	let acc = 0;
 	let pc = 0;
 	for (let steps = 0; steps < 1000; steps++) {
@@ -26,7 +30,8 @@ function run(prog: SockFilter[], arch: number, nr: number): Verdict {
 		if (!i) throw new Error(`pc ${pc} ran off the program`);
 		switch (i.code) {
 			case 0x20:
-				acc = i.k === 4 ? arch : i.k === 0 ? nr : Number.NaN;
+				acc =
+					i.k === 4 ? arch : i.k === 0 ? nr : i.k === 16 ? arg0 : Number.NaN;
 				if (Number.isNaN(acc)) throw new Error("bad load offset");
 				pc++;
 				break;
@@ -34,11 +39,12 @@ function run(prog: SockFilter[], arch: number, nr: number): Verdict {
 				pc += 1 + (acc === i.k ? i.jt : i.jf);
 				break;
 			case 0x45:
-				pc += 1 + ((acc & i.k) !== 0 ? i.jt : i.jf);
+				pc += 1 + ((acc & i.k) >>> 0 !== 0 ? i.jt : i.jf);
 				break;
 			case 0x06:
 				if (i.k === SECCOMP_RET_ALLOW) return "allow";
 				if (i.k === SECCOMP_RET_ERRNO_EPERM) return "eperm";
+				if (i.k === SECCOMP_RET_ERRNO_ENOSYS) return "enosys";
 				if (i.k === SECCOMP_RET_KILL_PROCESS) return "kill";
 				throw new Error(`unexpected return ${i.k.toString(16)}`);
 			default:
@@ -52,6 +58,8 @@ describe("seccomp program", () => {
 	const bytes = generateSeccompProgram("x64");
 	const prog = decodeProgram(bytes);
 	const denied = new Set(Object.values(DENIED_SYSCALLS));
+	const enosys = new Set(Object.values(ENOSYS_SYSCALLS));
+	const maskNrs = new Set(Object.values(DENIED_ARG_MASKS).map((m) => m.nr));
 
 	test("is a whole number of 8-byte instructions and round-trips", () => {
 		expect(bytes.length % 8).toBe(0);
@@ -62,8 +70,70 @@ describe("seccomp program", () => {
 	test("denies exactly the listed syscalls and allows every other number", () => {
 		for (let nr = 0; nr < 1024; nr++)
 			expect(run(prog, AUDIT_ARCH_X86_64, nr)).toBe(
-				denied.has(nr) ? "eperm" : "allow",
+				denied.has(nr) ? "eperm" : enosys.has(nr) ? "enosys" : "allow",
 			);
+	});
+
+	test("X12: process inspection, mount, handle and module calls are EPERM", () => {
+		const names = [
+			"ptrace",
+			"process_vm_readv",
+			"process_vm_writev",
+			"kcmp",
+			"pidfd_getfd",
+			"memfd_secret",
+			"setns",
+			"mount",
+			"umount2",
+			"pivot_root",
+			"move_mount",
+			"open_tree",
+			"fsopen",
+			"fsconfig",
+			"fsmount",
+			"fspick",
+			"open_by_handle_at",
+			"name_to_handle_at",
+			"kexec_load",
+			"kexec_file_load",
+			"init_module",
+			"finit_module",
+			"delete_module",
+			"fanotify_init",
+		];
+		for (const n of names) {
+			const nr = DENIED_SYSCALLS[n];
+			expect(nr).toBeDefined();
+			expect(run(prog, AUDIT_ARCH_X86_64, nr as number)).toBe("eperm");
+		}
+		expect(DENIED_SYSCALLS.ptrace).toBe(101);
+		expect(DENIED_SYSCALLS.process_vm_readv).toBe(310);
+		expect(DENIED_SYSCALLS.setns).toBe(308);
+		expect(DENIED_SYSCALLS.open_by_handle_at).toBe(304);
+	});
+
+	test("X12: clone3 is ENOSYS so glibc falls back to the filterable clone", () => {
+		expect(run(prog, AUDIT_ARCH_X86_64, 435)).toBe("enosys");
+	});
+
+	test("X12: clone and unshare are EPERM with CLONE_NEWUSER and allowed otherwise", () => {
+		for (const nr of maskNrs) {
+			expect(run(prog, AUDIT_ARCH_X86_64, nr, CLONE_NEWUSER)).toBe("eperm");
+			// NEWUSER alongside other flags, as a real clone call would pass.
+			expect(
+				run(prog, AUDIT_ARCH_X86_64, nr, (CLONE_NEWUSER | 0x11) >>> 0),
+			).toBe("eperm");
+			// the high bit of the low word, signed-looking value
+			expect(run(prog, AUDIT_ARCH_X86_64, nr, 0x00003d0f)).toBe("allow");
+			expect(run(prog, AUDIT_ARCH_X86_64, nr, 0x20000000)).toBe("allow"); // CLONE_NEWNS-ish, no userns
+			expect(run(prog, AUDIT_ARCH_X86_64, nr, 0)).toBe("allow");
+		}
+	});
+
+	test("the argument rules do not disturb the syscalls after them", () => {
+		// 57 (fork), 59 (execve) and 435's neighbours sit after the mask blocks.
+		for (const nr of [57, 59, 60, 231, 273, 335])
+			expect(run(prog, AUDIT_ARCH_X86_64, nr, CLONE_NEWUSER)).toBe("allow");
 	});
 
 	test("every conditional jump lands inside the program on a real target", () => {
@@ -77,11 +147,14 @@ describe("seccomp program", () => {
 	});
 
 	test("each rule's match target is exactly the EPERM return (no off-by-one)", () => {
-		const eperm = prog.length - 1;
+		const eperm = prog.length - 2;
+		expect(prog[eperm + 1]?.k).toBe(SECCOMP_RET_ERRNO_ENOSYS);
 		expect(prog[eperm]?.k).toBe(SECCOMP_RET_ERRNO_EPERM);
 		expect(prog[eperm - 1]?.k).toBe(SECCOMP_RET_ALLOW);
-		const rules = prog.filter((p) => p.code === 0x15 && denied.has(p.k));
-		expect(rules.length).toBe(denied.size);
+		const plain = prog.filter(
+			(p, idx) => p.code === 0x15 && denied.has(p.k) && idx >= 6,
+		);
+		expect(plain.length).toBe(denied.size);
 		prog.forEach((p, idx) => {
 			if (p.code === 0x15 && denied.has(p.k)) {
 				expect(idx + 1 + p.jt).toBe(eperm);
@@ -101,8 +174,8 @@ describe("seccomp program", () => {
 	});
 
 	test("the denied set is the documented one", () => {
-		expect(Object.keys(DENIED_SYSCALLS).sort()).toEqual(
-			[
+		expect(Object.keys(DENIED_SYSCALLS)).toEqual(
+			expect.arrayContaining([
 				"add_key",
 				"bpf",
 				"io_uring_enter",
@@ -112,8 +185,10 @@ describe("seccomp program", () => {
 				"perf_event_open",
 				"request_key",
 				"userfaultfd",
-			].sort(),
+			]),
 		);
+		expect(Object.keys(DENIED_SYSCALLS)).toHaveLength(34);
+		expect(new Set(Object.values(DENIED_SYSCALLS)).size).toBe(34);
 		expect(DENIED_SYSCALLS.io_uring_setup).toBe(425);
 		expect(DENIED_SYSCALLS.io_uring_enter).toBe(426);
 		expect(DENIED_SYSCALLS.io_uring_register).toBe(427);
