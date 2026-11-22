@@ -84,6 +84,19 @@ export interface MergeQueueDeps {
 		job: MergeJobView,
 		mergeSha: string,
 	) => Promise<{ passed: boolean; detail?: string; crashed?: boolean }>;
+	/**
+	 * Rebase a clone run's quarantine ref onto `onto` in a host-owned scratch
+	 * clone, moving the ref to the result on success. Absent (worktree
+	 * projects) means a clone run's conflict parks without a rebase.
+	 */
+	rebaseClone?: (
+		job: MergeJobView,
+		onto: string,
+	) => Promise<
+		| { ok: true }
+		| { ok: false; kind: "conflict"; paths: string[]; detail: string }
+		| { ok: false; kind: "error"; detail: string }
+	>;
 	/** Post-merge tail of the owning run's journal (release task → done, etc.). */
 	onMerged: (job: MergeJobView, sha: string) => Promise<void>;
 	/** Parked tail: settle `merge_parked` for the brain (task back to ready, run terminal, worktree preserved, job abandoned). */
@@ -360,39 +373,57 @@ export class MergeQueue {
 			return this.finishMerged(job, baseSha);
 		}
 
-		// Conflict: rebase the RUN worktree onto the target, re-verify, retry once.
+		// Conflict: rebase the run onto the target, re-verify, retry once. A
+		// worktree run rebases in its own worktree; a clone run rebases in a
+		// host-owned scratch clone of its quarantine ref.
 		if ((await this.mergeSource(job)) !== job.branch) {
-			// A clone is agent-writable: the host must not run a rebase in it.
-			await this.park(
-				job,
-				"merge conflict in a clone run: its rebase runs in a host-owned scratch clone, which is not built yet",
-				"conflict",
-			);
-			return "parked";
-		}
-		if (!job.worktreePath) {
-			await this.park(
-				job,
-				"merge conflict and no run worktree to rebase",
-				"conflict",
-			);
-			return "parked";
-		}
-		await this.setState(job.id, "rebasing");
-		const rebase = await git(["rebase", job.targetBranch], job.worktreePath);
-		if (rebase.exitCode !== 0) {
-			// Read conflicting paths before aborting; git's own advice is useless
-			// to the operator.
-			const paths = await this.conflictingPaths(job.worktreePath);
-			await git(["rebase", "--abort"], job.worktreePath);
-			await this.park(
-				job,
-				paths.length > 0
-					? `rebase conflict in ${paths.join(", ")}`
-					: `rebase conflict: ${tail(rebase.stderr)}`,
-				"conflict",
-			);
-			return "parked";
+			if (!this.deps.rebaseClone) {
+				await this.park(
+					job,
+					"merge conflict in a clone run and no scratch rebase is available",
+					"conflict",
+				);
+				return "parked";
+			}
+			await this.setState(job.id, "rebasing");
+			const rebased = await this.deps.rebaseClone(job, baseSha);
+			if (!rebased.ok) {
+				await this.park(
+					job,
+					rebased.kind === "conflict"
+						? rebased.paths.length > 0
+							? `rebase conflict in ${rebased.paths.join(", ")}`
+							: `rebase conflict: ${rebased.detail}`
+						: `rebase of the clone run failed: ${rebased.detail}`,
+					"conflict",
+				);
+				return "parked";
+			}
+		} else {
+			if (!job.worktreePath) {
+				await this.park(
+					job,
+					"merge conflict and no run worktree to rebase",
+					"conflict",
+				);
+				return "parked";
+			}
+			await this.setState(job.id, "rebasing");
+			const rebase = await git(["rebase", job.targetBranch], job.worktreePath);
+			if (rebase.exitCode !== 0) {
+				// Read conflicting paths before aborting; git's own advice is useless
+				// to the operator.
+				const paths = await this.conflictingPaths(job.worktreePath);
+				await git(["rebase", "--abort"], job.worktreePath);
+				await this.park(
+					job,
+					paths.length > 0
+						? `rebase conflict in ${paths.join(", ")}`
+						: `rebase conflict: ${tail(rebase.stderr)}`,
+					"conflict",
+				);
+				return "parked";
+			}
 		}
 
 		await this.setState(job.id, "reverifying");
