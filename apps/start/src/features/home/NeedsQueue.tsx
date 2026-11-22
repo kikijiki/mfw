@@ -32,7 +32,13 @@ import { RunConsole } from "../agents/RunConsole";
 import { AnswerBox } from "../clarify/AnswerBox";
 import { LetBrainDecide } from "../inspector/MessageBrain";
 import { runBranchName } from "../repo/repoModel";
-import { answersInPlace, needTarget, oldestFirst } from "./needs";
+import {
+	ATTENTION_LABEL,
+	answersInPlace,
+	groupByAttention,
+	needTarget,
+	oldestFirst,
+} from "./needs";
 import { useNeedActions } from "./useNeedActions";
 
 type ActiveRun = RouterOutputs["runs"]["active"][number];
@@ -72,10 +78,18 @@ const SEVERITY_TOKEN: Record<InboxSeverity, string> = {
 	info: "--mfw-neutral",
 };
 
-/** Most severe first, then oldest first: the order a person should work them. */
+const ATTENTION_RANK: Record<InboxItem["attention"], number> = {
+	act: 0,
+	know: 1,
+	ambient: 2,
+};
+
+/** Class first (act, know, ambient), then most severe, then oldest: the order a person should work them. */
 export function queueOrder(items: readonly InboxItem[]): InboxItem[] {
 	return oldestFirst(items).sort(
-		(a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity],
+		(a, b) =>
+			ATTENTION_RANK[a.attention] - ATTENTION_RANK[b.attention] ||
+			SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity],
 	);
 }
 
@@ -111,6 +125,7 @@ export function NeedsQueue({
 	runs,
 	onNavigate,
 	empty = true,
+	grouped = false,
 }: {
 	items: readonly InboxItem[];
 	/** `runs.active`, to find the live run an approval or stall belongs to. */
@@ -119,6 +134,8 @@ export function NeedsQueue({
 	onNavigate?: () => void;
 	/** Render the all-clear state when there are no items. */
 	empty?: boolean;
+	/** Home: a heading per attention class (the `act` rows sit under the section's own heading) and the ambient rows folded away. */
+	grouped?: boolean;
 }) {
 	const actions = useNeedActions();
 	const ordered = queueOrder(items);
@@ -135,25 +152,60 @@ export function NeedsQueue({
 		) : null;
 	}
 
+	const row = (item: InboxItem) => (
+		<NeedRow
+			key={item.id}
+			item={item}
+			run={
+				item.runId
+					? runs?.find(
+							(r) => r.project === item.project && r.runId === item.runId,
+						)
+					: undefined
+			}
+			actions={actions}
+			onNavigate={onNavigate}
+		/>
+	);
+
+	if (!grouped) {
+		return (
+			<>
+				<ul className="flex flex-col gap-2">{ordered.map(row)}</ul>
+				{actions.dialog}
+			</>
+		);
+	}
+
 	return (
 		<>
-			<ul className="flex flex-col gap-2">
-				{ordered.map((item) => (
-					<NeedRow
-						key={item.id}
-						item={item}
-						run={
-							item.runId
-								? runs?.find(
-										(r) => r.project === item.project && r.runId === item.runId,
-									)
-								: undefined
-						}
-						actions={actions}
-						onNavigate={onNavigate}
-					/>
-				))}
-			</ul>
+			{groupByAttention(ordered).map((g) => {
+				const list = (
+					<ul className="flex flex-col gap-2">{g.items.map(row)}</ul>
+				);
+				if (g.attention === "act") return <div key="act">{list}</div>;
+				return (
+					<details
+						key={g.attention}
+						data-attention={g.attention}
+						// Ambient is handled by mfw: folded until asked for.
+						open={g.attention === "know"}
+						className="flex flex-col gap-2"
+					>
+						<summary
+							className="mfw-focus cursor-pointer uppercase"
+							style={{
+								color: "var(--mfw-fg-faint)",
+								fontSize: "var(--mfw-text-2xs)",
+								letterSpacing: "0.06em",
+							}}
+						>
+							{ATTENTION_LABEL[g.attention]} {g.items.length}
+						</summary>
+						{list}
+					</details>
+				);
+			})}
 			{actions.dialog}
 		</>
 	);

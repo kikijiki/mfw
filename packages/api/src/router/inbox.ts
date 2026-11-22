@@ -1,3 +1,8 @@
+import {
+	collectHeadline,
+	countLanded,
+	type HeadlineSource,
+} from "@mfw/daemon/headlines";
 import { mergeInboxes } from "@mfw/daemon/inbox";
 import { z } from "zod";
 import {
@@ -21,6 +26,21 @@ export const inboxRouter = createTRPCRouter({
 		);
 		return mergeInboxes(lists);
 	}),
+
+	/** One mechanical headline per attached project (`daemon/headlines.ts`). */
+	headlines: publicProcedure.query(async ({ ctx }) =>
+		Promise.all(
+			ctx.orchestrator.list().map((svc) => {
+				const source: HeadlineSource = {
+					name: svc.name,
+					inbox: svc.inbox,
+					budgets: svc.budgets,
+					landedSince: (since) => countLanded(svc.handle, since),
+				};
+				return collectHeadline(source);
+			}),
+		),
+	),
 
 	dismiss: projectProcedure
 		.input(z.object({ itemId: z.string() }))

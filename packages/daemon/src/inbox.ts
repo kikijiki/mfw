@@ -49,12 +49,29 @@ export type InboxKind =
 
 export type InboxSeverity = "critical" | "attention" | "info";
 
+/**
+ * How an item competes for a person's attention (the Phase 0 form of the
+ * three attention classes):
+ *   act = needs a decision or an unblock from you.
+ *   know = worth reading, nothing to do.
+ *   ambient = mfw is handling it; shown so it is not hidden, never counted.
+ */
+export type AttentionClass = "act" | "know" | "ambient";
+
+export const ATTENTION_CLASSES: readonly AttentionClass[] = [
+	"act",
+	"know",
+	"ambient",
+];
+
 export interface InboxItem {
 	/** Stable across recomputation, so dismissals and notifications key off it. */
 	id: string;
 	project: string;
 	kind: InboxKind;
 	severity: InboxSeverity;
+	/** Derived from `kind` and `severity` by `attentionOf`; never set by a collector. */
+	attention: AttentionClass;
 	title: string;
 	detail: string;
 	taskId?: string;
@@ -92,7 +109,7 @@ const RUN_KINDS: ReadonlySet<InboxKind> = new Set([
 	"failed_run",
 ]);
 
-function refOf(item: Omit<InboxItem, "ref">): string {
+function refOf(item: Omit<InboxItem, "ref" | "attention">): string {
 	if (RUN_KINDS.has(item.kind) && item.runId) return `run:${item.runId}`;
 	if (item.taskId) return `task:${item.taskId}`;
 	if (item.mergeJobId !== undefined) return `merge:${item.mergeJobId}`;
@@ -246,13 +263,19 @@ export class InboxService {
 
 	private async collect(): Promise<InboxItem[]> {
 		const items = await this.collectItems();
-		return items.map((item) => ({ ...item, ref: refOf(item) }));
+		return items.map((item) => ({
+			...item,
+			ref: refOf(item),
+			attention: attentionOf(item.kind, item.severity),
+		}));
 	}
 
-	private async collectItems(): Promise<Omit<InboxItem, "ref">[]> {
+	private async collectItems(): Promise<
+		Omit<InboxItem, "ref" | "attention">[]
+	> {
 		const db = this.deps.handle.db;
 		const project = this.deps.project;
-		const items: Omit<InboxItem, "ref">[] = [];
+		const items: Omit<InboxItem, "ref" | "attention">[] = [];
 		for (const issue of (await this.deps.admission?.issues()) ?? []) {
 			items.push({
 				id: `admission:${issue.id}`,
@@ -707,10 +730,10 @@ export class InboxService {
 	 * `proposed` notice counts too: in shadow mode nothing else would deliver
 	 * it, and the owner must see what the brain asked for.
 	 */
-	private async brainItems(): Promise<Omit<InboxItem, "ref">[]> {
+	private async brainItems(): Promise<Omit<InboxItem, "ref" | "attention">[]> {
 		const db = this.deps.handle.db;
 		const project = this.deps.project;
-		const out: Omit<InboxItem, "ref">[] = [];
+		const out: Omit<InboxItem, "ref" | "attention">[] = [];
 		const [failed] = await db
 			.select()
 			.from(brainSessions)
@@ -822,6 +845,46 @@ export class InboxService {
 				};
 		}
 	}
+}
+
+/**
+ * One table decides the class of every kind at its ordinary severity. A
+ * `critical` item is always `act` (mfw is stuck), whatever its kind. The
+ * `Record` makes a new `InboxKind` a compile error until it is classified.
+ */
+export const ATTENTION_BY_KIND: Record<InboxKind, AttentionClass> = {
+	main_red: "act",
+	merge_parked: "act",
+	clarify: "act",
+	review: "act",
+	blocked: "act",
+	trigger_disarmed: "act",
+	trigger_failed: "act",
+	admission: "act",
+	draft_failed: "act",
+	ownership_conflict: "act",
+	needs_answer: "act",
+	approval_pending: "act",
+	stalled: "act",
+	budget: "act",
+	brain_stuck: "act",
+	brain_notice: "act",
+	// A run failed and was handled; read it, nothing to answer.
+	failed_run: "know",
+	followups: "know",
+	// Still retrying below `ESCALATE_AFTER_SWEEPS`; critical past it.
+	sweep_infra: "ambient",
+	verify_infra: "ambient",
+};
+
+export function attentionOf(
+	kind: InboxKind,
+	severity: InboxSeverity,
+): AttentionClass {
+	if (severity === "critical") return "act";
+	// An `act` kind at `info` is something mfw handled: informative only.
+	if (ATTENTION_BY_KIND[kind] === "act" && severity === "info") return "know";
+	return ATTENTION_BY_KIND[kind];
 }
 
 /** Merge per-project lists into one cross-project queue with badge counts. */
