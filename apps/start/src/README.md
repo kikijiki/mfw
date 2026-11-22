@@ -126,7 +126,7 @@ nothing.
 | `/p/$project/files` | redirects to `/p/$project/repo/files`, search kept |
 | `/p/$project/settings` | `settings/ProjectSettingsPage` → `ProjectConfig` + `board/SeedRuns` + `ResourcesPanel` + `board/WipeBoard` |
 
-`/p/$project` redirects to its board. There are no Now, Inbox, History, Agents or review-list routes: Home is the queue.
+`/p/$project` is **Lead** (`lead/LeadPage`): the mechanical headline (`inbox.headlines`, each number a link), the brain's paragraph (its latest plan, labelled "brain's words") and standing intent (`brain.intents`), this project's needs (`inbox.list` through `useInbox`) and live runs, then one-click drill-down to Board, Flow, docs, repo and triggers; pure rules in `lead/lead.ts`. It stacks to one column on a phone and takes two from `lg`. The page that was `/fleet` is labelled **Capacity** everywhere (the route path is unchanged). There are no Now, Inbox, History, Agents or review-list routes: Home is the queue.
 
 Note: `/settings` covers projects, providers and appearance (no daemon
 section), and **per-project configuration is a route, not a tab of
@@ -502,7 +502,7 @@ and machine settings are built. What ui.md describes and this does **not** have:
   not be automatic when built.
 - ~~**Command palette** and the `g ...` chord shortcuts~~: built (`Ctrl K` (command key on macOS), `g h`,
   `g b`, `g f`). Not built: `>` verbs scoped to the selection (only navigation
-  commands exist), and `g l` (no Fleet page). `g f` targets `/p/$project/flow`
+  commands exist), and `g l` (no Capacity page). `g f` targets `/p/$project/flow`
   (the Flow lens).
 - **Inspector**: docked panes have fixed widths (not resizable); only task and
   run nodes have bodies, other kinds render a placeholder.

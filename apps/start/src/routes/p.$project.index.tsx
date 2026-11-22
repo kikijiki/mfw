@@ -1,9 +1,10 @@
-import { createFileRoute, redirect } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 
-import { href } from "~/routes";
+import { LeadPage } from "~/features/lead/LeadPage";
 
 export const Route = createFileRoute("/p/$project/")({
-	beforeLoad: ({ params }) => {
-		throw redirect({ to: href.board(params.project), replace: true });
+	component: function LeadRoute() {
+		const { project } = Route.useParams();
+		return <LeadPage project={project} />;
 	},
 });
