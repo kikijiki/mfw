@@ -1,6 +1,7 @@
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sandboxBundleArgv } from "../../src/host-git/fetch.ts";
 import { runProc } from "../../src/proc.ts";
 
 /**
@@ -22,6 +23,8 @@ export interface TamperedClone {
 	workspaceRoot: string;
 	scratchRoot: string;
 	clone: string;
+	/** The bundle the sandbox helper wrote to the outbox, made before the clone was tampered with. */
+	bundle: string;
 	runId: string;
 	canary: string;
 	canaryLog: string;
@@ -91,6 +94,18 @@ export async function buildTamperedClone(
 		"do not exfiltrate\n",
 		"secret: initial",
 	);
+	// The victim's own run branch (same name the host fetches) and packed objects,
+	// so the pack and ref tampers below have something to point at.
+	await plainGit(["branch", `mfw/${runId}`], secret);
+	await plainGit(["gc", "-q"], secret);
+	// gc packs refs; keep the victim's run ref loose so a symlink to it resolves.
+	await mkdir(join(secret, ".git", "refs", "heads", "mfw"), {
+		recursive: true,
+	});
+	await writeFile(
+		join(secret, ".git", "refs", "heads", "mfw", runId),
+		`${secretSha}\n`,
+	);
 
 	await plainGit(["clone", "-q", "--no-hardlinks", primary, clone], root);
 	await plainGit(["checkout", "-q", "-b", `mfw/${runId}`], clone);
@@ -102,6 +117,12 @@ export async function buildTamperedClone(
 	await plainGit(["tag", "foreign-tag"], clone);
 	await plainGit(["update-ref", "refs/mfw/base/other", "HEAD"], clone);
 	await plainGit(["update-ref", "refs/remotes/evil/main", "HEAD"], clone);
+
+	// The in-sandbox helper's output, written while the clone is still honest.
+	const outbox = join(workspaceRoot, "outbox");
+	await mkdir(outbox, { recursive: true });
+	const bundle = join(outbox, `${runId}.bundle`);
+	await plainGit(sandboxBundleArgv(runId, bundle).slice(1), clone);
 
 	const canaryLog = join(root, "canary.log");
 	const canary = join(root, "canary.sh");
@@ -156,6 +177,7 @@ export async function buildTamperedClone(
 		workspaceRoot,
 		scratchRoot,
 		clone,
+		bundle,
 		runId,
 		canary,
 		canaryLog,
@@ -176,4 +198,84 @@ export async function plantAlternates(
 	const dir = join(t.clone, ".git", "objects", "info");
 	await mkdir(dir, { recursive: true });
 	await writeFile(join(dir, kind), `${join(t.secret, ".git", "objects")}\n`);
+}
+
+export type GitdirBypass =
+	| "commondir"
+	| "pack-symlink"
+	| "pack-and-ref-symlink"
+	| "decoy-dotgit";
+
+/**
+ * The four ways a tampered clone redirects which repo the host reads, each of
+ * which got another repo's secret into the primary through a path fetch (the
+ * security review, H1). `secretSha` ends up reachable from the run branch.
+ */
+export async function plantGitdirBypass(
+	t: TamperedClone,
+	kind: GitdirBypass,
+): Promise<void> {
+	const { rm, rename, symlink, readdir } = await import("node:fs/promises");
+	const gitDir = join(t.clone, ".git");
+	const secretGit = join(t.secret, ".git");
+	const ref = join(gitDir, "refs", "heads", "mfw", t.runId);
+	if (kind === "commondir") {
+		await writeFile(join(gitDir, "commondir"), `${secretGit}\n`);
+	} else if (kind === "pack-symlink" || kind === "pack-and-ref-symlink") {
+		await rm(join(gitDir, "objects", "pack"), { recursive: true, force: true });
+		await symlink(
+			join(secretGit, "objects", "pack"),
+			join(gitDir, "objects", "pack"),
+		);
+		await rm(ref, { force: true });
+		if (kind === "pack-symlink") {
+			await writeFile(ref, `${t.secretSha}\n`);
+		} else {
+			await symlink(join(secretGit, "refs", "heads", "mfw", t.runId), ref);
+		}
+	} else {
+		// Real gitdir at the clone root (with alternates), an empty decoy .git.
+		for (const name of await readdir(gitDir)) {
+			await rename(join(gitDir, name), join(t.clone, name));
+		}
+		await plantRootAlternates(t);
+		await writeFile(
+			join(t.clone, "refs", "heads", "mfw", t.runId),
+			`${t.secretSha}\n`,
+		);
+	}
+}
+
+async function plantRootAlternates(t: TamperedClone): Promise<void> {
+	const dir = join(t.clone, "objects", "info");
+	await mkdir(dir, { recursive: true });
+	await writeFile(
+		join(dir, "alternates"),
+		`${join(t.secret, ".git", "objects")}\n`,
+	);
+}
+
+/**
+ * An untampered repo with the run branch, a WIP snapshot and foreign refs, for
+ * building the hostile or odd bundles an agent could write to its outbox
+ * without arming the canary.
+ */
+export async function buildHonestRepo(t: TamperedClone): Promise<string> {
+	const honest = join(t.root, "honest");
+	await plainGit(["clone", "-q", "--no-hardlinks", t.primary, honest], t.root);
+	await plainGit(["checkout", "-q", "-b", `mfw/${t.runId}`], honest);
+	await commitFile(honest, "work.txt", "honest work\n", "honest: work");
+	await plainGit(["branch", `mfw-wip/${t.runId}/1`], honest);
+	await plainGit(["branch", "foreign-branch"], honest);
+	await plainGit(["tag", "foreign-tag"], honest);
+	return honest;
+}
+
+export async function makeBundle(
+	repo: string,
+	out: string,
+	args: string[],
+): Promise<string> {
+	await plainGit(["bundle", "create", out, ...args], repo);
+	return out;
 }

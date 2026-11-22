@@ -30,6 +30,7 @@ export type HostGitErrorCode =
 	| "bad_run_id"
 	| "precondition"
 	| "alternates"
+	| "bad_bundle"
 	| "no_branch"
 	| "fetch_failed"
 	| "validation";

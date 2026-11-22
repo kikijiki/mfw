@@ -1,17 +1,21 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
-import { readFile, rm, symlink } from "node:fs/promises";
+import { mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-	assertNoAlternates,
 	fetchRunResult,
 	quarantineRef,
+	sandboxBundleArgv,
 } from "../src/host-git/fetch.ts";
 import { HostGit, HostGitError } from "../src/host-git/runner.ts";
 import {
+	buildHonestRepo,
 	buildTamperedClone,
+	type GitdirBypass,
+	makeBundle,
 	plainGit,
 	plantAlternates,
+	plantGitdirBypass,
 	type TamperedClone,
 } from "./fixtures/tampered-clone.ts";
 
@@ -36,7 +40,7 @@ function fetchOpts(t: TamperedClone, extra: Record<string, unknown> = {}) {
 	return {
 		host: host(t),
 		primaryRepo: t.primary,
-		clonePath: t.clone,
+		bundlePath: t.bundle,
 		runId: t.runId,
 		scratchRoot: t.scratchRoot,
 		assertProcessesDead: dead,
@@ -112,16 +116,6 @@ describe("fetchRunResult", () => {
 		expect(readdirSync(t.scratchRoot)).toEqual([]);
 	});
 
-	test("a missing run branch is reported, with nothing imported", async () => {
-		const t = await fixture();
-		const before = await refs(t.primary);
-		expect(
-			await codeOf(fetchRunResult(fetchOpts(t, { runId: "nothere" }))),
-		).toBe("no_branch");
-		expect(await refs(t.primary)).toEqual(before);
-		expect(readdirSync(t.scratchRoot)).toEqual([]);
-	});
-
 	test("the validation hook runs on the bare repo before the primary changes", async () => {
 		const t = await fixture();
 		const before = await refs(t.primary);
@@ -149,35 +143,6 @@ describe("fetchRunResult", () => {
 });
 
 describe("fetchRunResult refusals", () => {
-	for (const kind of ["alternates", "http-alternates"] as const) {
-		test(`${kind} (the exfiltration case) is refused`, async () => {
-			const t = await fixture();
-			await plantAlternates(t, kind);
-			const before = await refs(t.primary);
-			expect(await codeOf(fetchRunResult(fetchOpts(t)))).toBe("alternates");
-			expect(await refs(t.primary)).toEqual(before);
-			const has = await plainGit(
-				["cat-file", "-e", t.secretSha],
-				t.primary,
-			).then(
-				() => true,
-				() => false,
-			);
-			expect(has).toBe(false);
-			expect(await readFile(t.canaryLog, "utf8")).toBe("");
-		});
-	}
-
-	test("a symlinked objects dir or .git is refused", async () => {
-		const t = await fixture();
-		await rm(join(t.clone, ".git", "objects"), { recursive: true });
-		await symlink(
-			join(t.secret, ".git", "objects"),
-			join(t.clone, ".git", "objects"),
-		);
-		expect(() => assertNoAlternates(t.clone)).toThrow(HostGitError);
-	});
-
 	test("the precondition runs first and its failure aborts everything", async () => {
 		const t = await fixture();
 		const before = await refs(t.primary);
@@ -199,30 +164,24 @@ describe("fetchRunResult refusals", () => {
 		expect(readdirSync(t.scratchRoot)).toEqual([]);
 	});
 
-	test("--upload-pack= urls are refused before git runs", async () => {
+	test("--upload-pack= paths are refused before git runs", async () => {
 		const t = await fixture();
 		const marker = join(t.root, "pwned");
+		for (const extra of [
+			{ bundlePath: `--upload-pack=touch ${marker}` },
+			{ primaryRepo: "--upload-pack=x" },
+		]) {
+			expect(await codeOf(fetchRunResult(fetchOpts(t, extra)))).toBe(
+				"option_injection",
+			);
+		}
 		expect(
-			await codeOf(
-				fetchRunResult(
-					fetchOpts(t, { clonePath: `--upload-pack=touch ${marker}` }),
-				),
-			),
-		).toBe("option_injection");
-		expect(
-			await codeOf(
-				fetchRunResult(fetchOpts(t, { primaryRepo: "--upload-pack=x" })),
-			),
-		).toBe("option_injection");
-		expect(
-			await codeOf(
-				fetchRunResult(fetchOpts(t, { clonePath: "relative/clone" })),
-			),
+			await codeOf(fetchRunResult(fetchOpts(t, { bundlePath: "rel.bundle" }))),
 		).toBe("bad_argument");
 		expect(await Bun.file(marker).exists()).toBe(false);
 	});
 
-	test("dash and malformed run ids and wip prefixes are refused", async () => {
+	test("dash and malformed run ids are refused", async () => {
 		const t = await fixture();
 		for (const runId of [
 			"--upload-pack=x",
@@ -237,15 +196,6 @@ describe("fetchRunResult refusals", () => {
 			expect(await codeOf(fetchRunResult(fetchOpts(t, { runId })))).toBe(
 				"bad_run_id",
 			);
-		}
-		for (const wipSourcePrefix of [
-			"--x/",
-			"refs/heads/../x/",
-			"refs/heads/x",
-		]) {
-			expect(
-				await codeOf(fetchRunResult(fetchOpts(t, { wipSourcePrefix }))),
-			).toBe("bad_argument");
 		}
 	});
 
@@ -263,11 +213,160 @@ describe("fetchRunResult refusals", () => {
 		).toBe("path_under_workspace");
 		expect(await readFile(t.canaryLog, "utf8")).toBe("");
 	});
+});
 
-	test("a clone outside the owned roots is refused", async () => {
+describe("gitdir redirection bypasses (security review H1)", () => {
+	// The host no longer reads the clone's gitdir at all, so no tamper of it can
+	// redirect the import: the bundle written before the tamper is what lands.
+	const kinds: (GitdirBypass | "alternates" | "http-alternates")[] = [
+		"commondir",
+		"pack-symlink",
+		"pack-and-ref-symlink",
+		"decoy-dotgit",
+		"alternates",
+		"http-alternates",
+	];
+	for (const kind of kinds) {
+		test(`${kind}: the secret from another repo never reaches the primary`, async () => {
+			const t = await fixture();
+			const tip = await plainGit(
+				["rev-parse", `mfw/${t.runId}`],
+				t.primary,
+			).catch(() => "");
+			expect(tip).toBe("");
+			if (kind === "alternates" || kind === "http-alternates") {
+				await plantAlternates(t, kind);
+			} else {
+				await plantGitdirBypass(t, kind);
+			}
+			const res = await fetchRunResult(fetchOpts(t));
+			const leaked = await plainGit(
+				["cat-file", "-e", t.secretSha],
+				t.primary,
+			).then(
+				() => true,
+				() => false,
+			);
+			expect(leaked).toBe(false);
+			expect(await readFile(t.canaryLog, "utf8")).toBe("");
+			expect(res.tip).not.toBe(t.secretSha);
+			expect(await plainGit(["show", `${res.tip}:work.txt`], t.primary)).toBe(
+				"agent work",
+			);
+		});
+	}
+});
+
+describe("hostile bundles", () => {
+	test("a symlinked bundle is refused, even to a valid bundle", async () => {
+		const t = await fixture();
+		const link = join(t.workspaceRoot, "outbox", "link.bundle");
+		await symlink(t.bundle, link);
+		expect(
+			await codeOf(fetchRunResult(fetchOpts(t, { bundlePath: link }))),
+		).toBe("bad_bundle");
+	});
+
+	test("a directory, a gitdir or a fifo is not a bundle", async () => {
+		const t = await fixture();
+		for (const p of [t.clone, join(t.clone, ".git"), t.secret]) {
+			expect(
+				await codeOf(fetchRunResult(fetchOpts(t, { bundlePath: p }))),
+			).toBe("bad_bundle");
+		}
+		const fifo = join(t.workspaceRoot, "outbox", "fifo.bundle");
+		const mk = Bun.spawnSync(["mkfifo", fifo]);
+		if (mk.exitCode === 0) {
+			expect(
+				await codeOf(fetchRunResult(fetchOpts(t, { bundlePath: fifo }))),
+			).toBe("bad_bundle");
+		}
+		expect(readdirSync(t.scratchRoot)).toEqual([]);
+	});
+
+	test("garbage and truncated headers are refused", async () => {
+		const t = await fixture();
+		const bad = join(t.workspaceRoot, "outbox", "bad.bundle");
+		for (const body of [
+			"hello\n\n",
+			"# v2 git bundle\n" + "0".repeat(40) + " refs/heads/x",
+			"# v2 git bundle\nnot-a-ref-line\n\n",
+			"# v3 git bundle\n@filter=blob:none\n\n",
+		]) {
+			await writeFile(bad, body);
+			expect(
+				await codeOf(fetchRunResult(fetchOpts(t, { bundlePath: bad }))),
+			).toBe("bad_bundle");
+		}
+	});
+
+	test("a header that lies about its pack fails the fsck fetch and imports nothing", async () => {
+		const t = await fixture();
+		const real = await readFile(t.bundle);
+		const bad = join(t.workspaceRoot, "outbox", "trunc.bundle");
+		await writeFile(bad, real.subarray(0, real.length - 20));
+		const before = await refs(t.primary);
+		expect(
+			await codeOf(fetchRunResult(fetchOpts(t, { bundlePath: bad }))),
+		).toBe("fetch_failed");
+		expect(await refs(t.primary)).toEqual(before);
+		expect(readdirSync(t.scratchRoot)).toEqual([]);
+	});
+
+	test("size and ref-count caps", async () => {
 		const t = await fixture();
 		expect(
-			await codeOf(fetchRunResult(fetchOpts(t, { clonePath: t.secret }))),
-		).toBe("bad_argument");
+			await codeOf(fetchRunResult(fetchOpts(t, { maxBundleBytes: 10 }))),
+		).toBe("bad_bundle");
+		expect(await codeOf(fetchRunResult(fetchOpts(t, { maxRefs: 1 })))).toBe(
+			"bad_bundle",
+		);
+	});
+
+	test("a bundle with prerequisites is refused", async () => {
+		const t = await fixture();
+		const honest = await buildHonestRepo(t);
+		const out = join(t.workspaceRoot, "outbox", "thin.bundle");
+		await makeBundle(honest, out, [
+			`refs/heads/mfw/${t.runId}`,
+			"^refs/heads/main",
+		]);
+		expect(
+			await codeOf(fetchRunResult(fetchOpts(t, { bundlePath: out }))),
+		).toBe("bad_bundle");
+	});
+
+	test("foreign refs and tags in a bundle are ignored", async () => {
+		const t = await fixture();
+		const honest = await buildHonestRepo(t);
+		const out = join(t.workspaceRoot, "outbox", "all.bundle");
+		await makeBundle(honest, out, ["--all"]);
+		const before = await refs(t.primary);
+		await fetchRunResult(fetchOpts(t, { bundlePath: out }));
+		const added = (await refs(t.primary)).filter((r) => !before.includes(r));
+		expect(added).toEqual([
+			"refs/mfw/quarantine-wip/run1/1",
+			"refs/mfw/quarantine/run1",
+		]);
+	});
+
+	test("a bundle without the run branch is reported", async () => {
+		const t = await fixture();
+		const honest = await buildHonestRepo(t);
+		const out = join(t.workspaceRoot, "outbox", "nohead.bundle");
+		await makeBundle(honest, out, ["refs/heads/foreign-branch"]);
+		expect(
+			await codeOf(fetchRunResult(fetchOpts(t, { bundlePath: out }))),
+		).toBe("no_branch");
+	});
+
+	test("the sandbox helper command produces what the host accepts", async () => {
+		const t = await fixture();
+		const honest = await buildHonestRepo(t);
+		const out = join(t.workspaceRoot, "outbox", "helper.bundle");
+		await mkdir(join(t.workspaceRoot, "outbox"), { recursive: true });
+		await plainGit(sandboxBundleArgv(t.runId, out).slice(1), honest);
+		const res = await fetchRunResult(fetchOpts(t, { bundlePath: out }));
+		expect(res.wipRefs).toHaveLength(1);
 	});
 });
