@@ -322,6 +322,6 @@ describe("the tmux socket dir is masked on a first launch (review G8)", () => {
 		const exists = () => true;
 		expect(
 			maskedRuntimePaths({ TMUX_TMPDIR: "/run/user/7" }, 7, exists),
-		).toEqual(["/run/user/7", "/tmp/tmux-7"]);
+		).toEqual(["/nix/var/nix/daemon-socket", "/run/user/7", "/tmp/tmux-7"]);
 	});
 });

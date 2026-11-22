@@ -31,7 +31,11 @@ import { runProc } from "./proc.ts";
  *    `--new-session` detaches the controlling terminal;
  *  - a minimal probe runs inside, before the driver, and fails closed.
  *
- * Nothing here degrades: callers refuse when `bwrap` is missing.
+ * Residuals, stated plainly: the network namespace is shared, so abstract unix
+ * sockets of the host (which tmpfs masks cannot hide) stay reachable until
+ * E7b's netns; and sockets under `$HOME` (for example an agent's own IPC dir)
+ * are inside the writable home. Nothing here degrades: callers refuse when
+ * `bwrap` is missing.
  */
 
 export interface BwrapIsolation {
@@ -178,7 +182,7 @@ function q(s: string): string {
 /**
  * Directories masked with an empty tmpfs so the daemon's runtime and tmux
  * sockets are unreachable (E1): `/run/user/<uid>`, `$TMUX_TMPDIR` and
- * `/tmp/tmux-<uid>`. Only paths that exist are masked; bwrap cannot create a
+ * `/tmp/tmux-<uid>`, plus the nix daemon socket directory. Only paths that exist are masked; bwrap cannot create a
  * mount point on a read-only root, and an absent path holds nothing to leak.
  */
 export function maskedRuntimePaths(
@@ -188,6 +192,8 @@ export function maskedRuntimePaths(
 ): string[] {
 	const tmuxBase = env.TMUX_TMPDIR?.startsWith("/") ? env.TMUX_TMPDIR : "/tmp";
 	const candidates = [
+		// The nix daemon socket gives root-equivalent builds to anyone who can reach it.
+		"/nix/var/nix/daemon-socket",
 		`/run/user/${uid}`,
 		env.TMUX_TMPDIR,
 		join(tmuxBase, `tmux-${uid}`),
@@ -235,6 +241,10 @@ export function bwrapCore(o: BwrapCoreOptions): string[] {
 		o.bwrapPath,
 		"--die-with-parent",
 		"--new-session",
+		// Own pid namespace (security review G7): host processes of the same uid,
+		// the daemon and other runs can no longer be signalled, and /proc/1 is the
+		// sandbox's own init, which makes the probe's /proc/1/environ check real.
+		"--unshare-pid",
 		"--ro-bind",
 		"/",
 		"/",
