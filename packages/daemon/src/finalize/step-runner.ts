@@ -1787,6 +1787,20 @@ export class StepRunner {
 		const { run } = built;
 		if (!run.branch) throw new Error("enqueue_merge: run has no branch");
 		const targetBranch = run.integrationBranch ?? "main";
+		// A clone's work reaches the primary only through the host's verified
+		// import; the merge queue reads that quarantine ref. Nothing to merge
+		// is a failed step, not an empty merge.
+		const workspace = createRunWorkspace(this.deps.projectRoot);
+		if (workspace.kind === "clone") {
+			const imported = await workspace.fetchResult({
+				path: run.worktreePath ?? workspace.paths(run.id).workPath,
+				branch: run.branch,
+				baseSha: run.baseSha ?? "",
+			});
+			if (!imported.sha) {
+				throw new Error("enqueue_merge: the run's result was not imported");
+			}
+		}
 		// Mark `merging` BEFORE the job is visible: otherwise the worker could
 		// finish the run first and this would drag a terminal run back to
 		// `merging`, where nothing revisits it and it holds a slot forever.

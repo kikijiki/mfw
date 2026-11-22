@@ -119,6 +119,7 @@ import {
 } from "./routing.ts";
 import { RunEngine } from "./run-engine.ts";
 import { RunRegistry } from "./run-registry.ts";
+import { configureRunWorkspace } from "./run-workspace/factory.ts";
 import {
 	RunPodAccountService,
 	type RunPodProviderClient,
@@ -231,6 +232,8 @@ export interface ProjectConfig {
 	pushRemote?: string;
 	/** Filesystem-isolate agent runs via `bwrap`. Defaults and fallback: see `config.ts`. */
 	agentIsolation?: "none" | "bwrap";
+	/** Where run files live; see `config.ts`. Defaults to `worktree`. */
+	runWorkspace?: "worktree" | "clone";
 	/** Failed expansion runs a draft tolerates before the bounded retry releases
 	 * it as its captured intent. Project merge checks remain inherited policy. */
 	draftExpandMaxAttempts?: number;
@@ -560,6 +563,23 @@ export async function attachProject(
 		log: plog,
 	});
 	const host = new AgentHost(plog);
+	configureRunWorkspace(
+		root,
+		(cfg.runWorkspace ?? DEFAULTS.runWorkspace) === "clone"
+			? {
+					kind: "clone",
+					clone: {
+						workspaceRoot: join(opts.mfwHome, "workspaces"),
+						// Only a session tmux positively reports gone counts as dead.
+						assertProcessesDead: async (runId) => {
+							if ((await host.sessionLiveness(runId)) !== false) {
+								throw new Error(`run ${runId} is not confirmed stopped`);
+							}
+						},
+					},
+				}
+			: { kind: "worktree" },
+	);
 	const adapters = new AdapterRegistry();
 	const notifier = makeNotifier(cfg.notify, plog);
 	// Built before mergeQueue/maintenance/stepRunner, which raise sessions.

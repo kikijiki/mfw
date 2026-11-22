@@ -57,7 +57,7 @@ export interface RunWorkspaceResult {
 }
 
 export interface RunWorkspace {
-	readonly kind: "worktree";
+	readonly kind: "worktree" | "clone";
 
 	/** Create the workspace for `runId` from `base` (default: current HEAD). */
 	seed(runId: string, base?: string): Promise<RunWorkspaceHandle>;
@@ -65,7 +65,12 @@ export interface RunWorkspace {
 	/** Where a run's workspace lives. Pure: touches no disk. */
 	paths(runId: string): RunWorkspacePaths;
 
-	/** Read what the run left behind (its branch tip). */
+	/**
+	 * Read what the run left behind: the ref the primary holds it under and its
+	 * tip. A worktree shares the primary's refs, so this is a read. A clone's
+	 * result arrives by a verified import (the first call after the run ends
+	 * performs it), and `ref` is the primary's quarantine ref, not `branch`.
+	 */
 	fetchResult(handle: RunWorkspaceHandle): Promise<RunWorkspaceResult>;
 
 	/**

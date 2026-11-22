@@ -327,6 +327,13 @@ const projectSchema = z.object({
 	 * at preflight (`sandbox_unavailable`), never silently unsandboxed.
 	 */
 	agentIsolation: z.enum(["none", "bwrap"]).optional(),
+	/**
+	 * Where a run's files live: a git `worktree` under the project (default),
+	 * or a private `clone` under `$MFW_HOME/workspaces` whose result the host
+	 * imports as a verified bundle (`run-workspace/clone-impl.ts`). Experimental
+	 * until the clone paths of the WIP, verifier and conflict-rebase work land.
+	 */
+	runWorkspace: z.enum(["worktree", "clone"]).optional(),
 	/** Failed expansion runs before a `draft` is marked failed (see `TaskService.recordDraftExpandFailure`). */
 	draftExpandMaxAttempts: z.number().int().positive().optional(),
 	/** Budget for draft expansion runs, separate from `maxConcurrent` like `maxConcurrentTriggers`. */
@@ -406,6 +413,7 @@ export const PROJECT_DEFAULTS = {
 	pushOnMerge: true,
 	pushRemote: "origin",
 	agentIsolation: "bwrap",
+	runWorkspace: "worktree" as const,
 	// Enough to rule out a blip without leaving a draft unusable through an outage.
 	draftExpandMaxAttempts: 3,
 	// Read-only planning; should not serialize a capture burst.
