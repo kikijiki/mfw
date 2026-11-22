@@ -8,7 +8,11 @@ import {
 	sandboxBundleArgv,
 } from "../src/host-git/fetch.ts";
 import { HostGit, HostGitError } from "../src/host-git/runner.ts";
-import { deltaBombBundle } from "./fixtures/delta-bomb.ts";
+import {
+	deltaBombBundle,
+	type TipKind,
+	typedRefsBundle,
+} from "./fixtures/delta-bomb.ts";
 import {
 	buildHonestRepo,
 	buildTamperedClone,
@@ -411,5 +415,56 @@ describe("host memory bound (security review B1)", () => {
 			}),
 		);
 		expect(res.tip).toMatch(/^[0-9a-f]{40}$/);
+	});
+});
+
+describe("tips must be commits (security review M1)", () => {
+	const head = "refs/heads/mfw/run1";
+	const wip = "refs/heads/mfw-wip/run1/1";
+	const cases: [string, [string, TipKind][]][] = [
+		["head is a blob", [[head, "blob"]]],
+		["head is a tree", [[head, "tree"]]],
+		["head is a tag of a commit", [[head, "tag"]]],
+		[
+			"a wip ref is a blob",
+			[
+				[head, "commit"],
+				[wip, "blob"],
+			],
+		],
+		[
+			"a wip ref is a tag",
+			[
+				[head, "commit"],
+				[wip, "tag"],
+			],
+		],
+	];
+	for (const [name, list] of cases) {
+		test(`${name}: refused and nothing imported`, async () => {
+			const t = await fixture();
+			const out = join(t.workspaceRoot, "outbox", "typed.bundle");
+			await writeFile(out, typedRefsBundle(list));
+			const before = await refs(t.primary);
+			expect(
+				await codeOf(fetchRunResult(fetchOpts(t, { bundlePath: out }))),
+			).toBe("bad_bundle");
+			expect(await refs(t.primary)).toEqual(before);
+			expect(readdirSync(t.scratchRoot)).toEqual([]);
+		});
+	}
+
+	test("commit heads and wip refs are accepted", async () => {
+		const t = await fixture();
+		const out = join(t.workspaceRoot, "outbox", "typed.bundle");
+		await writeFile(
+			out,
+			typedRefsBundle([
+				[head, "commit"],
+				[wip, "commit"],
+			]),
+		);
+		const res = await fetchRunResult(fetchOpts(t, { bundlePath: out }));
+		expect(res.wipRefs).toHaveLength(1);
 	});
 });

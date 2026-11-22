@@ -307,12 +307,24 @@ export async function fetchRunResult(
 		}
 
 		const refs = await host.runOk(
-			["for-each-ref", "--format=%(refname) %(objectname)", "refs/mfw/run/"],
+			[
+				"for-each-ref",
+				"--format=%(refname) %(objectname) %(objecttype)",
+				"refs/mfw/run/",
+			],
 			{ cwd: bare, repo: bare },
 		);
 		const heads = new Map<string, string>();
 		for (const line of refs.split("\n").filter(Boolean)) {
-			const [name, sha] = line.split(" ") as [string, string];
+			const [name, sha, type] = line.split(" ") as [string, string, string];
+			// Exactly a commit: git only enforces that under refs/heads/, and the
+			// destination is refs/mfw/. A tag would also hide which commit lands.
+			if (type !== "commit") {
+				throw new HostGitError(
+					"bad_bundle",
+					`${name.slice(0, 200)} points at a ${type.slice(0, 20)}, not a commit`,
+				);
+			}
 			heads.set(name, sha);
 		}
 		const tip = heads.get(BARE_HEAD);

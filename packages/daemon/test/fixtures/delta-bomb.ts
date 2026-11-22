@@ -113,11 +113,10 @@ export function deltaBombBundle(ref: string, copies: number): Buffer {
 	return bundleOf(ref, commitSha, pack);
 }
 
-/** A bundle whose `ref` points straight at a blob, a tree or a tag (security review M1). */
-export function nonCommitTipBundle(
-	ref: string,
-	kind: "blob" | "tree" | "tag",
-): Buffer {
+export type TipKind = "commit" | "blob" | "tree" | "tag";
+
+/** A bundle whose refs point at the given kinds of object (security review M1). */
+export function typedRefsBundle(refs: [string, TipKind][]): Buffer {
 	const blob = Buffer.from("hello\n");
 	const blobSha = objSha("blob", blob);
 	const tree = Buffer.concat([Buffer.from("100644 f\0"), blobSha]);
@@ -134,6 +133,14 @@ export function nonCommitTipBundle(
 		{ type: 1, data: commit },
 		{ type: 4, data: tag },
 	]);
-	const tip = kind === "blob" ? blobSha : kind === "tree" ? treeSha : tagSha;
-	return bundleOf(ref, tip, pack);
+	const shaOf = {
+		commit: commitSha,
+		blob: blobSha,
+		tree: treeSha,
+		tag: tagSha,
+	};
+	const header = refs
+		.map(([ref, k]) => `${shaOf[k].toString("hex")} ${ref}\n`)
+		.join("");
+	return Buffer.concat([Buffer.from(`# v2 git bundle\n${header}\n`), pack]);
 }
