@@ -38,6 +38,24 @@ export type ResolvedLink =
 
 const SCHEME = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
 
+/**
+ * Schemes a rendered link may navigate to. Anything else (`javascript:`,
+ * `data:`, `vbscript:`, `file:`, a custom handler) is never an `<a href>`.
+ * react-markdown's own `urlTransform` already drops most of these; this keeps
+ * the rule in one pure, tested place so it does not depend on that default.
+ */
+const SAFE_SCHEMES = new Set(["http", "https", "mailto"]);
+
+/** True for an absolute or protocol-relative URL whose scheme is safe to link to. */
+export function isSafeExternalHref(raw: string): boolean {
+	// Browsers drop tab, CR and LF inside a scheme (`java\tscript:`), so judge
+	// the URL the way they will read it.
+	const href = raw.replace(/[\t\r\n]/g, "").trim();
+	if (href.startsWith("//")) return true;
+	const m = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(href);
+	return m ? SAFE_SCHEMES.has((m[1] as string).toLowerCase()) : false;
+}
+
 /** `a/b/../c` → `a/c`; null when it climbs above the root. */
 export function joinBasePath(dir: string, rel: string): string | null {
 	const out: string[] = dir.split("/").filter((s) => s.length > 0);
@@ -129,7 +147,9 @@ export function resolveDocLink(href: string, ctx: LinkContext): ResolvedLink {
 	const raw = href.trim();
 	if (raw.startsWith("#")) return { kind: "anchor", fragment: raw.slice(1) };
 	if (SCHEME.test(raw) || raw.startsWith("//")) {
-		return { kind: "external", href: raw };
+		return isSafeExternalHref(raw)
+			? { kind: "external", href: raw }
+			: { kind: "unresolved", href: raw };
 	}
 	const { path, fragment } = splitHref(raw);
 	if (path === "") return { kind: "unresolved", href: raw };
@@ -184,5 +204,6 @@ export function resolveImageSrc(
 	const link = resolveDocLink(src, ctx);
 	if (link.kind === "doc") return toUrl(link.sourceId, link.key);
 	if (link.kind === "external") return link.href;
-	return src;
+	// An unresolved src is kept only when it is not an unsafe-scheme URL.
+	return link.kind === "unresolved" && SCHEME.test(src.trim()) ? "" : src;
 }
