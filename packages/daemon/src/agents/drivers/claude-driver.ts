@@ -28,6 +28,8 @@ const cfg = JSON.parse(readFileSync(join(runDir, "driver.json"), "utf8")) as {
 	model?: string;
 	initialMessage: string;
 	steer?: boolean;
+	/** How long to wait after a result for a late steer before closing (default 1500). */
+	steerGraceMs?: number;
 };
 const steerPath = join(runDir, "steer.jsonl");
 const eventsPath = join(runDir, "events.jsonl");
@@ -127,7 +129,7 @@ function onResult(): void {
 				/* already closed */
 			}
 		}
-	}, 1500);
+	}, cfg.steerGraceMs ?? 1500);
 }
 
 /** Translate one claude stream-json object into AgentEvents. */

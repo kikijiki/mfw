@@ -47,3 +47,8 @@ class UndurableDatabase extends Database {
 }
 const cached = require.cache[libsqlPath];
 if (cached) cached.exports = UndurableDatabase;
+
+// The drivers wait a fixed 1.5 s after each turn for a late steer; scripted
+// agents never send one, and the tests that exercise the window set their own.
+const { driverTimings } = await import("../packages/daemon/src/agent-host.ts");
+driverTimings.steerGraceMs = 100;
