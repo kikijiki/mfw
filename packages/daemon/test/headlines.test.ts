@@ -44,6 +44,7 @@ describe("attention classes", () => {
 		"approval_pending",
 		"stalled",
 		"budget",
+		"auth_hold",
 		"brain_stuck",
 		"brain_notice",
 	];
