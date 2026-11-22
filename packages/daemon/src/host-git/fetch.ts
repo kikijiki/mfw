@@ -296,12 +296,12 @@ export async function fetchRunResult(
 				`+${wipPrefix}*:${BARE_WIP}*`,
 			],
 			// A bundle is read through the `file` transport; the source is our own copy.
-			{ cwd: bare, allowFile: true },
+			{ cwd: bare, repo: bare, allowFile: true },
 		);
 
 		const refs = await host.runOk(
 			["for-each-ref", "--format=%(refname) %(objectname)", "refs/mfw/run/"],
-			{ cwd: bare },
+			{ cwd: bare, repo: bare },
 		);
 		const heads = new Map<string, string>();
 		for (const line of refs.split("\n").filter(Boolean)) {
@@ -343,7 +343,7 @@ export async function fetchRunResult(
 				`+${BARE_HEAD}:${qHead}`,
 				`+${BARE_WIP}*:${qWip}*`,
 			],
-			{ cwd: o.primaryRepo, allowFile: true },
+			{ cwd: o.primaryRepo, repo: o.primaryRepo, allowFile: true },
 		);
 		return {
 			quarantineRef: qHead,

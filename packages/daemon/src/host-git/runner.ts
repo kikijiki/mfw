@@ -64,10 +64,12 @@ export interface HostGitRunOpts {
 	cwd: string;
 	/** Allow the `file` transport (fetch from a mfw-owned local path). */
 	allowFile?: boolean;
-	/** Host-owned explicit gitdir; refused under the workspace root. */
-	gitDir?: string;
-	/** Host-owned explicit work tree; refused under the workspace root. */
-	workTree?: string;
+	/**
+	 * The repository to act on: a bare gitdir, or a work tree with a real `.git`
+	 * directory. Required for every subcommand except `init`. It is always passed
+	 * as an explicit `--git-dir`, so git never discovers a repo from `cwd`.
+	 */
+	repo?: string;
 	timeoutMs?: number;
 	maxOutputBytes?: number;
 }
@@ -158,6 +160,14 @@ export function resolveReal(p: string): string {
 			tail.push(basename(cur));
 			cur = parent;
 		}
+	}
+}
+
+function readSmallFile(p: string): string | undefined {
+	try {
+		return readFileSync(p, "utf8").slice(0, 64 * 1024);
+	} catch {
+		return undefined;
 	}
 }
 
@@ -259,6 +269,7 @@ export class HostGit {
 		return c;
 	}
 
+	/** Refuse a path that is, or resolves into, the workspace root. */
 	private assertHostOwned(label: string, p: string): void {
 		if (this.isWorkspacePath(p)) {
 			throw new HostGitError(
@@ -266,29 +277,66 @@ export class HostGit {
 				`refusing ${label} under the workspace root: ${p}`,
 			);
 		}
-		// A gitfile inside an otherwise host-owned dir may point back into a clone.
-		const dotgit = join(p, ".git");
+	}
+
+	/**
+	 * The effective gitdir for `repo`, checked end to end: a `.git` that is a
+	 * symlink or a gitfile is refused (it can point at a clone), and neither the
+	 * gitdir nor its common dir, alternates or the repo's own top-level entries
+	 * may resolve under the workspace root.
+	 */
+	resolveGitDir(repo: string): string {
+		this.assertHostOwned("repo", repo);
+		let gitDir = repo;
+		const dotgit = join(repo, ".git");
+		let st: ReturnType<typeof lstatSync> | undefined;
 		try {
-			if (lstatSync(dotgit).isFile()) {
-				const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotgit, "utf8"));
-				const target = m?.[1]?.trim();
-				if (target && this.isWorkspacePath(resolve(p, target))) {
-					throw new HostGitError(
-						"path_under_workspace",
-						`refusing ${label} whose gitfile points under the workspace root: ${p}`,
-					);
-				}
-			}
-		} catch (e) {
-			if (e instanceof HostGitError) throw e;
+			st = lstatSync(dotgit);
+		} catch {
+			// a bare gitdir
 		}
+		if (st) {
+			if (!st.isDirectory()) {
+				throw new HostGitError(
+					"path_under_workspace",
+					`refusing a repo whose .git is a ${st.isSymbolicLink() ? "symlink" : "file"}: ${repo}`,
+				);
+			}
+			gitDir = dotgit;
+		}
+		this.assertHostOwned("gitdir", gitDir);
+		for (const rel of [
+			"objects",
+			"refs",
+			"packed-refs",
+			"config",
+			"HEAD",
+			"info",
+			join("objects", "info"),
+			join("objects", "pack"),
+		]) {
+			// A symlink here is fine only if it stays out of the workspace.
+			this.assertHostOwned(`${rel} of the gitdir`, join(gitDir, rel));
+		}
+		const common = readSmallFile(join(gitDir, "commondir"));
+		if (common !== undefined) {
+			this.assertHostOwned("commondir", resolve(gitDir, common.trim()));
+		}
+		for (const alt of ["alternates", "http-alternates"]) {
+			const text = readSmallFile(join(gitDir, "objects", "info", alt));
+			if (text === undefined) continue;
+			for (const line of text.split("\n")) {
+				const l = line.trim();
+				if (l === "" || l.startsWith("#")) continue;
+				this.assertHostOwned(`${alt} entry`, resolve(gitDir, "objects", l));
+			}
+		}
+		return gitDir;
 	}
 
 	/** Validate `args` and `opts` without running anything. Throws a HostGitError. */
 	check(args: string[], opts: HostGitRunOpts): void {
 		this.assertHostOwned("cwd", opts.cwd);
-		if (opts.gitDir) this.assertHostOwned("gitdir", opts.gitDir);
-		if (opts.workTree) this.assertHostOwned("work tree", opts.workTree);
 
 		const sub = args[0];
 		const spec = sub ? SUBCOMMANDS[sub] : undefined;
@@ -304,6 +352,15 @@ export class HostGit {
 				"bad_argument",
 				`git ${sub}: operands must follow a "--"`,
 			);
+		}
+		if (sub !== "init") {
+			if (!opts.repo) {
+				throw new HostGitError(
+					"bad_argument",
+					`git ${sub}: an explicit repo is required`,
+				);
+			}
+			this.resolveGitDir(opts.repo);
 		}
 		const optionPart = dd === -1 ? args.slice(1) : args.slice(1, dd);
 		for (const a of optionPart) {
@@ -328,8 +385,7 @@ export class HostGit {
 	async run(args: string[], opts: HostGitRunOpts): Promise<HostGitResult> {
 		this.check(args, opts);
 		const prefix: string[] = [];
-		if (opts.gitDir) prefix.push(`--git-dir=${opts.gitDir}`);
-		if (opts.workTree) prefix.push(`--work-tree=${opts.workTree}`);
+		if (opts.repo) prefix.push(`--git-dir=${this.resolveGitDir(opts.repo)}`);
 		const raw = await runProc(
 			[
 				this.gitBin,
@@ -339,7 +395,11 @@ export class HostGit {
 			],
 			{
 				cwd: opts.cwd,
-				env: this.env(),
+				// Never discover a repo above cwd (a parent `.git` symlinked into a clone).
+				env: {
+					...this.env(),
+					GIT_CEILING_DIRECTORIES: dirname(resolve(opts.cwd)),
+				},
 				timeoutMs: opts.timeoutMs ?? 120_000,
 				...(opts.maxOutputBytes ? { maxOutputBytes: opts.maxOutputBytes } : {}),
 			},
