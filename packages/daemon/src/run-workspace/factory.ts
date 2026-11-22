@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { CloneRunWorkspace, type CloneWorkspaceOptions } from "./clone-impl.ts";
+import type { RebaseCloneOptions } from "./rebase-clone.ts";
 import type { RunWorkspace, RunWorkspaceHandle } from "./run-workspace.ts";
 import { VerifierClones } from "./verifier-clone.ts";
 import { WorktreeRunWorkspace } from "./worktree-impl.ts";
@@ -60,6 +61,25 @@ export function createVerifierClones(
 		...(setting.clone.gitBin ? { gitBin: setting.clone.gitBin } : {}),
 		...(setting.clone.log ? { log: setting.clone.log } : {}),
 	});
+}
+
+/**
+ * Options for rebasing a clone run in a host-owned scratch clone, or null when
+ * the project runs on worktrees (the run rebases in its own worktree).
+ */
+export function rebaseCloneOptions(
+	projectRoot: string,
+): RebaseCloneOptions | null {
+	const setting = settings.get(resolve(projectRoot));
+	if (setting?.kind !== "clone" || !setting.clone) return null;
+	return {
+		workspaceRoot: setting.clone.workspaceRoot,
+		primaryRoot: resolve(projectRoot),
+		...(setting.clone.scratchRoot
+			? { scratchRoot: setting.clone.scratchRoot }
+			: {}),
+		...(setting.clone.gitBin ? { gitBin: setting.clone.gitBin } : {}),
+	};
 }
 
 /**

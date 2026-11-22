@@ -125,7 +125,9 @@ import { RunRegistry } from "./run-registry.ts";
 import {
 	configureRunWorkspace,
 	createVerifierClones,
+	rebaseCloneOptions,
 } from "./run-workspace/factory.ts";
+import { rebaseQuarantineInScratch } from "./run-workspace/rebase-clone.ts";
 import {
 	RunPodAccountService,
 	type RunPodProviderClient,
@@ -731,6 +733,7 @@ export async function attachProject(
 	await verifierClones?.sweep().catch((e) => {
 		plog.warn({ err: e }, "verifier clone sweep failed");
 	});
+	const rebaseOpts = rebaseCloneOptions(root);
 	type MergeVerdict = { passed: boolean; detail?: string; crashed?: boolean };
 	const verdictOf = (result: VerificationResult): MergeVerdict => ({
 		passed: result.passed,
@@ -773,6 +776,17 @@ export async function attachProject(
 			);
 			return verdictOf(result);
 		},
+		// A clone run's conflict rebases in a host-owned scratch clone.
+		...(rebaseOpts
+			? {
+					rebaseClone: (job: MergeJobView, onto: string) =>
+						rebaseQuarantineInScratch(rebaseOpts, {
+							runId: job.runId,
+							targetBranch: job.targetBranch,
+							onto,
+						}),
+				}
+			: {}),
 		// Clone projects verify the merge commit itself, in a disposable clone,
 		// before the ref moves. Worktree projects keep today's behaviour.
 		...(verifierClones

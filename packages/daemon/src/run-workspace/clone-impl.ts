@@ -20,6 +20,7 @@ import {
 } from "../host-git/fetch.ts";
 import { HostGit, HostGitError } from "../host-git/runner.ts";
 import type { CacheDeclaration } from "./caches.ts";
+import { preRebasePrefix } from "./rebase-clone.ts";
 import type {
 	OwnedRunWorkspace,
 	RunWorkspace,
@@ -442,6 +443,7 @@ export class CloneRunWorkspace implements RunWorkspace {
 				"--format=%(refname)",
 				quarantineRef(runId),
 				quarantineWipPrefix(runId),
+				preRebasePrefix(runId),
 			],
 			this.primaryRoot,
 		);
