@@ -14,6 +14,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	createConnectionGate,
 	type EgressLogEntry,
 	type EgressProxy,
 	startEgressProxy,
@@ -65,6 +66,7 @@ async function rig(dns: Record<string, string[]>) {
 	const log: EgressLogEntry[] = [];
 	const dialled: string[] = [];
 	const proxy = await startEgressProxy({
+		gate: createConnectionGate(1000),
 		runId: "adv",
 		socketPath: join(dir, "e.sock"),
 		allow: [
@@ -443,6 +445,7 @@ describe("egress adversarial table (experiments-3 E4)", () => {
 		let calls = 0;
 		const dialled: string[] = [];
 		const proxy = await startEgressProxy({
+			gate: createConnectionGate(1000),
 			runId: "rb",
 			socketPath: join(dir, "e.sock"),
 			allow: [{ host: "rebind.test", port: 18443 }],
@@ -473,6 +476,7 @@ describe("egress adversarial table (experiments-3 E4)", () => {
 		const secret = await banner(LOCAL_SECRET);
 		const dialled: string[] = [];
 		const proxy = await startEgressProxy({
+			gate: createConnectionGate(1000),
 			runId: "m",
 			socketPath: join(dir, "e.sock"),
 			allow: [{ host: "multi.test", port: 18443 }],
@@ -497,6 +501,7 @@ describe("egress adversarial table (experiments-3 E4)", () => {
 	test("an allowlisted name that resolves to the metadata IP is denied", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "ega-"));
 		const proxy = await startEgressProxy({
+			gate: createConnectionGate(1000),
 			runId: "meta",
 			socketPath: join(dir, "e.sock"),
 			allow: [{ host: "meta-alias.test", port: 18443 }],
@@ -516,6 +521,7 @@ describe("egress adversarial table (experiments-3 E4)", () => {
 	test("an allowlisted localhost is denied at the address check", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "ega-"));
 		const proxy = await startEgressProxy({
+			gate: createConnectionGate(1000),
 			runId: "lh",
 			socketPath: join(dir, "e.sock"),
 			allow: [{ host: "localhost", port: 18443 }],

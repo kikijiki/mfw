@@ -105,7 +105,7 @@ async function startHarness(
 		log: (e) => log.push(e),
 		limits: opts.limits,
 		sni: opts.sni,
-		gate: opts.gate,
+		gate: opts.gate ?? createConnectionGate(1000),
 	});
 	cleanups.push(async () => {
 		await proxy.close();
@@ -487,6 +487,7 @@ describe("egress proxy: tunnels", () => {
 		const dir = h.dir;
 		const dialled: string[] = [];
 		const p = await startEgressProxy({
+			gate: createConnectionGate(1000),
 			runId: "r",
 			socketPath: join(dir, "rb.sock"),
 			allow: ["rebind.test"],
@@ -531,6 +532,7 @@ describe("egress proxy: tunnels", () => {
 		const dir = await mkdtemp(join(tmpdir(), "egp-"));
 		const log: EgressLogEntry[] = [];
 		const p = await startEgressProxy({
+			gate: createConnectionGate(1000),
 			runId: "r",
 			socketPath: join(dir, "e.sock"),
 			allow: ["a.test"],
@@ -554,6 +556,7 @@ describe("egress proxy: tunnels", () => {
 	test("a throwing log sink does not take the proxy down", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "egp-"));
 		const p = await startEgressProxy({
+			gate: createConnectionGate(1000),
 			runId: "r",
 			socketPath: join(dir, "e.sock"),
 			allow: ["a.test"],
@@ -672,6 +675,19 @@ describe("egress proxy: limits", () => {
 		);
 	});
 
+	test("a proxy without a global connection gate refuses to start", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "egp-"));
+		cleanups.push(() => rm(dir, { recursive: true, force: true }));
+		await expect(
+			startEgressProxy({
+				runId: "run-1",
+				socketPath: join(dir, "e.sock"),
+				allow: ["allowed.test"],
+				// Simulates a JS caller that ignores the type.
+			} as unknown as Parameters<typeof startEgressProxy>[0]),
+		).rejects.toThrow(/gate/);
+	});
+
 	test("the global gate is shared across proxies", async () => {
 		const gate = createConnectionGate(2);
 		const a = await startHarness({ gate });
@@ -691,6 +707,7 @@ describe("egress proxy: limits", () => {
 	test("upstream connect timeout is 504", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "egp-"));
 		const p = await startEgressProxy({
+			gate: createConnectionGate(1000),
 			runId: "r",
 			socketPath: join(dir, "e.sock"),
 			allow: ["a.test"],

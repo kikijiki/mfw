@@ -114,7 +114,11 @@ export interface EgressProxyOptions {
 	clock?: EgressClock;
 	log?: (entry: EgressLogEntry) => void;
 	limits?: Partial<EgressLimits>;
-	gate?: ConnectionGate;
+	/**
+	 * The global connection cap, shared by every run's proxy. Required: a proxy
+	 * with no global cap is a way to exhaust the daemon's file descriptors.
+	 */
+	gate: ConnectionGate;
 	/** Rule 11: the ClientHello SNI must equal the CONNECT host. Off by default. */
 	sni?: boolean;
 	/** Upstream dialer, given the pinned IP. Default `net.connect`. */
@@ -170,6 +174,9 @@ export async function startEgressProxy(
 	if (Buffer.byteLength(opts.socketPath) > UNIX_PATH_MAX) {
 		throw new Error(`egress socket path exceeds ${UNIX_PATH_MAX} bytes`);
 	}
+	if (!opts.gate) {
+		throw new Error("egress proxy requires a global connection gate");
+	}
 	const allow = buildAllowlist(opts.allow);
 	const limits: EgressLimits = { ...DEFAULT_EGRESS_LIMITS, ...opts.limits };
 	const resolve = opts.resolve ?? defaultResolver;
@@ -221,7 +228,7 @@ export async function startEgressProxy(
 			client.destroy();
 			return;
 		}
-		if (gate && !gate.acquire()) {
+		if (!gate.acquire()) {
 			denyLog(deny(429, "limit-global"));
 			client.destroy();
 			return;
@@ -229,7 +236,7 @@ export async function startEgressProxy(
 		sockets.add(client);
 		client.once("close", () => {
 			sockets.delete(client);
-			gate?.release();
+			gate.release();
 		});
 		client.on("error", () => client.destroy());
 		handle(client).catch(() => client.destroy());

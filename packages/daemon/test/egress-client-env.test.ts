@@ -12,6 +12,7 @@ import {
 	PROXY_VARS,
 } from "../src/containment/egress-env.ts";
 import {
+	createConnectionGate,
 	type EgressLogEntry,
 	type EgressProxy,
 	startEgressProxy,
@@ -194,6 +195,7 @@ async function startStack(): Promise<Stack> {
 
 	const log: EgressLogEntry[] = [];
 	const proxy = await startEgressProxy({
+		gate: createConnectionGate(1000),
 		runId: "run-e7b",
 		socketPath: join(dir, "e.sock"),
 		allow: ["allowed.test", "redirect.test"],
