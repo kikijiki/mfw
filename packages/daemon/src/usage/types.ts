@@ -1,10 +1,10 @@
 /**
  * Subscription usage: the shapes the `UsageMonitor`, its probes, the API and
- * the UI share. A window is one rolling quota (5 hour session, 7 day week).
+ * the UI share. A window is one rolling quota (Claude has only the 7 day week; Codex reports its own).
  */
 
 export interface UsageWindow {
-	/** "5h", "7d", "30d", or a scoped one such as "7d Sonnet". */
+	/** "7d", "30d", or whatever the vendor reports. */
 	label: string;
 	/** 0..100, as the vendor reports it. */
 	usedPercent: number;
@@ -12,11 +12,15 @@ export interface UsageWindow {
 	resetsAt: number | null;
 	/** Window length in minutes, or null when unknown. */
 	windowMinutes: number | null;
-	/** Which adapter produced it: `claude-oauth-usage`, `codex-app-server`. */
+	/** Which adapter produced it: `claude-rate-limit-event`, `codex-app-server`. */
 	source: string;
 }
 
-export type UsageStatus = "ok" | "stale" | "unavailable";
+/**
+ * `unknown`: the provider is installed but has told us nothing yet (no window
+ * and no number). Never rendered as 0%.
+ */
+export type UsageStatus = "ok" | "stale" | "unavailable" | "unknown";
 
 export interface UsageSubscription {
 	/** The provider hold key / harness id: `claude-cli`, `codex-cli`. */

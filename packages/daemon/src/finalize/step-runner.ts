@@ -51,6 +51,7 @@ import {
 	MODEL_TIERS,
 	type ModelTier,
 } from "../tasks/types.ts";
+import type { RateLimitObserver } from "../usage/claude-weekly.ts";
 import {
 	type EnvPolicy,
 	type VerificationResult,
@@ -191,6 +192,13 @@ export interface ClarifyPort {
 }
 
 export interface StepRunnerDeps {
+	/**
+	 * Machine-wide sink for Claude's observed `rate_limit` events; the usage
+	 * monitor's weekly meter reads the same observer (`usage/claude-weekly.ts`).
+	 * Absent = the meter stays "unknown". boot.ts creates one `RateLimitObserver`
+	 * and passes it here and as `UsageConfig.claudeObserver`.
+	 */
+	claudeRateLimits?: Pick<RateLimitObserver, "observe">;
 	handle: ProjectDbHandle;
 	bus: EventBus;
 	registry: RunRegistry;
@@ -1053,6 +1061,14 @@ export class StepRunner {
 				continue;
 			}
 			if (e.type !== "rate_limit") continue;
+			if (run.providerId === "claude-cli") {
+				this.deps.claudeRateLimits?.observe({
+					status: e.status,
+					limited: e.limited,
+					resetsAt: e.resetsAt,
+					utilization: typeof e.utilization === "number" ? e.utilization : null,
+				});
+			}
 			if (e.limited) {
 				limited = true;
 				if (e.resetsAt !== null) resetsAt = toMs(e.resetsAt);

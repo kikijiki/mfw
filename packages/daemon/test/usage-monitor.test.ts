@@ -394,3 +394,15 @@ describe("UsageMonitor", () => {
 		});
 	});
 });
+
+describe("UsageMonitor unknown", () => {
+	test("a provider that answers with no windows is unknown, not 0%", async () => {
+		const { probe, p } = fakeProbe("claude-cli");
+		probe.next = async () => ({ windows: [] });
+		const m = new UsageMonitor({ probes: [p] });
+		await m.refresh();
+		const s = m.snapshot()[0];
+		expect(s?.status).toBe("unknown");
+		expect(s?.windows).toEqual([]);
+	});
+});

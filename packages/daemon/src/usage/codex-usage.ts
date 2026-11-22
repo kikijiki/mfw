@@ -1,7 +1,5 @@
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { whichBin } from "../agents/detect.ts";
 import {
 	clampPercent,
 	type UsageProbe,
@@ -210,7 +208,6 @@ export async function readCodexRateLimits(
 }
 
 export interface CodexUsageDeps {
-	home?: string;
 	/** The `codex` binary to spawn; default `codex` on PATH. */
 	command?: string;
 	/** Test seam: replaces the spawned process. */
@@ -221,18 +218,14 @@ export interface CodexUsageDeps {
 }
 
 export function codexUsageProbe(deps: CodexUsageDeps = {}): UsageProbe {
-	const authFile = join(deps.home ?? homedir(), ".codex", "auth.json");
 	return {
 		provider: "codex-cli",
 		name: "Codex",
 		async available() {
+			// Installed is enough: the app-server read reports "not signed in" itself,
+			// and mfw never opens the login file.
 			if (deps.signedIn) return deps.signedIn();
-			try {
-				await readFile(authFile, "utf8");
-				return true;
-			} catch {
-				return false;
-			}
+			return (await whichBin(deps.command ?? "codex")) !== null;
 		},
 		async run(signal) {
 			const transport =
