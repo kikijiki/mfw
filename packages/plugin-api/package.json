@@ -1,0 +1,19 @@
+{
+	"name": "@mfw/plugin-api",
+	"version": "0.1.0",
+	"author": "Matteo Bernacchia <dev@kikijiki.com>",
+	"license": "MIT",
+	"type": "module",
+	"main": "src/common.ts",
+	"exports": {
+		"./*": "./src/*.ts",
+		"./fakes/*": "./src/fakes/*.ts",
+		"./conformance/*": "./src/conformance/*.ts"
+	},
+	"files": [
+		"src"
+	],
+	"dependencies": {
+		"zod": "^4.4.3"
+	}
+}
