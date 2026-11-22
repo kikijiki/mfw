@@ -161,7 +161,7 @@ function realDeps(): Deps {
 		},
 		runMcp: async (args) => {
 			// The MCP entry reads process.argv itself; present it as its own script.
-			process.argv = [process.argv[0] ?? "bun", "mfw-mcp", ...args];
+			process.argv = [process.argv[0] ?? "bun", "mfw mcp", ...args];
 			await import("@mfw/mcp");
 		},
 	};
