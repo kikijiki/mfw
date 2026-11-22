@@ -113,6 +113,9 @@ describe("machine-wide boot foundation", () => {
 			const child = Bun.spawn(
 				[
 					"bun",
+					// The same no-fsync test setup `bun test` gets from bunfig.toml.
+					"--preload",
+					join(import.meta.dir, "../../../tools/test-preload.ts"),
 					"-e",
 					`import { boot } from "./packages/daemon/src/boot.ts";
 					 import { silentLogger } from "./packages/daemon/src/log.ts";
