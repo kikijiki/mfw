@@ -188,6 +188,8 @@ describe("FleetView", () => {
 		expect(html).toContain('data-target="/p/jev/flow?node=run:01B"');
 		// Slot usage reads as a meter next to the SSH host.
 		expect(html).toContain('aria-label="2/2"');
+		// Remote targets are experimental and say so.
+		expect(html).toContain("ssh (experimental)");
 	});
 
 	test("a held account says when it is available again, and its budget is a full meter", () => {

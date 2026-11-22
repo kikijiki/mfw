@@ -136,3 +136,9 @@ describe("the process-global RunPod operations route", () => {
 		expect(source).not.toContain("JSON.stringify(entry.detail");
 	});
 });
+
+describe("remote targets are labelled experimental", () => {
+	test("the RunPod page header carries an experimental chip", () => {
+		expect(source).toContain("experimental");
+	});
+});

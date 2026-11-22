@@ -150,7 +150,7 @@ export function FleetView({
 							key={h.id}
 							testId={`host-${h.id}`}
 							title={h.label}
-							subtitle={h.kind === "ssh" ? "ssh" : "local"}
+							subtitle={h.kind === "ssh" ? "ssh (experimental)" : "local"}
 							health={h.health}
 							onRecheck={h.kind === "local" ? onRecheck : undefined}
 							rechecking={rechecking}
