@@ -8,6 +8,7 @@ import {
 	sandboxBundleArgv,
 } from "../src/host-git/fetch.ts";
 import { HostGit, HostGitError } from "../src/host-git/runner.ts";
+import { deltaBombBundle } from "./fixtures/delta-bomb.ts";
 import {
 	buildHonestRepo,
 	buildTamperedClone,
@@ -308,7 +309,7 @@ describe("hostile bundles", () => {
 		const before = await refs(t.primary);
 		expect(
 			await codeOf(fetchRunResult(fetchOpts(t, { bundlePath: bad }))),
-		).toBe("fetch_failed");
+		).toBe("bad_bundle");
 		expect(await refs(t.primary)).toEqual(before);
 		expect(readdirSync(t.scratchRoot)).toEqual([]);
 	});
@@ -368,5 +369,47 @@ describe("hostile bundles", () => {
 		await plainGit(sandboxBundleArgv(t.runId, out).slice(1), honest);
 		const res = await fetchRunResult(fetchOpts(t, { bundlePath: out }));
 		expect(res.wipRefs).toHaveLength(1);
+	});
+});
+
+describe("host memory bound (security review B1)", () => {
+	test("a small delta-bomb bundle is refused under the memory cap and imports nothing", async () => {
+		const t = await fixture();
+		// 64 x 16 MiB = 1 GiB inflated from a bundle of a few KiB.
+		const bomb = deltaBombBundle(`refs/heads/mfw/${t.runId}`, 64);
+		expect(bomb.length).toBeLessThan(64 * 1024);
+		const out = join(t.workspaceRoot, "outbox", "bomb.bundle");
+		await writeFile(out, bomb);
+		const before = await refs(t.primary);
+		expect(
+			await codeOf(
+				fetchRunResult(
+					fetchOpts(t, {
+						bundlePath: out,
+						host: new HostGit({
+							workspaceRoot: t.workspaceRoot,
+							ownedRoots: [t.scratchRoot],
+							maxMemoryBytes: 512 * 1024 * 1024,
+						}),
+					}),
+				),
+			),
+		).toBe("bad_bundle");
+		expect(await refs(t.primary)).toEqual(before);
+		expect(readdirSync(t.scratchRoot)).toEqual([]);
+	}, 60_000);
+
+	test("a normal bundle still imports under the same cap", async () => {
+		const t = await fixture();
+		const res = await fetchRunResult(
+			fetchOpts(t, {
+				host: new HostGit({
+					workspaceRoot: t.workspaceRoot,
+					ownedRoots: [t.scratchRoot],
+					maxMemoryBytes: 512 * 1024 * 1024,
+				}),
+			}),
+		);
+		expect(res.tip).toMatch(/^[0-9a-f]{40}$/);
 	});
 });

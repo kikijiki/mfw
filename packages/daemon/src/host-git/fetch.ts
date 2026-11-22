@@ -286,7 +286,7 @@ export async function fetchRunResult(
 			"--no-auto-maintenance",
 			"--no-prune",
 		];
-		await host.runOk(
+		const imported = await host.run(
 			[
 				"fetch",
 				...fetchFlags,
@@ -298,6 +298,13 @@ export async function fetchRunResult(
 			// A bundle is read through the `file` transport; the source is our own copy.
 			{ cwd: bare, repo: bare, allowFile: true },
 		);
+		if (imported.exitCode !== 0) {
+			// Includes a child killed by the memory or CPU cap (a delta bomb).
+			throw new HostGitError(
+				"bad_bundle",
+				`the bundle was rejected (${imported.raw.signalCode ?? imported.exitCode}): ${imported.stderr.slice(0, 300)}`,
+			);
+		}
 
 		const refs = await host.runOk(
 			["for-each-ref", "--format=%(refname) %(objectname)", "refs/mfw/run/"],

@@ -55,6 +55,15 @@ export interface HostGitOptions {
 	ownedRoots?: string[];
 	/** The git binary. Tests inject a fake; default `git`. */
 	gitBin?: string;
+	/**
+	 * Address-space cap for every git child (`ulimit -v`). A 16 KiB bundle of
+	 * chained deltas inflates to gigabytes inside `index-pack`, so the cap, not
+	 * the bundle size, bounds host memory. Default 2 GiB; a child that hits it
+	 * dies and the call fails.
+	 */
+	maxMemoryBytes?: number;
+	/** CPU-time cap for every git child (`ulimit -t`), seconds. Default 120. */
+	maxCpuSeconds?: number;
 	/** Environment the child inherits from (PATH, LANG, TMPDIR only). Default `process.env`. */
 	baseEnv?: NodeJS.ProcessEnv;
 }
@@ -143,6 +152,9 @@ const SUBCOMMANDS: Record<string, SubcommandSpec> = {
 	"update-ref": { flags: ["-d", "--no-deref"] },
 };
 
+export const DEFAULT_MAX_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
+export const DEFAULT_MAX_CPU_SECONDS = 120;
+
 /** Env vars inherited from the daemon. Everything else is dropped. */
 const INHERITED_ENV = ["PATH", "LANG", "LC_ALL", "TMPDIR", "TZ"];
 
@@ -200,6 +212,8 @@ export class HostGit {
 	readonly workspaceRoot: string;
 	readonly ownedRoots: string[];
 	private readonly gitBin: string;
+	private readonly maxMemoryKiB: number;
+	private readonly maxCpuSeconds: number;
 	private readonly baseEnv: NodeJS.ProcessEnv;
 
 	constructor(opts: HostGitOptions) {
@@ -212,6 +226,13 @@ export class HostGit {
 			...(opts.ownedRoots ?? []).map(resolveReal),
 		];
 		this.gitBin = opts.gitBin ?? "git";
+		this.maxMemoryKiB = Math.floor(
+			(opts.maxMemoryBytes ?? DEFAULT_MAX_MEMORY_BYTES) / 1024,
+		);
+		this.maxCpuSeconds = opts.maxCpuSeconds ?? DEFAULT_MAX_CPU_SECONDS;
+		if (this.maxMemoryKiB < 1 || this.maxCpuSeconds < 1) {
+			throw new HostGitError("bad_argument", "limits must be positive");
+		}
 		this.baseEnv = opts.baseEnv ?? process.env;
 	}
 
@@ -388,6 +409,13 @@ export class HostGit {
 		if (opts.repo) prefix.push(`--git-dir=${this.resolveGitDir(opts.repo)}`);
 		const raw = await runProc(
 			[
+				// Resource limits first, then exec git: a failed ulimit never runs git unbounded.
+				"/bin/sh",
+				"-c",
+				'ulimit -v "$1" && ulimit -t "$2" || exit 125; shift 2; exec "$@"',
+				"mfw-host-git",
+				String(this.maxMemoryKiB),
+				String(this.maxCpuSeconds),
 				this.gitBin,
 				...this.configArgs({ allowFile: opts.allowFile === true }),
 				...prefix,
