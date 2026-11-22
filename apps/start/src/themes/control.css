@@ -1,0 +1,109 @@
+/* Control Room: an operations console. Condensed type, mono numerals, tight rows, status colour carries the page. */
+@import "@fontsource/ibm-plex-sans-condensed/400.css";
+@import "@fontsource/ibm-plex-sans-condensed/500.css";
+@import "@fontsource/ibm-plex-sans-condensed/600.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/600.css";
+
+:root[data-theme="control"] {
+	--mfw-font-ui:
+		"IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+	--mfw-font-display: "IBM Plex Mono", ui-monospace, monospace;
+	--mfw-font-mono: "IBM Plex Mono", ui-monospace, monospace;
+	--mfw-radius-sm: 2px;
+	--mfw-radius-md: 2px;
+	--mfw-radius-lg: 3px;
+	--radius: 0.15rem;
+	--mfw-row-h: 30px;
+	--mfw-leading-data: 1.3;
+	--mfw-shadow-raised: none;
+	--mfw-shadow-overlay: 0 0 0 1px var(--mfw-border-strong), 0 6px 18px #0006;
+}
+
+:root[data-theme="control"]:not(.dark) {
+	--mfw-bg: #eef0ea;
+	--mfw-bg-subtle: #e4e7df;
+	--mfw-bg-raised: #f7f8f4;
+	--mfw-bg-inset: #dadfd4;
+	--mfw-bg-hover: #dde1d6;
+	--mfw-border: #b9bfb2;
+	--mfw-border-strong: #7c8476;
+	--mfw-fg: #10140f;
+	--mfw-fg-muted: #3d453a;
+	--mfw-fg-faint: #4e574a;
+	--mfw-fg-on-accent: #ffffff;
+	--mfw-accent: #6f4600;
+	--mfw-accent-hover: #573700;
+	--mfw-accent-subtle: #f0e0ba;
+	--mfw-link: #6f4600;
+	--mfw-ok: #0f5f34;
+	--mfw-warn: #8a4200;
+	--mfw-critical: #a81d0d;
+	--mfw-info: #0b5570;
+	--mfw-neutral: #4e574a;
+	--mfw-status-backlog: #4e574a;
+	--mfw-status-ready: #0b5570;
+	--mfw-status-in-progress: #6f5000;
+	--mfw-status-blocked: #8f360a;
+	--mfw-status-review: #722b59;
+	--mfw-status-done: #0f5f34;
+	--mfw-status-archived: #7c8476;
+	--mfw-diff-add-bg: #0f5f3424;
+	--mfw-diff-del-bg: #a81d0d20;
+	--mfw-diff-add-hl: #0f5f344d;
+	--mfw-diff-del-hl: #a81d0d45;
+	--mfw-swatch-l-bg: 0.86;
+	--mfw-swatch-l-fg: 0.32;
+	--mfw-swatch-c-bg: 0.05;
+	--mfw-swatch-c-fg: 0.09;
+}
+
+:root[data-theme="control"].dark {
+	--mfw-bg: #0a0c0b;
+	--mfw-bg-subtle: #101412;
+	--mfw-bg-raised: #141917;
+	--mfw-bg-inset: #060807;
+	--mfw-bg-hover: #1d2421;
+	--mfw-border: #2a332e;
+	--mfw-border-strong: #46544c;
+	--mfw-fg: #e9f0e6;
+	--mfw-fg-muted: #afbeb2;
+	--mfw-fg-faint: #8c9c90;
+	--mfw-fg-on-accent: #0a0c0b;
+	--mfw-accent: #ffb000;
+	--mfw-accent-hover: #ffc640;
+	--mfw-accent-subtle: #33280a;
+	--mfw-link: #ffc640;
+	--mfw-ok: #3ddc84;
+	--mfw-warn: #ff8a1f;
+	--mfw-critical: #ff5a4a;
+	--mfw-info: #5cc8e8;
+	--mfw-neutral: #8c9c90;
+	--mfw-status-backlog: #8c9c90;
+	--mfw-status-ready: #5cc8e8;
+	--mfw-status-in-progress: #ffd24a;
+	--mfw-status-blocked: #ff8a1f;
+	--mfw-status-review: #e58fd0;
+	--mfw-status-done: #3ddc84;
+	--mfw-status-archived: #5d6b62;
+	--mfw-diff-add-bg: #3ddc8422;
+	--mfw-diff-del-bg: #ff5a4a22;
+	--mfw-diff-add-hl: #3ddc8448;
+	--mfw-diff-del-hl: #ff5a4a48;
+	--mfw-swatch-l-bg: 0.3;
+	--mfw-swatch-l-fg: 0.88;
+	--mfw-swatch-c-bg: 0.05;
+	--mfw-swatch-c-fg: 0.1;
+}
+
+:root[data-theme="control"] .mfw-title {
+	--mfw-title-size: 15px;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+:root[data-theme="control"] .mfw-panel-title {
+	font-family: var(--mfw-font-mono);
+	--mfw-panel-title-tracking: 0.1em;
+	--mfw-panel-title-fg: var(--mfw-accent);
+}

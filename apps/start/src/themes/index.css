@@ -1,0 +1,7 @@
+/* Every theme, imported once from styles.css. Keep in step with registry.ts. */
+@import "./bridge.css";
+@import "./broadsheet.css";
+@import "./swiss.css";
+@import "./control.css";
+@import "./fieldnotes.css";
+@import "./teletype.css";

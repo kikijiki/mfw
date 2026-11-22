@@ -43,6 +43,7 @@ import { useSidebarPreference } from "../lib/sidebarPreference";
 import { ToastProvider } from "../lib/toast";
 import { useTRPC } from "../lib/trpc";
 import { href, isActive, withBase } from "../routes";
+import { ThemeSwitcher } from "../themes/ThemeSwitcher";
 import { ShortcutKbd } from "./ShortcutKbd";
 import "../styles/tokens.css";
 import { DaemonUnreachableBanner, ReconnectingOverlay } from "./ErrorState";
@@ -403,6 +404,7 @@ function Sidebar({
 			{/* Subscription usage (5h, 7d, ...): after the projects, just above Settings. */}
 			<UsageSidebarBlock expanded={expanded} onNavigate={onNavigate} />
 			<Divider />
+			<ThemeSwitcher expanded={expanded} />
 			<NavLink
 				entry={{ label: "Settings", to: href.settings(), icon: Settings }}
 				active={isActive(path, href.settings())}
@@ -681,6 +683,7 @@ function MobileHeader({
 				>
 					<FolderPlus />
 				</Button>
+				<ThemeSwitcher expanded={false} />
 				<GlobalDispatchButton variant="icon" />
 			</div>
 			<UsageStripBlock onNavigate={onNavigate} />

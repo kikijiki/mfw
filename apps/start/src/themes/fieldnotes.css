@@ -1,0 +1,114 @@
+/* Field Notes: a naturalist's notebook. Moss and clay, a soft serif, rounded shapes, generous rows. */
+@import "@fontsource-variable/fraunces/opsz.css";
+@import "@fontsource-variable/figtree/wght.css";
+@import "@fontsource-variable/jetbrains-mono/wght.css";
+
+:root[data-theme="fieldnotes"] {
+	--mfw-font-ui: "Figtree Variable", system-ui, sans-serif;
+	--mfw-font-display: "Fraunces Variable", Georgia, serif;
+	--mfw-font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+	--mfw-radius-sm: 7px;
+	--mfw-radius-md: 12px;
+	--mfw-radius-lg: 18px;
+	--radius: 0.9rem;
+	--mfw-row-h: 40px;
+	--mfw-text-sm: 14px;
+	--mfw-text-xs: 13px;
+	--mfw-text-2xs: 12px;
+	--mfw-leading-data: 1.45;
+	--mfw-shadow-raised: 0 1px 3px #3b35200f;
+	--mfw-shadow-overlay: 0 10px 30px #3b352026;
+}
+
+:root[data-theme="fieldnotes"]:not(.dark) {
+	--mfw-bg: #f3f1e8;
+	--mfw-bg-subtle: #eae8db;
+	--mfw-bg-raised: #faf9f2;
+	--mfw-bg-inset: #e1dfcf;
+	--mfw-bg-hover: #e3e1d2;
+	--mfw-border: #d8d5c3;
+	--mfw-border-strong: #a5a18a;
+	--mfw-fg: #23291f;
+	--mfw-fg-muted: #484f40;
+	--mfw-fg-faint: #5a6250;
+	--mfw-fg-on-accent: #faf9f2;
+	--mfw-accent: #3a5c40;
+	--mfw-accent-hover: #2c4832;
+	--mfw-accent-subtle: #dce5d3;
+	--mfw-link: #345539;
+	--mfw-ok: #2b6339;
+	--mfw-warn: #785209;
+	--mfw-critical: #95331d;
+	--mfw-info: #2a5a64;
+	--mfw-neutral: #5a6250;
+	--mfw-status-backlog: #5a6250;
+	--mfw-status-ready: #2a5a64;
+	--mfw-status-in-progress: #7d4f14;
+	--mfw-status-blocked: #923f22;
+	--mfw-status-review: #6c4861;
+	--mfw-status-done: #2b6339;
+	--mfw-status-archived: #8f8c78;
+	--mfw-diff-add-bg: #2b633922;
+	--mfw-diff-del-bg: #95331d20;
+	--mfw-diff-add-hl: #2b633948;
+	--mfw-diff-del-hl: #95331d45;
+	--mfw-swatch-l-bg: 0.88;
+	--mfw-swatch-l-fg: 0.37;
+	--mfw-swatch-c-bg: 0.04;
+	--mfw-swatch-c-fg: 0.07;
+}
+
+:root[data-theme="fieldnotes"].dark {
+	--mfw-bg: #171b16;
+	--mfw-bg-subtle: #1d221b;
+	--mfw-bg-raised: #232920;
+	--mfw-bg-inset: #121511;
+	--mfw-bg-hover: #2b3227;
+	--mfw-border: #363e31;
+	--mfw-border-strong: #566050;
+	--mfw-fg: #e8e9dd;
+	--mfw-fg-muted: #bdc1ae;
+	--mfw-fg-faint: #9ca18d;
+	--mfw-fg-on-accent: #171b16;
+	--mfw-accent: #a5c79a;
+	--mfw-accent-hover: #bcd8b2;
+	--mfw-accent-subtle: #2c3a2a;
+	--mfw-link: #b0d0a5;
+	--mfw-ok: #8fcb8e;
+	--mfw-warn: #ddb765;
+	--mfw-critical: #e8917a;
+	--mfw-info: #8cc2c8;
+	--mfw-neutral: #9ca18d;
+	--mfw-status-backlog: #9ca18d;
+	--mfw-status-ready: #8cc2c8;
+	--mfw-status-in-progress: #dda766;
+	--mfw-status-blocked: #e29a78;
+	--mfw-status-review: #cda9c2;
+	--mfw-status-done: #8fcb8e;
+	--mfw-status-archived: #6b705f;
+	--mfw-diff-add-bg: #8fcb8e24;
+	--mfw-diff-del-bg: #e8917a24;
+	--mfw-diff-add-hl: #8fcb8e4d;
+	--mfw-diff-del-hl: #e8917a4d;
+	--mfw-swatch-l-bg: 0.34;
+	--mfw-swatch-l-fg: 0.86;
+	--mfw-swatch-c-bg: 0.04;
+	--mfw-swatch-c-fg: 0.07;
+}
+
+:root[data-theme="fieldnotes"] .mfw-title {
+	--mfw-title-size: 24px;
+	font-weight: 500;
+	line-height: 1.2;
+}
+:root[data-theme="fieldnotes"] .mfw-panel-title {
+	font-family: var(--mfw-font-display);
+	--mfw-panel-title-size: 15px;
+	font-weight: 500;
+	--mfw-panel-title-tracking: 0;
+	text-transform: none;
+	--mfw-panel-title-fg: var(--mfw-fg);
+}
+:root[data-theme="fieldnotes"] .mfw-panel {
+	box-shadow: var(--mfw-shadow-raised);
+}

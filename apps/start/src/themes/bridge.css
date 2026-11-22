@@ -1,0 +1,57 @@
+/*
+ * What every non-Classic theme shares: the shadcn variables follow the --mfw-*
+ * tokens, so a theme file only sets tokens. Classic never matches these
+ * selectors, so it keeps its original values.
+ *
+ * Theme selectors are `:root[data-theme=x]:not(.dark)` and
+ * `:root[data-theme=x].dark` (specificity 0,3,0), which outrank the Classic
+ * mode blocks in tokens.css whatever order the stylesheets load in.
+ */
+:root[data-theme]:not([data-theme="classic"]) {
+	--background: var(--mfw-bg);
+	--foreground: var(--mfw-fg);
+	--card: var(--mfw-bg-raised);
+	--card-foreground: var(--mfw-fg);
+	--popover: var(--mfw-bg-raised);
+	--popover-foreground: var(--mfw-fg);
+	--primary: var(--mfw-accent);
+	--primary-foreground: var(--mfw-fg-on-accent);
+	--secondary: var(--mfw-bg-inset);
+	--secondary-foreground: var(--mfw-fg);
+	--muted: var(--mfw-bg-hover);
+	--muted-foreground: var(--mfw-fg-muted);
+	--accent: var(--mfw-bg-hover);
+	--accent-foreground: var(--mfw-fg);
+	--destructive: var(--mfw-critical);
+	--border: var(--mfw-border);
+	--input: var(--mfw-border-strong);
+	--ring: var(--mfw-accent);
+	--sidebar: var(--mfw-bg-subtle);
+	--sidebar-foreground: var(--mfw-fg);
+	--sidebar-primary: var(--mfw-accent);
+	--sidebar-primary-foreground: var(--mfw-fg-on-accent);
+	--sidebar-accent: var(--mfw-bg-hover);
+	--sidebar-accent-foreground: var(--mfw-fg);
+	--sidebar-border: var(--mfw-border);
+	--sidebar-ring: var(--mfw-accent);
+	--font-mono: var(--mfw-font-mono);
+	font-family: var(--mfw-font-ui);
+}
+
+:root[data-theme]:not([data-theme="classic"]):not(.dark) {
+	color-scheme: light;
+}
+:root[data-theme]:not([data-theme="classic"]).dark {
+	color-scheme: dark;
+}
+
+:root[data-theme]:not([data-theme="classic"]) .mfw-title {
+	font-family: var(--mfw-font-display);
+}
+
+/* No frosted glass in any theme: a flat scrim. */
+:root[data-theme]:not([data-theme="classic"]) [data-slot="dialog-overlay"],
+:root[data-theme]:not([data-theme="classic"]) [data-slot="sheet-overlay"] {
+	backdrop-filter: none;
+	background: color-mix(in srgb, var(--mfw-bg-inset) 72%, transparent);
+}
