@@ -22,6 +22,12 @@ export interface MinimalProbeSpec {
 	emptyDirs: readonly string[];
 	/** Directories that must hold no unix socket (tmux and dbus). */
 	noSocketDirs: readonly string[];
+	/**
+	 * Check pid 1's environment (default true). Only a sandbox with its own pid
+	 * namespace has a pid 1 worth reading; the pure unit layer, run on a plain
+	 * host where `/proc/1/environ` is root's, turns it off.
+	 */
+	checkPid1Environ?: boolean;
 }
 
 /** POSIX single-quote. */
@@ -39,30 +45,42 @@ export const PROBE_SENTINEL = "MFW_PROBE_SENTINEL";
 /**
  * The probe as a shell script body (no shebang); exits 78 on the first
  * failure. It fails closed (security review G6): every helper it needs is
- * checked first, `env` must show the sentinel, and any helper error is a
+ * checked first, the environment must show the sentinel, and any helper error is a
  * failure, never an empty (passing) result.
  */
 export function buildProbeScript(spec: MinimalProbeSpec): string {
 	const allowed = [...spec.allowedEnv, PROBE_SENTINEL];
 	const lines: string[] = [
 		"mfw_probe_fail() { printf 'sandbox_probe_failed: %s\\n' \"$1\" >&2; exit 78; }",
-		'for mfw_t in env sed ls find tr head; do command -v "$mfw_t" >/dev/null 2>&1 || mfw_probe_fail "required helper $mfw_t is missing"; done',
-		// 1. no canary env: every name must be on the allowlist
+		'for mfw_t in sed ls find tr head; do command -v "$mfw_t" >/dev/null 2>&1 || mfw_probe_fail "required helper $mfw_t is missing"; done',
+		// 1. no canary env: EVERY name must be on the allowlist, whatever characters it has
+		// (a name that is not a shell identifier, like BAD-NAME, is still a leak). The names
+		// come from the process's own NUL-separated environment, not from the `env` helper.
 		`allowed=" ${allowed.join(" ")} "`,
-		'mfw_env=$(env) || mfw_probe_fail "cannot list the environment"',
-		`case "$mfw_env" in *"${PROBE_SENTINEL}=1"*) ;; *) mfw_probe_fail "the environment listing is missing its sentinel" ;; esac`,
-		"mfw_names=$(printf '%s\\n' \"$mfw_env\" | sed -n 's/^\\([A-Za-z_][A-Za-z0-9_]*\\)=.*/\\1/p') || mfw_probe_fail \"cannot read the environment names\"",
+		'[ -r /proc/$$/environ ] || mfw_probe_fail "cannot read /proc/$$/environ"',
+		"mfw_names=$(tr '\\000' '\\n' < /proc/$$/environ | sed -n 's/^\\([^=]*\\)=.*/\\1/p') || mfw_probe_fail \"cannot read the environment names\"",
+		"mfw_ifs=$IFS; IFS='\n'",
+		"mfw_seen=",
 		"for name in $mfw_names; do",
-		'  case "$allowed" in *" $name "*) ;; *) mfw_probe_fail "environment variable $name leaked into the sandbox" ;; esac',
+		`  [ "$name" = ${PROBE_SENTINEL} ] && mfw_seen=1`,
+		'  case "$allowed" in *" $name "*) ;; *) IFS=$mfw_ifs; mfw_probe_fail "environment variable $name leaked into the sandbox" ;; esac',
 		"done",
-		// 2. pid 1's environment (the sandbox's own init, in its pid namespace) holds only allowlisted names
-		"if [ -r /proc/1/environ ]; then",
-		"  mfw_p1=$(tr '\\000' '\\n' < /proc/1/environ | sed -n 's/^\\([A-Za-z_][A-Za-z0-9_]*\\)=.*/\\1/p') || mfw_probe_fail \"cannot read /proc/1/environ\"",
-		"  for name in $mfw_p1; do",
-		'    case "$allowed" in *" $name "*) ;; *) mfw_probe_fail "/proc/1/environ holds $name" ;; esac',
-		"  done",
-		"fi",
+		"IFS=$mfw_ifs",
+		'[ "$mfw_seen" = 1 ] || mfw_probe_fail "the environment listing is missing its sentinel"',
 	];
+	if (spec.checkPid1Environ !== false) {
+		lines.push(
+			// 2. pid 1's environment (the sandbox's own init, in its pid namespace) holds only allowlisted names;
+			// an unreadable file is a failure, not a skip
+			'[ -r /proc/1/environ ] || mfw_probe_fail "cannot read /proc/1/environ"',
+			"mfw_p1=$(tr '\\000' '\\n' < /proc/1/environ | sed -n 's/^\\([^=]*\\)=.*/\\1/p') || mfw_probe_fail \"cannot read /proc/1/environ\"",
+			"mfw_ifs=$IFS; IFS='\n'",
+			"for name in $mfw_p1; do",
+			'  case "$allowed" in *" $name "*) ;; *) IFS=$mfw_ifs; mfw_probe_fail "/proc/1/environ holds $name" ;; esac',
+			"done",
+			"IFS=$mfw_ifs",
+		);
+	}
 	for (const d of spec.emptyDirs) {
 		lines.push(
 			`if [ -e ${q(d)} ]; then mfw_l=$(ls -A ${q(d)}) || mfw_probe_fail ${q(`cannot list ${d}`)}; [ -z "$mfw_l" ] || mfw_probe_fail ${q(`${d} is not empty`)}; fi`,
@@ -75,7 +93,7 @@ export function buildProbeScript(spec: MinimalProbeSpec): string {
 	}
 	// the sentinel is the probe's, not the driver's
 	lines.push(
-		`unset ${PROBE_SENTINEL} mfw_env mfw_names mfw_p1 mfw_l mfw_s mfw_t`,
+		`unset ${PROBE_SENTINEL} mfw_names mfw_p1 mfw_l mfw_s mfw_t mfw_ifs mfw_seen`,
 	);
 	return lines.join("\n");
 }

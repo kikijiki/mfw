@@ -285,7 +285,9 @@ export class AgentHost {
 		// is agent-writable and must not be sourced by the host shell), after the
 		// probe, so its exports reach the driver and the allowlist still holds for
 		// everything inherited.
-		let driverCmd = `bun run ${q(spec.driverScript)} ${q(dir)}`;
+		// The runtime is the host's pinned bun when one is trusted; otherwise the sandbox `PATH` finds it (trusted entries come first).
+		const bunBin = pinnedTool("bun") ?? "bun";
+		let driverCmd = `${q(bunBin)} run ${q(spec.driverScript)} ${q(dir)}`;
 		if (spec.isolation) {
 			if (!(await this.sandbox.bwrapAvailable())) {
 				throw new SandboxUnavailableError(

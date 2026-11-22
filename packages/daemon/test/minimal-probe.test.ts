@@ -26,6 +26,7 @@ const base = {
 	allowedEnv: ["PATH", "HOME", "PWD", "SHLVL", "_"],
 	emptyDirs: [] as string[],
 	noSocketDirs: [] as string[],
+	checkPid1Environ: false,
 };
 
 function runProbe(script: string, env: Record<string, string>) {
