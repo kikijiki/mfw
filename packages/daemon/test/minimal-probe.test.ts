@@ -48,13 +48,17 @@ describe("buildProbeScript (pure, run with sh)", () => {
 	const script = buildProbeScript(base);
 
 	test("passes with only allowlisted environment", async () => {
-		const r = await runProbe(script, { PATH: process.env.PATH ?? "" });
+		const r = await runProbe(script, {
+			PATH: process.env.PATH ?? "",
+			MFW_PROBE_SENTINEL: "1",
+		});
 		expect(r.exitCode).toBe(0);
 	});
 
 	test("a canary environment variable fails the probe with exit 78", async () => {
 		const r = await runProbe(script, {
 			PATH: process.env.PATH ?? "",
+			MFW_PROBE_SENTINEL: "1",
 			MFW_CANARY_E0: "daemon-secret",
 		});
 		expect(r.exitCode).toBe(PROBE_EXIT_CODE);
@@ -70,7 +74,7 @@ describe("buildProbeScript (pure, run with sh)", () => {
 			const full = join(dir, "full");
 			await mkdir(full);
 			await Bun.write(join(full, "credentials.json"), "{}");
-			const env = { PATH: process.env.PATH ?? "" };
+			const env = { PATH: process.env.PATH ?? "", MFW_PROBE_SENTINEL: "1" };
 			const ok = buildProbeScript({
 				...base,
 				emptyDirs: [empty, join(dir, "absent")],
@@ -94,7 +98,7 @@ describe("buildProbeScript (pure, run with sh)", () => {
 		try {
 			const r = await runProbe(
 				buildProbeScript({ ...base, noSocketDirs: [dir] }),
-				{ PATH: process.env.PATH ?? "" },
+				{ PATH: process.env.PATH ?? "", MFW_PROBE_SENTINEL: "1" },
 			);
 			expect(r.exitCode).toBe(PROBE_EXIT_CODE);
 			expect(r.stderr).toContain("unix socket");
@@ -246,5 +250,52 @@ describe("pinned host tools (review G4)", () => {
 		} finally {
 			await rm(root, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("the probe fails closed (review G6)", () => {
+	test("without its helpers on PATH it exits 78 instead of passing", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "mfw-g6-"));
+		try {
+			await Bun.write(join(dir, "credentials.json"), "{}");
+			const script = buildProbeScript({
+				...base,
+				emptyDirs: [dir],
+			});
+			// the report's reproduction: canary env and a non-empty masked dir, no helpers
+			const r = await runProc(
+				[
+					"env",
+					"-i",
+					"PATH=/nonexistent",
+					"MFW_CANARY_E0=x",
+					"MFW_PROBE_SENTINEL=1",
+					Bun.which("sh") ?? "/bin/sh",
+					"-c",
+					script,
+				],
+				{ timeoutMs: 10_000 },
+			);
+			expect(r.exitCode).toBe(PROBE_EXIT_CODE);
+			expect(r.stderr).toContain("required helper");
+		} finally {
+			await rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("an environment listing without the sentinel fails", async () => {
+		const r = await runProbe(buildProbeScript(base), {
+			PATH: process.env.PATH ?? "",
+		});
+		expect(r.exitCode).toBe(PROBE_EXIT_CODE);
+		expect(r.stderr).toContain("sentinel");
+	});
+
+	test("the sentinel does not reach the driver", async () => {
+		const r = await runProbe(
+			`${buildProbeScript(base)}\nenv | grep -c MFW_PROBE_SENTINEL`,
+			{ PATH: process.env.PATH ?? "", MFW_PROBE_SENTINEL: "1" },
+		);
+		expect(r.stdout.trim()).toBe("0");
 	});
 });

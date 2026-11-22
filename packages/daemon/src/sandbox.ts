@@ -10,6 +10,7 @@ import { join } from "node:path";
 import {
 	buildProbeScript,
 	PROBE_EXIT_CODE,
+	PROBE_SENTINEL,
 } from "./containment/minimal-probe.ts";
 import { runProc } from "./proc.ts";
 
@@ -285,6 +286,7 @@ export function wrapWithBwrap(
 	const inner = `${probeScriptFor(isolation, [...names, "PATH"], masks)}\n${cmd}`;
 	return [
 		"_mfw_env=()",
+		`_mfw_env+=(--setenv ${PROBE_SENTINEL} 1)`,
 		`for _n in ${names.join(" ")}; do`,
 		// biome-ignore lint/suspicious/noTemplateCurlyInString: bash indirect expansion, not a JS template
 		'  if [ -n "${!_n+x}" ]; then _mfw_env+=(--setenv "$_n" "${!_n}"); fi',
@@ -353,6 +355,9 @@ export async function probeSandbox(
 		`PATH=${env.PATH ?? "/usr/bin:/bin"}`,
 		...core,
 		...cleanEnvSetenvArgs(env, SANDBOX_ENV_ALLOWLIST),
+		"--setenv",
+		PROBE_SENTINEL,
+		"1",
 		"--",
 		"sh",
 		"-c",
