@@ -62,6 +62,7 @@ const KIND_ICON: Record<InboxKind, LucideIcon> = {
 	approval_pending: ShieldAlert,
 	stalled: Hourglass,
 	budget: Wallet,
+	auth_hold: ShieldAlert,
 	brain_stuck: BrainCircuit,
 	brain_notice: BrainCircuit,
 };

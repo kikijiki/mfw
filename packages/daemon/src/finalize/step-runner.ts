@@ -20,6 +20,11 @@ import type { RunExit } from "../agent-host.ts";
 import { finalActivity } from "../agents/activity.ts";
 import { adapterFor } from "../agents/adapter.ts";
 import { parseAgentEvents } from "../agents/events.ts";
+import {
+	AUTH_HOLD_MS,
+	AUTH_HOLD_REASON,
+	isAuthFailure,
+} from "../auth-failure.ts";
 import { git } from "../git.ts";
 import {
 	type CleanupResult,
@@ -274,6 +279,8 @@ interface ClassifyResult {
 	exitCode?: number;
 	killReason?: string;
 	resetsAt?: number;
+	/** The CLI could not authenticate: held fleet-wide, never retried (`auth-failure.ts`). */
+	auth?: true;
 	/** Background jobs the transcript shows started and never seen to finish. */
 	background?: BackgroundJob[];
 }
@@ -1113,6 +1120,15 @@ export class StepRunner {
 		const exit = await this.deps.host.readExit(
 			this.deps.registry.runDir(run.id),
 		);
+		// A login problem ends the run non-zero with the CLI's own message at the
+		// tail. It rides the rate-limit path (hold, requeue without a repair
+		// attempt) but holds for the owner instead of a reset time.
+		let authFailed = false;
+		if (!limited && exit.kind === "exit" && exit.code !== 0) {
+			const rawTail = await this.readTail(run.id, "raw.log", TAIL_BYTES);
+			authFailed = isAuthFailure(rawTail) || isAuthFailure(eventsTail);
+			if (authFailed) limited = true;
+		}
 		const targetJournal = await this.deps.registry.targetJournal(run.id);
 		const lastCollectionFailure = targetJournal.findLast(
 			(entry) => entry.phase === "collect" && entry.status === "failed",
@@ -1149,6 +1165,7 @@ export class StepRunner {
 			...(exitCode !== null ? { exitCode } : {}),
 			...(killReason ? { killReason } : {}),
 			...(resetsAt !== null ? { resetsAt } : {}),
+			...(authFailed ? { auth: true as const } : {}),
 			...(background.length ? { background } : {}),
 		};
 	}
@@ -1199,8 +1216,14 @@ export class StepRunner {
 		const classify = built.results.get("classify") as
 			| ClassifyResult
 			| undefined;
-		const until = classify?.resetsAt ?? Date.now() + HOLD_FALLBACK_MS;
-		const value = { until, reason: `rate-limited run ${built.run.id}` };
+		const auth = classify?.auth === true;
+		const until = auth
+			? Date.now() + AUTH_HOLD_MS
+			: (classify?.resetsAt ?? Date.now() + HOLD_FALLBACK_MS);
+		const value = {
+			until,
+			reason: auth ? AUTH_HOLD_REASON : `rate-limited run ${built.run.id}`,
+		};
 		if (this.deps.providerHolds) {
 			const key =
 				parseRoutingRecord(built.run.routing)?.holdKey ??

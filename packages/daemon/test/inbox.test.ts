@@ -962,6 +962,26 @@ describe("inbox: the brain needs a person", () => {
 		await f.cleanup();
 	});
 
+	test("a provider held for a failed login is a critical act item with the remedy", async () => {
+		const f = await fixture();
+		const inbox = new InboxService({
+			handle: f.handle,
+			project: "demo",
+			tasks: f.tasks,
+			authHolds: async () => [{ key: "codex-cli", since: 1000, until: 9000 }],
+		});
+		const item = (await inbox.list()).find((i) => i.kind === "auth_hold");
+		expect(item).toMatchObject({
+			id: "auth_hold:codex-cli",
+			severity: "critical",
+			attention: "act",
+			ref: "brain",
+			ts: 1000,
+		});
+		expect(item?.fix).toContain("log");
+		await f.cleanup();
+	});
+
 	test("notify_human surfaces (even as a shadow proposal) unless it is fyi or rejected", async () => {
 		const f = await fixture();
 		await f.handle.db.insert(brainSessions).values({
