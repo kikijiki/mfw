@@ -225,12 +225,43 @@ function protectedRoots(host: CompileHost): string[] {
 	return [...out];
 }
 
+/**
+ * Every deny entry, both as written and resolved, because a bind source is
+ * always a real path and a symlinked entry would otherwise never match it. A
+ * missing entry resolves through its parent. If the parent cannot be resolved
+ * the entry cannot be enforced, so the compile is refused.
+ */
+function resolveDeny(
+	profile: SandboxProfile,
+	host: CompileHost,
+): string[] | CompileRefusal {
+	const out = new Set<string>();
+	for (const entry of profile.filesystem?.deny ?? []) {
+		out.add(entry);
+		const real = host.realpath(entry);
+		if (real) {
+			out.add(real);
+			continue;
+		}
+		const parent = host.realpath(posix.dirname(entry));
+		if (!parent) {
+			return refuse(
+				"path_denied",
+				`deny entry ${entry} cannot be resolved`,
+				"create its parent directory or remove the entry",
+			);
+		}
+		out.add(posix.join(parent, posix.basename(entry)));
+	}
+	return [...out];
+}
+
 function checkSources(
 	profile: SandboxProfile,
 	host: CompileHost,
+	deny: readonly string[],
 ): CompileRefusal | null {
 	const sources = profileSources(profile);
-	const deny = profile.filesystem?.deny ?? [];
 	const guarded = protectedRoots(host);
 
 	for (const root of host.allowedRoots) {
@@ -326,6 +357,7 @@ function checkSources(
 function checkToolchain(
 	profile: SandboxProfile,
 	host: CompileHost,
+	deny: readonly string[],
 ): CompileRefusal | null {
 	const declared = profile.filesystem?.toolchain?.binaries;
 	if (!declared) return null;
@@ -340,12 +372,12 @@ function checkToolchain(
 			);
 		}
 	}
-	const deny = profile.filesystem?.deny ?? [];
 	const guarded = protectedRoots(host);
 	// Toolchain roots legitimately sit inside the real home, never inside MFW_HOME.
 	const homes = new Set([host.home, host.realpath(host.home)]);
 	for (const b of host.toolchain.binds) {
-		const denied = deny.find((d) => overlaps(b.path, d));
+		const real = host.realpath(b.path) ?? b.path;
+		const denied = deny.find((d) => overlaps(b.path, d) || overlaps(real, d));
 		if (denied) {
 			return refuse(
 				"path_denied",
@@ -497,10 +529,12 @@ export function compileBwrap(
 		);
 	}
 
+	const hostRefusal = checkHost(host);
+	if (hostRefusal) return hostRefusal;
+	const deny = resolveDeny(profile, host);
+	if (!Array.isArray(deny)) return deny;
 	const refusal =
-		checkHost(host) ??
-		checkSources(profile, host) ??
-		checkToolchain(profile, host);
+		checkSources(profile, host, deny) ?? checkToolchain(profile, host, deny);
 	if (refusal) return refusal;
 
 	let seccomp: Buffer;

@@ -577,6 +577,84 @@ describe("refusals", () => {
 		}
 	});
 
+	test("a deny entry that is a symlink protects its target", () => {
+		const h = host({
+			realpath: (p) => (p === `${R}/link` ? `${R}/real` : p),
+		});
+		const r = refusal(
+			withFs({
+				caches: [{ name: "c", source: `${R}/real`, access: "rw" }],
+				deny: [`${R}/link`],
+			}),
+			h,
+		);
+		expect(r.code).toBe("path_denied");
+	});
+
+	test("a symlinked deny entry also covers paths under its target", () => {
+		const h = host({
+			realpath: (p) => (p === `${R}/link` ? `${R}/real` : p),
+		});
+		expect(
+			refusal(
+				withFs({
+					caches: [{ name: "c", source: `${R}/real/sub`, access: "ro" }],
+					deny: [`${R}/link`],
+				}),
+				h,
+			).code,
+		).toBe("path_denied");
+	});
+
+	test("a missing deny entry resolves through its parent", () => {
+		const h = host({
+			realpath: (p) => {
+				if (p === `${R}/link/gone`) return null;
+				return p === `${R}/link` ? `${R}/real` : p;
+			},
+		});
+		expect(
+			refusal(
+				withFs({
+					caches: [{ name: "c", source: `${R}/real/gone`, access: "rw" }],
+					deny: [`${R}/link/gone`],
+				}),
+				h,
+			).code,
+		).toBe("path_denied");
+	});
+
+	test("a deny entry whose parent cannot be resolved is refused", () => {
+		const h = host({
+			realpath: (p) => (p.startsWith("/gone") ? null : p),
+		});
+		const r = refusal(withFs({ deny: ["/gone/a/b"] }), h);
+		expect(r.code).toBe("path_denied");
+		expect(r.reason).toContain("/gone/a/b");
+	});
+
+	test("a deny entry resolving onto a toolchain bind refuses it", () => {
+		const h = host({
+			realpath: (p) => (p === "/opt/link" ? "/nix/store/g" : p),
+		});
+		expect(
+			refusal(
+				withFs({
+					toolchain: { binaries: ["git"] },
+					deny: ["/opt/link"],
+				}),
+				h,
+			).code,
+		).toBe("path_denied");
+	});
+
+	test("an unrelated missing deny entry does not refuse", () => {
+		const h = host({
+			realpath: (p) => (p === "/opt/absent" ? null : p),
+		});
+		compiled(withFs({ deny: ["/opt/absent"] }), h);
+	});
+
 	test("deny wins over a toolchain bind", () => {
 		expect(
 			refusal(
