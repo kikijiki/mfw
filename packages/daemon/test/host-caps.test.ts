@@ -63,12 +63,12 @@ const nixos: Fixture = {
 	exists: ["/var/lib/systemd/linger/dev"],
 	run: { ...SYSTEMD_OK, ...BWRAP_OK },
 	fs: {
-		"/home/dev/.local/share/mfw": {
+		"/srv/dev/.local/share/mfw": {
 			dev: 7,
 			fstype: "btrfs",
 			source: "/dev/nvme0n1p2[/@home]",
 		},
-		"/home/dev/dev/repo": {
+		"/srv/dev/dev/repo": {
 			dev: 7,
 			fstype: "btrfs",
 			source: "/dev/nvme0n1p2[/@home]",
@@ -79,8 +79,8 @@ const nixos: Fixture = {
 
 const caps = (f: Fixture) =>
 	detectHostCaps(readers(f), {
-		mfwHome: "/home/dev/.local/share/mfw",
-		repoRoot: "/home/dev/dev/repo",
+		mfwHome: "/srv/dev/.local/share/mfw",
+		repoRoot: "/srv/dev/dev/repo",
 	});
 
 describe("distro fixtures", () => {
