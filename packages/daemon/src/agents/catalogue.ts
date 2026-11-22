@@ -29,11 +29,9 @@ export interface ProviderAuthMethod {
 	envVars?: readonly string[];
 	/**
 	 * Files (relative to $HOME) that prove an interactive login already
-	 * happened. First existing one wins.
+	 * happened. Presence only (never opened). First existing one wins.
 	 */
 	loginFiles?: readonly string[];
-	/** Top-level JSON key that must be present in the login file to count. */
-	loginMarker?: string;
 	/** Shown verbatim; says how to get into this state. */
 	hint: string;
 }
@@ -146,7 +144,6 @@ export const PROVIDER_CATALOGUE: readonly ProviderEntry[] = [
 			{
 				kind: "subscription",
 				loginFiles: [".claude/.credentials.json"],
-				loginMarker: "claudeAiOauth",
 				hint: "Run `claude` once and sign in, or `claude setup-token`. A Claude subscription needs no API key: this is how most operators run mfw.",
 			},
 			{

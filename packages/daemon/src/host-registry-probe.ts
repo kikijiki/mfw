@@ -32,6 +32,7 @@ export function hostProbeScript(): string {
 	const harnessLines = harnesses.flatMap(([id, h]) => [
 		// A generically named binary (`agent`, `pi`) must also pass its identity check.
 		`if command -v ${h.binary} >/dev/null 2>&1${h.identity ? ` && ${identityShell(h.identity, h.binary)}` : ""}; then printf 'harness.${id}=%s\\n' "$(${h.binary} --version 2>/dev/null | head -n1 | tr -d '\\r')"; else printf 'harness.${id}=\\n'; fi`,
+		// `-s` is a stat (exists and non-empty): the login file is never opened.
 		`a=no; for f in ${h.authPaths.map((p) => `"$HOME"/${q(p)}`).join(" ")}; do [ -s "$f" ] && a=yes; done; printf 'auth.${id}=%s\\n' "$a"`,
 	]);
 	return [

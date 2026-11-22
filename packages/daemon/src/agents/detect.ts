@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, readFile } from "node:fs/promises";
+import { access, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 import { runProc } from "../proc.ts";
@@ -255,7 +255,7 @@ async function probeMethod(
 	};
 	for (const rel of method.loginFiles ?? []) {
 		const abs = join(home, rel);
-		const ok = await loginFileSatisfies(abs, method.loginMarker);
+		const ok = await loginFilePresent(abs);
 		if (ok) return { ...base, configured: true, via: abs };
 	}
 	if (method.credentialId && hasCredential) {
@@ -273,26 +273,15 @@ async function probeMethod(
 	return { ...base, configured: false, via: null };
 }
 
-async function loginFileSatisfies(
-	abs: string,
-	marker?: string,
-): Promise<boolean> {
-	let raw: string;
+/**
+ * A login file counts when it exists and is not empty. Presence only: mfw never
+ * opens, reads or parses a credential file (its contents are the vendor's).
+ */
+async function loginFilePresent(abs: string): Promise<boolean> {
 	try {
-		raw = await readFile(abs, "utf8");
+		const st = await stat(abs);
+		return st.isFile() && st.size > 0;
 	} catch {
-		return false;
-	}
-	if (!marker) return true;
-	try {
-		const parsed: unknown = JSON.parse(raw);
-		return (
-			typeof parsed === "object" &&
-			parsed !== null &&
-			(parsed as Record<string, unknown>)[marker] != null
-		);
-	} catch {
-		// Unparseable third-party file counts as "not signed in"; mfw does not own the format.
 		return false;
 	}
 }

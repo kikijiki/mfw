@@ -390,19 +390,21 @@ describe("auth probing", () => {
 		});
 	});
 
-	test("a malformed or marker-less credentials file is 'not signed in', not a crash", async () => {
+	test("login detection is presence only: an unreadable file counts, an empty or missing one does not", async () => {
 		const home = await tmp("mfw-home-");
 		await mkdir(join(home, ".claude"), { recursive: true });
-		await writeFile(join(home, ".claude", ".credentials.json"), "{{{ not json");
+		const file = join(home, ".claude", ".credentials.json");
 		let [sub] = await probeAuth(claude(), { home, env: {} });
 		expect(sub?.configured).toBe(false);
 
-		await writeFile(
-			join(home, ".claude", ".credentials.json"),
-			JSON.stringify({ somethingElse: true }),
-		);
+		await writeFile(file, "");
 		[sub] = await probeAuth(claude(), { home, env: {} });
 		expect(sub?.configured).toBe(false);
+
+		// Contents are never opened: mode 000 and garbage still count as present.
+		await writeFile(file, "{{{ not json", { mode: 0o000 });
+		[sub] = await probeAuth(claude(), { home, env: {} });
+		expect(sub).toMatchObject({ configured: true, via: file });
 	});
 
 	test("a stored key or an env var satisfies the api-key method", async () => {
