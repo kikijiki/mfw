@@ -154,6 +154,7 @@ import { createCreateTaskAction } from "./triggers/create-task-action.ts";
 import { createNotifyAction } from "./triggers/notify-action.ts";
 import { createScriptAction, Semaphore } from "./triggers/script-action.ts";
 import { TriggerService } from "./triggers/service.ts";
+import { RateLimitObserver } from "./usage/claude-weekly.ts";
 import {
 	defaultUsageProbes,
 	type UsageConfig,
@@ -421,6 +422,8 @@ export async function attachProject(
 		ownedElsewhere?: (runId: string) => Promise<boolean>;
 		/** Machine-wide subscription usage, for the brain's capacity read. */
 		usage?: () => UsageSubscription[];
+		/** Machine-wide observer fed by finalized Claude rate_limit events; also read by the usage meter. */
+		claudeRateLimits?: RateLimitObserver;
 	},
 ): Promise<ProjectServices> {
 	// Must run before any write: mkdir(recursive) would recreate a moved or
@@ -980,7 +983,10 @@ export async function attachProject(
 	);
 	engine.setTaskAdmission(admission);
 
+	// One machine-wide observer: finalized Claude rate_limit events feed the weekly meter.
+	const claudeRateLimits = opts.claudeRateLimits ?? new RateLimitObserver();
 	const stepRunner = new StepRunner({
+		claudeRateLimits,
 		handle,
 		bus,
 		registry,
@@ -2158,8 +2164,11 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 		(opts.usage?.enabled === true ||
 			opts.usage?.probes !== undefined ||
 			process.env.NODE_ENV !== "test");
+	const claudeRateLimits = new RateLimitObserver();
 	const usage = new UsageMonitor({
-		probes: usageOn ? defaultUsageProbes(opts.usage) : [],
+		probes: usageOn
+			? defaultUsageProbes({ ...opts.usage, claudeObserver: claudeRateLimits })
+			: [],
 		holds: ProviderHoldStore.at(home),
 		log: log.child({ svc: "usage" }),
 	});
@@ -2290,6 +2299,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 					return false;
 				},
 				usage: () => usage.snapshot(),
+				claudeRateLimits,
 				onProjectIdentity: (identity) => {
 					configuredProjectId = identity.id;
 					configuredRunpodOwners.set(identity.id, { projectName: cfg.name });
@@ -2489,6 +2499,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 							return false;
 						},
 						usage: () => usage.snapshot(),
+						claudeRateLimits,
 						onProjectIdentity: (identity) => {
 							configuredRunpodOwners.set(identity.id, { projectName: name });
 						},
