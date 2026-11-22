@@ -25,6 +25,7 @@ import {
 	bwrapAvailable,
 	SANDBOX_ENV_ALLOWLIST,
 	SandboxUnavailableError,
+	underPrivateTmp,
 	wrapWithBwrap,
 } from "./sandbox.ts";
 
@@ -184,6 +185,16 @@ export class AgentHost {
 
 	/** Launch the driver in a fresh detached tmux session. The run dir (and meta.json) must already exist (RunRegistry.create). */
 	async launch(spec: LaunchSpec): Promise<void> {
+		// The single choke point (security review G5): every launch path, task or
+		// not, lands here, so autonomy without isolation is refused here.
+		if (
+			(spec.approvalMode ?? "autonomous") === "autonomous" &&
+			!spec.isolation
+		) {
+			throw new SandboxUnavailableError(
+				"autonomous runs require a bwrap sandbox (agentIsolation is none)",
+			);
+		}
 		const dir = spec.runDir;
 		const control = await this.controlRoot();
 		const scriptPath = join(control, `run-${spec.runId}.sh`);
@@ -258,7 +269,18 @@ export class AgentHost {
 					],
 				},
 				[...Object.keys(publicEnvironment), ...secretEnvironment.names()],
-				{ readOnly: [spec.driverScript] },
+				{
+					// `/tmp` is private per sandbox: what a run legitimately needs from
+					// there (its driver and the agent binaries) is bound back.
+					readOnly: [
+						spec.driverScript,
+						...[
+							...spec.agentArgv,
+							...(spec.bridgeArgv ?? []),
+							...(spec.providerArgv ?? []),
+						].filter((a) => a.startsWith("/")),
+					].filter(underPrivateTmp),
+				},
 			);
 		}
 

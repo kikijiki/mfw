@@ -189,6 +189,8 @@ describe("machine-wide boot foundation", () => {
 			driverScript: driver,
 			agentArgv: ["true"],
 			steer: false,
+			// a bare long-lived driver, not a sandboxed autonomous agent
+			approvalMode: "interactive",
 		});
 		expect(await svc.host.isAlive(runId)).toBe(true);
 

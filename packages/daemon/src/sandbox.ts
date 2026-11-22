@@ -319,3 +319,8 @@ export async function autonomySandboxRefusal(o: {
 		? null
 		: { code: "sandbox_probe_failed", detail: probed.detail };
 }
+
+/** True for a path inside the private `/tmp`, i.e. one a sandbox would not otherwise see. */
+export function underPrivateTmp(p: string): boolean {
+	return p === "/tmp" || p.startsWith("/tmp/");
+}

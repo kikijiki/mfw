@@ -108,6 +108,10 @@ export async function groupFixture(
 			changeReview: "off",
 		},
 		brain: STUB_BRAIN,
+		// The scripted driver and its control file live in a temp dir that a real
+		// sandbox's private /tmp would hide, and nothing here needs isolation.
+		agentIsolation: "none",
+		approvalMode: "interactive",
 		...over,
 	};
 
