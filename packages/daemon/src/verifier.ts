@@ -1,5 +1,9 @@
 import { access } from "node:fs/promises";
 import { join } from "node:path";
+import {
+	type ActionableFailureClass,
+	classifyCheckFailure,
+} from "./failure-class.ts";
 import { git } from "./git.ts";
 import { runProc } from "./proc.ts";
 import { requireHostTool } from "./sandbox.ts";
@@ -38,6 +42,8 @@ export interface CheckOutcome {
 	check: string;
 	ok: boolean;
 	classification?: FailureClass;
+	/** What can be done about the failure; set whenever `classification` is. */
+	failureClass?: ActionableFailureClass;
 	detail?: string;
 	/** The command's observed exit code. Only run checks have one; null means
 	 *  the wrapper itself was killed by a signal. */
@@ -54,6 +60,11 @@ export interface VerificationResult {
 	 * `passed` is true.
 	 */
 	crashed: boolean;
+	/**
+	 * The actionable class of the whole verification, the first failing
+	 * check's; null when it passed.
+	 */
+	failureClass?: ActionableFailureClass | null;
 }
 
 /**
@@ -359,9 +370,18 @@ export async function verify(
 		}
 	}
 
+	for (const c of checks) {
+		if (!c.ok && c.classification)
+			c.failureClass = classifyCheckFailure(c.classification);
+	}
 	const failing = checks.filter((c) => !c.ok);
 	// Every failing check is a signal death: a verifier-side fact, not a code one.
 	const crashed =
 		failing.length > 0 && failing.every((c) => c.classification === "crashed");
-	return { passed: failing.length === 0, checks, crashed };
+	return {
+		passed: failing.length === 0,
+		checks,
+		crashed,
+		failureClass: failing[0]?.failureClass ?? null,
+	};
 }

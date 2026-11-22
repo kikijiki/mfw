@@ -39,6 +39,9 @@ describe("verifier v2: checks", () => {
 		expect(bad.passed).toBe(false);
 		expect(bad.checks[0]?.detail).toContain("boom");
 		expect(bad.checks[0]?.exitCode).toBe(2);
+		expect(bad.checks[0]?.failureClass).toBe("agent");
+		expect(bad.failureClass).toBe("agent");
+		expect(ok.failureClass).toBeNull();
 		await rm(root, { recursive: true, force: true });
 	});
 
@@ -51,6 +54,8 @@ describe("verifier v2: checks", () => {
 		);
 		expect(r.passed).toBe(false);
 		expect(r.checks[0]?.classification).toBe("timeout");
+		expect(r.checks[0]?.failureClass).toBe("timeout");
+		expect(r.failureClass).toBe("timeout");
 		await rm(root, { recursive: true, force: true });
 	}, 20_000);
 
