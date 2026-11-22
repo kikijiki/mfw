@@ -24,6 +24,7 @@ import {
 	type InferenceClient,
 	inferenceForProvider,
 } from "./brain.ts";
+import { brainSocketFor } from "./brain-runtime/brain-socket.ts";
 import { BrainRuntime, resolveBrainConfig } from "./brain-runtime/runtime.ts";
 import { BudgetService } from "./budgets.ts";
 import { ClarifyService, continuationTerminalError } from "./clarify.ts";
@@ -1226,6 +1227,7 @@ export async function attachProject(
 		engine,
 		log: plog,
 		mfwDir,
+		mfwHome: opts.mfwHome,
 		projectName: cfg.name,
 		bootId,
 		config: () => resolveBrainConfig(liveBrainConfig),
@@ -2787,6 +2789,10 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 				}
 				projects.clear();
 				projectGenerations.clear();
+				// The brain socket is per home: no turn can use it once projects are down.
+				await brainSocketFor(home)
+					.stop()
+					.catch((error) => failures.push(error));
 				await runpod.stop().catch((error) => failures.push(error));
 				await hosts.stop().catch((error) => failures.push(error));
 				openrouter.stop();
