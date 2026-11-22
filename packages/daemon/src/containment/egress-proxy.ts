@@ -34,6 +34,11 @@ import {
 export type EgressLogEntry =
 	| {
 			decision: "ALLOW";
+			/**
+			 * `open` is logged when the tunnel is established (byte counts are
+			 * zero), `close` when it ends, with the totals.
+			 */
+			phase: "open" | "close";
 			runId: string;
 			host: string;
 			port: number;
@@ -65,6 +70,8 @@ export interface EgressLimits {
 	/** A tunnel with no traffic in either direction is closed after this. */
 	idleMs: number;
 	upstreamConnectMs: number;
+	/** A tunnel is closed this long after it opened, however busy it is. */
+	maxTunnelMs: number;
 	/** Total deadline for DNS resolution of an allowlisted name. */
 	resolveMs: number;
 	/** Concurrent client connections to this run's proxy. */
@@ -76,6 +83,7 @@ export const DEFAULT_EGRESS_LIMITS: EgressLimits = {
 	idleMs: 60_000,
 	upstreamConnectMs: 5_000,
 	resolveMs: 5_000,
+	maxTunnelMs: 60 * 60_000,
 	maxConnectionsPerRun: 64,
 };
 
@@ -302,8 +310,10 @@ export async function startEgressProxy(
 		const finish = (): void => {
 			if (logged) return;
 			logged = true;
+			clearTimeout(lifetime);
 			log({
 				decision: "ALLOW",
+				phase: "close",
 				runId: opts.runId,
 				host: target.host,
 				port: target.port,
@@ -314,6 +324,9 @@ export async function startEgressProxy(
 				at: started,
 			});
 		};
+		// A busy or slow keep-alive tunnel must not live forever.
+		const lifetime = setTimeout(() => teardown(), limits.maxTunnelMs);
+		lifetime.unref();
 		const teardown = (): void => {
 			client.destroy();
 			upstream.destroy();
@@ -351,6 +364,19 @@ export async function startEgressProxy(
 			client.resume();
 		};
 
+		// Visible while open, and survives a daemon crash that skips the close.
+		log({
+			decision: "ALLOW",
+			phase: "open",
+			runId: opts.runId,
+			host: target.host,
+			port: target.port,
+			ip,
+			bytesUp: 0,
+			bytesDown: 0,
+			durationMs: 0,
+			at: started,
+		});
 		client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
 		if (!opts.sni) {
 			startPiping(pipelined);

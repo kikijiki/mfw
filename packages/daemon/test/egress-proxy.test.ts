@@ -396,7 +396,9 @@ describe("egress proxy: tunnels", () => {
 		expect(h.dialled).toEqual([PUBLIC_IP]);
 		expect(h.resolved).toEqual(["allowed.test"]); // resolved exactly once
 		expect(Buffer.concat(h.backend.received).toString()).toBe("ping");
-		const allow = h.log.find((e) => e.decision === "ALLOW");
+		const allow = h.log.find(
+			(e) => e.decision === "ALLOW" && e.phase === "close",
+		);
 		expect(allow).toMatchObject({
 			runId: "run-1",
 			host: "allowed.test",
@@ -673,6 +675,59 @@ describe("egress proxy: limits", () => {
 		expect(h.log.some((e) => e.decision === "DENY" && e.status === 504)).toBe(
 			true,
 		);
+	});
+
+	test("an open tunnel is logged as ALLOW before it closes", async () => {
+		const h = await startHarness();
+		const r = await raw(
+			h.proxy.socketPath,
+			connectLine("allowed.test:443"),
+			150,
+			true,
+		);
+		expect(r.text).toContain("200 Connection Established");
+		const open = h.log.filter((e) => e.decision === "ALLOW");
+		expect(open).toHaveLength(1);
+		expect(open[0]).toMatchObject({
+			phase: "open",
+			host: "allowed.test",
+			port: 443,
+			ip: PUBLIC_IP,
+			bytesUp: 0,
+			bytesDown: 0,
+		});
+		r.socket.destroy();
+		await new Promise((res) => setTimeout(res, 150));
+		const all = h.log.filter((e) => e.decision === "ALLOW");
+		expect(all.map((e) => (e.decision === "ALLOW" ? e.phase : ""))).toEqual([
+			"open",
+			"close",
+		]);
+	});
+
+	test("a tunnel is closed at its maximum lifetime even when it is busy", async () => {
+		const h = await startHarness({ limits: { maxTunnelMs: 300 } });
+		const r = await raw(
+			h.proxy.socketPath,
+			connectLine("allowed.test:443"),
+			100,
+			true,
+		);
+		const started = Date.now();
+		// Keep it busy so the idle timeout never fires.
+		const timer = setInterval(() => r.socket.write("x"), 50);
+		const closed = await new Promise<boolean>((resolve) => {
+			r.socket.on("close", () => resolve(true));
+			setTimeout(() => resolve(false), 1500);
+		});
+		clearInterval(timer);
+		expect(closed).toBe(true);
+		expect(Date.now() - started).toBeLessThan(1200);
+		await new Promise((res) => setTimeout(res, 100));
+		const close = h.log.find(
+			(e) => e.decision === "ALLOW" && e.phase === "close",
+		);
+		expect(close).toBeDefined();
 	});
 
 	test("a proxy without a global connection gate refuses to start", async () => {
