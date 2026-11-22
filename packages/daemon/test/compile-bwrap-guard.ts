@@ -107,11 +107,31 @@ function checkReadOnlySource(source: string, spec: GuardSpec): void {
 	}
 }
 
+/** The two parts of a compiled launch that decide what the sandbox can touch. */
+export interface LaunchShape {
+	argv: string[];
+	bwrapArgs: Buffer;
+}
+
+/** Split the `--args` stream, which must be NUL-terminated. */
+export function decodeOptions(bytes: Buffer): string[] {
+	const text = bytes.toString();
+	if (!text.endsWith("\0")) refuse("the bwrap options are not NUL-terminated");
+	return text.slice(0, -1).split("\0");
+}
+
+export function encodeOptions(options: readonly string[]): Buffer {
+	return Buffer.from(options.map((o) => `${o}\0`).join(""));
+}
+
 /**
  * Validate a compiled argv and return it without the `systemd-run` scope.
  * Throws on anything not explicitly allowed.
  */
-export function assertContained(input: string[], spec: GuardSpec): string[] {
+export function assertContained(
+	compiled: LaunchShape,
+	spec: GuardSpec,
+): string[] {
 	if (!canonical(spec.root) || spec.root === "/") {
 		refuse(`bad fixture root ${spec.root}`);
 	}
@@ -120,14 +140,23 @@ export function assertContained(input: string[], spec: GuardSpec): string[] {
 			refuse(`fixture root ${spec.root} contains the real home ${home}`);
 		}
 	}
-	const argv = input.slice(input.indexOf("--") + 1);
-	if (argv[0] !== spec.env || argv[1] !== "-i" || argv[2] !== spec.bwrap) {
+	const launch = compiled.argv.slice(compiled.argv.indexOf("--") + 1);
+	if (
+		launch[0] !== spec.env ||
+		launch[1] !== "-i" ||
+		launch[2] !== spec.bwrap
+	) {
 		refuse("not an env -i bwrap command");
 	}
+	if (launch[3] !== "--args" || launch[4] !== "4" || launch[5] !== "--") {
+		refuse("bwrap options must arrive only through --args 4");
+	}
+	if (launch.length <= 6) refuse("no command");
+	const argv = decodeOptions(compiled.bwrapArgs);
 
 	const seen = new Set<string>();
 	let rootReadOnly = false;
-	let i = 3;
+	let i = 0;
 	const value = (): string => {
 		const v = argv[++i];
 		if (v === undefined) refuse(`${argv[i - 1]} is missing a value`);
@@ -135,7 +164,6 @@ export function assertContained(input: string[], spec: GuardSpec): string[] {
 	};
 	for (; i < argv.length; i++) {
 		const opt = argv[i] as string;
-		if (opt === "--") break;
 		seen.add(opt);
 		if (FLAGS.has(opt)) continue;
 		switch (opt) {
@@ -193,12 +221,10 @@ export function assertContained(input: string[], spec: GuardSpec): string[] {
 				refuse(`option ${opt} is not on the allowlist`);
 		}
 	}
-	if (argv[i] !== "--") refuse("no -- before the command");
-	if (i + 1 >= argv.length) refuse("no command");
 	for (const flag of [...FLAGS, "--cap-drop", "--seccomp", "--remount-ro"]) {
 		if (!seen.has(flag)) refuse(`no ${flag}`);
 	}
-	return argv;
+	return launch;
 }
 
 const shellQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;

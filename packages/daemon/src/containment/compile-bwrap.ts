@@ -2,7 +2,12 @@
  * Compile a SandboxProfile into the Tier 1 launch command (design "Tier 1
  * bwrap profile"):
  *
- *   systemd-run --user --scope ... -- env -i bwrap <flags> -- <command>
+ *   systemd-run --user --scope ... -- env -i bwrap --args 4 -- <command>
+ *
+ * Every bwrap option travels through `--args` on fd 4, never in argv: env
+ * values would otherwise be readable from `/proc/<pid>/cmdline`, on the host
+ * and as the sandbox's pid 1. The command stays in argv, so it must never
+ * carry a secret.
  *
  * Pure over {@link CompileHost}, so the argv can be snapshotted anywhere. It
  * never degrades: a host or profile it cannot enforce gets a refusal with the
@@ -13,8 +18,8 @@
  * fleet config, which keep their own access mode.
  *
  * bwrap follows a bind source that is a symlink, so every profile source must
- * already be its own real path. The caller passes the seccomp bytes returned
- * here as the child's fd 3.
+ * already be its own real path. The caller passes the returned seccomp bytes
+ * as the child's fd 3 and the returned options as its fd 4.
  */
 
 import { posix } from "node:path";
@@ -56,6 +61,9 @@ const FLEET_ENV = { claude: "CLAUDE_CONFIG_DIR", codex: "CODEX_HOME" } as const;
 
 /** PATH when the profile declares no toolchain: nothing resolves. */
 const EMPTY_PATH = "/nonexistent";
+
+/** The child's descriptor for the bwrap options (3 is the seccomp program). */
+export const BWRAP_ARGS_FD = 4;
 
 export interface CompileHost {
 	caps: {
@@ -100,10 +108,12 @@ export interface CompileRefusal {
 
 export interface CompiledSandbox {
 	ok: true;
-	/** The full command, starting at `systemd-run`. */
+	/** The full command, starting at `systemd-run`. Holds no bwrap option but `--args`. */
 	argv: string[];
 	/** Pass as the child's fd 3. */
 	seccomp: Buffer;
+	/** NUL-terminated bwrap options, including env values. Pass as the child's fd 4. */
+	bwrapArgs: Buffer;
 	/** The environment set inside the sandbox, for the audit trail. */
 	env: Record<string, string>;
 	cwd: string;
@@ -531,6 +541,33 @@ export function compileBwrap(
 		.sort()
 		.flatMap((k) => ["--setenv", k, env[k] as string]);
 
+	const options = [
+		"--unshare-all",
+		"--unshare-user",
+		...DISABLE_USERNS_BWRAP_ARGS,
+		"--die-with-parent",
+		"--new-session",
+		"--cap-drop",
+		"ALL",
+		...SECCOMP_BWRAP_ARGS,
+		...before,
+		"--remount-ro",
+		"/",
+		...after,
+		...setenv,
+		"--chdir",
+		cwd,
+	];
+	// A NUL would end one option and start another in the `--args` stream. The
+	// schema keeps it out of profile values; this also covers host-derived paths.
+	if (options.some((o) => o.includes("\0"))) {
+		return refuse(
+			"invalid_host",
+			"a bwrap option contains NUL",
+			"remove the NUL from the toolchain or host path",
+		);
+	}
+
 	return {
 		ok: true,
 		argv: [
@@ -538,25 +575,13 @@ export function compileBwrap(
 			host.envPath,
 			"-i",
 			host.bwrapPath,
-			"--unshare-all",
-			"--unshare-user",
-			...DISABLE_USERNS_BWRAP_ARGS,
-			"--die-with-parent",
-			"--new-session",
-			"--cap-drop",
-			"ALL",
-			...SECCOMP_BWRAP_ARGS,
-			...before,
-			"--remount-ro",
-			"/",
-			...after,
-			...setenv,
-			"--chdir",
-			cwd,
+			"--args",
+			String(BWRAP_ARGS_FD),
 			"--",
 			...command,
 		],
 		seccomp,
+		bwrapArgs: Buffer.from(options.map((o) => `${o}\0`).join("")),
 		env,
 		cwd,
 	};

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+	BWRAP_ARGS_FD,
 	type CompiledSandbox,
 	type CompileHost,
 	compileBwrap,
@@ -96,7 +97,16 @@ function compiled(
 ): CompiledSandbox {
 	const r = compileBwrap(profile, ["agent", "--flag"], h);
 	if (!r.ok) throw new Error(r.reason);
-	return r;
+	return { ...r, argv: expand(r) };
+}
+
+/** The argv as bwrap sees it, with `--args 4` replaced by the option stream. */
+function expand(r: CompiledSandbox): string[] {
+	const at = r.argv.indexOf("--args");
+	expect(r.argv[at + 1]).toBe(String(BWRAP_ARGS_FD));
+	expect(r.bwrapArgs.at(-1)).toBe(0);
+	const options = r.bwrapArgs.toString().slice(0, -1).split("\0");
+	return [...r.argv.slice(0, at), ...options, ...r.argv.slice(at + 2)];
 }
 
 function refusal(profile: SandboxProfile, h: CompileHost = host()) {
@@ -341,12 +351,65 @@ describe("argv snapshots", () => {
 		expect(argv.indexOf("--bind")).toBeGreaterThan(remount);
 	});
 
+	test("no env value reaches the process argv", () => {
+		const secret = "canary-token-value";
+		const profile = parseSandboxProfile({
+			version: 1,
+			role: "task",
+			process: { env: { OPENAI_API_KEY: secret } },
+		});
+		const r = compileBwrap(profile, ["agent"], host());
+		if (!r.ok) throw new Error(r.reason);
+		expect(r.env.OPENAI_API_KEY).toBe(secret);
+		expect(r.argv.join("\0")).not.toContain(secret);
+		expect(r.argv.join("\0")).not.toContain("--setenv");
+		expect(r.bwrapArgs.toString()).toContain(`OPENAI_API_KEY\0${secret}\0`);
+	});
+
+	test("the raw argv carries only --args before the command", () => {
+		const r = compileBwrap(full(), ["agent", "--flag"], host());
+		if (!r.ok) throw new Error(r.reason);
+		const at = r.argv.indexOf("/bin/env");
+		expect(r.argv.slice(at)).toEqual([
+			"/bin/env",
+			"-i",
+			"/bin/bwrap",
+			"--args",
+			"4",
+			"--",
+			"agent",
+			"--flag",
+		]);
+	});
+
+	test("a NUL in a host-derived path cannot inject an option", () => {
+		const plan: ToolchainPlan = {
+			...toolchain,
+			binds: [
+				{
+					path: "/nix/store\0--bind\0/\0/",
+					source: "nix",
+					reason: "git",
+					optional: false,
+				},
+			],
+		};
+		const r = compileBwrap(
+			withFs({ toolchain: { binaries: ["git"] } }),
+			["agent"],
+			host({ toolchain: plan }),
+		);
+		expect(r.ok).toBe(false);
+		if (!r.ok) expect(r.code).toBe("invalid_host");
+	});
+
 	test("a command that looks like a flag stays after the separator", () => {
 		const r = compileBwrap(minimal(), ["--bind", "/", "/"], host());
 		if (!r.ok) throw new Error(r.reason);
-		const sep = r.argv.lastIndexOf("--");
-		expect(r.argv.slice(sep + 1)).toEqual(["--bind", "/", "/"]);
-		expect(r.argv.slice(0, sep)).not.toContain("--bind");
+		const all = expand(r);
+		const sep = all.lastIndexOf("--");
+		expect(all.slice(sep + 1)).toEqual(["--bind", "/", "/"]);
+		expect(all.slice(0, sep)).not.toContain("--bind");
 	});
 
 	test("hands over the real seccomp program", () => {

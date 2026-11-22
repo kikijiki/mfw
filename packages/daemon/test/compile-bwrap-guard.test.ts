@@ -4,7 +4,9 @@ import {
 	assertContained,
 	BASE_WRITABLE,
 	checkControlReport,
+	encodeOptions,
 	type GuardSpec,
+	type LaunchShape,
 } from "./compile-bwrap-guard.ts";
 
 const ROOT = "/fixture/root";
@@ -67,17 +69,21 @@ const options = (extra: string[] = []): string[] => [
 	...extra,
 ];
 
-const argv = (opts: string[], command = ["sh", "-c", "true"]): string[] => [
-	"/s/systemd-run",
-	"--user",
-	"--",
-	"/e/env",
-	"-i",
-	"/b/bwrap",
-	...opts,
-	"--",
-	...command,
-];
+const argv = (opts: string[], command = ["sh", "-c", "true"]): LaunchShape => ({
+	argv: [
+		"/s/systemd-run",
+		"--user",
+		"--",
+		"/e/env",
+		"-i",
+		"/b/bwrap",
+		"--args",
+		"4",
+		"--",
+		...command,
+	],
+	bwrapArgs: encodeOptions(opts),
+});
 
 describe("assertContained", () => {
 	test("accepts the compiled shape and strips the scope", () => {
@@ -137,6 +143,30 @@ describe("assertContained", () => {
 	])("refuses an argv without %s", (flag) => {
 		const without = options().filter((o) => o !== flag);
 		expect(() => assertContained(argv(without), spec)).toThrow(
+			"refusing to launch",
+		);
+	});
+
+	test("refuses a bwrap option placed in argv", () => {
+		const shape = argv(options());
+		shape.argv.splice(6, 0, "--bind", HOME, "/work");
+		expect(() => assertContained(shape, spec)).toThrow("refusing to launch");
+	});
+
+	test("refuses options on another fd", () => {
+		const shape = argv(options());
+		shape.argv[7] = "9";
+		expect(() => assertContained(shape, spec)).toThrow("refusing to launch");
+	});
+
+	test("refuses an unterminated options stream", () => {
+		const shape = argv(options());
+		shape.bwrapArgs = shape.bwrapArgs.subarray(0, -1);
+		expect(() => assertContained(shape, spec)).toThrow("refusing to launch");
+	});
+
+	test("refuses a separator inside the options stream", () => {
+		expect(() => assertContained(argv(options(["--"])), spec)).toThrow(
 			"refusing to launch",
 		);
 	});

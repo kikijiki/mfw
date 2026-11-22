@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	realpathSync,
 	rmSync,
@@ -22,6 +24,8 @@ import {
 	BASE_WRITABLE,
 	buildControlScript,
 	checkControlReport,
+	decodeOptions,
+	encodeOptions,
 	type GuardSpec,
 	hostNamespaces,
 	realHomes,
@@ -108,6 +112,7 @@ function compile(
 		workspace?: Record<string, unknown>;
 		filesystem?: Record<string, unknown>;
 		network?: Record<string, unknown>;
+		process?: Record<string, unknown>;
 	} = {},
 ): CompiledSandbox {
 	const plan = discoverToolchain({
@@ -152,6 +157,7 @@ function compile(
 			...extra.filesystem,
 		},
 		...(extra.network ? { network: extra.network } : {}),
+		...(extra.process ? { process: extra.process } : {}),
 	});
 	const r = compileBwrap(profile, command, host);
 	if (!r.ok) throw new Error(`compile refused: ${r.reason}`);
@@ -170,12 +176,21 @@ function guardSpec(extraWritable: readonly string[] = []): GuardSpec {
 	};
 }
 
-/** Spawn without any guard. Only for harmless commands and guarded callers. */
-function spawnSandbox(argv: string[], c: CompiledSandbox) {
+/** The inherited descriptors for a sandbox: seccomp on 3, options on 4. */
+function sandboxFds(c: CompiledSandbox): unknown[] {
 	const bpf = join(root, "deny.bpf");
 	writeFileSync(bpf, c.seccomp, { mode: 0o600 });
+	const fds: unknown[] = [Bun.file(bpf)];
+	const file = join(root, "bwrap.args");
+	writeFileSync(file, c.bwrapArgs, { mode: 0o600 });
+	fds.push(Bun.file(file));
+	return fds;
+}
+
+/** Spawn without any guard. Only for harmless commands and guarded callers. */
+function spawnSandbox(argv: string[], c: CompiledSandbox) {
 	const child = Bun.spawnSync(argv, {
-		stdio: ["ignore", "pipe", "pipe", Bun.file(bpf)] as never,
+		stdio: ["ignore", "pipe", "pipe", ...sandboxFds(c)] as never,
 		timeout: 30_000,
 	});
 	return {
@@ -186,7 +201,7 @@ function spawnSandbox(argv: string[], c: CompiledSandbox) {
 }
 
 function launch(c: CompiledSandbox, extraWritable: readonly string[] = []) {
-	return spawnSandbox(assertContained(c.argv, guardSpec(extraWritable)), c);
+	return spawnSandbox(assertContained(c, guardSpec(extraWritable)), c);
 }
 
 /**
@@ -197,11 +212,12 @@ function destructive(script: string) {
 	const spec = guardSpec();
 	const scenario = compile(["sh", "-c", script]);
 	const probe = compile(["sh", "-c", buildControlScript(spec)]);
-	const scenarioArgv = assertContained(scenario.argv, spec);
-	const probeArgv = assertContained(probe.argv, spec);
+	const scenarioArgv = assertContained(scenario, spec);
+	const probeArgv = assertContained(probe, spec);
 	if (
 		JSON.stringify(scenarioArgv.slice(0, -1)) !==
-		JSON.stringify(probeArgv.slice(0, -1))
+			JSON.stringify(probeArgv.slice(0, -1)) ||
+		!scenario.bwrapArgs.equals(probe.bwrapArgs)
 	) {
 		throw new Error("refusing to launch: control used a different sandbox");
 	}
@@ -249,6 +265,45 @@ describe.skipIf(skip !== null)("compiled profile under bwrap", () => {
 			delete process.env.MFW_P1_SECRET_CANARY;
 		}
 	});
+
+	test("an env value is in no command line, on the host or inside", async () => {
+		const secret = `canary-${randomUUID()}`;
+		const script = `
+			[ "$OPENAI_API_KEY" != "" ] || exit 71
+			printf %s "$OPENAI_API_KEY" > /tmp/needle
+			if grep -lFf /tmp/needle /proc/[0-9]*/cmdline 2>/dev/null; then exit 72; fi
+			[ ! -e /proc/self/fd/3 ] || exit 73
+			[ ! -e /proc/self/fd/4 ] || exit 74
+			echo ready
+			cat >/dev/null`;
+		const c = compile(["sh", "-c", script], "rw", {
+			process: { env: { OPENAI_API_KEY: secret } },
+		});
+		const argv = assertContained(c, guardSpec());
+		const child = Bun.spawn(argv, {
+			stdio: ["pipe", "pipe", "pipe", ...sandboxFds(c)] as never,
+		});
+		try {
+			const reader = (child.stdout as ReadableStream<Uint8Array>).getReader();
+			const first = await reader.read();
+			expect(new TextDecoder().decode(first.value)).toBe("ready\n");
+			const leaks: string[] = [];
+			for (const pid of readdirSync("/proc")) {
+				if (!/^[0-9]+$/.test(pid)) continue;
+				try {
+					const line = readFileSync(`/proc/${pid}/cmdline`);
+					if (line.includes(secret)) leaks.push(pid);
+				} catch {
+					// the process exited during the scan
+				}
+			}
+			expect(leaks).toEqual([]);
+			(child.stdin as unknown as { end(): void }).end();
+			expect(await child.exited).toBe(0);
+		} finally {
+			child.kill();
+		}
+	}, 15_000);
 
 	test("has no network interface but loopback", () => {
 		const r = launch(compile(["cat", "/proc/net/dev"]));
@@ -355,17 +410,24 @@ describe.skipIf(skip !== null)("compiled profile under bwrap", () => {
 		mkdirSync(standIn);
 		const spec = guardSpec();
 		const probe = compile(["sh", "-c", buildControlScript(spec)]);
-		const at = probe.argv.indexOf("--remount-ro");
-		const smuggled = [
-			...probe.argv.slice(0, at),
-			"--bind-try",
-			standIn,
-			"/stand-in",
-			...probe.argv.slice(at),
-		];
+		const options = decodeOptions(probe.bwrapArgs);
+		const at = options.indexOf("--remount-ro");
+		const smuggled: CompiledSandbox = {
+			...probe,
+			bwrapArgs: encodeOptions([
+				...options.slice(0, at),
+				"--bind-try",
+				standIn,
+				"/stand-in",
+				...options.slice(at),
+			]),
+		};
 		expect(() => assertContained(smuggled, spec)).toThrow("refusing to launch");
 		// Harmless read-only command: past the guard only to test the control.
-		const r = spawnSandbox(smuggled.slice(smuggled.indexOf("--") + 1), probe);
+		const r = spawnSandbox(
+			smuggled.argv.slice(smuggled.argv.indexOf("--") + 1),
+			smuggled,
+		);
 		expect(r.code).toBe(0);
 		expect(checkControlReport(r.out, spec).join()).toContain("/stand-in");
 	});
