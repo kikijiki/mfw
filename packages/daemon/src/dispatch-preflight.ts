@@ -18,7 +18,11 @@ export type PreflightCode =
 	/** The task's route is rate-limit held (`provider-holds.ts`); waitingFor = [hold key]. */
 	| "provider_held"
 	/** A resource budget the task depends on is exhausted (`budgets.ts`); waitingFor = [budget key]. */
-	| "budget_exhausted";
+	| "budget_exhausted"
+	/** Autonomous approval without a usable bwrap sandbox (missing, or isolation is `none`). */
+	| "sandbox_unavailable"
+	/** The sandbox exists but the minimal probe failed (`containment/minimal-probe.ts`). */
+	| "sandbox_probe_failed";
 
 export class DispatchPreflightError extends Error {
 	readonly fix: RefusalFix;
@@ -41,6 +45,15 @@ export interface DispatchPreflightDeps {
 	memoryFloorBytes?: bigint;
 	/** Current `MemAvailable`; null when unknown (the check then passes). */
 	memAvailableBytes?: () => Promise<bigint | null>;
+	/**
+	 * Autonomy needs isolation: returns the refusal (code and what is wrong)
+	 * when the run would be autonomous without a bwrap sandbox that passes the
+	 * minimal probe, null when it may go. Absent = no sandbox gate.
+	 */
+	sandbox?: () => Promise<{
+		code: "sandbox_unavailable" | "sandbox_probe_failed";
+		detail: string;
+	} | null>;
 }
 
 const MiB = 1024n * 1024n;
@@ -49,6 +62,14 @@ export async function preflightDispatch(
 	deps: DispatchPreflightDeps,
 	runId: string,
 ): Promise<void> {
+	const refused = await deps.sandbox?.();
+	if (refused) {
+		throw new DispatchPreflightError(
+			refused.code,
+			[refused.detail],
+			`autonomous runs need a working sandbox: ${refused.detail}`,
+		);
+	}
 	const root = deps.projectRoot;
 	const integration = deps.integrationBranch;
 	const base = await git(

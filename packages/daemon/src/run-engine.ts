@@ -138,7 +138,7 @@ export interface RunEngineDeps {
 	/** Dispatch preflight for local task runs (`dispatch-preflight.ts`). Absent = no preflight. */
 	preflight?: Pick<
 		DispatchPreflightDeps,
-		"memoryFloorBytes" | "memAvailableBytes"
+		"memoryFloorBytes" | "memAvailableBytes" | "sandbox"
 	>;
 	/** Starting provider work preempts a low-priority regression sweep. */
 	beforeLaunch?: () => void;

@@ -125,3 +125,38 @@ describe("dispatch preflight", () => {
 		else expect(value).toBeNull();
 	});
 });
+
+describe("dispatch preflight: the sandbox gate (G2a)", () => {
+	test.each([
+		["sandbox_unavailable", "bwrap is not on PATH"],
+		["sandbox_probe_failed", "environment variable X leaked"],
+	] as const)("%s refuses before anything is checked, with a fix", async (code, detail) => {
+		const e = await refusal(
+			preflightDispatch(
+				{
+					// would also fail on the branch check: the sandbox gate comes first
+					projectRoot: "/nonexistent",
+					integrationBranch: "nope",
+					sandbox: async () => ({ code, detail }),
+				},
+				"r",
+			),
+		);
+		expect(e.code).toBe(code);
+		expect(e.waitingFor).toEqual([detail]);
+		expect(e.fix.kind).toBe("command");
+		expect(e.fix.text.length).toBeGreaterThan(20);
+	});
+
+	test("a passing gate falls through to the usual checks", async () => {
+		const root = await repo();
+		await preflightDispatch(
+			{
+				projectRoot: root,
+				integrationBranch: "main",
+				sandbox: async () => null,
+			},
+			"run1",
+		);
+	});
+});

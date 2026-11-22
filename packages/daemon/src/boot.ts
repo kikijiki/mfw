@@ -129,6 +129,7 @@ import type {
 	RunPodPlacementRequest,
 	RunPodProjectPolicy,
 } from "./runpod-policy.ts";
+import { autonomySandboxRefusal } from "./sandbox.ts";
 import { Scheduler } from "./scheduler.ts";
 import type { Orchestrator, ProjectServices } from "./services.ts";
 import { SessionService } from "./session.ts";
@@ -937,6 +938,15 @@ export async function attachProject(
 			memoryFloorBytes:
 				BigInt(cfg.minFreeMemoryMb ?? DEFAULTS.minFreeMemoryMb) * 1024n * 1024n,
 			memAvailableBytes: readMemAvailable,
+			// Autonomy is refused without a bwrap sandbox that passes the minimal probe.
+			sandbox: () =>
+				autonomySandboxRefusal({
+					approvalMode: cfg.approvalMode ?? DEFAULTS.approvalMode,
+					isolation:
+						(cfg.agentIsolation ?? DEFAULTS.agentIsolation) === "bwrap"
+							? { mode: "bwrap", hidePaths: [opts.mfwHome] }
+							: undefined,
+				}),
 		},
 		globalPaused: opts.globalPaused,
 		beforeLaunch: () => verification.preemptBackground(),
