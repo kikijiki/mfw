@@ -9,11 +9,14 @@
  * run changes in `.gitmodules` or a gitlink is refused by `inspect.ts`, so the
  * only submodules that ever exist are the base's.
  *
- * This module reads and decides; it runs no network fetch itself. The fetch is
- * a `HostGit` call and needs a per-scheme transport override that the runner
- * does not have yet (see the report for this work package).
+ * `seedSubmodules` then runs each planned fetch through `HostGit` (`allowProtocol`,
+ * one sha, an allowlisted url, a fresh bare repo under a scratch root). Nothing
+ * is checked out; importing the objects into a workspace is the seeder's job.
  */
-import { type HostGit, HostGitError } from "./runner.ts";
+import { randomBytes } from "node:crypto";
+import { mkdtemp } from "node:fs/promises";
+import { join } from "node:path";
+import { type HostGit, HostGitError, urlAllowed } from "./runner.ts";
 
 export interface SubmoduleEntry {
 	/** The `[submodule "<name>"]` name. */
@@ -138,12 +141,7 @@ export function urlScheme(
 	};
 }
 
-/** The allowlist: exact urls, or `prefix*` entries that end the url's host part with a `/`. */
-export function urlAllowed(url: string, allowlist: readonly string[]): boolean {
-	return allowlist.some((a) =>
-		a.endsWith("/*") ? url.startsWith(a.slice(0, -1)) : url === a,
-	);
-}
+export { urlAllowed };
 
 async function show(
 	host: HostGit,
@@ -287,4 +285,75 @@ export async function planSubmoduleSeeds(
 		}
 	}
 	return plan;
+}
+
+export interface SeededSubmodule {
+	entry: SubmoduleEntry;
+	/** A fresh bare repo under the scratch root that holds `entry.sha`. */
+	bareRepo: string;
+	/** The ref inside it that points at `entry.sha`. */
+	ref: string;
+}
+
+/**
+ * Fetch every planned submodule sha into its own throwaway bare repo. The host
+ * must have been built with the same allowlist (`submoduleAllowlist`); the
+ * runner checks every url again, so a plan from elsewhere cannot widen it.
+ */
+export async function seedSubmodules(o: {
+	host: HostGit;
+	plan: SubmodulePlan;
+	/** A mfw-owned scratch root outside the workspace root. */
+	scratchRoot: string;
+}): Promise<SeededSubmodule[]> {
+	if (o.plan.refusals.length > 0) {
+		throw new HostGitError(
+			"validation",
+			`refusing to seed: ${o.plan.refusals.length} submodule(s) are not seedable`,
+		);
+	}
+	const out: SeededSubmodule[] = [];
+	for (const seed of o.plan.seeds) {
+		const id = `s${randomBytes(6).toString("hex")}`;
+		const dir = await mkdtemp(join(o.scratchRoot, "submodule-"));
+		const bare = join(dir, "repo.git");
+		await o.host.runOk(["init", "--bare", "--quiet", "--", bare], { cwd: dir });
+		const ref = `refs/mfw/submodule/${id}`;
+		const r = await o.host.run(
+			[
+				"fetch",
+				"--no-tags",
+				"--no-write-fetch-head",
+				"--no-recurse-submodules",
+				"--no-auto-gc",
+				"--no-auto-maintenance",
+				"--no-prune",
+				"--",
+				seed.entry.url,
+				`+${seed.entry.sha}:${ref}`,
+			],
+			{ cwd: bare, repo: bare, allowProtocol: seed.scheme },
+		);
+		if (r.exitCode !== 0) {
+			throw new HostGitError(
+				"fetch_failed",
+				`fetching submodule ${seed.entry.name} failed (${r.raw.signalCode ?? r.exitCode}): ${r.stderr.slice(0, 300)}`,
+			);
+		}
+		const tip = await o.host.runOk(
+			["rev-parse", "--verify", `${ref}^{commit}`],
+			{
+				cwd: bare,
+				repo: bare,
+			},
+		);
+		if (tip !== seed.entry.sha) {
+			throw new HostGitError(
+				"fetch_failed",
+				`submodule ${seed.entry.name}: the remote did not return the recorded commit`,
+			);
+		}
+		out.push({ entry: seed.entry, bareRepo: bare, ref });
+	}
+	return out;
 }

@@ -66,13 +66,32 @@ export interface HostGitOptions {
 	maxCpuSeconds?: number;
 	/** Environment the child inherits from (PATH, LANG, TMPDIR only). Default `process.env`. */
 	baseEnv?: NodeJS.ProcessEnv;
+	/**
+	 * The only urls a submodule seed may fetch from: exact urls, or `prefix/*`
+	 * entries. Empty (the default) means no remote fetch is possible at all.
+	 */
+	submoduleAllowlist?: string[];
+	/**
+	 * Absolute path of `ssh`. Without it an `ssh` seed is refused, because the
+	 * runner otherwise sets `GIT_SSH_COMMAND=false`.
+	 */
+	sshBin?: string;
 }
+
+/** The one transport a seed fetch may enable. Never `file`, `ext` or the dumb `http`. */
+export type SeedProtocol = "https" | "ssh" | "git";
 
 export interface HostGitRunOpts {
 	/** A host-owned directory. Refused under the workspace root. */
 	cwd: string;
 	/** Allow the `file` transport (fetch from a mfw-owned local path). */
 	allowFile?: boolean;
+	/**
+	 * A submodule seed: fetch one sha from an allowlisted url into a scratch bare
+	 * repo, enabling only this scheme for the call. `fetch` only; exclusive with
+	 * `allowFile`.
+	 */
+	allowProtocol?: SeedProtocol;
 	/**
 	 * The repository to act on: a bare gitdir, or a work tree with a real `.git`
 	 * directory. Required for every subcommand except `init`. It is always passed
@@ -103,6 +122,8 @@ export interface HostGitResult {
  */
 interface OperandCtx {
 	host: HostGit;
+	repo?: string;
+	allowProtocol?: SeedProtocol;
 	/** The flags that were passed (exact allowlisted strings or `--name=value`). */
 	flags: string[];
 	input?: string;
@@ -126,6 +147,29 @@ const REFSPEC_SHAPES = [
 	new RegExp(`^\\+refs/mfw/run/head:refs/mfw/incoming/${ID}/head$`),
 	new RegExp(`^\\+refs/mfw/run/wip/\\*:refs/mfw/incoming/${ID}/wip/\\*$`),
 ];
+/** A seed fetches one full sha into `refs/mfw/submodule/<id>`: no branch names, no globs. */
+const SEED_REFSPEC = new RegExp(`^\\+[0-9a-f]{40}:refs/mfw/submodule/${ID}$`);
+const HOST = "[A-Za-z0-9][A-Za-z0-9.-]{0,252}";
+const PATH_PART = "[A-Za-z0-9._~%+/-]{1,400}";
+/** The urls a seed may use, per scheme. No userinfo on https or git; ssh allows a user name. */
+const SEED_URL: Record<SeedProtocol, RegExp[]> = {
+	https: [new RegExp(`^https://${HOST}(?::[0-9]{1,5})?/${PATH_PART}$`)],
+	git: [new RegExp(`^git://${HOST}(?::[0-9]{1,5})?/${PATH_PART}$`)],
+	ssh: [
+		new RegExp(
+			`^ssh://(?:[A-Za-z0-9._-]{1,64}@)?${HOST}(?::[0-9]{1,5})?/${PATH_PART}$`,
+		),
+		new RegExp(`^[A-Za-z0-9._-]{1,64}@${HOST}:${PATH_PART}$`),
+	],
+};
+
+/** True when `url` is listed exactly, or starts with a `prefix/*` entry's prefix. */
+export function urlAllowed(url: string, allowlist: readonly string[]): boolean {
+	return allowlist.some((a) =>
+		a.endsWith("/*") ? url.startsWith(a.slice(0, -1)) : url === a,
+	);
+}
+
 /** Refs the host may create or delete: the quarantine namespaces, and nothing else. */
 const REF_BODY = `refs/mfw/(?:quarantine|quarantine-wip|incoming)/${ID}(?:/[A-Za-z0-9_-]{1,128}){0,8}`;
 const QUARANTINE_REF = new RegExp(`^${REF_BODY}$`);
@@ -174,9 +218,23 @@ const SUBCOMMANDS: Record<string, SubcommandSpec> = {
 			"-q",
 		],
 		requireDashDash: true,
-		operands: (ops, { host }) => {
+		operands: (ops, { host, repo, allowProtocol }) => {
 			if (ops.length < 2) refuse("git fetch needs a source and a refspec");
 			const [source, ...specs] = ops as [string, ...string[]];
+			if (allowProtocol) {
+				// A submodule seed: one allowlisted url, one sha, a scratch bare repo.
+				if (specs.length !== 1)
+					refuse("a seed fetch takes exactly one refspec");
+				if (!repo) refuse("a seed fetch needs its target repo");
+				host.assertScratchPath(repo, "seed target");
+				host.assertSeedSource(source, allowProtocol);
+				if (!SEED_REFSPEC.test(specs[0] as string)) {
+					refuse(
+						`refusing seed refspec ${JSON.stringify((specs[0] as string).slice(0, 120))}`,
+					);
+				}
+				return;
+			}
 			// The source is a mfw-owned scratch file or throwaway repo, never a clone.
 			host.assertScratchPath(source, "fetch source");
 			if (isDirectory(source)) host.resolveGitDir(source);
@@ -339,6 +397,8 @@ export class HostGit {
 	private readonly maxMemoryKiB: number;
 	private readonly maxCpuSeconds: number;
 	private readonly baseEnv: NodeJS.ProcessEnv;
+	private readonly submoduleAllowlist: string[];
+	private readonly sshBin: string | undefined;
 
 	constructor(opts: HostGitOptions) {
 		if (!isAbsolute(opts.workspaceRoot)) {
@@ -371,6 +431,38 @@ export class HostGit {
 			throw new HostGitError("bad_argument", "limits must be positive");
 		}
 		this.baseEnv = opts.baseEnv ?? process.env;
+		this.submoduleAllowlist = [...(opts.submoduleAllowlist ?? [])];
+		if (
+			opts.sshBin !== undefined &&
+			!/^\/[A-Za-z0-9._/+-]{1,300}$/.test(opts.sshBin)
+		) {
+			throw new HostGitError(
+				"bad_argument",
+				"sshBin must be a plain absolute path",
+			);
+		}
+		this.sshBin = opts.sshBin;
+	}
+
+	/** The url must be on the allowlist, well formed, and of the one scheme this call enables. */
+	assertSeedSource(url: string, protocol: SeedProtocol): void {
+		if (!(protocol in SEED_URL)) refuse(`refusing protocol ${protocol}`);
+		if (url.startsWith("-") || url.includes("\0") || url.length > 600) {
+			refuse("refusing a seed url that looks like an option");
+		}
+		if (!SEED_URL[protocol].some((re) => re.test(url))) {
+			refuse(
+				`refusing seed url ${JSON.stringify(url.slice(0, 120))} for ${protocol}`,
+			);
+		}
+		if (!urlAllowed(url, this.submoduleAllowlist)) {
+			refuse(
+				`seed url ${JSON.stringify(url.slice(0, 120))} is not on the allowlist`,
+			);
+		}
+		if (protocol === "ssh" && !this.sshBin) {
+			refuse("ssh seeds are not configured (no sshBin)");
+		}
 	}
 
 	/** True when `p` is, or resolves into, the workspace root. */
@@ -384,7 +476,7 @@ export class HostGit {
 	}
 
 	/** The scrubbed environment every host git child gets. */
-	env(): Record<string, string> {
+	env(opts: { allowProtocol?: SeedProtocol } = {}): Record<string, string> {
 		const env: Record<string, string> = {};
 		for (const k of INHERITED_ENV) {
 			const v = this.baseEnv[k];
@@ -393,7 +485,10 @@ export class HostGit {
 		env.GIT_CONFIG_GLOBAL = "/dev/null";
 		env.GIT_CONFIG_SYSTEM = "/dev/null";
 		env.GIT_CONFIG_NOSYSTEM = "1";
-		env.GIT_SSH_COMMAND = "false";
+		env.GIT_SSH_COMMAND =
+			opts.allowProtocol === "ssh" && this.sshBin
+				? `${this.sshBin} -F /dev/null -o BatchMode=yes -o StrictHostKeyChecking=yes -o ClearAllForwardings=yes`
+				: "false";
 		env.GIT_TERMINAL_PROMPT = "0";
 		env.GIT_ASKPASS = "false";
 		env.GIT_ATTR_NOSYSTEM = "1";
@@ -405,7 +500,10 @@ export class HostGit {
 	}
 
 	/** The fixed `-c` prelude: no transport, fsck on, no hooks. */
-	configArgs(opts: { allowFile?: boolean }): string[] {
+	configArgs(opts: {
+		allowFile?: boolean;
+		allowProtocol?: SeedProtocol;
+	}): string[] {
 		const c = [
 			"-c",
 			"protocol.allow=never",
@@ -431,6 +529,15 @@ export class HostGit {
 			"core.alternateRefsCommand=",
 		];
 		if (opts.allowFile) c.push("-c", "protocol.file.allow=always");
+		if (opts.allowProtocol) {
+			// Only the scheme the allowlisted url needs, and no redirect to another host.
+			c.push(
+				"-c",
+				`protocol.${opts.allowProtocol}.allow=always`,
+				"-c",
+				"http.followRedirects=false",
+			);
+		}
 		return c;
 	}
 
@@ -518,6 +625,13 @@ export class HostGit {
 	/** Validate `args` and `opts` without running anything. Throws a HostGitError. */
 	check(args: string[], opts: HostGitRunOpts): void {
 		this.assertHostOwned("cwd", opts.cwd);
+		if (opts.allowProtocol) {
+			if (args[0] !== "fetch" || opts.allowFile) {
+				refuse(
+					"allowProtocol is for a seed fetch only, and excludes allowFile",
+				);
+			}
+		}
 
 		const sub = args[0];
 		const spec = sub ? SUBCOMMANDS[sub] : undefined;
@@ -581,6 +695,8 @@ export class HostGit {
 		spec.operands?.(positional, {
 			host: this,
 			flags: optionPart.filter((a) => a.startsWith("-")),
+			...(opts.repo ? { repo: opts.repo } : {}),
+			...(opts.allowProtocol ? { allowProtocol: opts.allowProtocol } : {}),
 			...(opts.input !== undefined ? { input: opts.input } : {}),
 		});
 		for (const a of args) {
@@ -604,7 +720,10 @@ export class HostGit {
 				String(this.maxMemoryKiB),
 				String(this.maxCpuSeconds),
 				this.gitBin,
-				...this.configArgs({ allowFile: opts.allowFile === true }),
+				...this.configArgs({
+					allowFile: opts.allowFile === true,
+					...(opts.allowProtocol ? { allowProtocol: opts.allowProtocol } : {}),
+				}),
 				...prefix,
 				...args,
 			],
@@ -613,7 +732,9 @@ export class HostGit {
 				...(opts.input !== undefined ? { input: opts.input } : {}),
 				// Never discover a repo above cwd (a parent `.git` symlinked into a clone).
 				env: {
-					...this.env(),
+					...this.env(
+						opts.allowProtocol ? { allowProtocol: opts.allowProtocol } : {},
+					),
 					GIT_CEILING_DIRECTORIES: dirname(resolve(opts.cwd)),
 				},
 				timeoutMs: opts.timeoutMs ?? 120_000,
