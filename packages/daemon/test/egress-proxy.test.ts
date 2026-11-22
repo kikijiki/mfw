@@ -74,6 +74,7 @@ async function startHarness(
 		limits?: Parameters<typeof startEgressProxy>[0]["limits"];
 		sni?: boolean;
 		gate?: ReturnType<typeof createConnectionGate>;
+		resolve?: (host: string) => Promise<readonly string[]>;
 	} = {},
 ): Promise<Harness> {
 	const dir = await mkdtemp(join(tmpdir(), "egp-"));
@@ -89,12 +90,14 @@ async function startHarness(
 		runId: "run-1",
 		socketPath: join(dir, "e.sock"),
 		allow: opts.allow ?? ["allowed.test", "allowed.test:8443"],
-		resolve: async (host) => {
-			resolved.push(host);
-			const a = dns[host];
-			if (!a) throw new Error("NXDOMAIN");
-			return a;
-		},
+		resolve:
+			opts.resolve ??
+			(async (host) => {
+				resolved.push(host);
+				const a = dns[host];
+				if (!a) throw new Error("NXDOMAIN");
+				return a;
+			}),
 		connect: (ip) => {
 			dialled.push(ip);
 			return net.connect({ host: "127.0.0.1", port: backend.port });
@@ -643,6 +646,30 @@ describe("egress proxy: limits", () => {
 			150,
 		);
 		expect(again.text).toContain("200 Connection Established");
+	});
+
+	test("a resolver that never answers is cut off with 504 and frees its slot", async () => {
+		const gate = createConnectionGate(5);
+		const h = await startHarness({
+			gate,
+			limits: { resolveMs: 150 },
+			resolve: () => new Promise(() => {}),
+		});
+		const r = await raw(
+			h.proxy.socketPath,
+			connectLine("allowed.test:443"),
+			1500,
+		);
+		expect(r.text).toContain("504");
+		expect(r.text).toContain("mfw-egress-denied: dns-timeout");
+		expect(r.closedAtMs).not.toBeNull();
+		expect(r.closedAtMs as number).toBeLessThan(1000);
+		for (let i = 0; i < 30 && gate.active > 0; i++)
+			await new Promise((res) => setTimeout(res, 20));
+		expect(gate.active).toBe(0);
+		expect(h.log.some((e) => e.decision === "DENY" && e.status === 504)).toBe(
+			true,
+		);
 	});
 
 	test("the global gate is shared across proxies", async () => {

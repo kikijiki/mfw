@@ -65,6 +65,8 @@ export interface EgressLimits {
 	/** A tunnel with no traffic in either direction is closed after this. */
 	idleMs: number;
 	upstreamConnectMs: number;
+	/** Total deadline for DNS resolution of an allowlisted name. */
+	resolveMs: number;
 	/** Concurrent client connections to this run's proxy. */
 	maxConnectionsPerRun: number;
 }
@@ -73,6 +75,7 @@ export const DEFAULT_EGRESS_LIMITS: EgressLimits = {
 	headerDeadlineMs: 5_000,
 	idleMs: 60_000,
 	upstreamConnectMs: 5_000,
+	resolveMs: 5_000,
 	maxConnectionsPerRun: 64,
 };
 
@@ -253,7 +256,11 @@ export async function startEgressProxy(
 			respondDeny(client, refused);
 			return;
 		}
-		const pinned = await resolvePinned(target.host, resolve);
+		const pinned = await withDeadline(
+			resolvePinned(target.host, resolve),
+			limits.resolveMs,
+			deny(504, "dns-timeout"),
+		);
 		if (!pinned.ok) {
 			denyLog(pinned, target);
 			respondDeny(client, pinned);
@@ -404,6 +411,27 @@ export async function startEgressProxy(
 			await rm(opts.socketPath, { force: true });
 		},
 	};
+}
+
+/** Race `work` against a deadline; the loser's result is dropped. */
+function withDeadline<T, D>(
+	work: Promise<T>,
+	ms: number,
+	onTimeout: D,
+): Promise<T | D> {
+	return new Promise((resolveRace, rejectRace) => {
+		const timer = setTimeout(() => resolveRace(onTimeout), ms);
+		work.then(
+			(v) => {
+				clearTimeout(timer);
+				resolveRace(v);
+			},
+			(e) => {
+				clearTimeout(timer);
+				rejectRace(e);
+			},
+		);
+	});
 }
 
 type HeadResult =
