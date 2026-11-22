@@ -81,7 +81,7 @@ export const md = {
 	),
 	li: (p: ComponentPropsWithoutRef<"li">) => <li className="text-sm" {...p} />,
 	a: (p: ComponentPropsWithoutRef<"a">) => (
-		<a className="text-sky-400 underline" {...p} />
+		<a className="text-[var(--mfw-link)] underline" {...p} />
 	),
 	code: (p: ComponentPropsWithoutRef<"code">) => (
 		<code className="font-mono text-[0.85em] bg-muted/60 px-1 rounded" {...p} />

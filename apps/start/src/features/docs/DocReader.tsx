@@ -141,7 +141,7 @@ export function DocReader({
 											<AppLink
 												key={id}
 												to={href.docs(project, { source, key: id })}
-												className="mfw-num text-sky-400"
+												className="mfw-num text-[var(--mfw-link)]"
 											>
 												{id}
 											</AppLink>
@@ -149,7 +149,7 @@ export function DocReader({
 											<AppLink
 												key={id}
 												to={href.task(project, id)}
-												className="mfw-num text-sky-400"
+												className="mfw-num text-[var(--mfw-link)]"
 											>
 												{id}
 											</AppLink>

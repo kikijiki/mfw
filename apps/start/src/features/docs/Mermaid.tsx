@@ -18,21 +18,21 @@ const load = () => {
 	return loading;
 };
 
-/** True while the document paints dark (`data-theme` or the OS), re-evaluated on change. */
+/** True while the document paints dark (`data-mode` or the OS), re-evaluated on change. */
 function useDark(): boolean {
 	const [dark, setDark] = useState(false);
 	useEffect(() => {
 		const root = document.documentElement;
 		const mq = window.matchMedia("(prefers-color-scheme: dark)");
 		const read = () => {
-			const choice = root.getAttribute("data-theme");
+			const choice = root.getAttribute("data-mode");
 			setDark(choice === "dark" || (choice === null && mq.matches));
 		};
 		read();
 		const observer = new MutationObserver(read);
 		observer.observe(root, {
 			attributes: true,
-			attributeFilter: ["data-theme"],
+			attributeFilter: ["data-mode"],
 		});
 		mq.addEventListener("change", read);
 		return () => {

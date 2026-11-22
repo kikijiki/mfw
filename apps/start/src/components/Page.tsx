@@ -61,8 +61,8 @@ export function PageHeader({
 				{back ? <div className="flex items-center gap-2">{back}</div> : null}
 				{title ? (
 					<h1
-						className="min-w-0 truncate font-semibold"
-						style={{ fontSize: "var(--mfw-text-lg)" }}
+						className="mfw-title min-w-0 truncate font-semibold"
+						style={{ fontSize: "var(--mfw-title-size, var(--mfw-text-lg))" }}
 					>
 						{title}
 					</h1>
@@ -120,14 +120,14 @@ export function Panel({
 		<section
 			id={id}
 			className={cn(
-				"flex min-h-0 min-w-0 shrink-0 flex-col border",
+				"mfw-panel flex min-h-0 min-w-0 shrink-0 flex-col border",
 				id && "scroll-mt-3",
 				className,
 			)}
 			style={{
-				borderColor: "var(--mfw-border)",
-				borderRadius: "var(--mfw-radius-md)",
-				background: "var(--mfw-bg-raised)",
+				borderColor: "var(--mfw-panel-border, var(--mfw-border))",
+				borderRadius: "var(--mfw-panel-radius, var(--mfw-radius-md))",
+				background: "var(--mfw-panel-bg, var(--mfw-bg-raised))",
 				...style,
 			}}
 		>
@@ -137,11 +137,11 @@ export function Panel({
 					style={{ borderColor: "var(--mfw-border)" }}
 				>
 					<h2
-						className="min-w-0 flex-1 truncate uppercase"
+						className="mfw-panel-title min-w-0 flex-1 truncate uppercase"
 						style={{
-							color: "var(--mfw-fg-muted)",
-							fontSize: "var(--mfw-text-2xs)",
-							letterSpacing: "0.06em",
+							color: "var(--mfw-panel-title-fg, var(--mfw-fg-muted))",
+							fontSize: "var(--mfw-panel-title-size, var(--mfw-text-2xs))",
+							letterSpacing: "var(--mfw-panel-title-tracking, 0.06em)",
 						}}
 					>
 						{title}
