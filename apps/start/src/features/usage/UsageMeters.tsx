@@ -296,6 +296,28 @@ export function UsageRail({
 			>
 				Usage
 			</TipA>
+			{/* Themes with a one-line nav show this instead of the meters. */}
+			<span data-ui="usage-compact" className="mfw-num hidden">
+				{views.map((v) => {
+					const sev = subscriptionSeverity(v);
+					return (
+						<span
+							key={v.provider}
+							style={{
+								color:
+									sev === "ok"
+										? "var(--mfw-fg-muted)"
+										: `var(${SEVERITY_TOKEN[sev]})`,
+								fontWeight: sev === "ok" ? undefined : 700,
+								fontSize: "var(--mfw-text-2xs)",
+							}}
+						>
+							{harnessMonogram(v.provider)}{" "}
+							{v.worst ? `${v.worst.percent}%` : "?"}
+						</span>
+					);
+				})}
+			</span>
 			<div className="flex flex-col gap-2">
 				{views.map((v) => (
 					<SubscriptionRow key={v.provider} view={v} />

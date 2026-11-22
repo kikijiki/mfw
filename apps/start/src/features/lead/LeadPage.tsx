@@ -68,9 +68,10 @@ export function LeadPage({ project }: { project: string }) {
 					</StaleWhenOffline>
 				}
 			/>
-			<Scroller className="flex flex-col gap-6 p-3">
+			<Scroller data-ui="lead-grid" className="flex flex-col gap-6 p-3">
 				<section
 					aria-label="Headline"
+					data-ui="lead-headline"
 					data-lead-headline={project}
 					style={{ fontSize: "var(--mfw-text-md)" }}
 				>
@@ -92,9 +93,13 @@ export function LeadPage({ project }: { project: string }) {
 					)}
 				</section>
 
-				<div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+				<div
+					data-ui="lead-columns"
+					className="grid grid-cols-1 gap-6 lg:grid-cols-2"
+				>
 					<section
 						aria-label="The brain"
+						data-ui="lead-brain"
 						className="flex min-w-0 flex-col gap-2"
 					>
 						<SectionHeading>Tech lead</SectionHeading>
@@ -173,6 +178,7 @@ export function LeadPage({ project }: { project: string }) {
 
 					<section
 						id="needs-you"
+						data-ui="lead-needs"
 						aria-label="Needs you"
 						className="flex min-w-0 flex-col gap-2"
 					>
@@ -193,7 +199,11 @@ export function LeadPage({ project }: { project: string }) {
 					</section>
 				</div>
 
-				<section aria-label="Live" className="flex flex-col gap-2">
+				<section
+					data-ui="lead-live"
+					aria-label="Live"
+					className="flex flex-col gap-2"
+				>
 					<SectionHeading count={runs.length > 0 ? runs.length : undefined}>
 						Live
 					</SectionHeading>
@@ -212,6 +222,7 @@ export function LeadPage({ project }: { project: string }) {
 
 				<nav
 					aria-label="Drill down"
+					data-ui="lead-drill"
 					className="flex flex-wrap items-center gap-x-4 gap-y-2"
 				>
 					<SectionHeading>Drill down</SectionHeading>

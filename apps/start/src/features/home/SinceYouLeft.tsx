@@ -203,7 +203,11 @@ export function SinceYouLeft() {
 	};
 
 	return (
-		<section aria-label="Since you left" className="flex flex-col gap-2">
+		<section
+			data-ui="home-since"
+			aria-label="Since you left"
+			className="flex flex-col gap-2"
+		>
 			<div className="flex flex-wrap items-center gap-2">
 				<h2
 					className="uppercase"

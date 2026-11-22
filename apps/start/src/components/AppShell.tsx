@@ -43,6 +43,7 @@ import { useSidebarPreference } from "../lib/sidebarPreference";
 import { ToastProvider } from "../lib/toast";
 import { useTRPC } from "../lib/trpc";
 import { href, isActive, withBase } from "../routes";
+import { BenchPane } from "../themes/BenchPane";
 import { ThemeSwitcher } from "../themes/ThemeSwitcher";
 import { ShortcutKbd } from "./ShortcutKbd";
 import "../styles/tokens.css";
@@ -97,12 +98,16 @@ function Shell({ children, project, activePath, navigate }: AppShellProps) {
 	return (
 		/* Exactly the viewport; never scrolls, so the sidebar cannot grow with content. */
 		<div
+			data-ui="shell"
 			className="mfw-v2 flex h-full w-full flex-col overflow-hidden"
 			style={{ background: "var(--mfw-bg)" }}
 		>
 			{/* Who is working where and what needs you, on every screen. */}
 			<PresenceBar onNavigate={go} />
-			<div className="flex min-h-0 flex-1 flex-col md:flex-row">
+			<div
+				data-ui="shell-body"
+				className="flex min-h-0 flex-1 flex-col md:flex-row"
+			>
 				<Sidebar
 					path={path}
 					project={project}
@@ -111,7 +116,10 @@ function Shell({ children, project, activePath, navigate }: AppShellProps) {
 					expanded={sidebar.expanded}
 					onToggle={sidebar.toggle}
 				/>
-				<div className="flex min-h-0 min-w-0 flex-1 flex-col">
+				<div
+					data-ui="shell-main"
+					className="flex min-h-0 min-w-0 flex-1 flex-col"
+				>
 					<HealthBanner />
 					<MobileHeader project={project} onNavigate={go} />
 					{/*
@@ -132,6 +140,7 @@ function Shell({ children, project, activePath, navigate }: AppShellProps) {
 						</main>
 					</div>
 				</div>
+				<BenchPane />
 			</div>
 			{/* Reset transient mobile menus whenever the router commits a path. */}
 			<TabBar key={path} path={path} inboxCount={inboxCount} onNavigate={go} />
@@ -289,6 +298,7 @@ function Sidebar({
 	return (
 		<nav
 			aria-label="Main"
+			data-ui="rail"
 			data-expanded={expanded}
 			// Scrolls on its own so many projects do not clip Settings.
 			className="hidden min-h-0 shrink-0 flex-col gap-1 overflow-y-auto border-r p-2 md:flex"
@@ -358,6 +368,7 @@ function Sidebar({
 			{expanded ? (
 				<>
 					<div
+						data-ui="rail-label"
 						className="px-2 pt-1 pb-0.5 uppercase"
 						style={{
 							color: "var(--mfw-fg-faint)",
@@ -418,6 +429,7 @@ function Sidebar({
 function Divider() {
 	return (
 		<div
+			data-ui="rail-divider"
 			className="my-1 h-px"
 			style={{ background: "var(--mfw-border)" }}
 			aria-hidden
@@ -580,6 +592,7 @@ function TabBar({
 			) : null}
 			<nav
 				aria-label="Main"
+				data-ui="tabbar"
 				className="fixed inset-x-0 bottom-0 z-40 flex border-t md:hidden"
 				style={{
 					background: "var(--mfw-bg-subtle)",
@@ -660,6 +673,7 @@ function MobileHeader({
 	return (
 		<>
 			<div
+				data-ui="mobile-header"
 				className="flex items-center gap-2 border-b px-2 py-1.5 md:hidden"
 				style={{
 					borderColor: "var(--mfw-border)",
