@@ -805,6 +805,138 @@ describe("refusals", () => {
 		);
 	});
 
+	test("an empty binary list refuses a plan that resolved binaries", () => {
+		expect(refusal(withFs({ toolchain: { binaries: [] } })).code).toBe(
+			"toolchain_undeclared",
+		);
+	});
+
+	test("a plan with a binary the profile did not declare is refused", () => {
+		const plan: ToolchainPlan = {
+			...toolchain,
+			resolved: [
+				...toolchain.resolved,
+				{
+					name: "curl",
+					path: "/nix/store/c/bin/curl",
+					realPath: "/nix/store/c/bin/curl",
+				},
+			],
+			pathDirs: ["/nix/store/g/bin", "/nix/store/c/bin"],
+		};
+		const r = refusal(
+			withFs({ toolchain: { binaries: ["git"] } }),
+			host({ toolchain: plan }),
+		);
+		expect(r.code).toBe("toolchain_undeclared");
+		expect(r.reason).toContain("curl");
+	});
+
+	test("an empty binary list with an empty plan binds nothing", () => {
+		const plan: ToolchainPlan = {
+			binds: [
+				{
+					path: "/usr",
+					source: "system",
+					reason: "system root",
+					optional: true,
+				},
+				{ path: "/etc/ssl", source: "etc", reason: "etc set", optional: true },
+			],
+			resolved: [],
+			unresolved: [],
+			pathDirs: [],
+		};
+		const { argv, env } = compiled(
+			withFs({ toolchain: { binaries: [] } }),
+			host({ toolchain: plan }),
+		);
+		expect(argv).not.toContain("/usr");
+		expect(argv).not.toContain("/etc/ssl");
+		expect(env.PATH).toBe("/nonexistent");
+	});
+
+	test("PATH comes from the declared binaries, not the plan's list", () => {
+		const plan: ToolchainPlan = {
+			...toolchain,
+			pathDirs: ["/evil/bin", "/nix/store/g/bin"],
+		};
+		const { env } = compiled(
+			withFs({ toolchain: { binaries: ["git"] } }),
+			host({ toolchain: plan }),
+		);
+		expect(env.PATH).toBe("/nix/store/g/bin");
+	});
+
+	test("PATH follows the declared order without duplicates", () => {
+		const plan: ToolchainPlan = {
+			...toolchain,
+			resolved: [
+				{
+					name: "a",
+					path: "/nix/store/a/bin/a",
+					realPath: "/nix/store/a/bin/a",
+				},
+				{
+					name: "b",
+					path: "/nix/store/b/bin/b",
+					realPath: "/nix/store/b/bin/b",
+				},
+				{
+					name: "c",
+					path: "/nix/store/a/bin/c",
+					realPath: "/nix/store/a/bin/c",
+				},
+			],
+		};
+		const { env } = compiled(
+			withFs({ toolchain: { binaries: ["b", "c", "a"] } }),
+			host({ toolchain: plan }),
+		);
+		expect(env.PATH).toBe("/nix/store/b/bin:/nix/store/a/bin");
+	});
+
+	test("a home toolchain root no declared binary needs is not bound", () => {
+		const plan: ToolchainPlan = {
+			...toolchain,
+			binds: [
+				...toolchain.binds,
+				{
+					path: "/users/owner/.rustup",
+					source: "home",
+					reason: "home toolchain root",
+					optional: true,
+				},
+			],
+		};
+		const { argv } = compiled(
+			withFs({ toolchain: { binaries: ["git"] } }),
+			host({ toolchain: plan }),
+		);
+		expect(argv).toContain("/nix/store");
+		expect(argv).toContain("/etc/ssl");
+		expect(argv).not.toContain("/users/owner/.rustup");
+	});
+
+	test("a home toolchain root a declared binary lives in is bound", () => {
+		const plan: ToolchainPlan = {
+			...toolchain,
+			binds: [
+				{
+					path: "/users/owner/.bun",
+					source: "home",
+					reason: "git",
+					optional: false,
+				},
+			],
+		};
+		const { argv } = compiled(
+			withFs({ toolchain: { binaries: ["git"] } }),
+			host({ toolchain: plan }),
+		);
+		expect(argv).toContain("/users/owner/.bun");
+	});
+
 	test("without a toolchain section nothing from the plan is bound", () => {
 		const { argv, env } = compiled(minimal());
 		expect(argv).not.toContain("/nix/store");

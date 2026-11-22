@@ -94,6 +94,7 @@ export type CompileRefusalCode =
 	| "invalid_command"
 	| "invalid_host"
 	| "toolchain_unresolved"
+	| "toolchain_undeclared"
 	| "path_denied"
 	| "path_not_canonical"
 	| "path_outside_roots"
@@ -354,6 +355,38 @@ function checkSources(
 	return null;
 }
 
+/**
+ * What a profile actually gets from the host's toolchain plan:
+ *
+ * - no section or an empty binary list: nothing, not even `/usr`, and a PATH
+ *   that resolves nothing;
+ * - declared binaries: their own binds, plus the fixed system, Nix and `/etc`
+ *   binds that dynamic linking, shebangs and TLS need. Those are read-only and
+ *   hold no user data.
+ *
+ * HOME toolchain roots that no declared binary lives in are dropped, because
+ * the plan adds every root that exists on the host. PATH is rebuilt from the
+ * declared binaries, in declared order.
+ */
+function declaredToolchain(
+	profile: SandboxProfile,
+	plan: ToolchainPlan,
+): ToolchainPlan {
+	const declared = profile.filesystem?.toolchain?.binaries ?? [];
+	if (declared.length === 0) {
+		return { binds: [], resolved: [], unresolved: [], pathDirs: [] };
+	}
+	const resolved = declared.flatMap((name) =>
+		plan.resolved.filter((b) => b.name === name),
+	);
+	return {
+		binds: plan.binds.filter((b) => !(b.source === "home" && b.optional)),
+		resolved,
+		unresolved: [],
+		pathDirs: [...new Set(resolved.map((b) => posix.dirname(b.path)))],
+	};
+}
+
 function checkToolchain(
 	profile: SandboxProfile,
 	host: CompileHost,
@@ -372,12 +405,29 @@ function checkToolchain(
 			);
 		}
 	}
+	const undeclared = host.toolchain.resolved.find(
+		(b) => !declared.includes(b.name),
+	);
+	if (undeclared) {
+		return refuse(
+			"toolchain_undeclared",
+			`the toolchain plan holds ${undeclared.name}, which the profile does not declare`,
+			"discover the toolchain from the profile's binary list",
+		);
+	}
 	const guarded = protectedRoots(host);
 	// Toolchain roots legitimately sit inside the real home, never inside MFW_HOME.
 	const homes = new Set([host.home, host.realpath(host.home)]);
+	const mounted = new Set(
+		declaredToolchain(profile, host.toolchain).binds.map((b) => b.path),
+	);
+	// The protected-path checks cover the whole plan: a plan holding a bind of
+	// HOME is wrong even when this profile would not mount that entry.
 	for (const b of host.toolchain.binds) {
 		const real = host.realpath(b.path) ?? b.path;
-		const denied = deny.find((d) => overlaps(b.path, d) || overlaps(real, d));
+		const denied = mounted.has(b.path)
+			? deny.find((d) => overlaps(b.path, d) || overlaps(real, d))
+			: undefined;
 		if (denied) {
 			return refuse(
 				"path_denied",
@@ -410,8 +460,7 @@ function buildEnv(
 	host: CompileHost,
 ): Record<string, string> {
 	const home = SANDBOX_PATHS.home;
-	const declared = profile.filesystem?.toolchain !== undefined;
-	const pathDirs = declared ? host.toolchain.pathDirs : [];
+	const { pathDirs } = declaredToolchain(profile, host.toolchain);
 	const env: Record<string, string> = {
 		PATH: pathDirs.length > 0 ? pathDirs.join(":") : EMPTY_PATH,
 		HOME: home,
@@ -462,7 +511,9 @@ function buildMounts(
 		"--tmpfs",
 		SANDBOX_PATHS.home,
 	];
-	if (fs?.toolchain) before.push(...toolchainBwrapArgs(host.toolchain));
+	before.push(
+		...toolchainBwrapArgs(declaredToolchain(profile, host.toolchain)),
+	);
 	if (fs?.scratch) before.push("--tmpfs", SANDBOX_PATHS.scratch);
 
 	const after: string[] = [];
