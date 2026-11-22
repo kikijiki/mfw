@@ -4,6 +4,13 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pino from "pino";
+import {
+	buildBoardLayoutRecord,
+	DEFAULT_PROTECTED_BOARD_PATHS,
+	readBoardLayout,
+	readProtectedBoardPaths,
+	recordBoardLocation,
+} from "../src/board-layout.ts";
 import { relocateLegacyBoard } from "../src/board-relocate.ts";
 import { boot } from "../src/boot.ts";
 import { defaultBoardYaml } from "../src/default-board-config.ts";
@@ -312,5 +319,128 @@ describe("a directory that is not a board", () => {
 		}
 		expect(existsSync(join(root, "board.yaml"))).toBe(false);
 		expect((await readdir(join(root, "tasks"))).sort()).toEqual(["todo.txt"]);
+	});
+});
+
+describe("the board layout record", () => {
+	const types = { task: { dir: "tasks" }, adr: { dir: "adrs" } } as never;
+
+	test("a board at the repository root is layout (a), committed with the code", () => {
+		const r = buildBoardLayoutRecord({
+			repoRoot: "/r",
+			boardFolder: "/r",
+			config: { types },
+		});
+		expect(r).toEqual({
+			version: 1,
+			layout: "in-repo",
+			root: "/r",
+			commitRepo: "/r",
+			push: "with-code",
+			protectedPaths: ["board.yaml", "tasks", "adrs"],
+		});
+	});
+
+	test("a nested board folder is still layout (a), with prefixed paths", () => {
+		const r = buildBoardLayoutRecord({
+			repoRoot: "/r",
+			boardFolder: "/r/docs/board",
+			config: { types },
+		});
+		expect(r.layout).toBe("in-repo");
+		expect(r.protectedPaths).toContain("docs/board/tasks");
+	});
+
+	test("a board outside the repository is layout (c) and commits to its own repo", () => {
+		const r = buildBoardLayoutRecord({
+			repoRoot: "/r",
+			boardFolder: "/b",
+			config: { types },
+		});
+		expect(r.layout).toBe("separate-repo");
+		expect(r.commitRepo).toBe("/b");
+		expect(r.push).toBe("board-repo");
+		expect(r.protectedPaths).toEqual([]);
+	});
+
+	test("the push policy can be overridden", () => {
+		const r = buildBoardLayoutRecord({
+			repoRoot: "/r",
+			boardFolder: "/r",
+			config: { types },
+			push: "untracked",
+		});
+		expect(r.push).toBe("untracked");
+	});
+
+	test("a record round-trips, and both readers agree", async () => {
+		const root = await tmp("mfw-layout-rec-");
+		const rec = buildBoardLayoutRecord({
+			repoRoot: root,
+			boardFolder: root,
+			config: { types },
+		});
+		await recordBoardLocation(root, rec);
+		expect(await readBoardLayout(root)).toEqual(rec);
+		expect(await readProtectedBoardPaths(root)).toEqual(rec.protectedPaths);
+	});
+
+	test("nothing recorded fails closed to the default paths", async () => {
+		const root = await tmp("mfw-layout-none-");
+		expect(await readBoardLayout(root)).toBeNull();
+		expect(await readProtectedBoardPaths(root)).toEqual([
+			...DEFAULT_PROTECTED_BOARD_PATHS,
+		]);
+	});
+
+	test("a pre-record file keeps protecting its paths", async () => {
+		const root = await tmp("mfw-layout-old-");
+		await mkdir(join(root, ".mfw", "state"), { recursive: true });
+		await writeFile(
+			join(root, ".mfw", "state", "board-location.json"),
+			JSON.stringify({ paths: ["board.yaml", "notes"] }),
+		);
+		expect(await readBoardLayout(root)).toBeNull();
+		expect(await readProtectedBoardPaths(root)).toEqual([
+			"board.yaml",
+			"notes",
+		]);
+	});
+
+	test("an invalid record is ignored rather than trusted", async () => {
+		const root = await tmp("mfw-layout-bad-");
+		await mkdir(join(root, ".mfw", "state"), { recursive: true });
+		await writeFile(
+			join(root, ".mfw", "state", "board-location.json"),
+			JSON.stringify({
+				version: 1,
+				layout: "branch",
+				root: "/x",
+				commitRepo: "/x",
+				push: "with-code",
+				protectedPaths: [],
+			}),
+		);
+		expect(await readBoardLayout(root)).toBeNull();
+		expect(await readProtectedBoardPaths(root)).toEqual([
+			...DEFAULT_PROTECTED_BOARD_PATHS,
+		]);
+	});
+
+	test("attach records layout (a), and layout (c) for a separate board folder", async () => {
+		const root = await repo();
+		const a = await attach(root);
+		await a.shutdown();
+		const rec = await readBoardLayout(root);
+		expect(rec?.layout).toBe("in-repo");
+		expect(rec?.protectedPaths).toContain("tasks");
+
+		const code = await repo("mfw-layout-code-");
+		const boardDir = await repo("mfw-layout-sep-");
+		const c = await attach(code, boardDir);
+		await c.shutdown();
+		const rec2 = await readBoardLayout(code);
+		expect(rec2?.layout).toBe("separate-repo");
+		expect(rec2?.commitRepo).toBe(boardDir);
 	});
 });

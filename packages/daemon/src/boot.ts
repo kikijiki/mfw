@@ -12,7 +12,7 @@ import { AgentHost } from "./agent-host.ts";
 import { AgentReviewInference } from "./agent-review.ts";
 import { AdapterRegistry } from "./agents/adapter.ts";
 import { DEFAULT_PROVIDER_ID, providerConfigFor } from "./agents/catalogue.ts";
-import { boardRepoPaths, recordBoardLocation } from "./board-layout.ts";
+import { buildBoardLayoutRecord, recordBoardLocation } from "./board-layout.ts";
 import {
 	assertNoForeignTasksDir,
 	relocateLegacyBoard,
@@ -499,7 +499,11 @@ export async function attachProject(
 		// The worktree sparse rules and the merge firewall read this.
 		await recordBoardLocation(
 			root,
-			boardRepoPaths(root, boardDir, boardConfig),
+			buildBoardLayoutRecord({
+				repoRoot: root,
+				boardFolder: boardDir,
+				config: boardConfig,
+			}),
 		);
 	} catch (error) {
 		handle.close();
