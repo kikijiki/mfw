@@ -79,6 +79,8 @@ export interface HostGitRunOpts {
 	 * as an explicit `--git-dir`, so git never discovers a repo from `cwd`.
 	 */
 	repo?: string;
+	/** stdin; only `update-ref --stdin` takes it, and its lines are validated. */
+	input?: string;
 	timeoutMs?: number;
 	maxOutputBytes?: number;
 }
@@ -103,6 +105,7 @@ interface OperandCtx {
 	host: HostGit;
 	/** The flags that were passed (exact allowlisted strings or `--name=value`). */
 	flags: string[];
+	input?: string;
 }
 
 interface SubcommandSpec {
@@ -119,12 +122,16 @@ const ID = "[A-Za-z0-9][A-Za-z0-9_-]{0,127}";
 const REFSPEC_SHAPES = [
 	new RegExp(`^\\+refs/heads/mfw/${ID}:refs/mfw/run/head$`),
 	new RegExp(`^\\+refs/heads/mfw-wip/${ID}/\\*:refs/mfw/run/wip/\\*$`),
-	new RegExp(`^\\+refs/mfw/run/head:refs/mfw/quarantine/${ID}$`),
-	new RegExp(`^\\+refs/mfw/run/wip/\\*:refs/mfw/quarantine-wip/${ID}/\\*$`),
+	// into a per-attempt namespace of the primary; a transaction then moves them
+	new RegExp(`^\\+refs/mfw/run/head:refs/mfw/incoming/${ID}/head$`),
+	new RegExp(`^\\+refs/mfw/run/wip/\\*:refs/mfw/incoming/${ID}/wip/\\*$`),
 ];
 /** Refs the host may create or delete: the quarantine namespaces, and nothing else. */
-const QUARANTINE_REF = new RegExp(
-	`^refs/mfw/quarantine(-wip)?/${ID}(/[A-Za-z0-9_-]{1,128}){0,8}$`,
+const REF_BODY = `refs/mfw/(?:quarantine|quarantine-wip|incoming)/${ID}(?:/[A-Za-z0-9_-]{1,128}){0,8}`;
+const QUARANTINE_REF = new RegExp(`^${REF_BODY}$`);
+/** One line of the `update-ref --stdin` transaction HostGit writes. */
+const TX_LINE = new RegExp(
+	`^(?:start|prepare|commit|update ${REF_BODY} [0-9a-f]{40}|delete ${REF_BODY})$`,
 );
 const OBJECT_NAME = /^[A-Za-z0-9_/:^~@{}%.-]{1,300}$/;
 const REF_PATTERN = /^refs\/[A-Za-z0-9_/.*-]{0,300}$/;
@@ -162,6 +169,7 @@ const SUBCOMMANDS: Record<string, SubcommandSpec> = {
 			"--no-auto-maintenance",
 			"--no-prune",
 			"--force",
+			"--atomic",
 			"--quiet",
 			"-q",
 		],
@@ -228,8 +236,21 @@ const SUBCOMMANDS: Record<string, SubcommandSpec> = {
 		},
 	},
 	"update-ref": {
-		flags: ["-d", "--no-deref"],
-		operands: (ops, { flags }) => {
+		flags: ["-d", "--no-deref", "--stdin"],
+		operands: (ops, { flags, input }) => {
+			if (flags.includes("--stdin")) {
+				// A transaction the runner's typed method wrote: every line is checked.
+				if (ops.length > 0 || flags.length !== 1 || input === undefined) {
+					refuse("update-ref --stdin takes only stdin");
+				}
+				const lines = input.split("\n").filter((l) => l !== "");
+				if (lines.length === 0 || lines.some((l) => !TX_LINE.test(l))) {
+					refuse(
+						"update-ref --stdin has a line outside the quarantine namespaces",
+					);
+				}
+				return;
+			}
 			const [ref, extra] = ops;
 			if (!ref || !QUARANTINE_REF.test(ref)) {
 				refuse(
@@ -532,9 +553,16 @@ export class HostGit {
 		if (!spec.operands && positional.length > 0) {
 			refuse(`git ${sub} takes no operands`);
 		}
+		if (
+			opts.input !== undefined &&
+			!(sub === "update-ref" && optionPart.includes("--stdin"))
+		) {
+			refuse(`git ${sub} takes no stdin`);
+		}
 		spec.operands?.(positional, {
 			host: this,
 			flags: optionPart.filter((a) => a.startsWith("-")),
+			...(opts.input !== undefined ? { input: opts.input } : {}),
 		});
 		for (const a of args) {
 			if (a.includes("\0")) {
@@ -563,6 +591,7 @@ export class HostGit {
 			],
 			{
 				cwd: opts.cwd,
+				...(opts.input !== undefined ? { input: opts.input } : {}),
 				// Never discover a repo above cwd (a parent `.git` symlinked into a clone).
 				env: {
 					...this.env(),

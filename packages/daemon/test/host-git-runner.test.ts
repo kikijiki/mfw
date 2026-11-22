@@ -175,7 +175,7 @@ describe("HostGit allowlist", () => {
 					"--no-tags",
 					"--",
 					join(t.scratchRoot, "x.bundle"),
-					"+refs/mfw/run/head:refs/mfw/quarantine/run1",
+					"+refs/mfw/run/head:refs/mfw/incoming/abc123/head",
 				],
 				{
 					cwd: t.primary,
@@ -419,7 +419,7 @@ describe("HostGit operands (security review M3)", () => {
 		const t = await fixture();
 		const h = hostFor(t);
 		const opts = { cwd: t.primary, repo: t.primary, allowFile: true };
-		const ok = "+refs/mfw/run/head:refs/mfw/quarantine/run1";
+		const ok = "+refs/mfw/run/head:refs/mfw/incoming/abc123/head";
 		for (const args of [
 			// straight from a workspace clone: the H1 path
 			["fetch", "--", t.clone, "+refs/heads/main:refs/stolen/main"],

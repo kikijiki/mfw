@@ -527,3 +527,104 @@ describe("outbox containment (security review M2)", () => {
 		expect(msg).not.toContain("ECHOED-LINE");
 	});
 });
+
+describe("atomic quarantine import (security review M4)", () => {
+	const head = "refs/heads/mfw/run1";
+	const wip = (n: string) => `refs/heads/mfw-wip/run1/${n}`;
+
+	async function put(t: TamperedClone, name: string, b: Buffer) {
+		await writeFile(join(t.workspaceRoot, "outbox", name), b);
+		return { bundlePath: join(t.workspaceRoot, "outbox", name) };
+	}
+
+	async function quarantine(t: TamperedClone): Promise<Record<string, string>> {
+		// no attempt namespace is ever left behind, success or failure
+		expect(
+			await plainGit(["for-each-ref", "refs/mfw/incoming/"], t.primary),
+		).toBe("");
+		const out = await plainGit(
+			[
+				"for-each-ref",
+				"--format=%(refname) %(objectname)",
+				"refs/mfw/quarantine/",
+				"refs/mfw/quarantine-wip/",
+			],
+			t.primary,
+		);
+		return Object.fromEntries(
+			out
+				.split("\n")
+				.filter(Boolean)
+				.map((l) => l.split(" ") as [string, string]),
+		);
+	}
+
+	test("a conflicting second attempt either fully replaces the first or leaves it untouched", async () => {
+		const t = await fixture();
+		const first = await fetchRunResult(fetchOpts(t));
+		const second = await put(
+			t,
+			"b.bundle",
+			typedRefsBundle([
+				[head, "commit"],
+				[wip("1/x"), "commit"],
+			]),
+		);
+		let tip2: string | undefined;
+		try {
+			tip2 = (await fetchRunResult(fetchOpts(t, second))).tip;
+		} catch {
+			// a failure must leave attempt 1 whole
+		}
+		const q = await quarantine(t);
+		if (tip2 === undefined) {
+			expect(q["refs/mfw/quarantine/run1"]).toBe(first.tip);
+			expect(q["refs/mfw/quarantine-wip/run1/1"]).toBeDefined();
+		} else {
+			expect(q["refs/mfw/quarantine/run1"]).toBe(tip2);
+			expect(Object.keys(q).sort()).toEqual([
+				"refs/mfw/quarantine-wip/run1/1/x",
+				"refs/mfw/quarantine/run1",
+			]);
+		}
+	});
+
+	test("a failed transaction moves no ref", async () => {
+		const t = await fixture();
+		const first = await fetchRunResult(fetchOpts(t));
+		const lockDir = join(
+			t.primary,
+			".git",
+			"refs",
+			"mfw",
+			"quarantine-wip",
+			"run1",
+		);
+		await mkdir(lockDir, { recursive: true });
+		await writeFile(join(lockDir, "zz.lock"), "");
+		const next = await put(
+			t,
+			"c.bundle",
+			typedRefsBundle([
+				[head, "commit"],
+				[wip("zz"), "commit"],
+			]),
+		);
+		expect(await codeOf(fetchRunResult(fetchOpts(t, next)))).toBe(
+			"fetch_failed",
+		);
+		const q = await quarantine(t);
+		expect(q["refs/mfw/quarantine/run1"]).toBe(first.tip);
+		expect(q["refs/mfw/quarantine-wip/run1/1"]).toBeDefined();
+	});
+
+	test("stale wip refs from an earlier attempt do not survive a later one", async () => {
+		const t = await fixture();
+		await fetchRunResult(fetchOpts(t));
+		const noWip = await put(t, "d.bundle", typedRefsBundle([[head, "commit"]]));
+		const res = await fetchRunResult(fetchOpts(t, noWip));
+		expect(res.wipRefs).toEqual([]);
+		const q = await quarantine(t);
+		expect(Object.keys(q)).toEqual(["refs/mfw/quarantine/run1"]);
+	});
+});

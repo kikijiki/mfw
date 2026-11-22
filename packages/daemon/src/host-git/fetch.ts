@@ -23,6 +23,7 @@
  *
  * Every git call goes through `HostGit`.
  */
+import { randomBytes } from "node:crypto";
 import { constants, lstatSync, realpathSync } from "node:fs";
 import { mkdtemp, open, rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
@@ -415,20 +416,70 @@ export async function fetchRunResult(
 			}
 		}
 
-		// 6. into the primary's quarantine namespace.
+		// 6. into the primary's quarantine namespaces, in one transaction.
+		//    The objects land under a per-attempt `incoming` namespace first (a
+		//    fresh name, so it cannot conflict with an earlier attempt); then a
+		//    single `update-ref --stdin` transaction moves the head and WIP refs,
+		//    deletes the WIP refs an earlier attempt left, and drops `incoming`.
+		//    Either the whole result replaces the previous one, or nothing moves.
 		const qHead = quarantineRef(runId);
 		const qWip = quarantineWipPrefix(runId);
-		await host.runOk(
-			[
-				"fetch",
-				...fetchFlags,
-				"--",
-				bare,
-				`+${BARE_HEAD}:${qHead}`,
-				`+${BARE_WIP}*:${qWip}*`,
-			],
-			{ cwd: o.primaryRepo, repo: o.primaryRepo, allowFile: true },
-		);
+		const attempt = randomBytes(8).toString("hex");
+		const inc = `refs/mfw/incoming/${attempt}/`;
+		const priOpts = { cwd: o.primaryRepo, repo: o.primaryRepo };
+		const incoming = [
+			`${inc}head`,
+			...wipNames.map((n) => inc + "wip/" + n.slice(BARE_WIP.length)),
+		];
+		try {
+			await host.runOk(
+				[
+					"fetch",
+					...fetchFlags,
+					"--atomic",
+					"--",
+					bare,
+					`+${BARE_HEAD}:${inc}head`,
+					`+${BARE_WIP}*:${inc}wip/*`,
+				],
+				{ ...priOpts, allowFile: true },
+			);
+			const have = await host.runOk(
+				["for-each-ref", "--format=%(refname)", qWip.slice(0, -1) + "/"],
+				priOpts,
+			);
+			const keep = new Set(
+				wipNames.map((n) => qWip + n.slice(BARE_WIP.length)),
+			);
+			const lines = ["start", `update ${qHead} ${tip}`];
+			for (const n of wipNames) {
+				lines.push(`update ${qWip}${n.slice(BARE_WIP.length)} ${heads.get(n)}`);
+			}
+			for (const stale of have.split("\n").filter(Boolean)) {
+				if (!keep.has(stale)) lines.push(`delete ${stale}`);
+			}
+			for (const r of incoming) lines.push(`delete ${r}`);
+			lines.push("prepare", "commit");
+			const tx = await host.run(["update-ref", "--stdin"], {
+				...priOpts,
+				input: `${lines.join("\n")}\n`,
+			});
+			if (tx.exitCode !== 0) {
+				throw new HostGitError(
+					"fetch_failed",
+					`the quarantine update failed: ${tx.stderr.slice(0, 300)}`,
+				);
+			}
+		} catch (e) {
+			// Leave nothing of this attempt behind; the previous result stands.
+			await host
+				.run(["update-ref", "--stdin"], {
+					...priOpts,
+					input: `${["start", ...incoming.map((r) => `delete ${r}`), "prepare", "commit"].join("\n")}\n`,
+				})
+				.catch(() => {});
+			throw e;
+		}
 		return {
 			quarantineRef: qHead,
 			tip,
