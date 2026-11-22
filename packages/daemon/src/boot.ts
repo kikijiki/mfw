@@ -12,6 +12,7 @@ import { AgentHost } from "./agent-host.ts";
 import { AgentReviewInference } from "./agent-review.ts";
 import { AdapterRegistry } from "./agents/adapter.ts";
 import { DEFAULT_PROVIDER_ID, providerConfigFor } from "./agents/catalogue.ts";
+import { AUTH_HOLD_REASON } from "./auth-failure.ts";
 import { boardRepoPaths, recordBoardLocation } from "./board-layout.ts";
 import {
 	assertNoForeignTasksDir,
@@ -26,6 +27,7 @@ import {
 import { BrainRuntime, resolveBrainConfig } from "./brain-runtime/runtime.ts";
 import { BudgetService } from "./budgets.ts";
 import { ClarifyService, continuationTerminalError } from "./clarify.ts";
+import { CodexLane } from "./codex-lane.ts";
 import {
 	mfwHome as configuredMfwHome,
 	effectiveAssistance,
@@ -413,6 +415,8 @@ export async function attachProject(
 		runpod?: RunPodAccountService;
 		/** Registry SSH hosts; absent = no `ssh` target. */
 		hosts?: HostService;
+		/** Machine-wide Codex login concurrency (`codex-lane.ts`); absent = unlimited. */
+		codexLane?: CodexLane;
 		sshTransport?: BootOptions["sshTransport"];
 		credentials?: CredentialStore;
 		workloadGrants?: WorkloadSecretGrantStore;
@@ -884,9 +888,19 @@ export async function attachProject(
 					(task.executionTarget === "local" &&
 						liveRouting.routing?.placement?.target === "ssh");
 				if (!wantsSsh) {
+					// A local Codex run on a ChatGPT login holds the one slot of its
+					// CODEX_HOME, so a second one waits in the host ledger.
+					const codexSlot =
+						task.executionTarget === "local" &&
+						opts.codexLane &&
+						primaryHarness(task, liveRouting) === "codex-cli"
+							? await opts.codexLane.requirement()
+							: null;
 					return {
 						kind: task.executionTarget,
-						requiresResources: task.requiresResources,
+						requiresResources: codexSlot
+							? [...(task.requiresResources ?? []), codexSlot]
+							: task.requiresResources,
 						localStagingResources: task.localStagingResources,
 					};
 				}
@@ -1382,6 +1396,10 @@ export async function attachProject(
 		mergeQueue,
 		admission,
 		budgets,
+		authHolds: async () =>
+			Object.entries(await providerHolds.active())
+				.filter(([, h]) => h.reason === AUTH_HOLD_REASON)
+				.map(([key, h]) => ({ key, since: h.since ?? 0, until: h.until })),
 		isolationIssue: () => {
 			const detail = isolationConfigProblem({
 				agentIsolation: cfg.agentIsolation,
@@ -2187,6 +2205,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 		log: log.child({ svc: "ssh-hosts" }),
 		...(opts.sshTransport ? { transport: opts.sshTransport } : {}),
 	});
+	const codexLane = new CodexLane({ ledger: hostResources });
 	const openrouter = new OpenRouterAccountService({
 		client:
 			opts.openrouterClient ??
@@ -2330,6 +2349,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 				afterAdmissionTransition: opts.afterAdmissionTransition,
 				runpod,
 				hosts,
+				codexLane,
 				sshTransport: opts.sshTransport,
 				credentials: credentialStore,
 				workloadGrants,
@@ -2532,6 +2552,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 						afterAdmissionTransition: opts.afterAdmissionTransition,
 						runpod,
 						hosts,
+						codexLane,
 						sshTransport: opts.sshTransport,
 						credentials: credentialStore,
 						workloadGrants,
