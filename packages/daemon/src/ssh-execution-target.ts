@@ -33,8 +33,12 @@ import {
 	syncRemoteArtifacts,
 } from "./remote-execution-support.ts";
 import { applyRemoteCollection, createRemoteStage } from "./remote-worktree.ts";
+import {
+	createRunWorkspace,
+	type WorkspacePort,
+	workspacePort,
+} from "./run-workspace/factory.ts";
 import { RemoteTransportError, type SshTransport } from "./ssh-transport.ts";
-import { type Worktree, WorktreeManager } from "./worktree.ts";
 
 /**
  * Execution on a registry SSH host (`execution_target: ssh`). Same lifecycle
@@ -74,10 +78,7 @@ export interface SshExecutionTargetOptions {
 	hosts: SshHostSource;
 	projectRoot: string;
 	integrationBranch: string;
-	worktrees?: {
-		create(runId: string, base?: string): Promise<Worktree>;
-		remove(worktree: Worktree): Promise<void>;
-	};
+	worktrees?: WorkspacePort;
 	/** Defaults to the strict, registry-pinned SshTransport. */
 	transport: (
 		host: RegisteredHost,
@@ -207,7 +208,8 @@ export class SshExecutionTarget implements ExecutionTarget {
 
 	constructor(private readonly options: SshExecutionTargetOptions) {
 		this.worktrees =
-			options.worktrees ?? new WorktreeManager(options.projectRoot);
+			options.worktrees ??
+			workspacePort(createRunWorkspace(options.projectRoot));
 	}
 
 	private get maxTransferBytes(): number {

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -98,5 +99,34 @@ describe("RunWorkspace over worktrees", () => {
 				baseSha: "0",
 			}),
 		).rejects.toThrow(/unproven/);
+	});
+});
+
+describe("workspace seam", () => {
+	test("only run-workspace/worktree-impl.ts imports WorktreeManager", () => {
+		const srcRoot = join(import.meta.dir, "..", "src");
+		const offenders: string[] = [];
+		const walk = (dir: string) => {
+			for (const name of readdirSync(dir)) {
+				const full = join(dir, name);
+				if (statSync(full).isDirectory()) walk(full);
+				else if (name.endsWith(".ts")) {
+					const rel = full.slice(srcRoot.length + 1);
+					if (rel === "worktree.ts") continue;
+					if (rel === join("run-workspace", "worktree-impl.ts")) continue;
+					if (/\bWorktreeManager\b/.test(readFileSync(full, "utf8"))) {
+						offenders.push(rel);
+					}
+				}
+			}
+		};
+		walk(srcRoot);
+		// Comments may mention the class; code must not import it.
+		const importing = offenders.filter((rel) =>
+			/import[^;]*\bWorktreeManager\b[^;]*from/s.test(
+				readFileSync(join(srcRoot, rel), "utf8"),
+			),
+		);
+		expect(importing).toEqual([]);
 	});
 });

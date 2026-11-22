@@ -30,6 +30,11 @@ import {
 	syncRemoteArtifacts,
 } from "./remote-execution-support.ts";
 import { applyRemoteCollection, createRemoteStage } from "./remote-worktree.ts";
+import {
+	createRunWorkspace,
+	type WorkspacePort,
+	workspacePort,
+} from "./run-workspace/factory.ts";
 import type {
 	RunPodAccountService,
 	RunPodLeaseConnection,
@@ -39,7 +44,6 @@ import {
 	MFW_RUNPOD_CPU_READY_PATH,
 	mfwRunPodCpuBootstrapCommand,
 } from "./runpod-runtime.ts";
-import { type Worktree, WorktreeManager } from "./worktree.ts";
 
 export {
 	RemoteEvidenceSecretsUnavailableError,
@@ -77,10 +81,7 @@ export interface RunPodExecutionTargetOptions {
 	account: RunPodExecutionAccount;
 	projectRoot: string;
 	integrationBranch: string;
-	worktrees?: {
-		create(runId: string, base?: string): Promise<Worktree>;
-		remove(worktree: Worktree): Promise<void>;
-	};
+	worktrees?: WorkspacePort;
 	transport?: (connection: RunPodLeaseConnection) => RunPodExecutionTransport;
 	readinessMs?: number;
 	maxTransferBytes?: number;
@@ -126,7 +127,8 @@ export class RunPodExecutionTarget implements ExecutionTarget {
 
 	constructor(private readonly options: RunPodExecutionTargetOptions) {
 		this.worktrees =
-			options.worktrees ?? new WorktreeManager(options.projectRoot);
+			options.worktrees ??
+			workspacePort(createRunWorkspace(options.projectRoot));
 		this.remoteRoot = options.remoteRoot ?? "/workspace/mfw";
 	}
 
