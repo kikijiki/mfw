@@ -61,7 +61,7 @@ describe("toolchain discovery", () => {
 		await writeFile(join(root, "etc/group"), "");
 		await link(root, "etc/ssl", "static/ssl");
 		const plan = discoverToolchain({
-			home: "/home/u",
+			home: "/users/u",
 			binaries: ["git"],
 			path: "/run/current-system/sw/bin",
 			root,
@@ -86,7 +86,7 @@ describe("toolchain discovery", () => {
 		await mkdir(join(root, "etc/ssl"), { recursive: true });
 		await writeFile(join(root, "etc/nsswitch.conf"), "");
 		const plan = discoverToolchain({
-			home: "/home/u",
+			home: "/users/u",
 			binaries: ["git"],
 			path: "/usr/bin:/bin",
 			root,
@@ -108,7 +108,7 @@ describe("toolchain discovery", () => {
 
 	test("HOME-rustup: toolchain roots bind, cargo only at bin, never HOME", async () => {
 		const root = await fixture();
-		const home = "/home/u";
+		const home = "/users/u";
 		await exe(root, `${home}/.rustup/toolchains/stable/bin/rustc`);
 		await link(
 			root,
@@ -150,43 +150,43 @@ describe("toolchain discovery", () => {
 
 	test("a HOME binary outside the toolchain roots is unresolved, not bound", async () => {
 		const root = await fixture();
-		await exe(root, "home/u/Downloads/tool");
-		await exe(root, "home/u/.ssh/evil");
+		await exe(root, "users/u/Downloads/tool");
+		await exe(root, "users/u/.ssh/evil");
 		const plan = discoverToolchain({
-			home: "/home/u",
-			binaries: ["/home/u/Downloads/tool", "/home/u/.ssh/evil"],
+			home: "/users/u",
+			binaries: ["/users/u/Downloads/tool", "/users/u/.ssh/evil"],
 			path: "/usr/bin",
 			root,
 		});
 		expect(plan.resolved).toEqual([]);
 		expect(plan.unresolved.map((u) => u.name)).toEqual([
-			"/home/u/Downloads/tool",
-			"/home/u/.ssh/evil",
+			"/users/u/Downloads/tool",
+			"/users/u/.ssh/evil",
 		]);
 		expect(paths(plan)).toEqual([]);
 	});
 
 	test("a symlink in a toolchain dir that escapes to HOME is refused, and loops are survived", async () => {
 		const root = await fixture();
-		await exe(root, "home/u/private/real");
-		await link(root, "home/u/.local/bin/sneaky", "/home/u/private/real");
-		await link(root, "home/u/.local/bin/loop", "/home/u/.local/bin/loop");
+		await exe(root, "users/u/private/real");
+		await link(root, "users/u/.local/bin/sneaky", "/users/u/private/real");
+		await link(root, "users/u/.local/bin/loop", "/users/u/.local/bin/loop");
 		const plan = discoverToolchain({
-			home: "/home/u",
+			home: "/users/u",
 			binaries: ["sneaky", "loop", "missing"],
-			path: "/home/u/.local/bin",
+			path: "/users/u/.local/bin",
 			root,
 		});
 		expect(plan.resolved).toEqual([]);
 		expect(plan.unresolved).toHaveLength(3);
-		expect(paths(plan)).not.toContain("/home/u/private");
+		expect(paths(plan)).not.toContain("/users/u/private");
 	});
 
 	test("a binary outside every known root is unresolved", async () => {
 		const root = await fixture();
 		await exe(root, "opt/vendor/bin/tool");
 		const plan = discoverToolchain({
-			home: "/home/u",
+			home: "/users/u",
 			binaries: ["tool"],
 			path: "/opt/vendor/bin",
 			root,
@@ -198,12 +198,12 @@ describe("toolchain discovery", () => {
 		const root = await fixture();
 		await exe(root, "usr/bin/git");
 		await mkdir(join(root, "usr/lib"), { recursive: true });
-		await exe(root, "home/u/.local/bin/uv");
-		await exe(root, "home/u/.local/share/uv/tools/x");
+		await exe(root, "users/u/.local/bin/uv");
+		await exe(root, "users/u/.local/share/uv/tools/x");
 		const plan = discoverToolchain({
-			home: "/home/u",
+			home: "/users/u",
 			binaries: ["git", "uv"],
-			path: "/usr/bin:/home/u/.local/bin",
+			path: "/usr/bin:/users/u/.local/bin",
 			root,
 		});
 		const args = toolchainBwrapArgs(plan);
@@ -217,14 +217,14 @@ describe("toolchain discovery", () => {
 			expect(args[i + 1]).toBe(args[i + 2]);
 		}
 		expect(paths(plan).filter((p) => p.startsWith("/usr/"))).toEqual([]);
-		expect(paths(plan)).toContain("/home/u/.local/share/uv");
+		expect(paths(plan)).toContain("/users/u/.local/share/uv");
 	});
 
 	test("a relative or PATH-less name never resolves, and relative PATH entries are ignored", async () => {
 		const root = await fixture();
 		await exe(root, "work/git");
 		const plan = discoverToolchain({
-			home: "/home/u",
+			home: "/users/u",
 			binaries: ["git", "../git"],
 			path: "work:.",
 			root,
