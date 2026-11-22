@@ -17,17 +17,25 @@ import {
 import type { Check } from "../src/containment/host-caps.ts";
 import { parseSandboxProfile } from "../src/containment/profile.ts";
 import { discoverToolchain } from "../src/containment/toolchain.ts";
+import {
+	assertContained,
+	BASE_WRITABLE,
+	buildControlScript,
+	checkControlReport,
+	type GuardSpec,
+	hostNamespaces,
+	realHomes,
+} from "./compile-bwrap-guard.ts";
 
 /**
  * The compiled profile under real bwrap. The scenarios are destructive on
- * purpose, so three guards stand before each one:
+ * purpose, so they can only run through `destructive`:
  *
- * - every fixture, including the canary HOME, lives in a throwaway directory
- *   inside this package, and no real home is ever named;
- * - `assertContained` refuses an argv without the hardening flags or with a
- *   writable bind outside the fixture;
- * - a harmless control command must first prove that the canary is invisible
- *   and `/` is read-only. Any failure throws and the scenario never runs.
+ * - every fixture, including the canary HOME, lives in a throwaway directory;
+ * - `assertContained` allowlists every bwrap option in the argv;
+ * - a control command with the identical sandbox options must report the exact
+ *   writable mount set, its own namespaces and no real home. Any failure
+ *   throws and the scenario is never launched.
  *
  * The `systemd-run` scope is removed before launching, because the limits need
  * a user manager that test environments often lack. Its argv is covered by the
@@ -36,7 +44,7 @@ import { discoverToolchain } from "../src/containment/toolchain.ts";
 
 const BWRAP = Bun.which("bwrap");
 const ENV = Bun.which("env");
-const TOOLS = ["sh", "rm", "find", "touch", "cat", "ls", "grep"];
+const TOOLS = ["sh", "rm", "find", "touch", "cat", "ls", "grep", "readlink"];
 
 function liveSkipReason(): string | null {
 	if (process.arch !== "x64") return "seccomp is x86_64 only";
@@ -150,32 +158,20 @@ function compile(
 	return r;
 }
 
-function assertContained(c: CompiledSandbox): string[] {
-	const argv = c.argv.slice(c.argv.indexOf("--") + 1);
-	if (argv[0] !== ENV || argv[1] !== "-i" || argv[2] !== BWRAP) {
-		throw new Error("refusing to launch: not an env -i bwrap command");
-	}
-	const end = argv.lastIndexOf("--");
-	const flags = argv.slice(0, end);
-	for (const f of [
-		"--unshare-all",
-		"--unshare-user",
-		"--disable-userns",
-		"--remount-ro",
-		"--seccomp",
-	]) {
-		if (!flags.includes(f)) throw new Error(`refusing to launch: no ${f}`);
-	}
-	flags.forEach((f, i) => {
-		if (f === "--bind" && !flags[i + 1]?.startsWith(`${root}/`)) {
-			throw new Error(`refusing to launch: writable bind ${flags[i + 1]}`);
-		}
-	});
-	return argv;
+function guardSpec(extraWritable: readonly string[] = []): GuardSpec {
+	return {
+		root,
+		bwrap: BWRAP as string,
+		env: ENV as string,
+		homes: realHomes(),
+		hidden: [root, home],
+		hostNs: hostNamespaces(),
+		writable: [...BASE_WRITABLE, "/scratch", "/work", ...extraWritable],
+	};
 }
 
-function launch(c: CompiledSandbox) {
-	const argv = assertContained(c);
+/** Spawn without any guard. Only for harmless commands and guarded callers. */
+function spawnSandbox(argv: string[], c: CompiledSandbox) {
 	const bpf = join(root, "deny.bpf");
 	writeFileSync(bpf, c.seccomp, { mode: 0o600 });
 	const child = Bun.spawnSync(argv, {
@@ -189,17 +185,35 @@ function launch(c: CompiledSandbox) {
 	};
 }
 
-/** Throws unless the sandbox hides the canary HOME and has a read-only root. */
-function control(): void {
-	const script = `
-		[ ! -e ${JSON.stringify(home)} ] || exit 11
-		[ "$HOME" = /sandbox/agent ] || exit 12
-		if touch /mfw-root-write 2>/dev/null; then exit 13; fi
-		exit 0`;
-	const r = launch(compile(["sh", "-c", script]));
+function launch(c: CompiledSandbox, extraWritable: readonly string[] = []) {
+	return spawnSandbox(assertContained(c.argv, guardSpec(extraWritable)), c);
+}
+
+/**
+ * The only way to run a destructive script. The control runs in a sandbox
+ * with byte-identical options, and any problem throws before the launch.
+ */
+function destructive(script: string) {
+	const spec = guardSpec();
+	const scenario = compile(["sh", "-c", script]);
+	const probe = compile(["sh", "-c", buildControlScript(spec)]);
+	const scenarioArgv = assertContained(scenario.argv, spec);
+	const probeArgv = assertContained(probe.argv, spec);
+	if (
+		JSON.stringify(scenarioArgv.slice(0, -1)) !==
+		JSON.stringify(probeArgv.slice(0, -1))
+	) {
+		throw new Error("refusing to launch: control used a different sandbox");
+	}
+	const r = spawnSandbox(probeArgv, probe);
 	if (r.code !== 0) {
 		throw new Error(`containment control failed (${r.code}): ${r.err}`);
 	}
+	const problems = checkControlReport(r.out, spec);
+	if (problems.length > 0) {
+		throw new Error(`containment control failed: ${problems.join("; ")}`);
+	}
+	return spawnSandbox(scenarioArgv, scenario);
 }
 
 function canaryIntact(): void {
@@ -300,6 +314,7 @@ describe.skipIf(skip !== null)("compiled profile under bwrap", () => {
 				},
 				network: { mode: "proxy", socketDir: join(run, "egress") },
 			}),
+			["/git", "/fleet/codex/sessions"],
 		);
 		expect(r.err).toBe("");
 		expect(r.code).toBe(0);
@@ -327,6 +342,34 @@ describe.skipIf(skip !== null)("compiled profile under bwrap", () => {
 		expect(existsSync(join(work, "new"))).toBe(false);
 	});
 
+	test("the control passes on the real compiled sandbox", () => {
+		const spec = guardSpec();
+		const probe = compile(["sh", "-c", buildControlScript(spec)]);
+		const r = launch(probe);
+		expect(r.code).toBe(0);
+		expect(checkControlReport(r.out, spec)).toEqual([]);
+	});
+
+	test("a smuggled writable bind is caught by the guard and the control", () => {
+		const standIn = join(root, "stand-in-home");
+		mkdirSync(standIn);
+		const spec = guardSpec();
+		const probe = compile(["sh", "-c", buildControlScript(spec)]);
+		const at = probe.argv.indexOf("--remount-ro");
+		const smuggled = [
+			...probe.argv.slice(0, at),
+			"--bind-try",
+			standIn,
+			"/stand-in",
+			...probe.argv.slice(at),
+		];
+		expect(() => assertContained(smuggled, spec)).toThrow("refusing to launch");
+		// Harmless read-only command: past the guard only to test the control.
+		const r = spawnSandbox(smuggled.slice(smuggled.indexOf("--") + 1), probe);
+		expect(r.code).toBe(0);
+		expect(checkControlReport(r.out, spec).join()).toContain("/stand-in");
+	});
+
 	// The mis-expansion scenarios the containment suite tracks as fail-until:P1.
 	test.each([
 		["rm -rf ~", "rm -rf ~; true"],
@@ -341,8 +384,7 @@ describe.skipIf(skip !== null)("compiled profile under bwrap", () => {
 	])(
 		"mis-expansion: %s leaves the canary HOME intact",
 		(_name, script) => {
-			control();
-			const r = launch(compile(["sh", "-c", script.replace("__HOME__", home)]));
+			const r = destructive(script.replace("__HOME__", home));
 			expect(r.code).toBe(0);
 			canaryIntact();
 		},
