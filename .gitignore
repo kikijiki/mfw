@@ -27,6 +27,9 @@ worktrees/
 # scratch output of throwaway runs (screenshots now run under /tmp)
 /tmp/
 
+# fixtures of the live sandbox tests
+/.live-sandbox/
+
 # skills installed for other agent CLIs by `mfw board skill install` (generated)
 /.agents/
 
