@@ -27,7 +27,6 @@ export const BASE_WRITABLE: readonly string[] = [
 	"/dev/tty",
 	"/dev/pts",
 	"/tmp",
-	"/run",
 	"/run/user",
 	"/sandbox/agent",
 ];
@@ -156,6 +155,7 @@ export function assertContained(
 
 	const seen = new Set<string>();
 	let rootReadOnly = false;
+	let runReadOnly = false;
 	let i = 0;
 	const value = (): string => {
 		const v = argv[++i];
@@ -195,8 +195,9 @@ export function assertContained(
 			}
 			case "--remount-ro": {
 				const dest = value();
-				if (dest !== "/") refuse(`--remount-ro ${dest}`);
-				rootReadOnly = true;
+				if (dest === "/") rootReadOnly = true;
+				else if (dest === "/run") runReadOnly = true;
+				else refuse(`--remount-ro ${dest}`);
 				break;
 			}
 			case "--setenv":
@@ -221,7 +222,9 @@ export function assertContained(
 				refuse(`option ${opt} is not on the allowlist`);
 		}
 	}
-	for (const flag of [...FLAGS, "--cap-drop", "--seccomp", "--remount-ro"]) {
+	if (!rootReadOnly) refuse("no --remount-ro /");
+	if (!runReadOnly) refuse("no --remount-ro /run");
+	for (const flag of [...FLAGS, "--cap-drop", "--seccomp"]) {
 		if (!seen.has(flag)) refuse(`no ${flag}`);
 	}
 	return launch;

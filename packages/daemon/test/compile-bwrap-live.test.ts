@@ -381,6 +381,26 @@ describe.skipIf(skip !== null)("compiled profile under bwrap", () => {
 		);
 	});
 
+	test("/run is read-only, so the egress path cannot be replaced", () => {
+		const run = join(root, "mfw/runs/r1");
+		mkdirSync(join(run, "egress"), { recursive: true });
+		writeFileSync(join(run, "egress/marker"), "egress\n");
+		const script = `
+			if touch /run/planted 2>/dev/null; then exit 61; fi
+			if mkdir /run/mfw/planted 2>/dev/null; then exit 62; fi
+			if (cd /run && exec 2>/dev/null; : > /run/mfw/x); then exit 63; fi
+			touch /run/user/ok || exit 64
+			cat /run/mfw/egress/marker >/dev/null || exit 65
+			exit 0`;
+		const r = launch(
+			compile(["sh", "-c", script], "rw", {
+				network: { mode: "proxy", socketDir: join(run, "egress") },
+			}),
+		);
+		expect(r.err).toBe("");
+		expect(r.code).toBe(0);
+	});
+
 	test("a read-only workspace refuses writes at the mount", () => {
 		const r = launch(
 			compile(

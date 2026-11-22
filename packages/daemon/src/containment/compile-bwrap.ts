@@ -639,6 +639,10 @@ export function compileBwrap(
 		"--remount-ro",
 		"/",
 		...after,
+		// Last, so the egress mount point exists but cannot be renamed or replaced.
+		// `/run/user` is its own tmpfs and stays writable.
+		"--remount-ro",
+		"/run",
 		...setenv,
 		"--chdir",
 		cwd,

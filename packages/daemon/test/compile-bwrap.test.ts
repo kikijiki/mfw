@@ -203,6 +203,8 @@ describe("argv snapshots", () => {
 			"/sandbox/agent",
 			"--remount-ro",
 			"/",
+			"--remount-ro",
+			"/run",
 			...BASE_ENV,
 			"--chdir",
 			"/sandbox/agent",
@@ -295,6 +297,8 @@ describe("argv snapshots", () => {
 			"--ro-bind",
 			`${R}/egress`,
 			"/run/mfw/egress",
+			"--remount-ro",
+			"/run",
 		]);
 		expect(r.argv.slice(-5)).toEqual([
 			"--chdir",
@@ -343,6 +347,20 @@ describe("argv snapshots", () => {
 		);
 		expect(argv).not.toContain("--bind");
 		expect(argv).toContain("--ro-bind");
+	});
+
+	test("/run is remounted read-only after the egress bind", () => {
+		const { argv } = compiled(full());
+		const egress = argv.indexOf(
+			"/run/mfw/egress",
+			argv.indexOf("--remount-ro"),
+		);
+		const remount = argv.findIndex(
+			(a, i) => a === "--remount-ro" && argv[i + 1] === "/run",
+		);
+		expect(egress).toBeGreaterThan(0);
+		expect(remount).toBeGreaterThan(egress);
+		expect(argv.indexOf("/run/user")).toBeLessThan(remount);
 	});
 
 	test("every writable bind comes after the root is remounted read-only", () => {

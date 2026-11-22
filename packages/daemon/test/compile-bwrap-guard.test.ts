@@ -61,6 +61,8 @@ const options = (extra: string[] = []): string[] => [
 	"--bind",
 	`${ROOT}/work`,
 	"/work",
+	"--remount-ro",
+	"/run",
 	"--setenv",
 	"HOME",
 	"/sandbox/agent",
@@ -132,6 +134,19 @@ describe("assertContained", () => {
 		expect(() => assertContained(argv(options(extra)), spec)).toThrow(
 			"refusing to launch",
 		);
+	});
+
+	test("refuses a sandbox that leaves /run writable", () => {
+		const o = options();
+		const at = o.lastIndexOf("--remount-ro");
+		o.splice(at, 2);
+		expect(() => assertContained(argv(o), spec)).toThrow("/run");
+	});
+
+	test("refuses a sandbox that leaves the root writable", () => {
+		const o = options();
+		o.splice(o.indexOf("--remount-ro"), 2);
+		expect(() => assertContained(argv(o), spec)).toThrow("refusing to launch");
 	});
 
 	test.each([
