@@ -7,13 +7,13 @@ import {
 	mkdir,
 	mkdtemp,
 	open,
-	readFile,
+	readdir,
 	rm,
 	writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
+import { readSmallRegularFile } from "./containment/safe-file.ts";
 import {
 	assertDisjointEnvironmentNames,
 	SecretEnvironment,
@@ -23,10 +23,11 @@ import { runProc } from "./proc.ts";
 import {
 	type BwrapIsolation,
 	bwrapAvailable,
+	controlRootPath,
 	ensureTmuxSocketDir,
 	pinnedTool,
-	SANDBOX_ENV_ALLOWLIST,
 	requireHostTool,
+	SANDBOX_ENV_ALLOWLIST,
 	SandboxUnavailableError,
 	safeHostPath,
 	underPrivateTmp,
@@ -193,7 +194,7 @@ export class AgentHost {
 	 */
 	private async controlRoot(): Promise<string> {
 		const uid = process.getuid?.() ?? 0;
-		const root = join(tmpdir(), `mfw-control-${uid}`);
+		const root = controlRootPath(uid);
 		await mkdir(root, { recursive: true, mode: 0o700 });
 		const st = await lstat(root);
 		if (
@@ -228,6 +229,11 @@ export class AgentHost {
 		const scriptPath = join(control, `run-${spec.runId}.sh`);
 		const rawLog = join(dir, "raw.log");
 		const exitPath = join(dir, "exit");
+		// The authoritative exit record: host-only, never the agent-writable run dir (security review X9).
+		const exitRecord = join(control, `exit-${spec.runId}`);
+		await this.pruneControl(control);
+		// A stale record from an earlier run that reused this id must not read as this run's exit.
+		await rm(exitRecord, { force: true });
 
 		const publicEnvironment = spec.env ?? {};
 		const secretEnvironment =
@@ -329,7 +335,7 @@ export class AgentHost {
 					"secret_handoff_failed() {",
 					"  exec 9<&- 2>/dev/null",
 					`  rm -rf ${q(secretHandoff.directory)}`,
-					`  [ -f ${q(exitPath)} ] || printf 'exit:78' > ${q(exitPath)}`,
+					"  mfw_record_exit 'exit:78'",
 					"}",
 					"trap secret_handoff_failed EXIT HUP INT TERM",
 					`exec 9< ${q(secretHandoff.fifoPath)} || exit 1`,
@@ -357,6 +363,14 @@ export class AgentHost {
 			// appended to this file later is never executed (security review G1).
 			"{",
 			"set +e",
+			// compare-and-skip: noclobber makes the open O_EXCL, so an exit that is already
+			// recorded (the kill path's) wins and a link planted at the path is never followed.
+			// The control-dir record is the authoritative one; the run-dir copy is for readers there.
+			"mfw_record_exit() {",
+			`  ( set -C; printf '%s' "$1" > ${q(exitRecord)} ) 2>/dev/null`,
+			`  ( set -C; printf '%s' "$1" > ${q(exitPath)} ) 2>/dev/null`,
+			"  return 0",
+			"}",
 			// The tmux server runs under `env -i`, so the pane's login shell rebuilds PATH from
 			// system defaults (on NixOS, dropping the daemon's toolchain). PATH is public: restore it.
 			// With a sandbox, the shell itself keeps only trusted PATH entries (an agent can
@@ -368,13 +382,12 @@ export class AgentHost {
 					]
 				: [`export PATH=${q(process.env.PATH ?? "/usr/bin:/bin")}`]),
 			"IFS= read -r _ 2>/dev/null  # wait for go signal",
-			`cd ${q(spec.cwd)} || { printf 'exit:1' > ${q(exitPath)}; exit 1; }`,
+			`cd ${q(spec.cwd)} || { mfw_record_exit 'exit:1'; exit 1; }`,
 			...(spec.isolation ? [] : [envrcGate]),
 			...secretGate,
 			driverCmd,
 			"rc=$?",
-			// compare-and-skip: never overwrite an exit the kill path already wrote
-			`[ -f ${q(exitPath)} ] || printf 'exit:%s' "$rc" > ${q(exitPath)}`,
+			'mfw_record_exit "exit:$rc"',
 			'exit "$rc"',
 			"}",
 			"",
@@ -537,14 +550,31 @@ export class AgentHost {
 	/** Kill the whole session (process tree). Writes the reason to `exit` only if none is recorded, preserving a clean exit code. */
 	async kill(runDir: string, runId: string, reason: string): Promise<void> {
 		await this.runTmux(["kill-session", "-t", this.session(runId)]);
-		const exitPath = join(runDir, "exit");
-		try {
-			await readFile(exitPath, "utf8"); // already recorded, keep it
-		} catch {
-			await writeFile(exitPath, `killed:${reason}`).catch(() => {
-				// best-effort: reconcile classifies a missing exit as interrupted
-			});
-		}
+		const content = `killed:${reason}`;
+		// Exclusive creates: an exit that already exists is kept, and a link or
+		// FIFO planted at the path is never followed or read (security review X9).
+		const create = async (path: string) => {
+			try {
+				const fh = await open(
+					path,
+					constants.O_WRONLY |
+						constants.O_CREAT |
+						constants.O_EXCL |
+						constants.O_NOFOLLOW |
+						constants.O_NONBLOCK,
+					0o600,
+				);
+				try {
+					await fh.writeFile(content);
+				} finally {
+					await fh.close();
+				}
+			} catch {
+				// exists already, or best-effort: reconcile classifies a missing exit as interrupted
+			}
+		};
+		await create(join(await this.controlRoot(), `exit-${runId}`));
+		await create(join(runDir, "exit"));
 	}
 
 	/** Append one steering message (O_APPEND, no read-modify-write races). */
@@ -573,18 +603,56 @@ export class AgentHost {
 		);
 	}
 
+	/**
+	 * The recorded exit. For a run this host launched only the host-only record
+	 * counts: the run dir copy is agent-writable, so a forged `exit:0` there must
+	 * not read as completion while the session lives (security review X9). A run
+	 * the control dir knows nothing about (an older launch, after a reboot) falls
+	 * back to the run dir, read without following links or blocking.
+	 */
 	async readExit(runDir: string): Promise<RunExit> {
-		let s: string;
-		try {
-			s = (await readFile(join(runDir, "exit"), "utf8")).trim();
-		} catch {
-			return { kind: "running" }; // no exit recorded (yet)
+		const runId = basename(runDir);
+		const control = await this.controlRoot();
+		const authoritative = await readSmallRegularFile(
+			join(control, `exit-${runId}`),
+		);
+		let s: string | null;
+		if (authoritative !== null) {
+			s = authoritative;
+			// The run script (host-only, no secrets) is done with.
+			await rm(join(control, `run-${runId}.sh`), { force: true }).catch(
+				() => {},
+			);
+		} else if (
+			await lstat(join(control, `run-${runId}.sh`)).then(
+				() => true,
+				() => false,
+			)
+		) {
+			return { kind: "running" };
+		} else {
+			s = await readSmallRegularFile(join(runDir, "exit"));
 		}
+		if (s === null) return { kind: "running" }; // no exit recorded (yet)
+		s = s.trim();
 		const exit = /^exit:(\d+)$/.exec(s);
 		if (exit) return { kind: "exit", code: Number(exit[1]) };
 		const killed = /^killed:(.+)$/.exec(s);
 		if (killed) return { kind: "killed", reason: killed[1] as string };
 		return { kind: "running" };
+	}
+
+	/** Old run scripts and exit records of long-finished runs; the control dir is not a log. */
+	private async pruneControl(control: string): Promise<void> {
+		const cutoff = Date.now() - 3 * 24 * 3600_000;
+		try {
+			for (const name of await readdir(control)) {
+				if (!/^(run-.*\.sh|exit-.*)$/.test(name)) continue;
+				const p = join(control, name);
+				const st = await lstat(p).catch(() => null);
+				if (st && st.mtimeMs < cutoff) await rm(p, { force: true });
+			}
+		} catch {}
 	}
 
 	/** mfw_* sessions on our socket (reconcile input). */
