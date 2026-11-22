@@ -224,6 +224,9 @@ export async function startEgressProxy(
 			`Content-Length: ${Buffer.byteLength(body)}\r\n` +
 			(d.status === 405 ? "Allow: CONNECT\r\n" : "") +
 			"Connection: close\r\n\r\n";
+		// readHead paused the socket; a peer still sending would otherwise keep
+		// its unread bytes queued and the close from ever completing.
+		client.resume();
 		client.end(head + body);
 		// Never leave a half-closed peer holding the socket open.
 		setTimeout(() => client.destroy(), 250).unref();
