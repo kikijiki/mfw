@@ -154,7 +154,9 @@ async function holdWrite(config: HoldWriteConfig): Promise<void> {
 	const client = createClient({
 		url: `file:${config.home}/host/host.db`,
 		intMode: "bigint",
-		timeout: 25,
+		// The holder must win the lock even if the parent's connection is still
+		// closing; only the contender's busy budget is under test.
+		timeout: 2_000,
 	});
 	const tx = await client.transaction("write");
 	try {
