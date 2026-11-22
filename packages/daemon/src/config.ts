@@ -242,122 +242,130 @@ export const docSourceSchema = z.object({
 });
 export type DocSourceConfig = z.infer<typeof docSourceSchema>;
 
-const projectSchema = z
-	.object({
-		name: z.string().min(1),
-		root: z.string().min(1),
-		/** Where the board (`board.yaml`, `tasks/`, `adrs/`, templates) lives at the root of this folder,
-		 * if different from `root` — e.g. the repo is `~/dev/app` but its board is
-		 * tracked in a separate docs checkout like `~/docs/projects/app`.
-		 * Defaults to `root`. Irrelevant to the standalone `board` CLI, which only
-		 * ever cares about wherever its `board.yaml` is; this only matters for the
-		 * service, which also needs to know the code repo for worktrees/git. */
-		boardRoot: z.string().min(1).optional(),
-		integrationBranch: z.string().optional(),
-		/** Display options: a curated icon key or a 1-2 character mark, and a swatch key (`project-appearance.ts`). Absent = derived from the name. */
-		icon: z
-			.string()
-			.refine((v) => iconProblem(v) === null, {
-				message: "invalid project icon",
-			})
-			.optional(),
-		color: z
-			.string()
-			.refine((v) => colorProblem(v) === null, {
-				message: "invalid project colour",
-			})
-			.optional(),
-		model: z.string().optional(),
-		/** Model per task `model_tier`; standard defaults to `model`, while light/strong use the provider tier default, then `model`. */
-		modelTiers: z
-			.object({
-				light: z.string().min(1).optional(),
-				standard: z.string().min(1).optional(),
-				strong: z.string().min(1).optional(),
-			})
-			.optional(),
-		/** Model for the semantic change review (critic); unset = the brain's `model`. */
-		reviewModel: z.string().min(1).optional(),
-		/** Change review policy when `assistance.changeReview` is `assisted`. */
-		review: reviewSchema.optional(),
-		reasoningEffort: z
-			.enum(["none", "low", "medium", "high", "xhigh", "max"])
-			.optional(),
-		approvalMode: z.enum(["autonomous", "interactive"]).optional(),
-		provider: providerSchema.optional(),
-		routing: routingSchema.optional(),
-		/** The project brain; absent = off (nothing is dispatched: runs start only from its spawns). */
-		brain: brainSchema.optional(),
-		/** Spend ceilings for this project; each can only tighten a machine-level one. */
-		budgets: budgetsSchema.optional(),
-		maxConcurrent: z.number().int().positive().optional(),
-		/** Semaphore for `action: script` triggers, separate from `maxConcurrent` (which limits LLM spend). */
-		maxConcurrentTriggers: z.number().int().positive().optional(),
-		schedulerAutostart: z.boolean().optional(),
-		assistance: assistanceSchema.optional(),
-		leaseMs: z.number().int().positive().optional(),
-		/**
-		 * Wrapper command for every verification check (sandbox or dev-environment
-		 * entrypoint such as `direnv exec .`, `nix develop -c`). Never auto-detected.
-		 */
-		checkPrefix: z.string().optional(),
-		/** Env vars a check may read. Absent = `DEFAULT_ENV_ALLOWLIST` in `verifier.ts`. */
-		envPolicy: z
-			.object({
-				allow: z.array(z.string()).optional(),
-				inherit: z.boolean().optional(),
-			})
-			.optional(),
-		/** Repository-wide gates for every candidate; task verification adds to them, never replaces them. */
-		mergeChecks: VerificationPlanSchema.nullable().optional(),
-		notify: notifySchema.optional(),
-		/** Let the task that broke main run despite the red-main dispatch gate (see `Scheduler`). */
-		selfRepairMainRed: z.boolean().optional(),
-		/**
-		 * Push the integration branch after every merge the queue lands. A failed
-		 * push never fails or parks the already-landed merge.
-		 */
-		pushOnMerge: z.boolean().optional(),
-		/** Remote to push to when `pushOnMerge` is set. Defaults to `origin`. */
-		pushRemote: z.string().min(1).optional(),
-		/**
-		 * Isolate agent runs from the daemon's home (trigger arming store,
-		 * `credentials.json`), its environment and the tmux sockets via `bwrap`.
-		 * Defaults to `bwrap`. `none` is allowed only with `approvalMode:
-		 * "interactive"`; an autonomous run without a working sandbox is refused
-		 * at preflight (`sandbox_unavailable`), never silently unsandboxed.
-		 */
-		agentIsolation: z.enum(["none", "bwrap"]).optional(),
-		/** Failed expansion runs before a `draft` is marked failed (see `TaskService.recordDraftExpandFailure`). */
-		draftExpandMaxAttempts: z.number().int().positive().optional(),
-		/** Budget for draft expansion runs, separate from `maxConcurrent` like `maxConcurrentTriggers`. */
-		maxConcurrentDraftExpansions: z.number().int().positive().optional(),
-		/**
-		 * Live-run watchdog (`supervisor.ts`, `scope-watchdog.ts`). Every field is
-		 * optional; an absent one takes `PROJECT_DEFAULTS.watchdog`. Applied live.
-		 */
-		watchdog: watchdogSchema.optional(),
-		/** Dispatch preflight: refuse a local run while host MemAvailable is below this (MiB). 0 = off. */
-		minFreeMemoryMb: z.number().int().nonnegative().optional(),
-		/** A project may only narrow the process-global RunPod account policy. */
-		runpod: RunPodProjectPolicySchema.optional(),
-		/** Explicit placement used only by tasks selecting execution_target: runpod. */
-		runpodTarget: RunPodPlacementRequestSchema.optional(),
-		/** Extra documentation directories shown on the Docs page (not tracked by the board). */
-		docs: z.array(docSourceSchema).max(40).optional(),
-		/** Default machine workload grants selected by runs; identifiers only. */
-		workloadSecretGrants: z
-			.array(z.string().regex(/^[A-Za-z0-9._-]+$/))
-			.optional(),
-	})
-	.refine(
-		(p) => p.agentIsolation !== "none" || p.approvalMode === "interactive",
-		{
-			message:
-				'agentIsolation "none" requires approvalMode "interactive": autonomous runs need a bwrap sandbox',
-			path: ["agentIsolation"],
-		},
-	);
+const projectSchema = z.object({
+	name: z.string().min(1),
+	root: z.string().min(1),
+	/** Where the board (`board.yaml`, `tasks/`, `adrs/`, templates) lives at the root of this folder,
+	 * if different from `root` — e.g. the repo is `~/dev/app` but its board is
+	 * tracked in a separate docs checkout like `~/docs/projects/app`.
+	 * Defaults to `root`. Irrelevant to the standalone `board` CLI, which only
+	 * ever cares about wherever its `board.yaml` is; this only matters for the
+	 * service, which also needs to know the code repo for worktrees/git. */
+	boardRoot: z.string().min(1).optional(),
+	integrationBranch: z.string().optional(),
+	/** Display options: a curated icon key or a 1-2 character mark, and a swatch key (`project-appearance.ts`). Absent = derived from the name. */
+	icon: z
+		.string()
+		.refine((v) => iconProblem(v) === null, {
+			message: "invalid project icon",
+		})
+		.optional(),
+	color: z
+		.string()
+		.refine((v) => colorProblem(v) === null, {
+			message: "invalid project colour",
+		})
+		.optional(),
+	model: z.string().optional(),
+	/** Model per task `model_tier`; standard defaults to `model`, while light/strong use the provider tier default, then `model`. */
+	modelTiers: z
+		.object({
+			light: z.string().min(1).optional(),
+			standard: z.string().min(1).optional(),
+			strong: z.string().min(1).optional(),
+		})
+		.optional(),
+	/** Model for the semantic change review (critic); unset = the brain's `model`. */
+	reviewModel: z.string().min(1).optional(),
+	/** Change review policy when `assistance.changeReview` is `assisted`. */
+	review: reviewSchema.optional(),
+	reasoningEffort: z
+		.enum(["none", "low", "medium", "high", "xhigh", "max"])
+		.optional(),
+	approvalMode: z.enum(["autonomous", "interactive"]).optional(),
+	provider: providerSchema.optional(),
+	routing: routingSchema.optional(),
+	/** The project brain; absent = off (nothing is dispatched: runs start only from its spawns). */
+	brain: brainSchema.optional(),
+	/** Spend ceilings for this project; each can only tighten a machine-level one. */
+	budgets: budgetsSchema.optional(),
+	maxConcurrent: z.number().int().positive().optional(),
+	/** Semaphore for `action: script` triggers, separate from `maxConcurrent` (which limits LLM spend). */
+	maxConcurrentTriggers: z.number().int().positive().optional(),
+	schedulerAutostart: z.boolean().optional(),
+	assistance: assistanceSchema.optional(),
+	leaseMs: z.number().int().positive().optional(),
+	/**
+	 * Wrapper command for every verification check (sandbox or dev-environment
+	 * entrypoint such as `direnv exec .`, `nix develop -c`). Never auto-detected.
+	 */
+	checkPrefix: z.string().optional(),
+	/** Env vars a check may read. Absent = `DEFAULT_ENV_ALLOWLIST` in `verifier.ts`. */
+	envPolicy: z
+		.object({
+			allow: z.array(z.string()).optional(),
+			inherit: z.boolean().optional(),
+		})
+		.optional(),
+	/** Repository-wide gates for every candidate; task verification adds to them, never replaces them. */
+	mergeChecks: VerificationPlanSchema.nullable().optional(),
+	notify: notifySchema.optional(),
+	/** Let the task that broke main run despite the red-main dispatch gate (see `Scheduler`). */
+	selfRepairMainRed: z.boolean().optional(),
+	/**
+	 * Push the integration branch after every merge the queue lands. A failed
+	 * push never fails or parks the already-landed merge.
+	 */
+	pushOnMerge: z.boolean().optional(),
+	/** Remote to push to when `pushOnMerge` is set. Defaults to `origin`. */
+	pushRemote: z.string().min(1).optional(),
+	/**
+	 * Isolate agent runs from the daemon's home (trigger arming store,
+	 * `credentials.json`), its environment and the tmux sockets via `bwrap`.
+	 * Defaults to `bwrap`. `none` is allowed only with `approvalMode:
+	 * "interactive"`; an autonomous run without a working sandbox is refused
+	 * at preflight (`sandbox_unavailable`), never silently unsandboxed.
+	 */
+	agentIsolation: z.enum(["none", "bwrap"]).optional(),
+	/** Failed expansion runs before a `draft` is marked failed (see `TaskService.recordDraftExpandFailure`). */
+	draftExpandMaxAttempts: z.number().int().positive().optional(),
+	/** Budget for draft expansion runs, separate from `maxConcurrent` like `maxConcurrentTriggers`. */
+	maxConcurrentDraftExpansions: z.number().int().positive().optional(),
+	/**
+	 * Live-run watchdog (`supervisor.ts`, `scope-watchdog.ts`). Every field is
+	 * optional; an absent one takes `PROJECT_DEFAULTS.watchdog`. Applied live.
+	 */
+	watchdog: watchdogSchema.optional(),
+	/** Dispatch preflight: refuse a local run while host MemAvailable is below this (MiB). 0 = off. */
+	minFreeMemoryMb: z.number().int().nonnegative().optional(),
+	/** A project may only narrow the process-global RunPod account policy. */
+	runpod: RunPodProjectPolicySchema.optional(),
+	/** Explicit placement used only by tasks selecting execution_target: runpod. */
+	runpodTarget: RunPodPlacementRequestSchema.optional(),
+	/** Extra documentation directories shown on the Docs page (not tracked by the board). */
+	docs: z.array(docSourceSchema).max(40).optional(),
+	/** Default machine workload grants selected by runs; identifiers only. */
+	workloadSecretGrants: z
+		.array(z.string().regex(/^[A-Za-z0-9._-]+$/))
+		.optional(),
+});
+
+/**
+ * Why a project entry may not run autonomously without a sandbox, or null.
+ * Not part of the schema: an existing entry that violates it must not stop the
+ * daemon at boot (security review X5). It loads, its autonomous dispatch is
+ * refused with `sandbox_unavailable`, and it shows in the inbox. New and edited
+ * entries are checked with this before they are written.
+ */
+export function isolationConfigProblem(p: {
+	agentIsolation?: "none" | "bwrap";
+	approvalMode?: "autonomous" | "interactive";
+}): string | null {
+	if (p.agentIsolation === "none" && p.approvalMode !== "interactive") {
+		return 'agentIsolation "none" requires approvalMode "interactive": autonomous runs need a bwrap sandbox';
+	}
+	return null;
+}
 
 const configSchema = z.object({
 	projects: z.array(projectSchema).default([]),
