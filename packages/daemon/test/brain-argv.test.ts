@@ -125,6 +125,7 @@ describe("brain turn argv", () => {
 						model: "gpt-5",
 						steer: false,
 						approvalMode: "autonomous",
+						steerGraceMs: 50, // no follow-up is queued: skip the 1.5 s default
 					}),
 				);
 				await writeFile(join(dir, "events.jsonl"), "");

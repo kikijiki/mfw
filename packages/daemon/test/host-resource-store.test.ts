@@ -11,6 +11,7 @@ import {
 	type LivenessEvidence,
 	openHostResourceStore,
 } from "../src/host-resources/index.ts";
+import { withRealSqliteSync } from "./support/real-sqlite-sync.ts";
 
 const homes: string[] = [];
 const projectHandles: ProjectDbHandle[] = [];
@@ -57,27 +58,29 @@ async function coordinator(path: string, processBootId: string) {
 
 describe("host resource store", () => {
 	test("uses an independent FULL/WAL host database and stable home identity", async () => {
-		const path = await home();
-		const first = await openHostResourceStore(path, {
-			processBootId: "process-a",
-			kernelBootId: "kernel-a",
-		});
-		const id = first.identity.hostId;
-		const coordinatorId = first.identity.coordinatorId;
-		const journal = await first.client.execute("PRAGMA journal_mode");
-		const sync = await first.client.execute("PRAGMA synchronous");
-		expect(journal.rows[0]?.[0]).toBe("wal");
-		expect(sync.rows[0]?.[0]).toBe(2n); // FULL
-		first.close();
+		return withRealSqliteSync(async () => {
+			const path = await home();
+			const first = await openHostResourceStore(path, {
+				processBootId: "process-a",
+				kernelBootId: "kernel-a",
+			});
+			const id = first.identity.hostId;
+			const coordinatorId = first.identity.coordinatorId;
+			const journal = await first.client.execute("PRAGMA journal_mode");
+			const sync = await first.client.execute("PRAGMA synchronous");
+			expect(journal.rows[0]?.[0]).toBe("wal");
+			expect(sync.rows[0]?.[0]).toBe(2n); // FULL
+			first.close();
 
-		const reopened = await openHostResourceStore(path, {
-			processBootId: "process-b",
-			kernelBootId: "kernel-a",
+			const reopened = await openHostResourceStore(path, {
+				processBootId: "process-b",
+				kernelBootId: "kernel-a",
+			});
+			expect(reopened.identity.hostId).toBe(id);
+			expect(reopened.identity.coordinatorId).toBe(coordinatorId);
+			expect(reopened.identity.processBootId).toBe("process-b");
+			reopened.close();
 		});
-		expect(reopened.identity.hostId).toBe(id);
-		expect(reopened.identity.coordinatorId).toBe(coordinatorId);
-		expect(reopened.identity.processBootId).toBe("process-b");
-		reopened.close();
 	});
 
 	test("two project DBs and independently opened clients cannot over-grant capacity one", async () => {

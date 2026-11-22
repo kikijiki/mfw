@@ -111,6 +111,14 @@ export type AgentSecretHandoffWriter = (
 
 const SECRET_HANDOFF_SENTINEL = "MFW_DRIVER_SECRET_HANDOFF_COMPLETE";
 
+/**
+ * Timing defaults for the per-run driver, persisted into driver.json. A test
+ * seam: `tools/test-preload.ts` shortens the steer grace, which is a fixed
+ * 1.5 s wait after every turn that a scripted agent never needs. Nothing in
+ * production writes to it.
+ */
+export const driverTimings: { steerGraceMs?: number } = {};
+
 export interface AgentHostOptions {
 	tmuxRunner?: AgentTmuxRunner;
 	/** Test seam for availability degradation (Bun module mocks are process-global). */
@@ -260,6 +268,9 @@ export class AgentHost {
 					initialMessage: spec.initialMessage ?? "",
 					steer: spec.steer,
 					approvalMode: spec.approvalMode ?? "autonomous",
+					...(driverTimings.steerGraceMs !== undefined
+						? { steerGraceMs: driverTimings.steerGraceMs }
+						: {}),
 				},
 				null,
 				2,

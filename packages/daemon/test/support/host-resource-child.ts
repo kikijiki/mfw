@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { createClient } from "@libsql/client";
 import { dispatchAdmissions, events, resourceSlots } from "@mfw/db/schema";
 import { boot, type ProjectConfig } from "../../src/boot.ts";
@@ -65,8 +65,15 @@ const stringify = (value: unknown) =>
 		typeof nested === "bigint" ? nested.toString() : nested,
 	)}\n`;
 
+/**
+ * The parent polls for these files and parses them the moment they exist, so
+ * they must appear whole: a plain `writeFile` creates the file empty first and
+ * the parent could read it before the content landed ("Unexpected EOF").
+ */
 async function publish(path: string, value: unknown): Promise<void> {
-	await writeFile(path, stringify(value), { mode: 0o600 });
+	const staging = `${path}.${process.pid}.tmp`;
+	await writeFile(staging, stringify(value), { mode: 0o600 });
+	await rename(staging, path);
 }
 
 async function waitForFile(path: string, timeoutMs = 15_000): Promise<void> {
@@ -147,7 +154,9 @@ async function holdWrite(config: HoldWriteConfig): Promise<void> {
 	const client = createClient({
 		url: `file:${config.home}/host/host.db`,
 		intMode: "bigint",
-		timeout: 25,
+		// The holder must win the lock even if the parent's connection is still
+		// closing; only the contender's busy budget is under test.
+		timeout: 2_000,
 	});
 	const tx = await client.transaction("write");
 	try {

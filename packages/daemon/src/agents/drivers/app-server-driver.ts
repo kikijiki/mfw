@@ -27,6 +27,8 @@ const cfg = JSON.parse(readFileSync(join(runDir, "driver.json"), "utf8")) as {
 	initialMessage: string;
 	steer?: boolean;
 	approvalMode?: "autonomous" | "interactive";
+	/** The pause between a finished turn and the next queued one (default 1500). */
+	steerGraceMs?: number;
 };
 const eventsPath = join(runDir, "events.jsonl");
 const controlsPath = join(runDir, "control.jsonl");
@@ -324,7 +326,7 @@ try {
 			await Bun.sleep(50);
 		}
 		if (fatal) break;
-		await Bun.sleep(1500);
+		await Bun.sleep(cfg.steerGraceMs ?? 1500);
 		nextInputs = [
 			...retryInputs.splice(0),
 			...drainControls()

@@ -11,6 +11,7 @@ async function runDriver(
 	cfg: Partial<{
 		initialMessage: string;
 		steer: boolean;
+		steerGraceMs: number;
 	}> = {},
 	during?: (dir: string) => Promise<void>,
 ): Promise<{ events: AgentEvent[]; exitCode: number | null }> {
@@ -23,6 +24,9 @@ async function runDriver(
 			env: {},
 			initialMessage: cfg.initialMessage ?? "hello",
 			steer: cfg.steer ?? true,
+			// The wait after a result for a late steer: short unless a test is
+			// about the window itself.
+			steerGraceMs: cfg.steerGraceMs ?? 100,
 		}),
 	);
 	await writeFile(join(dir, "steer.jsonl"), "");
@@ -74,10 +78,17 @@ describe("claude driver v2", () => {
 
 	test("steering: a queued message becomes the next turn before completion", async () => {
 		const { events } = await runDriver(
-			{ initialMessage: "first" },
+			{ initialMessage: "first", steerGraceMs: 1_000 },
 			async (dir) => {
-				// queue a steer while the driver's grace window is open
-				await Bun.sleep(400);
+				// Queue the steer once the first turn's reply is on record: the
+				// result follows it at once, so the grace window is open (and
+				// stays open for a second), whatever the machine's speed.
+				const events = join(dir, "events.jsonl");
+				for (let i = 0; i < 1_000; i++) {
+					const text = await readFile(events, "utf8").catch(() => "");
+					if (text.includes("got: first")) break;
+					await Bun.sleep(10);
+				}
 				await appendFile(
 					join(dir, "steer.jsonl"),
 					`${JSON.stringify("second")}\n`,

@@ -75,6 +75,9 @@ async function withRun(
 				initialMessage: options.message,
 				steer: false,
 				approvalMode: options.approvalMode ?? "autonomous",
+				// The pause after a finished turn for a queued follow-up; none is
+				// ever queued here, so do not sit out the 1.5 s default.
+				steerGraceMs: 50,
 			}),
 		);
 		await writeFile(join(dir, "events.jsonl"), "");
