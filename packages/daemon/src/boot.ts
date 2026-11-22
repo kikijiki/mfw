@@ -50,6 +50,7 @@ import { type CriticResult, StepRunner } from "./finalize/step-runner.ts";
 import { git } from "./git.ts";
 import { GlobalDispatch } from "./global-dispatch.ts";
 import { Health } from "./health.ts";
+import { quarantineRef } from "./host-git/fetch.ts";
 import type { HostObservationServiceOptions } from "./host-observation-service.ts";
 import {
 	createProductionHostProbeRuntime,
@@ -89,7 +90,7 @@ import { LifetimeManager } from "./lifetime.ts";
 import { createLocalExecutionTarget } from "./local-execution-target.ts";
 import { type Logger, rootLogger } from "./log.ts";
 import { Maintenance } from "./maintenance.ts";
-import { MergeQueue } from "./merge-queue.ts";
+import { type MergeJobView, MergeQueue } from "./merge-queue.ts";
 import { makeNotifier, type NotifyConfig } from "./notify.ts";
 import { OpenAICompatibleInference } from "./openai-compatible-inference.ts";
 import { OpenRouterAccountService } from "./openrouter-account-service.ts";
@@ -119,7 +120,10 @@ import {
 } from "./routing.ts";
 import { RunEngine } from "./run-engine.ts";
 import { RunRegistry } from "./run-registry.ts";
-import { configureRunWorkspace } from "./run-workspace/factory.ts";
+import {
+	configureRunWorkspace,
+	createVerifierClones,
+} from "./run-workspace/factory.ts";
 import {
 	RunPodAccountService,
 	type RunPodProviderClient,
@@ -164,7 +168,12 @@ import {
 } from "./usage/default-probes.ts";
 import { UsageMonitor, type UsageSubscription } from "./usage-monitor.ts";
 import { VerificationCoordinator } from "./verification-coordinator.ts";
-import { type EnvPolicy, verify } from "./verifier.ts";
+import {
+	type EnvPolicy,
+	type VerificationResult,
+	verify,
+	verifyInClone,
+} from "./verifier.ts";
 import { WorkspaceService } from "./workspace.ts";
 
 /**
@@ -709,6 +718,21 @@ export async function attachProject(
 	let maintenance!: Maintenance;
 	let supervisor!: Supervisor;
 
+	const verifierClones = createVerifierClones(root);
+	// A crashed daemon may have left verification clones and their pins behind.
+	await verifierClones?.sweep().catch((e) => {
+		plog.warn({ err: e }, "verifier clone sweep failed");
+	});
+	type MergeVerdict = { passed: boolean; detail?: string; crashed?: boolean };
+	const verdictOf = (result: VerificationResult): MergeVerdict => ({
+		passed: result.passed,
+		// Lets MergeQueue tell a crashed check from a real verification failure.
+		crashed: result.crashed,
+		detail: result.checks
+			.filter((c) => !c.ok)
+			.map((c) => c.check)
+			.join(", "),
+	});
 	const mergeQueue = new MergeQueue({
 		handle,
 		bus,
@@ -721,22 +745,53 @@ export async function attachProject(
 			const run = await registry.get(job.runId);
 			if (!run?.worktreePath || !run.baseSha)
 				return { passed: false, detail: "run worktree is gone" };
+			const opts = { checkPrefix: cfg.checkPrefix, envPolicy: cfg.envPolicy };
 			const result = await verification.foreground(() =>
-				verify(run.worktreePath as string, dod, run.baseSha as string, {
-					checkPrefix: cfg.checkPrefix,
-					envPolicy: cfg.envPolicy,
-				}),
+				verifierClones
+					? verifyInClone(
+							verifierClones,
+							quarantineRef(job.runId),
+							job.runId,
+							dod,
+							run.baseSha as string,
+							opts,
+						)
+					: verify(
+							run.worktreePath as string,
+							dod,
+							run.baseSha as string,
+							opts,
+						),
 			);
-			return {
-				passed: result.passed,
-				// Lets MergeQueue tell a crashed check from a real re-verify failure.
-				crashed: result.crashed,
-				detail: result.checks
-					.filter((c) => !c.ok)
-					.map((c) => c.check)
-					.join(", "),
-			};
+			return verdictOf(result);
 		},
+		// Clone projects verify the merge commit itself, in a disposable clone,
+		// before the ref moves. Worktree projects keep today's behaviour.
+		...(verifierClones
+			? {
+					verifyMerge: async (
+						job: MergeJobView,
+						mergeSha: string,
+					): Promise<MergeVerdict> => {
+						const task = job.taskId ? await tasks.get(job.taskId) : null;
+						const dod = tasks.effectiveDod(task?.dod ?? null);
+						if (!dod) return { passed: true };
+						const run = await registry.get(job.runId);
+						if (!run?.baseSha) return { passed: true };
+						const result = await verification.foreground(() =>
+							verifyInClone(
+								verifierClones,
+								mergeSha,
+								`merge-${job.runId}`,
+								dod,
+								run.baseSha as string,
+								{ checkPrefix: cfg.checkPrefix, envPolicy: cfg.envPolicy },
+							),
+						);
+						return verdictOf(result);
+					},
+				}
+			: {}),
 		onMerged: async (job) => {
 			const mergedRun = await registry.get(job.runId);
 			if (job.taskId && mergedRun?.kind !== "repair") {

@@ -6,6 +6,7 @@ import {
 } from "./failure-class.ts";
 import { git } from "./git.ts";
 import { runProc } from "./proc.ts";
+import type { VerifierClones } from "./run-workspace/verifier-clone.ts";
 import { requireHostTool } from "./sandbox.ts";
 import type { DefinitionOfDone, DoDCheck } from "./tasks/types.ts";
 
@@ -98,6 +99,13 @@ export interface VerifyOptions {
 	envPolicy?: EnvPolicy;
 	/** Cancels the currently running check (preemptible background sweeps). */
 	signal?: AbortSignal;
+	/**
+	 * The commit `cwd` was checked out at, when `cwd` is a disposable
+	 * verification clone (`run-workspace/verifier-clone.ts`). A clone is
+	 * agent-influenced, so the `diff_against_base` check answers from this sha
+	 * and runs no git in it.
+	 */
+	candidateSha?: string;
 }
 
 const DEFAULT_CHECK_TIMEOUT_MS = 10 * 60_000;
@@ -352,11 +360,17 @@ export async function verify(
 				checks.push({ check: label, ok: true });
 				continue;
 			}
-			const head = await git(["rev-parse", "HEAD"], cwd);
-			const dirty = await git(["status", "--porcelain"], cwd);
-			const changed =
-				(head.exitCode === 0 && head.stdout !== baseSha) ||
-				dirty.stdout.length > 0;
+			let changed: boolean;
+			if (opts.candidateSha !== undefined) {
+				// A clone holds exactly the candidate commit: nothing is uncommitted.
+				changed = opts.candidateSha !== baseSha;
+			} else {
+				const head = await git(["rev-parse", "HEAD"], cwd);
+				const dirty = await git(["status", "--porcelain"], cwd);
+				changed =
+					(head.exitCode === 0 && head.stdout !== baseSha) ||
+					dirty.stdout.length > 0;
+			}
 			checks.push(
 				changed
 					? { check: label, ok: true }
@@ -384,4 +398,22 @@ export async function verify(
 		crashed,
 		failureClass: failing[0]?.failureClass ?? null,
 	};
+}
+
+/**
+ * Verify a commit in a fresh, host-owned clone that is thrown away afterwards.
+ * `rev` is the run's quarantine tip, or the merge commit about to land; the
+ * checks never run in the run's workspace or the integration worktree.
+ */
+export async function verifyInClone(
+	clones: Pick<VerifierClones, "with">,
+	rev: string,
+	label: string,
+	dod: DefinitionOfDone,
+	baseSha: string,
+	opts: VerifyOptions = {},
+): Promise<VerificationResult> {
+	return clones.with(rev, label, (clone) =>
+		verify(clone.path, dod, baseSha, { ...opts, candidateSha: clone.sha }),
+	);
 }

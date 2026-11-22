@@ -22,6 +22,9 @@ import {
 	type RunRegistry,
 	type RunRow,
 } from "./run-registry.ts";
+import { CloneRunWorkspace } from "./run-workspace/clone-impl.ts";
+import { createRunWorkspace } from "./run-workspace/factory.ts";
+import { cloneScopeFiles } from "./run-workspace/scope-files.ts";
 import {
 	assessScope,
 	changedFiles,
@@ -199,6 +202,9 @@ export interface PassStats {
 	finalized: number;
 	errors: number;
 }
+
+/** How long a scope sample waits for the in-sandbox helper to answer. */
+const SCOPE_WIP_TIMEOUT_MS = 5_000;
 
 export class Supervisor {
 	private readonly log: Logger;
@@ -608,10 +614,16 @@ export class Supervisor {
 			return;
 		let sample: ScopeSample;
 		try {
-			const listed = await (this.deps.scopeFiles ?? changedFiles)(
-				run.worktreePath,
-				run.baseSha,
-			);
+			const workspace = createRunWorkspace(this.deps.projectRoot);
+			const listed = await (
+				this.deps.scopeFiles ??
+				(workspace instanceof CloneRunWorkspace
+					? (wt: string, base: string) =>
+							cloneScopeFiles(workspace, this.deps.projectRoot, wt, base, {
+								timeoutMs: SCOPE_WIP_TIMEOUT_MS,
+							})
+					: changedFiles)
+			)(run.worktreePath, run.baseSha);
 			sample = assessScope(
 				listed.files,
 				await this.scopeOwners(run),
