@@ -18,7 +18,6 @@
 
 import { posix } from "node:path";
 import { z } from "zod";
-import { PROXY_VARS } from "./egress-env.ts";
 import type { LimitsSpec } from "./limits.ts";
 
 export const SANDBOX_PROFILE_VERSION = 1;
@@ -133,51 +132,37 @@ const FilesystemSection = z.strictObject({
 	deny: z.array(AbsolutePath).max(256).optional(),
 });
 
-/** Names the compiler owns, or that change how a program loads code. */
-const RESERVED_ENV = new Set<string>([
-	"PATH",
-	"HOME",
-	"USER",
-	"LOGNAME",
-	"SHELL",
-	"TERM",
-	"LANG",
-	"TMPDIR",
-	"BASH_ENV",
-	"ENV",
-	"IFS",
-	"CDPATH",
-	"PROMPT_COMMAND",
-	"NODE_OPTIONS",
-	"NODE_PATH",
-	"NODE_USE_ENV_PROXY",
-	"NO_PROXY",
-	"BUN_OPTIONS",
-	"PYTHONPATH",
-	"PYTHONSTARTUP",
-	"PYTHONHOME",
-	"PERL5OPT",
-	"PERL5LIB",
-	"RUBYOPT",
-	"RUBYLIB",
-	"CLAUDE_CONFIG_DIR",
-	"CODEX_HOME",
-	...PROXY_VARS.map((v) => v.toUpperCase()),
+/**
+ * The env names a profile may set: an allowlist, because the variables that
+ * change how a program loads code cannot be enumerated (`LD_*`, `GCONV_PATH`,
+ * `GLIBC_TUNABLES`, `JAVA_TOOL_OPTIONS`, `ZDOTDIR`, and more each release).
+ * Everything the sandbox itself needs (`PATH`, `HOME`, proxy, git) is set by
+ * the compiler. Named workload secrets use the `MFW_GRANT_` namespace.
+ */
+const ALLOWED_ENV: ReadonlySet<string> = new Set([
+	"CI",
+	"NO_COLOR",
+	"FORCE_COLOR",
+	"RUST_BACKTRACE",
+	"ANTHROPIC_API_KEY",
+	"OPENAI_API_KEY",
+	"OPENROUTER_API_KEY",
+	"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+	"DISABLE_TELEMETRY",
+	"DISABLE_ERROR_REPORTING",
+	"DISABLE_AUTOUPDATER",
+	"DO_NOT_TRACK",
+	"ENABLE_CLAUDEAI_MCP_SERVERS",
 ]);
-const RESERVED_ENV_PREFIXES = ["LD_", "GIT_", "XDG_", "BASH_FUNC_", "MFW_"];
+const GRANT_ENV = /^MFW_GRANT_[A-Z0-9][A-Z0-9_]{0,100}$/;
 
-export function isReservedEnvName(name: string): boolean {
-	const upper = name.toUpperCase();
-	return (
-		RESERVED_ENV.has(upper) ||
-		RESERVED_ENV_PREFIXES.some((p) => upper.startsWith(p))
-	);
+export function isAllowedEnvName(name: string): boolean {
+	return ALLOWED_ENV.has(name) || GRANT_ENV.test(name);
 }
 
 const EnvName = z
 	.string()
-	.regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/)
-	.refine((n) => !isReservedEnvName(n), "is reserved for the compiler");
+	.refine(isAllowedEnvName, "is not on the sandbox env allowlist");
 
 const EnvValue = z
 	.string()

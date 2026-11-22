@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	effectiveLimits,
-	isReservedEnvName,
+	isAllowedEnvName,
 	MINIMAL_LIMITS,
 	memoryBytes,
 	narrowProfile,
@@ -27,7 +27,7 @@ const base = (): SandboxProfile =>
 				writable: ["sessions", "cache"],
 			},
 		},
-		process: { env: { KEEP: "1", DROP: "2" } },
+		process: { env: { CI: "1", NO_COLOR: "2" } },
 		network: { mode: "proxy", socketDir: "/r/egress" },
 		resources: { tasksMax: 1000, memoryMax: "4G" },
 	});
@@ -142,13 +142,60 @@ describe("schema", () => {
 	])("rejects the env name %s", (name) =>
 		rejects({ ...minimal, process: { env: { [name]: "x" } } }));
 
-	test("rejects NUL in an env value and allows a plain variable", () => {
-		rejects({ ...minimal, process: { env: { FOO: "a\0b" } } });
+	test.each([
+		"GCONV_PATH",
+		"LOCPATH",
+		"GLIBC_TUNABLES",
+		"JAVA_TOOL_OPTIONS",
+		"ZDOTDIR",
+		"SHELLOPTS",
+		"BASHOPTS",
+		"NLSPATH",
+		"HOSTALIASES",
+		"RES_OPTIONS",
+		"ANTHROPIC_BASE_URL",
+		"SOME_NEW_LOADER_HOOK",
+	])("rejects %s, which is not on the allowlist", (name) =>
+		rejects({ ...minimal, process: { env: { [name]: "x" } } }));
+
+	test.each([
+		"CI",
+		"NO_COLOR",
+		"FORCE_COLOR",
+		"RUST_BACKTRACE",
+		"ANTHROPIC_API_KEY",
+		"OPENAI_API_KEY",
+		"OPENROUTER_API_KEY",
+		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+		"DISABLE_TELEMETRY",
+		"DISABLE_ERROR_REPORTING",
+		"DISABLE_AUTOUPDATER",
+		"DO_NOT_TRACK",
+		"ENABLE_CLAUDEAI_MCP_SERVERS",
+		"MFW_GRANT_STRIPE_KEY",
+	])("allows %s", (name) => {
 		expect(
-			parseSandboxProfile({ ...minimal, process: { env: { FOO: "bar" } } })
+			parseSandboxProfile({ ...minimal, process: { env: { [name]: "x" } } })
 				.process?.env,
-		).toEqual({ FOO: "bar" });
-		expect(isReservedEnvName("FOO")).toBe(false);
+		).toEqual({ [name]: "x" });
+	});
+
+	test.each([
+		"MFW_GRANT_",
+		"MFW_GRANT_lower",
+		"mfw_grant_X",
+		"MFW_HOME",
+	])("rejects the malformed grant name %s", (name) =>
+		rejects({ ...minimal, process: { env: { [name]: "x" } } }));
+
+	test("rejects NUL in an env value and allows a plain variable", () => {
+		rejects({ ...minimal, process: { env: { CI: "a\0b" } } });
+		expect(
+			parseSandboxProfile({ ...minimal, process: { env: { CI: "bar" } } })
+				.process?.env,
+		).toEqual({ CI: "bar" });
+		expect(isAllowedEnvName("CI")).toBe(true);
+		expect(isAllowedEnvName("FOO")).toBe(false);
 	});
 
 	test.each([
@@ -201,7 +248,7 @@ describe("narrowProfile", () => {
 			deny: ["/r/secret"],
 			network: "none",
 			resources: { tasksMax: 10, memoryMax: "512M" },
-			dropEnv: ["DROP"],
+			dropEnv: ["NO_COLOR"],
 		});
 		expect(n.filesystem?.workspace?.access).toBe("ro");
 		expect(n.filesystem?.scratch).toBeUndefined();
@@ -212,7 +259,7 @@ describe("narrowProfile", () => {
 		expect(n.filesystem?.deny).toEqual(["/r/secret"]);
 		expect(n.network).toEqual({ mode: "none" });
 		expect(n.resources).toEqual({ tasksMax: 10, memoryMax: "512M" });
-		expect(n.process?.env).toEqual({ KEEP: "1" });
+		expect(n.process?.env).toEqual({ CI: "1" });
 	});
 
 	test.each([

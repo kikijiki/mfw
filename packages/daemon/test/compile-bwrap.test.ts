@@ -83,7 +83,7 @@ const full = (): SandboxProfile =>
 				writable: ["sessions", "cache"],
 			},
 		},
-		process: { env: { FOO: "bar" } },
+		process: { env: { CI: "bar" } },
 		network: { mode: "proxy", socketDir: `${R}/egress` },
 		resources: { tasksMax: 512, memoryMax: "2G" },
 	});
@@ -317,7 +317,7 @@ describe("argv snapshots", () => {
 		expect(env.GIT_DIR).toBe("/git");
 		expect(env.GIT_WORK_TREE).toBe("/work");
 		expect(env.CODEX_HOME).toBe("/fleet/codex");
-		expect(env.FOO).toBe("bar");
+		expect(env.CI).toBe("bar");
 		expect(env.HTTPS_PROXY).toBe("http://127.0.0.1:3128");
 		expect(env.https_proxy).toBe("http://127.0.0.1:3128");
 		expect(env.NO_PROXY).toBe("");
