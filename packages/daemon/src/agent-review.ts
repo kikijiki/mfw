@@ -1,5 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
 	InferenceClient,
@@ -9,7 +9,14 @@ import type {
 import { claudeEnvelopeUsage } from "./brain.ts";
 import { git } from "./git.ts";
 import { type ProcOpts, type ProcResult, runProc } from "./proc.ts";
-import { bwrapAvailable } from "./sandbox.ts";
+import {
+	bwrapCore,
+	cleanEnvSetenvArgs,
+	maskedRuntimePaths,
+	resolveBwrapPath,
+	SANDBOX_ENV_ALLOWLIST,
+	SandboxUnavailableError,
+} from "./sandbox.ts";
 
 /**
  * Agent review: a reviewer agent that can read code and run commands, in its
@@ -20,7 +27,7 @@ import { bwrapAvailable } from "./sandbox.ts";
  * state; afterwards the checkout must be clean at the same commit, the branch
  * tip unmoved, and the run worktree identical. Any difference throws
  * `ReviewerModifiedError` and the verdict is discarded (the task goes to a
- * human). When `bwrap` is available the agent also runs with the project
+ * human). The agent also runs under `bwrap` (refused without it) with the project
  * root, the checkout and the run worktree bound read-only.
  */
 
@@ -50,7 +57,7 @@ export interface AgentReviewOpts {
 	bin?: string;
 	/** Paths masked inside bwrap (the daemon's home). */
 	hidePaths?: string[];
-	/** "auto": bwrap when the binary exists; "off": never (tests). */
+	/** "auto": always bwrap, refusing when it is missing; "off": never (tests). */
 	sandbox?: "auto" | "off";
 	/** Test seam: runs the reviewer process. */
 	run?: AgentRunner;
@@ -180,35 +187,42 @@ export class AgentReviewInference implements InferenceClient {
 		];
 	}
 
+	/**
+	 * Fail closed: with `sandbox: "auto"` a missing bwrap is a refusal, not an
+	 * unsandboxed reviewer. The reviewer gets the same clean environment and
+	 * masks as a run (`sandbox.ts`), with the checkouts bound read-only.
+	 */
 	private async sandboxed(argv: string[], dir: string): Promise<string[]> {
-		if (this.opts.sandbox === "off" || !(await bwrapAvailable())) return argv;
+		if (this.opts.sandbox === "off") return argv;
+		const bwrapPath = await resolveBwrapPath();
+		if (!bwrapPath) {
+			throw new SandboxUnavailableError(
+				"agent review requires `bwrap`, which is not on PATH",
+			);
+		}
 		const { subject } = this.opts;
-		const home = homedir();
-		const tokens = [
-			"bwrap",
-			"--die-with-parent",
-			"--ro-bind",
-			"/",
-			"/",
-			"--dev",
-			"/dev",
-			"--proc",
-			"/proc",
-			"--bind",
-			home,
-			home,
-			"--bind",
-			"/tmp",
-			"/tmp",
-		];
-		// After the writable binds, so these win where they nest inside them.
 		const readOnly = [subject.projectRoot, dir, subject.runWorktree].filter(
 			(p): p is string => typeof p === "string",
 		);
-		for (const p of new Set(readOnly)) tokens.push("--ro-bind", p, p);
-		for (const p of this.opts.hidePaths ?? []) tokens.push("--tmpfs", p);
-		tokens.push("--chdir", dir, "--", ...argv);
-		return tokens;
+		const env = process.env;
+		return [
+			"env",
+			"-i",
+			`PATH=${env.PATH ?? "/usr/bin:/bin"}`,
+			...bwrapCore({
+				bwrapPath,
+				cwd: dir,
+				runDir: dir,
+				isolation: { mode: "bwrap", hidePaths: this.opts.hidePaths ?? [] },
+				readOnly,
+				masks: maskedRuntimePaths(env),
+			}),
+			...cleanEnvSetenvArgs(env, SANDBOX_ENV_ALLOWLIST),
+			"--chdir",
+			dir,
+			"--",
+			...argv,
+		];
 	}
 
 	private async runAgent(

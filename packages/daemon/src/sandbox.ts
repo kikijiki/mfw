@@ -1,17 +1,28 @@
-import { homedir } from "node:os";
+import { existsSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import {
+	buildProbeScript,
+	PROBE_EXIT_CODE,
+} from "./containment/minimal-probe.ts";
 import { runProc } from "./proc.ts";
 
 /**
- * Agent filesystem isolation (MFW-33 item 3; MFW-117 §3.5's residual risk).
+ * Agent filesystem and environment isolation (MFW-33 item 3; MFW-117 §3.5's
+ * residual risk; the sandbox experiments E0 and E1).
  *
- * The agent runs as the same uid as the daemon, so this does not stop a
- * deliberate escape. It closes the casual/confused path: a prompt-injected
- * agent reading or editing `~/.local/share/mfw` (arming store, credentials,
- * config). bwrap masks that path so it does not exist inside the sandbox.
+ * INTERIM. The agent runs as the same uid as the daemon, so this does not stop
+ * a deliberate escape, and `$HOME` stays writable (agents need their login
+ * until the per-run home exists) and the network stays shared. It closes the
+ * casual path and the two leaks the experiments found:
  *
- * Only the filesystem view changes. Network stays shared and `$HOME` stays
- * writable, except the hidden paths, masked with an empty tmpfs layered inside
- * the `$HOME` bind.
+ *  - the daemon's own `$MFW_HOME` (arming store, credentials) is masked;
+ *  - the environment is an explicit allowlist, started under `env -i` and
+ *    `--clearenv`, so daemon and tmux-server secrets (E0, E1) are absent;
+ *  - the user runtime dir and the tmux socket dirs are masked, and
+ *    `--new-session` detaches the controlling terminal;
+ *  - a minimal probe runs inside, before the driver, and fails closed.
+ *
+ * Nothing here degrades: callers refuse when `bwrap` is missing.
  */
 
 export interface BwrapIsolation {
@@ -21,25 +32,60 @@ export interface BwrapIsolation {
 	hidePaths: string[];
 }
 
-let cachedAvailable: boolean | null = null;
+/**
+ * The environment names a sandbox may inherit from the launching process.
+ * Modelled on the verifier's `DEFAULT_ENV_ALLOWLIST`: nothing that can hold a
+ * credential. Per-run values (`MFW_*`, the agent's own keys) are added by name
+ * from the launch spec, never by pattern.
+ */
+export const SANDBOX_ENV_ALLOWLIST: readonly string[] = [
+	"PATH",
+	"HOME",
+	"LANG",
+	"LC_ALL",
+	"TZ",
+	"TERM",
+	"SHELL",
+	"USER",
+	"LOGNAME",
+	"TMPDIR",
+	"XDG_CACHE_HOME",
+	"XDG_DATA_HOME",
+	"XDG_CONFIG_HOME",
+	"NIX_PATH",
+	"NIX_PROFILES",
+	"NIX_SSL_CERT_FILE",
+	"SSL_CERT_FILE",
+];
+
+/** Names a POSIX shell adds on its own; the probe must not read them as leaks. */
+const SHELL_OWN_ENV = ["PWD", "OLDPWD", "SHLVL", "_"];
+
+/** Thrown instead of launching unsandboxed; the engine maps it to `sandbox_unavailable`. */
+export class SandboxUnavailableError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "SandboxUnavailableError";
+	}
+}
+
+let cachedPath: string | null | undefined;
+
+/** The absolute `bwrap` path, resolved once per process; null when absent. */
+export async function resolveBwrapPath(): Promise<string | null> {
+	if (cachedPath !== undefined) return cachedPath;
+	cachedPath = Bun.which("bwrap") ?? null;
+	return cachedPath;
+}
 
 /** Cached for the process lifetime; checked on every launch. */
 export async function bwrapAvailable(): Promise<boolean> {
-	if (cachedAvailable !== null) return cachedAvailable;
-	try {
-		const r = await runProc(["sh", "-c", "command -v bwrap"], {
-			timeoutMs: 5_000,
-		});
-		cachedAvailable = r.exitCode === 0;
-	} catch {
-		cachedAvailable = false;
-	}
-	return cachedAvailable;
+	return (await resolveBwrapPath()) !== null;
 }
 
 /** Test seam: clears the `bwrapAvailable` memo. */
 export function resetBwrapAvailableCache(): void {
-	cachedAvailable = null;
+	cachedPath = undefined;
 }
 
 /** POSIX single-quote, mirrors `agent-host.ts`'s `q`. */
@@ -48,23 +94,42 @@ function q(s: string): string {
 }
 
 /**
- * Wrap a shell command in `bwrap`: host filesystem read-only, `$HOME`
- * re-bound read-write, `isolation.hidePaths` masked with an empty tmpfs.
- * `--die-with-parent` ties the sandbox to `run.sh` so a killed run leaks no
- * `bwrap` process. Network is shared.
+ * Directories masked with an empty tmpfs so the daemon's runtime and tmux
+ * sockets are unreachable (E1): `/run/user/<uid>`, `$TMUX_TMPDIR` and
+ * `/tmp/tmux-<uid>`. Only paths that exist are masked; bwrap cannot create a
+ * mount point on a read-only root, and an absent path holds nothing to leak.
  */
-export function wrapWithBwrap(
-	cmd: string,
-	cwd: string,
-	runDir: string,
-	isolation: BwrapIsolation,
-): string {
+export function maskedRuntimePaths(
+	env: NodeJS.ProcessEnv = process.env,
+	uid: number = process.getuid?.() ?? 0,
+	exists: (p: string) => boolean = existsSync,
+): string[] {
+	const candidates = [`/run/user/${uid}`, env.TMUX_TMPDIR, `/tmp/tmux-${uid}`];
+	const out = candidates.filter(
+		(p): p is string => typeof p === "string" && p.startsWith("/") && exists(p),
+	);
+	return [...new Set(out)];
+}
+
+export interface BwrapCoreOptions {
+	bwrapPath: string;
+	cwd: string;
+	runDir: string;
+	isolation: BwrapIsolation;
+	/** Paths bound read-only AFTER the writable binds (the reviewer's checkouts). */
+	readOnly?: readonly string[];
+	masks?: readonly string[];
+}
+
+/** The bwrap flags shared by the driver sandbox and the reviewer: no env, no command. */
+export function bwrapCore(o: BwrapCoreOptions): string[] {
 	const home = homedir();
 	// `/tmp` stays writable: build tools and test runners use it as scratch.
-	const writable = [...new Set([home, "/tmp", cwd, runDir])];
+	const writable = [...new Set([home, "/tmp", o.cwd, o.runDir])];
 	const tokens: string[] = [
-		"bwrap",
+		o.bwrapPath,
 		"--die-with-parent",
+		"--new-session",
 		"--ro-bind",
 		"/",
 		"/",
@@ -73,9 +138,172 @@ export function wrapWithBwrap(
 		"--proc",
 		"/proc",
 	];
-	for (const p of writable) tokens.push("--bind", q(p), q(p));
-	// After every writable bind, so a hidden path under `$HOME` overlays it.
-	for (const p of isolation.hidePaths) tokens.push("--tmpfs", q(p));
-	tokens.push("--", "sh", "-c", q(cmd));
-	return tokens.join(" ");
+	for (const p of writable) tokens.push("--bind", p, p);
+	for (const p of new Set(o.readOnly ?? [])) tokens.push("--ro-bind", p, p);
+	// After every writable bind, so a masked path under one overlays it.
+	for (const p of new Set([...(o.masks ?? []), ...o.isolation.hidePaths])) {
+		tokens.push("--tmpfs", p);
+	}
+	tokens.push("--clearenv");
+	return tokens;
+}
+
+function probeScriptFor(
+	isolation: BwrapIsolation,
+	allowedEnv: readonly string[],
+	masks: readonly string[],
+): string {
+	return buildProbeScript({
+		allowedEnv: [...allowedEnv, ...SHELL_OWN_ENV],
+		emptyDirs: [...isolation.hidePaths, ...masks],
+		noSocketDirs: [...masks],
+	});
+}
+
+/**
+ * Wrap a shell command in `bwrap`: host filesystem read-only, `$HOME`
+ * re-bound read-write, `isolation.hidePaths` and the runtime and tmux dirs
+ * masked, the environment cleared and rebuilt from the allowlist plus
+ * `passEnv`, and the minimal probe run first (exit 78 on any failure).
+ *
+ * The returned text is a bash fragment for `run.sh`. Environment VALUES are
+ * read from the shell at run time, so secrets handed over by the FIFO never
+ * appear in the script. `--die-with-parent` ties the sandbox to `run.sh` so a
+ * killed run leaks no `bwrap` process. Network is shared.
+ */
+export function wrapWithBwrap(
+	cmd: string,
+	cwd: string,
+	runDir: string,
+	isolation: BwrapIsolation,
+	passEnv: readonly string[] = [],
+): string {
+	const bwrapPath = Bun.which("bwrap");
+	if (!bwrapPath) throw new Error("bwrap is not on PATH");
+	const masks = maskedRuntimePaths();
+	const names = [...new Set([...SANDBOX_ENV_ALLOWLIST, ...passEnv])];
+	const core = bwrapCore({ bwrapPath, cwd, runDir, isolation, masks });
+	const inner = `${probeScriptFor(isolation, names, masks)}\n${cmd}`;
+	return [
+		"_mfw_env=()",
+		`for _n in ${names.join(" ")}; do`,
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: bash indirect expansion, not a JS template
+		'  if [ -n "${!_n+x}" ]; then _mfw_env+=(--setenv "$_n" "${!_n}"); fi',
+		"done",
+		`env -i PATH="$PATH" ${core.map(q).join(" ")} "\${_mfw_env[@]}" -- sh -c ${q(inner)}`,
+	].join("\n");
+}
+
+/** `--setenv` pairs for the named variables present in `source`. */
+export function cleanEnvSetenvArgs(
+	source: NodeJS.ProcessEnv,
+	names: readonly string[],
+): string[] {
+	const out: string[] = [];
+	for (const n of new Set(names)) {
+		const v = source[n];
+		if (typeof v === "string") out.push("--setenv", n, v);
+	}
+	return out;
+}
+
+export type SandboxProbeResult = { ok: true } | { ok: false; detail: string };
+
+const PROBE_TTL_MS = 60_000;
+let probeMemo: { key: string; at: number; result: SandboxProbeResult } | null =
+	null;
+
+/** Test seam: forgets the memoized probe. */
+export function resetSandboxProbeCache(): void {
+	probeMemo = null;
+}
+
+/**
+ * Run the minimal probe in a real bwrap, with the same flags a run gets.
+ * Memoized for a minute per isolation, so preflight stays cheap. A bwrap that
+ * cannot start (no user namespaces, AppArmor) is a failed probe too.
+ */
+export async function probeSandbox(
+	isolation: BwrapIsolation,
+	opts: { env?: NodeJS.ProcessEnv; now?: () => number } = {},
+): Promise<SandboxProbeResult> {
+	const bwrapPath = await resolveBwrapPath();
+	if (!bwrapPath) return { ok: false, detail: "bwrap is not on PATH" };
+	const now = (opts.now ?? Date.now)();
+	const key = JSON.stringify(isolation);
+	if (probeMemo && probeMemo.key === key && now - probeMemo.at < PROBE_TTL_MS) {
+		return probeMemo.result;
+	}
+	const env = opts.env ?? process.env;
+	const scratch = tmpdir();
+	const masks = maskedRuntimePaths(env);
+	const core = bwrapCore({
+		bwrapPath,
+		cwd: scratch,
+		runDir: scratch,
+		isolation,
+		masks,
+	});
+	const argv = [
+		"env",
+		"-i",
+		`PATH=${env.PATH ?? "/usr/bin:/bin"}`,
+		...core,
+		...cleanEnvSetenvArgs(env, SANDBOX_ENV_ALLOWLIST),
+		"--",
+		"sh",
+		"-c",
+		`${probeScriptFor(isolation, SANDBOX_ENV_ALLOWLIST, masks)}\ntrue`,
+	];
+	let result: SandboxProbeResult;
+	try {
+		const r = await runProc(argv, { timeoutMs: 15_000 });
+		result =
+			r.exitCode === 0
+				? { ok: true }
+				: {
+						ok: false,
+						detail:
+							(r.stderr || r.stdout).trim().split("\n").pop() ||
+							`probe exited ${r.exitCode ?? "by signal"} (expected ${PROBE_EXIT_CODE} on a refusal)`,
+					};
+	} catch (error) {
+		result = {
+			ok: false,
+			detail: error instanceof Error ? error.message : String(error),
+		};
+	}
+	probeMemo = { key, at: now, result };
+	return result;
+}
+
+/**
+ * The preflight gate for autonomy: null when the run may go, else the refusal.
+ * `interactive` runs ask a human for every action, so they may run unsandboxed
+ * (`agentIsolation: "none"`).
+ */
+export async function autonomySandboxRefusal(o: {
+	approvalMode: "autonomous" | "interactive";
+	isolation: BwrapIsolation | undefined;
+	probe?: typeof probeSandbox;
+	/** Test seam for "bwrap is absent". */
+	available?: () => Promise<boolean>;
+}): Promise<{
+	code: "sandbox_unavailable" | "sandbox_probe_failed";
+	detail: string;
+} | null> {
+	if (o.approvalMode !== "autonomous") return null;
+	if (!o.isolation) {
+		return {
+			code: "sandbox_unavailable",
+			detail: "agentIsolation is none",
+		};
+	}
+	if (!(await (o.available ?? bwrapAvailable)())) {
+		return { code: "sandbox_unavailable", detail: "bwrap is not on PATH" };
+	}
+	const probed = await (o.probe ?? probeSandbox)(o.isolation);
+	return probed.ok
+		? null
+		: { code: "sandbox_probe_failed", detail: probed.detail };
 }

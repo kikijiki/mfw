@@ -33,7 +33,7 @@ describe("wrapWithBwrap", () => {
 			hidePaths: ["/home/x/.local/share/mfw"],
 		});
 		const bindIdx = wrapped.indexOf("'/work/wt' '/work/wt'");
-		const tmpfsIdx = wrapped.indexOf("--tmpfs '/home/x/.local/share/mfw'");
+		const tmpfsIdx = wrapped.indexOf("'--tmpfs' '/home/x/.local/share/mfw'");
 		expect(bindIdx).toBeGreaterThan(-1);
 		expect(tmpfsIdx).toBeGreaterThan(bindIdx);
 	});
@@ -43,11 +43,11 @@ describe("wrapWithBwrap", () => {
 			mode: "bwrap",
 			hidePaths: [],
 		});
-		expect(wrapped).toContain("--ro-bind / /");
-		expect(wrapped).toContain("--bind '/work/wt' '/work/wt'");
-		expect(wrapped).toContain("--bind '/work/run' '/work/run'");
-		expect(wrapped).toStartWith("bwrap --die-with-parent");
-		expect(wrapped).toContain("-- sh -c 'echo hi'");
+		expect(wrapped).toContain("'--ro-bind' '/' '/'");
+		expect(wrapped).toContain("'--bind' '/work/wt' '/work/wt'");
+		expect(wrapped).toContain("'--bind' '/work/run' '/work/run'");
+		expect(wrapped).toContain("'--die-with-parent'");
+		expect(wrapped).toContain("echo hi'");
 	});
 
 	test("never unshares the network: an agent still needs it", () => {
