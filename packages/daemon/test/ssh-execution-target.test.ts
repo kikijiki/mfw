@@ -191,6 +191,7 @@ await Bun.write(runDir + "/events.jsonl", JSON.stringify({ type: "done" }) + "\\
 		},
 		projectRoot: project,
 		integrationBranch: "main",
+		enabled: true,
 		transport: () => transport,
 	});
 	const prepared = await target.prepare({
@@ -217,7 +218,7 @@ await Bun.write(runDir + "/events.jsonl", JSON.stringify({ type: "done" }) + "\\
 			reasoningEffort: "medium",
 			initialMessage: "go",
 			steer: true,
-			approvalMode: "autonomous",
+			approvalMode: "interactive",
 			...(secretEnvironment ? { secretEnvironment } : {}),
 		},
 	});

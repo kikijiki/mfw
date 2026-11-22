@@ -281,6 +281,7 @@ await Bun.write(runDir + "/events.jsonl", JSON.stringify({ type: "done", reason:
 		account,
 		projectRoot: root,
 		integrationBranch: "main",
+		enabled: true,
 		remoteRoot: join(root, "remote-machine"),
 		remoteGitPath: Bun.which("git") as string,
 		transport: () => transport,
@@ -317,7 +318,7 @@ describe("RunPod ExecutionTarget integration", () => {
 				reasoningEffort: "medium",
 				initialMessage: "execute",
 				steer: true,
-				approvalMode: "autonomous",
+				approvalMode: "interactive",
 			},
 		});
 		expect(f.transport.runtimeBootstrapCalls).toBe(1);
@@ -351,7 +352,7 @@ describe("RunPod ExecutionTarget integration", () => {
 					reasoningEffort: "medium" as const,
 					initialMessage: "execute once",
 					steer: true,
-					approvalMode: "autonomous" as const,
+					approvalMode: "interactive" as const,
 				},
 			};
 			await expect(f.target.launch(request)).rejects.toBeInstanceOf(
@@ -414,7 +415,7 @@ describe("RunPod ExecutionTarget integration", () => {
 				reasoningEffort: "medium",
 				initialMessage: "execute",
 				steer: true,
-				approvalMode: "autonomous",
+				approvalMode: "interactive",
 				secretEnvironment: new SecretEnvironment({
 					CODEX_API_KEY: canary,
 				}),
@@ -502,7 +503,7 @@ await Bun.sleep(750);
 				reasoningEffort: "medium",
 				initialMessage: "leak",
 				steer: true,
-				approvalMode: "autonomous",
+				approvalMode: "interactive",
 				secretEnvironment,
 			},
 		});
@@ -575,7 +576,7 @@ await Bun.sleep(750);
 				reasoningEffort: "medium",
 				initialMessage: "launch before revocation",
 				steer: true,
-				approvalMode: "autonomous",
+				approvalMode: "interactive",
 				secretEnvironment: new SecretEnvironment({ CODEX_API_KEY: canary }),
 			},
 		});
@@ -583,6 +584,7 @@ await Bun.sleep(750);
 			account: f.account,
 			projectRoot: f.root,
 			integrationBranch: "main",
+			enabled: true,
 			remoteRoot: join(f.root, "remote-machine"),
 			remoteGitPath: Bun.which("git") as string,
 			transport: () => f.transport,

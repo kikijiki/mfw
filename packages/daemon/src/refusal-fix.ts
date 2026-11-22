@@ -8,6 +8,7 @@
 
 import type { PreflightCode } from "./dispatch-preflight.ts";
 import type { Held, HostCapacityHoldReason } from "./host-resources/types.ts";
+import type { RemoteRefusalCode } from "./remote-experimental.ts";
 
 export interface RefusalFix {
 	/** Where the remedy lives: a project setting, a shell command, or a screen. */
@@ -45,6 +46,7 @@ export type RefusalCode =
 	| "project_slot_recovery"
 	| "compensation"
 	| "route_invalid"
+	| RemoteRefusalCode
 	| PreflightCode;
 
 export const REFUSAL_FIXES: Record<RefusalCode, FixFor> = {
@@ -199,6 +201,15 @@ export const REFUSAL_FIXES: Record<RefusalCode, FixFor> = {
 		(ids) =>
 			`Edit task ${ids}: set its provider to claude-cli, codex-cli or an endpoint defined in Settings → Routing (or clear it), and give an endpoint without a default model a model.`,
 	),
+	// experimental remote targets (remote-experimental.ts)
+	remote_target_disabled: () => ({
+		kind: "setting",
+		text: "Remote targets (ssh, runpod) are experimental and off by default. Set MFW_EXPERIMENTAL_REMOTE=1 for the daemon to enable them, or use execution_target: local.",
+	}),
+	remote_autonomy_unsupported: () => ({
+		kind: "setting",
+		text: "Remote targets cannot run autonomously until they reach sandbox-profile parity. Set approvalMode to interactive for this project, or use execution_target: local.",
+	}),
 	// issues set on an existing admission
 	renewal_uncertain: ui(
 		() =>
