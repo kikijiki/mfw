@@ -39,7 +39,10 @@ import {
 import { mcpMainScript } from "../agents/adapter.ts";
 import { parseAgentEvents } from "../agents/events.ts";
 import { nativeSessionUuid } from "../agents/native-session.ts";
-import type { StoredBrainConfig } from "../config.ts";
+import {
+	mfwHome as configuredMfwHome,
+	type StoredBrainConfig,
+} from "../config.ts";
 import { HumanOverrideService } from "../human-override.ts";
 import type { Logger } from "../log.ts";
 import type { ProviderHold, RoutingDecision } from "../routing.ts";
@@ -47,6 +50,7 @@ import type { RunRegistry, RunRow } from "../run-registry.ts";
 import type { TaskService } from "../task-service.ts";
 import { BrainActionService } from "./actions.ts";
 import { pruneAwaiting } from "./awaiting.ts";
+import { type BrainSocket, brainSocketFor } from "./brain-socket.ts";
 import {
 	type DigestInput,
 	type DigestRunFact,
@@ -160,7 +164,15 @@ export interface BrainRuntimeDeps {
 	world: BrainWorld;
 	hostname?: string;
 	now?: () => number;
+	/**
+	 * The brain's MCP server. `url` forces the TCP transport (a test seam);
+	 * otherwise a turn talks over the unix socket.
+	 */
 	mcp?: { url?: string; script?: string; command?: string };
+	/** `$MFW_HOME`, where the brain socket lives (default: the configured home). */
+	mfwHome?: string;
+	/** The socket turns authenticate to (default: the home's shared one). */
+	brainSocket?: BrainSocket;
 	/** What the action executor needs of the daemon beyond the shared handles. */
 	exec: Omit<
 		BrainExecutorDeps,
@@ -216,6 +228,8 @@ export class BrainRuntime {
 	private inflight: Promise<TickOutcome> | null = null;
 	/** Failures already announced, so a stuck brain pages once. */
 	private stuckNotified = new Set<string>();
+	/** Turns holding a socket token, so ending a TCP turn never touches the home. */
+	private tokenTurns = new Set<string>();
 
 	constructor(private readonly deps: BrainRuntimeDeps) {
 		this.now = deps.now ?? (() => Date.now());
@@ -749,7 +763,7 @@ export class BrainRuntime {
 			await writeFile(join(runDir, "digest.md"), markdown);
 			const scratchDir = join(this.deps.mfwDir, "brain", session.id);
 			await mkdir(scratchDir, { recursive: true });
-			const mcp = this.mcpServer(session.id, runId);
+			const mcp = await this.mcpServer(session.id, runId);
 			const mcpConfigPath = join(runDir, "mcp.json");
 			await writeFile(
 				mcpConfigPath,
@@ -778,21 +792,67 @@ export class BrainRuntime {
 		return { state: "started", runId, wakeClass };
 	}
 
-	private mcpServer(sessionId: string, turnRunId: string): BrainMcpServer {
+	private socket(): BrainSocket {
+		this.deps.brainSocket ??= brainSocketFor(
+			this.deps.mfwHome ?? configuredMfwHome(),
+		);
+		return this.deps.brainSocket;
+	}
+
+	/**
+	 * The MCP server a turn gets. Over the unix socket it carries a per-turn
+	 * token file path and no URL. TCP is the old unauthenticated path: it is
+	 * used only when `mcp.url` is set, when `MFW_BRAIN_TCP=1` asks for it (a
+	 * temporary switch until auth v1), or, loudly, when no router has been
+	 * wired to the socket (a daemon booted without the app).
+	 */
+	private async mcpServer(
+		sessionId: string,
+		turnRunId: string,
+	): Promise<BrainMcpServer> {
 		const mcp = this.deps.mcp ?? {};
-		return {
-			name: "mfw_brain",
-			command: mcp.command ?? "bun",
-			args: ["run", mcp.script ?? mcpMainScript(), "--brain", sessionId],
-			env: {
+		const base = {
+			MFW_PROJECT: this.deps.projectName,
+			MFW_BRAIN_SESSION: sessionId,
+			MFW_BRAIN_TURN: turnRunId,
+		};
+		const socket = this.socket();
+		const tcp =
+			mcp.url !== undefined ||
+			process.env.MFW_BRAIN_TCP === "1" ||
+			!socket.ready;
+		if (tcp && mcp.url === undefined && process.env.MFW_BRAIN_TCP !== "1")
+			this.deps.log.warn(
+				{ turnRunId },
+				"no router is wired to the brain socket: the brain turn uses unauthenticated TCP",
+			);
+		let env: Record<string, string>;
+		if (tcp) {
+			env = {
 				MFW_URL:
 					mcp.url ??
 					process.env.MFW_URL ??
 					"http://localhost:7777/mfw/api/trpc",
-				MFW_PROJECT: this.deps.projectName,
-				MFW_BRAIN_SESSION: sessionId,
-				MFW_BRAIN_TURN: turnRunId,
-			},
+				...base,
+			};
+		} else {
+			const access = await socket.issue({
+				project: this.deps.projectName,
+				sessionId,
+				runId: turnRunId,
+			});
+			this.tokenTurns.add(turnRunId);
+			env = {
+				MFW_SOCKET: access.socketPath,
+				MFW_BRAIN_TOKEN_FILE: access.tokenFile,
+				...base,
+			};
+		}
+		return {
+			name: "mfw_brain",
+			command: mcp.command ?? "bun",
+			args: ["run", mcp.script ?? mcpMainScript(), "--brain", sessionId],
+			env,
 		};
 	}
 
@@ -1219,6 +1279,13 @@ export class BrainRuntime {
 			run?: RunRow;
 		},
 	): Promise<void> {
+		// The turn is over: its token stops working before anything else.
+		if (this.tokenTurns.delete(runId))
+			await this.socket()
+				.revoke(runId)
+				.catch((e) =>
+					this.deps.log.warn({ err: e, runId }, "brain token revoke failed"),
+				);
 		const nowMs = this.now();
 		const cfg = this.deps.config();
 		const published: StoredEvent[] = [];

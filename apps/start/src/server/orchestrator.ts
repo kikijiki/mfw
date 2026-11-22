@@ -1,11 +1,17 @@
 import { resolve } from "node:path";
+import { appRouter } from "@mfw/api";
 import { boot } from "@mfw/daemon/boot";
+import {
+	BRAIN_SOCKET_ENDPOINT,
+	brainSocketFor,
+} from "@mfw/daemon/brain-runtime/brain-socket";
 import {
 	mfwHome as configuredMfwHome,
 	loadConfig,
 	toBootProjects,
 } from "@mfw/daemon/config";
 import type { Orchestrator } from "@mfw/daemon/services";
+import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 
 /**
  * The orchestrator singleton: constructed ONCE per server process, eagerly at
@@ -26,6 +32,24 @@ export function getOrchestrator(): Promise<Orchestrator> {
 	holder[KEY] ??= (async () => {
 		const mfwHome = resolve(configuredMfwHome());
 		const cfg = await loadConfig(mfwHome);
+		// The brain's unix socket serves the same router; the socket checks the
+		// per-turn token and only lets the brain's own procedures through.
+		brainSocketFor(mfwHome).setHandler((req) =>
+			fetchRequestHandler({
+				endpoint: BRAIN_SOCKET_ENDPOINT,
+				router: appRouter,
+				req,
+				createContext: async () => ({
+					orchestrator: await getOrchestrator(),
+				}),
+				onError({ error, path }) {
+					console.error(
+						`[mfw] brain socket error on '${path}':`,
+						error.message,
+					);
+				},
+			}),
+		);
 		return boot({
 			mfwHome,
 			projects: toBootProjects(cfg),

@@ -368,6 +368,12 @@ export const BRAIN_TOOLS: ToolDef[] = [
 
 /** Network-level failure (daemon down or restarting), as opposed to a typed answer. */
 export function isUnavailable(error: unknown): boolean {
+	// A refusal (bad or revoked token) is an answer; retrying cannot change it.
+	if (
+		(error as { cause?: { name?: unknown } } | null)?.cause?.name ===
+		"BrainSocketRefused"
+	)
+		return false;
 	const data = (error as { data?: { code?: unknown } } | null)?.data;
 	if (data && typeof data.code === "string") return false;
 	const shape = (error as { shape?: { data?: { code?: unknown } } } | null)

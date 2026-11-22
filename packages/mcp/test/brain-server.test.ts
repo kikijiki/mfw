@@ -4,6 +4,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
 	BRAIN_TOOLS,
 	buildBrainServer,
+	isUnavailable,
 	withDaemonRetry,
 } from "../src/brain-server.ts";
 import type { MfwClient } from "../src/client.ts";
@@ -161,5 +162,15 @@ describe("withDaemonRetry", () => {
 		expect(out).toMatchObject({ status: "unavailable" });
 		expect(attempts).toBeGreaterThan(5);
 		expect(t).toBeLessThanOrEqual(120_000);
+	});
+});
+
+describe("isUnavailable", () => {
+	test("a socket refusal is an answer, not an outage", () => {
+		const refusal = Object.assign(new Error("refused"), {
+			cause: { name: "BrainSocketRefused" },
+		});
+		expect(isUnavailable(refusal)).toBe(false);
+		expect(isUnavailable(new TypeError("fetch failed"))).toBe(true);
 	});
 });

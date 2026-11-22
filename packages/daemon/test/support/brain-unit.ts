@@ -6,6 +6,7 @@ import { openProjectDb } from "@mfw/db/client";
 import { appendEvent, EventBus } from "@mfw/db/eventlog";
 import { brainSessions, brainTurns, mergeJobs } from "@mfw/db/schema";
 import { desc } from "drizzle-orm";
+import type { BrainSocket } from "../../src/brain-runtime/brain-socket.ts";
 import type { ExecutorCrashPoint } from "../../src/brain-runtime/executor.ts";
 import {
 	type BrainConfig,
@@ -45,6 +46,8 @@ export async function brainUnit(
 		taskKey?: string;
 		/** Mutable: set `.reason` to a string to stop dispatch, null to resume. */
 		dispatchBlock?: { reason: string | null };
+		/** Give turns the unix socket (and no TCP url) instead of the TCP stub. */
+		socket?: BrainSocket;
 	} = {},
 ) {
 	const root = await mkdtemp(join(tmpdir(), "mfw-test-brain-unit-"));
@@ -268,7 +271,10 @@ export async function brainUnit(
 		},
 		hostname: opts.hostname ?? "host-a",
 		now: () => clock.t,
-		mcp: { url: "http://127.0.0.1:1/trpc", script: "/nonexistent/mcp.ts" },
+		mcp: opts.socket
+			? { script: "/nonexistent/mcp.ts" }
+			: { url: "http://127.0.0.1:1/trpc", script: "/nonexistent/mcp.ts" },
+		...(opts.socket ? { brainSocket: opts.socket } : {}),
 	});
 
 	const api = {
