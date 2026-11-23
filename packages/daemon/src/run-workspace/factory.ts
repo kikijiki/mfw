@@ -127,10 +127,18 @@ export function createVerifierClones(
 	run?: RunWorkspaceFacts,
 ): VerifierClones | null {
 	const setting = settings.get(resolve(projectRoot));
-	if (!setting?.clone) return null;
-	const kind = run ? runWorkspaceKind(projectRoot, run) : setting.kind;
+	const kind = run
+		? runWorkspaceKind(projectRoot, run)
+		: (setting?.kind ?? "worktree");
 	if (kind !== "clone") return null;
-	return createCheckClones(projectRoot);
+	const clones = createCheckClones(projectRoot);
+	// Null would send a caller to verify this agent-writable path directly.
+	if (!clones && run) {
+		throw new Error(
+			`run workspace ${run.worktreePath ?? "(unknown)"} is a clone, but this project has no clone settings`,
+		);
+	}
+	return clones;
 }
 
 /**

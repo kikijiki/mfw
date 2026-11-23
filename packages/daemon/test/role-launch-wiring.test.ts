@@ -20,6 +20,7 @@ import type { ProcResult } from "../src/proc.ts";
 import {
 	clearRunWorkspace,
 	configureRunWorkspace,
+	createVerifierClones,
 } from "../src/run-workspace/factory.ts";
 import { createRoleClone } from "../src/run-workspace/role-clone.ts";
 import { SandboxUnavailableError } from "../src/sandbox.ts";
@@ -79,6 +80,24 @@ describe("a brain turn's command inside the sandbox", () => {
 		expect(() => brainTranscriptStore("/m", session, "claude")).toThrow(
 			"invalid brain session id",
 		);
+	});
+});
+
+// Review P7, m1: a null here sent a clone's agent-writable path to the host.
+describe("verifier clones for a run", () => {
+	test("a clone run with no clone settings is refused", () => {
+		expect(() =>
+			createVerifierClones("/nonexistent-project", { workspaceKind: "clone" }),
+		).toThrow("no clone settings");
+	});
+
+	test("a worktree run still gets none", () => {
+		expect(
+			createVerifierClones("/nonexistent-project", {
+				workspaceKind: "worktree",
+			}),
+		).toBeNull();
+		expect(createVerifierClones("/nonexistent-project")).toBeNull();
 	});
 });
 
