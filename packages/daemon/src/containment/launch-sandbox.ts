@@ -17,6 +17,16 @@
  *
  * There is no fallback. The scope is dropped only when a caller asks for
  * `scope: "none"`, which also drops the resource limits.
+ *
+ * Not wired into the engine yet. Before it is, the P3 in-child probe must check:
+ * - `/proc/1/cmdline` holds no secret;
+ * - the writable mount set is exactly the expected one;
+ * - the open descriptors are exactly 0-2;
+ * - `/dev/console` is absent;
+ * - no bound path holds a socket, other than the run's egress socket;
+ * - the real home is absent, allowing for toolchain roots that recreate part
+ *   of its path;
+ * - cgroup limits are confirmed from the host side, since `/sys` is not mounted.
  */
 
 import { closeSync, constants, fstatSync, openSync, writeSync } from "node:fs";
