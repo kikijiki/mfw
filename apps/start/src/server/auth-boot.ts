@@ -29,6 +29,13 @@ export async function announceFirstRun(
 	);
 }
 
+declare const __MFW_VITE_DEV_SERVER__: boolean | undefined;
+
+/** Set at build time from Vite's command. Absent or false means enforce. */
+const isViteDevServer = (): boolean =>
+	typeof __MFW_VITE_DEV_SERVER__ !== "undefined" &&
+	__MFW_VITE_DEV_SERVER__ === true;
+
 /**
  * Stop before the listener opens if this configuration would expose the server
  * without TLS. Vite's dev server has its own bind, which `HOST` does not
@@ -46,7 +53,7 @@ export function enforceExposure(
 }
 
 export default definePlugin(() => {
-	if (!import.meta.env?.DEV) enforceExposure(process.env);
+	if (!isViteDevServer()) enforceExposure(process.env);
 	void serverAuth()
 		.then((auth) => announceFirstRun(auth))
 		.catch((error) => {

@@ -804,6 +804,44 @@ async function refusesToStart(
 	check(`${name}: nothing is listening`, open === null, open?.status);
 }
 
+/**
+ * Review F3: a build made with any NODE_ENV still refuses. Point
+ * `MFW_SMOKE_ENTRY` at a `NODE_ENV=development` build and set
+ * `MFW_SMOKE_REFUSALS=1` to run only this against it.
+ */
+async function refusalsInDevelopmentMode(): Promise<void> {
+	const scratch = validateTestHome(mkdtempSync(join(tmpdir(), "mfw-test-")));
+	const fakeHome = join(scratch, "home");
+	mkdirSync(fakeHome);
+	const base = {
+		PATH: safePath(),
+		HOME: fakeHome,
+		MFW_HOME: join(scratch, "mfw"),
+		MFW_USAGE_MONITOR: "0",
+		MFW_DISABLE_ORCHESTRATOR: "1",
+		TMUX_TMPDIR: scratch,
+		MFW_TMUX_SOCKET: `mfw-smoke-dev-${process.pid}`,
+		NODE_ENV: "development",
+	};
+	try {
+		await refusesToStart("NODE_ENV=development, no HOST", base, {}, scratch);
+		await refusesToStart(
+			"NODE_ENV=development, every interface",
+			base,
+			{ HOST: "0.0.0.0" },
+			scratch,
+		);
+		await refusesToStart(
+			"NODE_ENV=development, plain non-loopback",
+			base,
+			{ HOST: "192.0.2.1" },
+			scratch,
+		);
+	} finally {
+		rmSync(validateTestHome(scratch), { recursive: true, force: true });
+	}
+}
+
 /** C4: the production build behind a fake TLS proxy, over real socket peers. */
 async function trustedProxy(): Promise<void> {
 	const scratch = validateTestHome(mkdtempSync(join(tmpdir(), "mfw-test-")));
@@ -1125,6 +1163,12 @@ async function main(): Promise<number> {
 		console.error("auth-smoke: no production build. Fix: bun run build");
 		return 2;
 	}
+	if (process.env.MFW_SMOKE_REFUSALS === "1") {
+		await refusalsInDevelopmentMode();
+		console.log(`auth-smoke: ${passed} passed, ${failures.length} failed`);
+		for (const f of failures.slice(0, 40)) console.log(`  FAIL ${f}`);
+		return failures.length ? 1 : 0;
+	}
 	const scratch = validateTestHome(mkdtempSync(join(tmpdir(), "mfw-test-")));
 	const fakeHome = join(scratch, "home");
 	const mfwHome = join(scratch, "mfw");
@@ -1233,6 +1277,7 @@ async function main(): Promise<number> {
 		rmSync(validateTestHome(scratch), { recursive: true, force: true });
 	}
 	await trustedProxy();
+	await refusalsInDevelopmentMode();
 	console.log(`auth-smoke: ${passed} passed, ${failures.length} failed`);
 	for (const f of failures.slice(0, 40)) console.log(`  FAIL ${f}`);
 	return failures.length ? 1 : 0;
