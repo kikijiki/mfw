@@ -207,7 +207,6 @@ export async function validateRunResult(
 			const meta = (parts[i] ?? "").split(" ");
 			const path = parts[i + 1] ?? "";
 			const newMode = meta[1] ?? "";
-			const newSha = meta[3] ?? "";
 			const status = (meta[4] ?? "").slice(0, 1);
 			if (path.split("/").some(isProtectedName)) {
 				throw new HostGitError(
