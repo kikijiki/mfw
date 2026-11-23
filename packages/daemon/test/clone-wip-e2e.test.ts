@@ -24,6 +24,7 @@ import {
 	AGENT_BASE_TOOLS,
 	TEMPORARY_FLEET_WRITABLE,
 } from "../src/containment/agent-profile.ts";
+import type { SandboxProfile } from "../src/containment/profile.ts";
 import { ensureRunDirLayout } from "../src/containment/run-dir.ts";
 import {
 	assertRunDead,
@@ -758,6 +759,33 @@ echo changed > a.txt
 			"changed",
 		);
 	}, 120_000);
+
+	test("the snapshot sandbox binds the clone and run dir, with no fleet config (L2)", async () => {
+		let seen: SandboxProfile | null = null;
+		const stored = JSON.parse(
+			readFileSync(wipLaunchRequestPath(f.runDir), "utf8"),
+		) as AgentLaunchRequest;
+		const steps = cagedSteps(f.cage);
+		const refused = await launchAgentSandbox(stored, ["ignored"], {
+			...steps,
+			attest: (async (input: { profile: SandboxProfile }) => {
+				seen = input.profile;
+				return { ok: false, reason: "stop here", fix: "none" };
+			}) as never,
+			db: f.handle.db,
+			secretValue: () => undefined,
+			warn: () => {},
+		});
+		expect(refused.ok).toBe(false);
+		const fs = (seen as SandboxProfile | null)?.filesystem;
+		expect(fs?.workspace?.source).toBe(f.seeded.path);
+		expect(fs?.fleetConfig).toBeUndefined();
+		expect(fs?.caches ?? []).toEqual([]);
+		expect(existsSync(join(dirname(f.seeded.path), "fleet-state"))).toBe(false);
+		expect(
+			Object.keys((seen as SandboxProfile | null)?.process?.env ?? {}),
+		).toEqual([]);
+	}, 60_000);
 
 	test("the stored snapshot request carries no agent env or secret", () => {
 		const stored = JSON.parse(

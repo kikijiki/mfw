@@ -27,7 +27,7 @@ export function wipLaunchRequestPath(runDir: string): string {
 	return join(runDir, REQUEST_FILE);
 }
 
-/** The agent's request with everything but the clone taken out. */
+/** The agent's request without its env, secrets or network. The launcher also drops the fleet mounts. */
 export function wipSnapshotRequest(
 	req: AgentLaunchRequest,
 ): AgentLaunchRequest {

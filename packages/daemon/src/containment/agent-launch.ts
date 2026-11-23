@@ -179,11 +179,13 @@ export async function launchAgentSandbox(
 	let profile: SandboxProfile;
 	try {
 		cloneLayout(req.tree);
-		ensureFleetPrivateState(
-			req.tree,
-			req.cli,
-			join(req.mfwHome, "agents", req.cli),
-		);
+		if (!snapshot) {
+			ensureFleetPrivateState(
+				req.tree,
+				req.cli,
+				join(req.mfwHome, "agents", req.cli),
+			);
+		}
 		const looked = await deps.compileHost(
 			req,
 			agentToolCandidates(required),
@@ -208,12 +210,13 @@ export async function launchAgentSandbox(
 			binaries,
 			env: {
 				...req.env,
-				...(req.cli === "claude"
+				...(req.cli === "claude" && !snapshot
 					? { CLAUDE_CODE_PROJECT_DIR_NAME: `mfw-run-${req.runId}` }
 					: {}),
 				...secrets,
 			},
 			...(req.egressSocketDir ? { egressSocketDir: req.egressSocketDir } : {}),
+			...(snapshot ? { snapshotOnly: true } : {}),
 		});
 	} catch (err) {
 		if (err instanceof AgentProfileError) {
