@@ -190,6 +190,7 @@ Run these on the host, outside any agent sandbox:
 | `mfw auth unlock` | clear failed sign-in attempts, if you are locked out |
 | `mfw auth sign-out-everywhere` | revoke every session, including a stolen one |
 | `mfw auth setup-token` | issue a new first-run token (before an owner exists) |
+| `mfw auth token ...` | create, list and revoke API tokens (see below) |
 | `mfw auth reset --yes` | forget the password and all sessions, then repeat setup |
 
 Failed sign-ins are limited per address, and all of loopback counts as one
@@ -205,8 +206,40 @@ tmux sockets itself, whatever your shell's environment says, and refuses if unsu
 a surviving agent could otherwise claim the owner account during setup. Do not
 delete `auth.db` by hand: that skips this check.
 
-`mfw mcp` over HTTP has no way to sign in yet and is refused until scoped tokens
-land. The project brain is unaffected: it uses its own unix socket.
+### API tokens
+
+MCP clients and scripts use scoped API tokens instead of a session. Create them
+under Settings > API tokens, or on the host:
+
+```sh
+mfw auth token create --name editor --scope board:read --write-file
+mfw auth token list
+mfw auth token revoke <id>
+```
+
+A token is shown once and stored only as a hash. It expires after 24 hours unless
+you pass `--ttl` (for example `30m`, `7d`, at most `90d`), and `--project` limits it
+to one project. Send it only as `Authorization: Bearer <token>`.
+
+| Scope | Allows |
+| --- | --- |
+| `status:read` | health, inbox, what is running |
+| `board:read` | tasks, ADRs, clarifications, audit events |
+| `board:write` | task title, body, priority and size; file tasks in backlog |
+| `runs:act` | start and stop task runs, read transcripts, move a task to ready |
+
+No scope reaches settings, hosts, triggers, merges, approvals, passwords or token
+management. A token cannot set verification commands, routing or review labels.
+Changing the password or signing out everywhere revokes every token.
+
+`mfw mcp` takes its token from `--token-file <path>`, then `MFW_TOKEN`, then
+`$MFW_HOME/mcp-token`, which must be a 0600 file. It refuses to send a token over
+plain HTTP except to loopback. The tools need these scopes: `list_tasks`,
+`get_task`, `graph` and `task_trace` need `board:read`; `create_task`, `edit_task`,
+`criteria` and `move_task` need `board:write`; `inbox` and `health` need
+`status:read`; `list_runs` and `run_entries` need `runs:act`.
+
+The project brain does not use tokens: it talks over its own unix socket.
 
 ## How it is built
 
