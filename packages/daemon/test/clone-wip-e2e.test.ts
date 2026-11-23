@@ -581,6 +581,50 @@ rm -rf /git/objects /git/refs /git/HEAD
 		expect(await f.ws.hasLocalChanges(f.seeded)).toBe(true);
 	}, 120_000);
 
+	test("a committed symlink out of the tree is refused at import", async () => {
+		const code = await runAgent(
+			f,
+			`
+ln -s /etc/passwd leak.txt
+gc add -A
+gc commit -q -m "symlink out of the tree"
+`,
+		);
+		expect(code).toBe(0);
+		const result = await f.ws.fetchResult(f.seeded);
+		expect(result).toMatchObject({ sha: null, failure: "validation" });
+		expect(await refsOf(f, quarantineRef(f.runId))).toEqual([]);
+	}, 120_000);
+
+	test("symlinked hooks, config and bundle are moved or refused without being followed", async () => {
+		const victim = join(f.base, "victim");
+		mkdirSync(victim);
+		writeFileSync(join(victim, "keep"), "host file\n");
+		const code = await runAgent(
+			f,
+			`
+echo linked > a.txt
+ln a.txt hardlink.txt
+gc add -A
+gc commit -q -m "hardlinked content"
+rm -rf /git/hooks
+ln -s '${victim}' /git/hooks
+mv /git/config /git/config.real
+ln -s '${join(victim, "keep")}' /git/config
+ln -sf '${join(victim, "keep")}' /mfw-run/outbox/result.bundle
+`,
+		);
+		expect(code).toBe(0);
+		const result = await f.ws.fetchResult(f.seeded);
+		expect(result.failure).toBeUndefined();
+		expect(
+			(await git(["show", `${result.sha}:hardlink.txt`], f.project)).stdout,
+		).toBe("linked");
+		// The links moved; what they pointed at did not.
+		expect(readFileSync(join(victim, "keep"), "utf8")).toBe("host file\n");
+		expectHostRanNothing(f);
+	}, 120_000);
+
 	test("a socket planted in the clone is a final refusal, not an endless retry", async () => {
 		const code = await runAgent(
 			f,
