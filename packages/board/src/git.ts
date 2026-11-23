@@ -19,12 +19,25 @@ export class GitError extends Error {
 const LOCK_HELD_RE = /\.lock'?: File exists|Unable to create '[^']*\.lock'/;
 const LOCK_RETRIES = 6;
 
+export interface GitOptions {
+	/** Backoff wait between lock retries; tests inject one to drive the clock. */
+	sleep?: (ms: number) => Promise<void>;
+}
+
+const defaultSleep = (ms: number): Promise<void> =>
+	new Promise((r) => setTimeout(r, ms));
+
 /**
  * Run `git <args>` in `cwd`; returns trimmed stdout, throws `GitError`. A held
  * `.lock` file (another git process, an editor integration) is transient, so
  * those failures are retried with a short backoff before giving up.
  */
-export async function git(args: string[], cwd: string): Promise<string> {
+export async function git(
+	args: string[],
+	cwd: string,
+	opts: GitOptions = {},
+): Promise<string> {
+	const sleep = opts.sleep ?? defaultSleep;
 	for (let attempt = 0; ; attempt++) {
 		try {
 			const { stdout } = await execFileP("git", args, {
@@ -37,7 +50,7 @@ export async function git(args: string[], cwd: string): Promise<string> {
 			const err = e as { stderr?: string; code?: number | string };
 			const stderr = (err.stderr ?? "").trim();
 			if (attempt < LOCK_RETRIES && LOCK_HELD_RE.test(stderr)) {
-				await new Promise((r) => setTimeout(r, 100 * 2 ** attempt));
+				await sleep(100 * 2 ** attempt);
 				continue;
 			}
 			throw new GitError(args, stderr, err.code);
