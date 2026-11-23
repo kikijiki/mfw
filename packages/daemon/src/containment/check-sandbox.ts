@@ -20,11 +20,18 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ProjectDb } from "@mfw/db/client";
-import { protectedPaths, realLaunchSteps } from "./agent-launch.ts";
+import {
+	type LauncherSteps,
+	protectedPaths,
+	realLaunchSteps,
+} from "./agent-launch.ts";
 import { liveCompileHost } from "./agent-launch-host.ts";
-import type { LauncherSteps } from "./agent-launch-run.ts";
 import { AgentProfileError } from "./agent-profile.ts";
-import { type CheckRunner, CheckSandboxRefusal } from "./check-runner.ts";
+import {
+	type CheckRunner,
+	CheckSandboxRefusal,
+	drainTail,
+} from "./check-runner.ts";
 import { type CompileHost, compileBwrap } from "./compile-bwrap.ts";
 import { ProfileRejectedError } from "./profile.ts";
 import { buildVerifierProfile, VERIFIER_TOOLS } from "./role-profiles.ts";
@@ -50,30 +57,6 @@ const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 export function checkShellText(command: string, prefix?: string): string {
 	const wrapper = prefix?.trim();
 	return wrapper ? `${wrapper} sh -c ${quote(command)}` : command;
-}
-
-/** Drain a stream, keeping the last `max` bytes. */
-async function tail(
-	stream: ReadableStream<Uint8Array>,
-	max: number,
-): Promise<{ text: string; truncated: boolean }> {
-	const chunks: Uint8Array[] = [];
-	let held = 0;
-	let truncated = false;
-	for await (const chunk of stream) {
-		chunks.push(chunk);
-		held += chunk.length;
-		while (held > max && chunks.length > 1) {
-			held -= (chunks.shift() as Uint8Array).length;
-			truncated = true;
-		}
-	}
-	let bytes = Buffer.concat(chunks);
-	if (bytes.length > max) {
-		bytes = bytes.subarray(bytes.length - max);
-		truncated = true;
-	}
-	return { text: bytes.toString(), truncated };
 }
 
 export function createCheckSandbox(deps: CheckSandboxDeps): CheckRunner {
@@ -221,8 +204,8 @@ export function createCheckSandbox(deps: CheckSandboxDeps): CheckRunner {
 		req.signal?.addEventListener("abort", kill, { once: true });
 		try {
 			const [out, err, exitCode] = await Promise.all([
-				tail(child.stdout as never, req.maxOutputBytes),
-				tail(child.stderr as never, req.maxOutputBytes),
+				drainTail(child.stdout as never, req.maxOutputBytes),
+				drainTail(child.stderr as never, req.maxOutputBytes),
 				child.exited,
 			]);
 			const signalCode = (child.signalCode ?? null) as NodeJS.Signals | null;

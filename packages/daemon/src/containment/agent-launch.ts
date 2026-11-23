@@ -114,6 +114,12 @@ export interface AgentLaunchDeps {
 	warn(message: string): void;
 }
 
+/** The host-side steps of a launch; only the tests' caged launcher swaps them. */
+export type LauncherSteps = Pick<
+	AgentLaunchDeps,
+	"compileHost" | "attest" | "authorize" | "launch"
+>;
+
 export const realLaunchSteps = {
 	attest: attestSandbox,
 	authorize: authorizeAutonomousLaunch,

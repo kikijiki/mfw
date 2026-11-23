@@ -42,6 +42,26 @@ export function isReadOnlyAgentRole(role: string): role is ReadOnlyAgentRole {
 	return (READ_ONLY_AGENT_ROLES as readonly string[]).includes(role);
 }
 
+/** The sandbox role of each run kind. Anything else is refused. */
+const ROLE_OF_KIND: Readonly<
+	Record<string, "task" | "repair" | ReadOnlyAgentRole>
+> = {
+	task: "task",
+	repair: "repair",
+	plan: "plan",
+	import: "import",
+	action: "trigger",
+	brain: "brain",
+};
+
+/** The role a run kind launches in, or null for a kind with no profile. */
+export function sandboxRoleOfKind(
+	kind: string | undefined,
+): "task" | "repair" | ReadOnlyAgentRole | null {
+	if (kind === undefined || !Object.hasOwn(ROLE_OF_KIND, kind)) return null;
+	return ROLE_OF_KIND[kind] ?? null;
+}
+
 /** Limits of one check: enough for a test suite, bounded against a fork bomb. */
 export const VERIFIER_LIMITS = { tasksMax: 2048, memoryMax: "8G" } as const;
 

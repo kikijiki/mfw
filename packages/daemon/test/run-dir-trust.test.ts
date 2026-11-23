@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { openProjectDb } from "@mfw/db/client";
 import { EventBus } from "@mfw/db/eventlog";
 import { AgentHost } from "../src/agent-host.ts";
+import { ensureRunDirLayout } from "../src/containment/run-dir.ts";
 import { RunRegistry } from "../src/run-registry.ts";
 import { controlRootPath } from "../src/sandbox.ts";
 import {
@@ -12,7 +13,6 @@ import {
 	installCleanup,
 	mkfifoSync,
 	uid,
-	usable,
 	waitFor,
 } from "./support/review-fixes.ts";
 import { runShTmux } from "./support/run-sh-tmux.ts";
@@ -45,10 +45,9 @@ describe("X9: the host does not trust or follow files in the writable run dir", 
 	});
 
 	test("an exit forged in the run dir does not read as completion while the run lives", async () => {
-		const why = await usable();
-		if (why) return console.log(`skip: ${why}`);
 		const { base, mk } = await fakeHome();
 		const runDir = mk(`xrun-forge-${uid}`);
+		ensureRunDirLayout(runDir);
 		const driver = join(base, "forge.ts");
 		writeFileSync(
 			driver,
@@ -114,8 +113,6 @@ process.exit(3);
 
 describe("X15: housekeeping", () => {
 	test("the run script is removed from the control dir once the exit is observed", async () => {
-		const why = await usable();
-		if (why) return console.log(`skip: ${why}`);
 		const { base, mk } = await fakeHome();
 		const runDir = mk(`xrun-clean-${uid}`);
 		const driver = join(base, "d.ts");

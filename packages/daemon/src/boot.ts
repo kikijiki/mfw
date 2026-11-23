@@ -732,7 +732,7 @@ export async function attachProject(
 			return new AgentReviewInference({
 				subject: { projectRoot: root, ...subject },
 				harness: type,
-				hidePaths: [opts.mfwHome],
+				host: { mfwHome: opts.mfwHome, stateDir: mfwDir },
 			});
 		},
 		registry,

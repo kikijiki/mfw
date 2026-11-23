@@ -30,3 +30,27 @@ export interface CheckRunRequest {
 }
 
 export type CheckRunner = (req: CheckRunRequest) => Promise<ProcResult>;
+
+/** Drain a stream, keeping the last `max` bytes. */
+export async function drainTail(
+	stream: AsyncIterable<Uint8Array>,
+	max: number,
+): Promise<{ text: string; truncated: boolean }> {
+	const chunks: Uint8Array[] = [];
+	let held = 0;
+	let truncated = false;
+	for await (const chunk of stream) {
+		chunks.push(chunk);
+		held += chunk.length;
+		while (held > max && chunks.length > 1) {
+			held -= (chunks.shift() as Uint8Array).length;
+			truncated = true;
+		}
+	}
+	let bytes = Buffer.concat(chunks);
+	if (bytes.length > max) {
+		bytes = bytes.subarray(bytes.length - max);
+		truncated = true;
+	}
+	return { text: bytes.toString(), truncated };
+}

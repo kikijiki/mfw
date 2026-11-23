@@ -11,6 +11,7 @@ import {
 	readBrainTurnLaunch,
 	writeBrainTurnLaunch,
 } from "./brain-runtime/turn-run.ts";
+import { sandboxRoleOfKind } from "./containment/role-profiles.ts";
 import {
 	type DispatchPreflightDeps,
 	DispatchPreflightError,
@@ -1205,21 +1206,13 @@ export class RunEngine {
 		return this.launchPreparedRun(prepared);
 	}
 
-	/**
-	 * Only task and repair runs have a sandbox profile. Every other kind would
-	 * get the interim sandbox, which binds the real home read-write, so it may
-	 * not act without a human until its role profile exists.
-	 */
+	/** Every local kind has a sandbox role; a kind without one cannot start. */
 	assertKindMayRun(kind: string): void {
-		if (!this.deps.isolation) return;
-		if ((this.deps.defaults.approvalMode ?? "autonomous") !== "autonomous") {
-			return;
-		}
-		if (kind === "task" || kind === "repair") return;
+		if (!this.deps.isolation || sandboxRoleOfKind(kind)) return;
 		throw new DispatchPreflightError(
 			"sandbox_role_unavailable",
 			[kind],
-			`autonomous ${kind} runs are refused until their sandbox profile exists`,
+			`${kind} runs have no sandbox profile`,
 		);
 	}
 

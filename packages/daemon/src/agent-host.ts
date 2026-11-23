@@ -24,7 +24,16 @@ import {
 	DEV_SHELL_REFUSAL,
 	needsDevShell,
 } from "./containment/agent-preflight.ts";
-import { withoutAutonomyFlags } from "./containment/agent-profile.ts";
+import {
+	AgentProfileError,
+	cloneLayout,
+	withoutAutonomyFlags,
+} from "./containment/agent-profile.ts";
+import {
+	BrainLaunchError,
+	type BrainSandbox,
+	prepareBrainSandbox,
+} from "./containment/brain-launch.ts";
 import { SANDBOX_PATHS } from "./containment/compile-bwrap.ts";
 import {
 	harnessAllowlist,
@@ -37,6 +46,10 @@ import {
 	prepareRunEgress,
 } from "./containment/egress-run.ts";
 import {
+	isReadOnlyAgentRole,
+	sandboxRoleOfKind,
+} from "./containment/role-profiles.ts";
+import {
 	driverRunPaths,
 	ensureRunDirLayout,
 	HOST_BRIDGE_MARKER,
@@ -47,22 +60,20 @@ import {
 	assertDisjointEnvironmentNames,
 	SecretEnvironment,
 } from "./execution-environment.ts";
+import { git } from "./git.ts";
 import type { Logger } from "./log.ts";
 import { runProc } from "./proc.ts";
 import type { ExitEvidence, ExitSource } from "./run-exit-evidence.ts";
+import { createRoleClone } from "./run-workspace/role-clone.ts";
 import { writeWipLaunchRequest } from "./run-workspace/wip-snapshot.ts";
 import {
 	type BwrapIsolation,
 	bwrapAvailable,
 	controlRootPath,
-	ensureTmuxSocketDir,
 	pinnedTool,
 	requireHostTool,
-	SANDBOX_ENV_ALLOWLIST,
 	SandboxUnavailableError,
 	safeHostPath,
-	underPrivateTmp,
-	wrapWithBwrap,
 } from "./sandbox.ts";
 
 /**
@@ -105,7 +116,26 @@ const TMUX_SOCKET = process.env.MFW_TMUX_SOCKET || "mfw";
  * sandbox experiment E1: a canary in the daemon's env reached every run).
  * `TMUX_TMPDIR` only locates the socket.
  */
-const TMUX_ENV_NAMES = [...SANDBOX_ENV_ALLOWLIST, "TMUX_TMPDIR"];
+const TMUX_ENV_NAMES = [
+	"PATH",
+	"HOME",
+	"LANG",
+	"LC_ALL",
+	"TZ",
+	"TERM",
+	"SHELL",
+	"USER",
+	"LOGNAME",
+	"TMPDIR",
+	"XDG_CACHE_HOME",
+	"XDG_DATA_HOME",
+	"XDG_CONFIG_HOME",
+	"NIX_PATH",
+	"NIX_PROFILES",
+	"NIX_SSL_CERT_FILE",
+	"SSL_CERT_FILE",
+	"TMUX_TMPDIR",
+];
 
 /** The mfw tmux server is driven under `env -i`; per-run public values travel by `-e`. */
 function tmuxEnv(source: NodeJS.ProcessEnv = process.env): string[] {
@@ -164,11 +194,8 @@ export const driverTimings: { steerGraceMs?: number } = {};
 
 export interface AgentHostOptions {
 	tmuxRunner?: AgentTmuxRunner;
-	/** Test seam for availability degradation (Bun module mocks are process-global). */
-	sandbox?: {
-		bwrapAvailable: typeof bwrapAvailable;
-		wrapWithBwrap: typeof wrapWithBwrap;
-	};
+	/** Test seam for a host without bwrap (Bun module mocks are process-global). */
+	sandbox?: { bwrapAvailable: typeof bwrapAvailable };
 	/** Where secret FIFOs are made; defaults to the host-only control directory. Must be private and is masked inside every sandbox. */
 	secretCarrierRoot?: string;
 	/** The host-only control directory. Defaults to the per-user one; tests use a private one. */
@@ -212,7 +239,7 @@ export interface LaunchSpec {
 	approvalMode?: "autonomous" | "interactive";
 	/** Isolate the driver from the daemon home (trigger arming store, credentials.json). Fail closed: without `bwrap` on `PATH` the launch throws `SandboxUnavailableError`. */
 	isolation?: BwrapIsolation;
-	/** `task` and `repair` runs get the host bridge; other kinds are P7. */
+	/** Selects the sandbox role (`ROLE_OF_KIND`). */
 	runKind?: string;
 	/** Names the fleet config of a host-bridged run. */
 	providerId?: string;
@@ -228,6 +255,8 @@ interface HostBridge {
 	bridgeArgv: string[];
 	providerArgv: string[];
 	env: Record<string, string>;
+	/** A read-only role's private clone, removed when the run ends. */
+	roleCloneRoot?: string;
 }
 
 const EGRESS_PROXY_MAIN = join(
@@ -252,14 +281,6 @@ const exists = (path: string) =>
 		() => false,
 	);
 
-/** Task and repair runs in a sandbox: the driver stays on the host. */
-function usesHostBridge(spec: LaunchSpec): boolean {
-	return (
-		spec.isolation !== undefined &&
-		(spec.runKind === "task" || spec.runKind === "repair")
-	);
-}
-
 /** A machine at its proxy cap refuses the launch like any missing sandbox. */
 function refuseOverEgressCapacity<T>(prepare: () => T): T {
 	try {
@@ -272,6 +293,34 @@ function refuseOverEgressCapacity<T>(prepare: () => T): T {
 	}
 }
 
+/** True for a run clone this role can mount as it is. */
+async function isPrivateClone(
+	cwd: string,
+	role: AgentLaunchRequest["role"],
+): Promise<boolean> {
+	if (role === "brain") return false;
+	try {
+		cloneLayout(await realpath(cwd));
+		return true;
+	} catch (err) {
+		if (err instanceof AgentProfileError) return false;
+		throw err;
+	}
+}
+
+/** The commit a host-created worktree was checked out at. */
+async function worktreeHead(cwd: string, projectRoot: string): Promise<string> {
+	const head = await git(["rev-parse", "HEAD"], cwd);
+	if (head.exitCode === 0 && head.stdout.trim()) return head.stdout.trim();
+	const primary = await git(["rev-parse", "HEAD"], projectRoot);
+	if (primary.exitCode !== 0) {
+		throw new SandboxUnavailableError(
+			"cannot find a commit to seed the run from",
+		);
+	}
+	return primary.stdout.trim();
+}
+
 export class AgentHost {
 	private readonly runTmux: AgentTmuxRunner;
 	private readonly carrierRootOverride: string | null;
@@ -282,7 +331,7 @@ export class AgentHost {
 
 	constructor(_log?: Logger, opts: AgentHostOptions = {}) {
 		this.runTmux = opts.tmuxRunner ?? tmux;
-		this.sandbox = opts.sandbox ?? { bwrapAvailable, wrapWithBwrap };
+		this.sandbox = opts.sandbox ?? { bwrapAvailable };
 		this.carrierRootOverride = opts.secretCarrierRoot ?? null;
 		this.controlRootOverride = opts.controlRoot ?? null;
 		this.secretHandoffTimeoutMs = opts.secretHandoffTimeoutMs ?? 5_000;
@@ -337,14 +386,14 @@ export class AgentHost {
 				"autonomous runs require a bwrap sandbox (agentIsolation is none)",
 			);
 		}
-		// Only the host bridge is a real profile. The interim sandbox binds the
-		// real home read-write, so nothing autonomous may start in it.
-		if (
-			(spec.approvalMode ?? "autonomous") === "autonomous" &&
-			!usesHostBridge(spec)
-		) {
+		if (spec.isolation && !(await this.sandbox.bwrapAvailable())) {
 			throw new SandboxUnavailableError(
-				`autonomous ${spec.runKind ?? "unnamed"} runs have no sandbox profile yet: set approvalMode to interactive`,
+				"isolation requested but `bwrap` is not on PATH",
+			);
+		}
+		if (spec.isolation && !sandboxRoleOfKind(spec.runKind)) {
+			throw new SandboxUnavailableError(
+				`${spec.runKind ?? "unnamed"} runs have no sandbox profile`,
 			);
 		}
 		const dir = spec.runDir;
@@ -376,7 +425,7 @@ export class AgentHost {
 		) {
 			throw new Error("launch environment uses a reserved internal name");
 		}
-		const bridge = usesHostBridge(spec)
+		const bridge = spec.isolation
 			? await this.prepareHostBridge(spec, control, secretEnvironment)
 			: null;
 
@@ -411,71 +460,14 @@ export class AgentHost {
 			});
 		}
 
-		// Evaluated only inside the interim sandbox. The host never evaluates a
-		// project's `.envrc` or direnv, and a host-bridged run has no dev shell yet.
-		const rootEnvrc = join(spec.projectRoot, ".envrc");
-		const envrcGate = [
-			`if [ -f .envrc ] && command -v direnv >/dev/null 2>&1 && cmp -s .envrc ${q(rootEnvrc)}; then`,
-			'  _mfw_dx=$(mktemp -d 2>/dev/null) || _mfw_dx=""',
-			'  if [ -n "$_mfw_dx" ]; then',
-			'    XDG_DATA_HOME="$_mfw_dx" direnv allow . >/dev/null 2>&1',
-			'    eval "$(XDG_DATA_HOME="$_mfw_dx" direnv export bash 2>/dev/null)"',
-			'    rm -rf "$_mfw_dx"',
-			"  fi",
-			"  unset _mfw_dx",
-			"fi",
-		].join("\n");
-
-		// Run the driver under bwrap when requested. Fail closed: a missing bwrap
-		// is a refusal, never a silent unsandboxed launch. With a sandbox the
-		// direnv gate runs INSIDE it (security review G3: `~/.config/direnv/direnvrc`
-		// is agent-writable and must not be sourced by the host shell), after the
-		// probe, so its exports reach the driver and the allowlist still holds for
-		// everything inherited.
-		// The runtime is the host's pinned bun when one is trusted; otherwise the sandbox `PATH` finds it (trusted entries come first).
+		// The driver is host code next to agent-written files: bun must not read
+		// any config or `.env` from around it. Its output goes to the log file and
+		// never to the pane, so no agent byte reaches a terminal. The host never
+		// evaluates a project's `.envrc`.
 		const bunBin = pinnedTool("bun") ?? "bun";
-		let driverCmd = bridge
-			? // The driver is host code next to agent-written files: bun must not read
-				// any config or `.env` from around it. Its output goes to the log file
-				// and never to the pane, so no agent byte reaches a terminal.
-				`export ${AGENT_BRIDGED_ENV}=1 ${AGENT_LAUNCH_ENV}=${q(bridge.requestPath)}\n${[bunBin, ...HOST_BUN_FLAGS, "run", spec.driverScript, dir].map(q).join(" ")} >> ${q(rawLog)} 2>&1`
+		const driverCmd = bridge
+			? `export ${AGENT_BRIDGED_ENV}=1 ${AGENT_LAUNCH_ENV}=${q(bridge.requestPath)}\n${[bunBin, ...HOST_BUN_FLAGS, "run", spec.driverScript, dir].map(q).join(" ")} >> ${q(rawLog)} 2>&1`
 			: `${q(bunBin)} run ${q(spec.driverScript)} ${q(dir)}`;
-		if (spec.isolation && !bridge) {
-			if (!(await this.sandbox.bwrapAvailable())) {
-				throw new SandboxUnavailableError(
-					"isolation requested but `bwrap` is not on PATH",
-				);
-			}
-			// Make sure the tmux socket dir exists so it is masked even on a first launch.
-			ensureTmuxSocketDir();
-			driverCmd = this.sandbox.wrapWithBwrap(
-				`${envrcGate}\n${driverCmd}`,
-				spec.cwd,
-				dir,
-				{
-					...spec.isolation,
-					hidePaths: [
-						...spec.isolation.hidePaths,
-						control,
-						...(this.carrierRootOverride ? [this.carrierRootOverride] : []),
-					],
-				},
-				[...Object.keys(publicEnvironment), ...secretEnvironment.names()],
-				{
-					// `/tmp` is private per sandbox: what a run legitimately needs from
-					// there (its driver and the agent binaries) is bound back.
-					readOnly: [
-						spec.driverScript,
-						...[
-							...spec.agentArgv,
-							...(spec.bridgeArgv ?? []),
-							...(spec.providerArgv ?? []),
-						].filter((a) => a.startsWith("/")),
-					].filter(underPrivateTmp),
-					splitRunDir: true,
-				},
-			);
-		}
 
 		// Secrets never touch a regular file: write through a 0600 FIFO once run.sh
 		// acknowledges its reader, then unlink. A crash leaves at worst an empty FIFO for the session trap.
@@ -559,6 +551,9 @@ export class AgentHost {
 						"  sleep 0.05",
 						"done",
 					]
+				: []),
+			...(bridge?.roleCloneRoot
+				? [`rm -rf -- ${q(bridge.roleCloneRoot)} 2>/dev/null`]
 				: []),
 			'mfw_record_exit "exit:$rc"',
 			'exit "$rc"',
@@ -714,7 +709,7 @@ export class AgentHost {
 		const cli = FLEET_CLI[spec.providerId ?? ""];
 		if (!mfwHome || !cli) {
 			throw new SandboxUnavailableError(
-				`provider ${spec.providerId ?? "(none)"} has no sandbox profile yet: task and repair runs support claude-cli and codex-cli`,
+				`provider ${spec.providerId ?? "(none)"} has no sandbox profile yet: sandboxed runs support claude-cli and codex-cli`,
 			);
 		}
 		const runDir = await realpath(spec.runDir);
@@ -724,7 +719,18 @@ export class AgentHost {
 				`run dir ${runDir} is not in a project's runs directory`,
 			);
 		}
-		if (needsDevShell(spec.projectRoot) || needsDevShell(spec.cwd)) {
+		const role = sandboxRoleOfKind(spec.runKind);
+		if (!role) {
+			throw new SandboxUnavailableError(
+				`${spec.runKind ?? "unnamed"} runs have no sandbox profile`,
+			);
+		}
+		const readOnly = isReadOnlyAgentRole(role);
+		// Only a role that builds needs the dev shell. Nothing here evaluates it.
+		if (
+			!readOnly &&
+			(needsDevShell(spec.projectRoot) || needsDevShell(spec.cwd))
+		) {
 			throw new SandboxUnavailableError(DEV_SHELL_REFUSAL);
 		}
 		if (!(await exists(join(stateDir, "mfw.db")))) {
@@ -735,8 +741,26 @@ export class AgentHost {
 		const approvalMode = spec.approvalMode ?? "autonomous";
 		const forMode = (argv: string[]) =>
 			approvalMode === "autonomous" ? argv : withoutAutonomyFlags(argv);
-		const agentArgv = forMode(spec.agentArgv);
-		const providerArgv = forMode(spec.providerArgv ?? spec.agentArgv);
+		let agentArgv = forMode(spec.agentArgv);
+		let providerArgv = forMode(spec.providerArgv ?? spec.agentArgv);
+		const realHome = await realpath(mfwHome);
+		let brain: BrainSandbox | null = null;
+		if (role === "brain") {
+			try {
+				brain = await prepareBrainSandbox({
+					runDir,
+					mfwHome: realHome,
+					cli,
+					agentArgv,
+					providerArgv,
+				});
+			} catch (err) {
+				if (!(err instanceof BrainLaunchError)) throw err;
+				throw new SandboxUnavailableError(err.message);
+			}
+			agentArgv = brain.agentArgv;
+			providerArgv = brain.providerArgv;
+		}
 		const egressOptions = {
 			telemetry: spec.isolation?.egressTelemetry === true,
 		};
@@ -745,7 +769,8 @@ export class AgentHost {
 			...harnessEgressEnv(cli, egressOptions),
 		};
 		if ("MFW_REPORT_PATH" in env) {
-			env.MFW_REPORT_PATH = `${SANDBOX_PATHS.workspace}/MFW_REPORT.json`;
+			// A read-only role cannot write its workspace: it reports to the outbox.
+			env.MFW_REPORT_PATH = `${readOnly ? SANDBOX_PATHS.runOutbox : SANDBOX_PATHS.workspace}/MFW_REPORT.json`;
 		}
 		const egressHome = await realpath(mfwHome);
 		const egress = refuseOverEgressCapacity(() =>
@@ -765,13 +790,28 @@ export class AgentHost {
 					: {}),
 			}),
 		);
+		// A brain's cwd is its scratch directory and a worktree's gitdir is in the
+		// primary, so neither can be mounted: those get a private clone.
+		let tree: string;
+		let roleCloneRoot: string | undefined;
+		if (readOnly && !(await isPrivateClone(spec.cwd, role))) {
+			const rev =
+				role === "brain"
+					? "HEAD"
+					: await worktreeHead(spec.cwd, spec.projectRoot);
+			const clone = await createRoleClone(spec.projectRoot, spec.runId, rev);
+			tree = clone.tree;
+			roleCloneRoot = clone.root;
+		} else {
+			tree = await realpath(spec.cwd);
+		}
 		const request: AgentLaunchRequest = {
 			version: 1,
 			runId: spec.runId,
-			role: spec.runKind as "task" | "repair",
+			role,
 			approvalMode,
 			cli,
-			tree: await realpath(spec.cwd),
+			tree,
 			runDir,
 			projectRoot: await realpath(spec.projectRoot),
 			stateDir,
@@ -779,8 +819,14 @@ export class AgentHost {
 			env,
 			secretNames: secretEnvironment.names(),
 			egressSocketDir: egress.socketDir,
+			...(brain
+				? {
+						brainSocketDir: brain.brainSocketDir,
+						fleetStateDir: brain.fleetStateDir,
+					}
+				: {}),
 		};
-		writeWipLaunchRequest(request);
+		if (!readOnly) writeWipLaunchRequest(request);
 		const requestPath = join(control, `agent-launch-${spec.runId}.json`);
 		await rm(requestPath, { force: true });
 		await writeFile(requestPath, JSON.stringify(request), {
@@ -800,6 +846,7 @@ export class AgentHost {
 					: bridgeArgv,
 			providerArgv,
 			env,
+			...(roleCloneRoot ? { roleCloneRoot } : {}),
 		};
 	}
 

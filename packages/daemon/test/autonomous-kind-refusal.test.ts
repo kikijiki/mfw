@@ -7,15 +7,15 @@ import {
 	type AgentTmuxRunner,
 	type LaunchSpec,
 } from "../src/agent-host.ts";
+import { sandboxRoleOfKind } from "../src/containment/role-profiles.ts";
 import { DispatchPreflightError } from "../src/dispatch-preflight.ts";
-import { refusalFix } from "../src/refusal-fix.ts";
 import { RunEngine } from "../src/run-engine.ts";
-import { controlRootPath, SandboxUnavailableError } from "../src/sandbox.ts";
+import { SandboxUnavailableError } from "../src/sandbox.ts";
 
 /**
- * Security review P5b, M4: plan, import, action and brain runs still use the
- * interim sandbox, which binds the real home read-write. They may not run
- * autonomously until their role profiles exist.
+ * Security review P5b, M4, closed by P7: every kind launches in its own role
+ * profile, and a kind without one cannot start. The real launch of each role is
+ * in role-sandbox-live.test.ts.
  */
 
 const KINDS = ["plan", "import", "action", "brain"] as const;
@@ -56,44 +56,69 @@ const spec = (runId: string, over: Partial<LaunchSpec>): LaunchSpec => ({
 	...over,
 });
 
-describe("M4: the agent host", () => {
-	test.each([...KINDS])("refuses an autonomous %s run", async (runKind) => {
-		const host = new AgentHost(undefined, { tmuxRunner: runner });
-		await expect(
-			host.launch(spec(`m4-${runKind}-${process.pid}`, { runKind })),
-		).rejects.toBeInstanceOf(SandboxUnavailableError);
+const host = () =>
+	new AgentHost(undefined, {
+		tmuxRunner: runner,
+		sandbox: { bwrapAvailable: async () => true },
+	});
+
+describe("every kind has a role", () => {
+	test.each([
+		["task", "task"],
+		["repair", "repair"],
+		["plan", "plan"],
+		["import", "import"],
+		["action", "trigger"],
+		["brain", "brain"],
+	])("%s runs as %s", (kind, role) => {
+		expect(sandboxRoleOfKind(kind)).toBe(role as never);
+	});
+
+	test.each([
+		"session",
+		"",
+		"constructor",
+		"__proto__",
+	])("%j has no role", (kind) => {
+		expect(sandboxRoleOfKind(kind)).toBeNull();
+	});
+});
+
+describe("the agent host", () => {
+	test("refuses a kind with no role, in either mode", async () => {
+		for (const approvalMode of ["autonomous", "interactive"] as const) {
+			await expect(
+				host().launch(
+					spec(`m4-none-${process.pid}`, { runKind: "session", approvalMode }),
+				),
+			).rejects.toBeInstanceOf(SandboxUnavailableError);
+		}
 		expect(calls).toEqual([]);
 	});
 
-	test("refuses an autonomous launch that names no kind", async () => {
-		const host = new AgentHost(undefined, { tmuxRunner: runner });
+	test("refuses a launch that names no kind", async () => {
 		await expect(
-			host.launch(spec(`m4-none-${process.pid}`, {})),
+			host().launch(spec(`m4-unnamed-${process.pid}`, {})),
 		).rejects.toBeInstanceOf(SandboxUnavailableError);
 		expect(calls).toEqual([]);
 	});
 
 	test.each([
 		...KINDS,
-	])("leaves an interactive %s run as it was", async (runKind) => {
-		const runId = `m4-int-${runKind}-${process.pid}`;
-		const host = new AgentHost(undefined, {
-			tmuxRunner: runner,
-			sandbox: {
-				bwrapAvailable: async () => true,
-				wrapWithBwrap: (cmd: string) => cmd,
-			},
-		});
-		try {
-			await host.launch(spec(runId, { runKind, approvalMode: "interactive" }));
-			expect(calls.some((c) => c[0] === "new-session")).toBe(true);
-		} finally {
-			rmSync(join(controlRootPath(), `run-${runId}.sh`), { force: true });
+	])("never starts %s outside its profile when the launch cannot be built", async (runKind) => {
+		// No fleet home: the role's launch cannot be prepared, and nothing falls back.
+		for (const approvalMode of ["autonomous", "interactive"] as const) {
+			await expect(
+				host().launch(
+					spec(`m4-${runKind}-${process.pid}`, { runKind, approvalMode }),
+				),
+			).rejects.toBeInstanceOf(SandboxUnavailableError);
 		}
+		expect(calls).toEqual([]);
 	});
 });
 
-describe("M4: the engine refuses before preparing anything", () => {
+describe("the engine", () => {
 	const engine = (approvalMode: "autonomous" | "interactive") => {
 		const e = Object.create(RunEngine.prototype) as {
 			deps: unknown;
@@ -106,31 +131,20 @@ describe("M4: the engine refuses before preparing anything", () => {
 		return e;
 	};
 
-	test.each([...KINDS])("%s is a preflight refusal with a fix", (kind) => {
+	test.each(["task", "repair", ...KINDS])("%s may run autonomously", (kind) => {
+		expect(() => engine("autonomous").assertKindMayRun(kind)).not.toThrow();
+	});
+
+	test("a kind with no role is a preflight refusal with a fix", () => {
 		let thrown: unknown;
 		try {
-			engine("autonomous").assertKindMayRun(kind);
+			engine("interactive").assertKindMayRun("session");
 		} catch (e) {
 			thrown = e;
 		}
 		expect(thrown).toBeInstanceOf(DispatchPreflightError);
 		const err = thrown as DispatchPreflightError;
 		expect(err.code).toBe("sandbox_role_unavailable");
-		expect(err.fix.text).toContain("interactive");
-		expect(err.fix.text).not.toContain("agentIsolation none");
-	});
-
-	test.each(["task", "repair"])("%s may run", (kind) => {
-		expect(() => engine("autonomous").assertKindMayRun(kind)).not.toThrow();
-	});
-
-	test.each([...KINDS])("an interactive %s may run", (kind) => {
-		expect(() => engine("interactive").assertKindMayRun(kind)).not.toThrow();
-	});
-
-	test("the refusal names the run kind", () => {
-		expect(refusalFix("sandbox_role_unavailable", ["plan"]).text).toContain(
-			"plan",
-		);
+		expect(err.fix.text).toContain("session");
 	});
 });

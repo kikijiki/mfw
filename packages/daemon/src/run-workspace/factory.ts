@@ -106,6 +106,11 @@ export function workspaceForRun(
 	return new CloneRunWorkspace(resolve(projectRoot), clone);
 }
 
+/** Where a project's clones live; registered for worktree projects too. */
+export function workspaceRootOf(projectRoot: string): string | null {
+	return settings.get(resolve(projectRoot))?.clone?.workspaceRoot ?? null;
+}
+
 /**
  * The disposable verification clones for a project, or null when it runs on
  * worktrees (verification then happens in the run's own worktree, as before).
