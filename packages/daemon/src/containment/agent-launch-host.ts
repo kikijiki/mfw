@@ -5,7 +5,7 @@
 
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { requireHostTool } from "../sandbox.ts";
+import { pinnedTool, requireHostTool } from "../sandbox.ts";
 import type { AgentLaunchRequest } from "./agent-launch.ts";
 import type { CompileHost } from "./compile-bwrap.ts";
 import {
@@ -33,7 +33,11 @@ export async function liveCompileHost(
 	const bwrapPath = requireHostTool("bwrap");
 	const readers = liveHostReaders();
 	const [userns, bwrap, systemd] = await Promise.all([
-		detectUserns(readers),
+		detectUserns(readers, {
+			bwrap: bwrapPath,
+			bwrapReal: realOrNull(bwrapPath),
+			trueBin: pinnedTool("true"),
+		}),
 		detectBwrap(readers, bwrapPath),
 		detectSystemdUser(readers),
 	]);

@@ -40,7 +40,12 @@ const CG =
 const BWRAP_OK = {
 	"bwrap --version": { code: 0, stdout: "bubblewrap 0.13.1\n" },
 	"bwrap --help": { code: 0, stdout: "  --disable-userns\n" },
+	"bwrap --unshare-user --ro-bind / / true": { code: 0, stdout: "" },
 };
+const USERNS_DENIED = {
+	"bwrap --unshare-user --ro-bind / / true": { code: 1, stdout: "" },
+};
+const PROBE = { bwrap: "bwrap", trueBin: "true" };
 
 function readers(f: Fixture): HostReaders {
 	return {
@@ -96,6 +101,7 @@ describe("distro fixtures", () => {
 	test("Ubuntu 24.04 with AppArmor: userns refused with the profile fix", async () => {
 		const r = await caps({
 			...nixos,
+			run: { ...nixos.run, ...USERNS_DENIED },
 			files: {
 				...nixos.files,
 				"/proc/sys/kernel/apparmor_restrict_unprivileged_userns": "1\n",
@@ -103,8 +109,9 @@ describe("distro fixtures", () => {
 		});
 		expect(r.userns.ok).toBe(false);
 		expect(r.userns.value.appArmorRestricted).toBe(true);
-		expect(r.userns.fix).toContain("apparmor_restrict_unprivileged_userns=0");
-		expect(r.userns.fix).toContain("/etc/apparmor.d/bwrap");
+		expect(r.userns.fix).not.toContain("sysctl");
+		// The fixture names bwrap bare; the exact profile is in userns-probe.test.ts.
+		expect(r.userns.fix).toContain("AppArmor profile");
 		expect(r.autonomyOk).toBe(false);
 		expect(r.fixes[0]).toBe(r.userns.fix as string);
 	});
@@ -112,24 +119,32 @@ describe("distro fixtures", () => {
 	test("Ubuntu with the restriction off passes", async () => {
 		const c = await detectUserns(
 			readers({
+				run: BWRAP_OK,
 				files: {
 					"/proc/sys/kernel/apparmor_restrict_unprivileged_userns": "0\n",
 				},
 			}),
+			PROBE,
 		);
 		expect(c.ok).toBe(true);
 	});
 
 	test("Debian with userns 0: sysctl fix", async () => {
 		const c = await detectUserns(
-			readers({ files: { "/proc/sys/user/max_user_namespaces": "0\n" } }),
+			readers({
+				run: USERNS_DENIED,
+				files: { "/proc/sys/user/max_user_namespaces": "0\n" },
+			}),
+			PROBE,
 		);
 		expect(c.ok).toBe(false);
 		expect(c.fix).toContain("user.max_user_namespaces=63304");
 		const d = await detectUserns(
 			readers({
+				run: USERNS_DENIED,
 				files: { "/proc/sys/kernel/unprivileged_userns_clone": "0\n" },
 			}),
+			PROBE,
 		);
 		expect(d.ok).toBe(false);
 		expect(d.fix).toContain("kernel.unprivileged_userns_clone=1");

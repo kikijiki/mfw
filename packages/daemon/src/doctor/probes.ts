@@ -16,6 +16,8 @@ export interface PathStat {
 export interface ToolLookup {
 	/** On a PATH entry an agent cannot write. Only this path is ever executed. */
 	path: string | null;
+	/** `path` with symlinks resolved, when it differs. */
+	realPath?: string;
 	/** Found only somewhere an agent could have planted it. Never executed. */
 	untrustedPath?: string;
 }

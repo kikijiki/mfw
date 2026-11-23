@@ -624,9 +624,19 @@ export async function runDoctor(
 
 	const fixed = await Promise.all([
 		guarded("host.bwrap", "host", () => bwrapCheck(p)),
-		guarded("host.userns", "host", async () =>
-			fromHostCheck(await detectUserns(p.host)),
-		),
+		guarded("host.userns", "host", async () => {
+			const [bwrap, trueBin] = await Promise.all([
+				p.tool("bwrap"),
+				p.tool("true"),
+			]);
+			return fromHostCheck(
+				await detectUserns(p.host, {
+					bwrap: bwrap.path,
+					bwrapReal: bwrap.realPath ?? bwrap.path,
+					trueBin: trueBin.path,
+				}),
+			);
+		}),
 		guarded("host.seccomp", "host", () => seccompCheck(p)),
 		guarded("host.systemd", "host", async () =>
 			fromHostCheck(await detectSystemdUser(p.host)),

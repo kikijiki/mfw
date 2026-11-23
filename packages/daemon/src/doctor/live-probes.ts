@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { lstat, stat } from "node:fs/promises";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -350,7 +350,10 @@ export function liveDoctorProbes(o: LiveProbeOptions): DoctorProbes {
 
 	const tool = async (name: string): Promise<ToolLookup> => {
 		const path = trusted(name);
-		if (path) return { path };
+		if (path) {
+			const real = realpathSync(path);
+			return real === path ? { path } : { path, realPath: real };
+		}
 		for (const dir of (pathVar ?? "").split(delimiter)) {
 			if (!dir) continue;
 			const candidate = join(dir, name);

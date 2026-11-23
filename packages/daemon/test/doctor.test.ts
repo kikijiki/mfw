@@ -235,16 +235,29 @@ describe("host checks", () => {
 
 	test("the Ubuntu 24.04 AppArmor restriction gets its documented fix", async () => {
 		const base = fixtureHost();
-		const host: HostReaders = {
+		const restricted = async (p: string) =>
+			p === "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+				? "1\n"
+				: base.readFile(p);
+		const denied: HostReaders = {
 			...base,
-			readFile: async (p) =>
-				p === "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
-					? "1\n"
-					: base.readFile(p),
+			readFile: restricted,
+			run: async (argv) =>
+				argv.includes("--unshare-user")
+					? { code: 1, stdout: "" }
+					: base.run(argv),
 		};
-		const c = await check({ host }, "host.userns");
+		const c = await check({ host: denied }, "host.userns");
 		expect([c.status, c.severity]).toEqual(["problem", "blocker"]);
-		expect(c.fix).toContain("apparmor");
+		expect(c.fix).toContain("profile mfw-bwrap /usr/bin/bwrap");
+		expect(c.fix).not.toContain("sysctl");
+
+		// With the profile installed the knob still reads 1, and doctor passes.
+		const profiled = await check(
+			{ host: { ...base, readFile: restricted } },
+			"host.userns",
+		);
+		expect(profiled.status).toBe("ok");
 	});
 
 	test("aarch64 is a blocker: the seccomp filter is x86_64 only", async () => {
