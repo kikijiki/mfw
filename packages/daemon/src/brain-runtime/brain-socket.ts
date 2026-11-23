@@ -8,10 +8,10 @@ import { join, resolve } from "node:path";
  *
  * The brain's MCP server is a child of an LLM harness, so anything it can
  * reach, the model can reach. Over TCP that was the whole UI API with no
- * credential. Here the daemon listens on `$MFW_HOME/run/brain.sock` (0600, in
- * a 0700 directory) and accepts only a bearer token minted for ONE turn,
- * written to a 0600 file whose path (never the secret) goes into the MCP
- * server's environment. The token is revoked when the turn ends, and a daemon
+ * credential. Here the daemon opens one listener per turn at
+ * `$MFW_HOME/run/b/<hash>/brain.sock` (0600, in a 0700 directory) and accepts
+ * only a bearer token minted for that turn, written to a 0600 file beside it
+ * whose path (never the secret) goes into the MCP server's environment. The token is revoked when the turn ends, and a daemon
  * restart forgets every token, so a leaked or stale one buys nothing.
  *
  * The token binds the call: the project and the turn id the caller claims
@@ -55,6 +55,10 @@ export type BrainSocketHandler = (
 /** Linux `sun_path` holds 108 bytes including the NUL. */
 const MAX_SOCKET_PATH = 100;
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
+const TURN_DIR_CHARS = 12;
+/** Names inside a turn's directory, which a brain sandbox binds read-only. */
+export const BRAIN_SOCKET_FILE = "brain.sock";
+export const BRAIN_TOKEN_FILE = "token";
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
@@ -64,27 +68,35 @@ const json = (status: number, message: string) =>
 		headers: { "content-type": "application/json" },
 	});
 
+/** One turn's listener and the directory that is all its sandbox can see. */
+interface TurnEndpoint {
+	key: string;
+	dir: string;
+	socketPath: string;
+	server: ReturnType<typeof Bun.serve>;
+}
+
 export class BrainSocket {
 	readonly dir: string;
-	readonly socketPath: string;
-	private readonly tokenDir: string;
+	/** Short, because a unix socket path is limited: `<home>/run/b/<hash>/brain.sock`. */
+	private readonly turnRoot: string;
 	private handler: BrainSocketHandler | null = null;
-	private server: ReturnType<typeof Bun.serve> | null = null;
+	private prepared: Promise<void> | null = null;
 	/** sha256(token) -> binding. */
 	private readonly tokens = new Map<string, BrainTurnBinding>();
-	/** runId -> sha256(token), to revoke by turn. */
-	private readonly byRun = new Map<string, string>();
-	private starting: Promise<void> | null = null;
+	/** runId -> its token and listener, to revoke by turn. */
+	private readonly byRun = new Map<string, TurnEndpoint>();
 	private readonly onExit = () => {
-		try {
-			unlinkSync(this.socketPath);
-		} catch {}
+		for (const turn of this.byRun.values()) {
+			try {
+				unlinkSync(turn.socketPath);
+			} catch {}
+		}
 	};
 
 	constructor(home: string) {
 		this.dir = join(resolve(home), "run");
-		this.socketPath = join(this.dir, "brain.sock");
-		this.tokenDir = join(this.dir, "brain-turn");
+		this.turnRoot = join(this.dir, "b");
 	}
 
 	setHandler(handler: BrainSocketHandler | null): void {
@@ -96,30 +108,59 @@ export class BrainSocket {
 		return this.handler !== null;
 	}
 
-	/** Mint a token for one turn, start listening if needed, return what the MCP server needs. */
+	/**
+	 * Mint a token for one turn and open a listener only it can use. The turn's
+	 * directory holds exactly that socket and token, so a sandbox binding it
+	 * reaches no other turn.
+	 */
 	async issue(binding: BrainTurnBinding): Promise<BrainSocketAccess> {
-		await this.start();
-		this.revokeSync(binding.runId);
+		await this.prepare();
+		await this.revoke(binding.runId);
+		const turnDir = join(
+			this.turnRoot,
+			sha(binding.runId).slice(0, TURN_DIR_CHARS),
+		);
+		const socketPath = join(turnDir, BRAIN_SOCKET_FILE);
+		if (socketPath.length > MAX_SOCKET_PATH)
+			throw new Error(
+				`the brain socket path is too long for a unix socket (${socketPath.length} > ${MAX_SOCKET_PATH}); set MFW_HOME to a shorter directory`,
+			);
+		await rm(turnDir, { recursive: true, force: true });
+		await mkdir(turnDir, { mode: 0o700 });
+		await chmod(turnDir, 0o700);
 		const token = randomBytes(32).toString("base64url");
 		const key = sha(token);
-		const tokenFile = join(this.tokenDir, `${binding.runId}.token`);
+		const tokenFile = join(turnDir, BRAIN_TOKEN_FILE);
 		await writeFile(tokenFile, token, { mode: 0o600 });
 		await chmod(tokenFile, 0o600);
+		const runId = binding.runId;
+		const prior = process.umask(0o177);
+		let server: ReturnType<typeof Bun.serve>;
+		try {
+			server = Bun.serve({
+				unix: socketPath,
+				maxRequestBodySize: MAX_BODY_BYTES,
+				fetch: (req) => this.serve(req, runId),
+			});
+		} finally {
+			process.umask(prior);
+		}
+		await chmod(socketPath, 0o600);
+		// Never keep the process alive, and never leave a socket file behind.
+		server.unref();
 		this.tokens.set(key, { ...binding });
-		this.byRun.set(binding.runId, key);
-		return { socketPath: this.socketPath, tokenFile };
+		this.byRun.set(runId, { key, dir: turnDir, socketPath, server });
+		return { socketPath, tokenFile };
 	}
 
-	/** End a turn's access: the token stops working and its file goes. Idempotent. */
+	/** End a turn's access: token, listener and directory all go. Idempotent. */
 	async revoke(runId: string): Promise<void> {
-		this.revokeSync(runId);
-		await rm(join(this.tokenDir, `${runId}.token`), { force: true });
-	}
-
-	private revokeSync(runId: string): void {
-		const key = this.byRun.get(runId);
-		if (key) this.tokens.delete(key);
+		const turn = this.byRun.get(runId);
+		if (!turn) return;
+		this.tokens.delete(turn.key);
 		this.byRun.delete(runId);
+		await turn.server.stop(true);
+		await rm(turn.dir, { recursive: true, force: true });
 	}
 
 	/** Tokens currently valid (tests and status). */
@@ -128,59 +169,40 @@ export class BrainSocket {
 	}
 
 	async stop(): Promise<void> {
+		const turns = [...this.byRun.keys()];
+		await Promise.all(turns.map((runId) => this.revoke(runId)));
 		this.tokens.clear();
-		this.byRun.clear();
-		const server = this.server;
-		this.server = null;
-		this.starting = null;
+		this.prepared = null;
 		process.off("exit", this.onExit);
-		if (server) await server.stop(true);
-		await rm(this.socketPath, { force: true });
-		await rm(this.tokenDir, { recursive: true, force: true });
+		await rm(this.turnRoot, { recursive: true, force: true });
 	}
 
-	private start(): Promise<void> {
-		if (this.server) return Promise.resolve();
-		this.starting ??= this.listen().catch((e) => {
-			this.starting = null;
+	/** Once per daemon: a second run of it would delete a live turn's directory. */
+	private prepare(): Promise<void> {
+		this.prepared ??= this.sweepTurns().catch((e) => {
+			this.prepared = null;
 			throw e;
 		});
-		return this.starting;
+		return this.prepared;
 	}
 
-	private async listen(): Promise<void> {
-		if (this.socketPath.length > MAX_SOCKET_PATH)
-			throw new Error(
-				`the brain socket path is too long for a unix socket (${this.socketPath.length} > ${MAX_SOCKET_PATH}); set MFW_HOME to a shorter directory`,
-			);
+	private async sweepTurns(): Promise<void> {
 		// The directory is the real barrier (0700); the socket mode is belt and braces.
 		await mkdir(this.dir, { recursive: true, mode: 0o700 });
 		await chmod(this.dir, 0o700);
 		// A previous daemon's tokens are dead with it: never leave their files around.
-		await rm(this.tokenDir, { recursive: true, force: true });
-		await mkdir(this.tokenDir, { recursive: true, mode: 0o700 });
-		await rm(this.socketPath, { force: true });
-		const prior = process.umask(0o177);
-		try {
-			this.server = Bun.serve({
-				unix: this.socketPath,
-				maxRequestBodySize: MAX_BODY_BYTES,
-				fetch: (req) => this.serve(req),
-			});
-		} finally {
-			process.umask(prior);
-		}
-		await chmod(this.socketPath, 0o600);
-		// Never keep the process alive, and never leave a socket file behind.
-		this.server.unref();
+		await rm(this.turnRoot, { recursive: true, force: true });
+		await mkdir(this.turnRoot, { recursive: true, mode: 0o700 });
 		process.on("exit", this.onExit);
 	}
 
-	private async serve(req: Request): Promise<Response> {
+	private async serve(req: Request, listenerRun: string): Promise<Response> {
 		const auth = req.headers.get("authorization") ?? "";
 		const m = /^Bearer (\S+)$/.exec(auth);
 		const binding = m?.[1] ? this.tokens.get(sha(m[1])) : undefined;
-		if (!binding) return json(401, "unknown or revoked brain token");
+		// A token works only on its own turn's listener.
+		if (!binding || binding.runId !== listenerRun)
+			return json(401, "unknown or revoked brain token");
 		if (!this.handler) return json(503, "the brain socket has no router yet");
 
 		const url = new URL(req.url);
