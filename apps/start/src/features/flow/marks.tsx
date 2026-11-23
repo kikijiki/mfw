@@ -67,8 +67,9 @@ export const MARK_LOOK: Record<MarkKind, MarkLook> = {
 		token: "--mfw-status-review",
 	},
 	passed: {
-		name: "verify passed",
-		meaning: "the run or its checks finished clean",
+		name: "finished",
+		meaning:
+			"the run ended without error; any stronger word is a separate host claim",
 		shape: "check",
 		token: "--mfw-ok",
 	},

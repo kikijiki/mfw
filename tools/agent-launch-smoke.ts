@@ -12,6 +12,7 @@
  */
 import {
 	chmodSync,
+	cpSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -26,6 +27,13 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { saveConfig } from "../packages/daemon/src/config.ts";
 import { AGENT_BASE_TOOLS } from "../packages/daemon/src/containment/agent-profile.ts";
+import {
+	builtScriptName,
+	CLAUDE_BRIDGE,
+	HOST_SCRIPTS_DIR,
+	HOST_SCRIPTS_MANIFEST,
+	sha256Hex,
+} from "../packages/daemon/src/containment/host-script.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const ENTRY =
@@ -142,6 +150,27 @@ function git(cwd: string, ...args: string[]): void {
 	if (r.exitCode !== 0) fail(`git ${args[0]}: ${r.stderr.toString()}`);
 }
 
+/**
+ * A private copy of the build whose Claude bridge is the caged one, listed in
+ * its manifest. The server accepts no script override, so this is how the smoke
+ * gets a fake CLI without a test seam in production code.
+ */
+function buildWithBridge(base: string, bridge: string): string {
+	const output = join(base, "apps/start/.output");
+	cpSync(dirname(dirname(ENTRY)), output, { recursive: true });
+	const dir = join(output, HOST_SCRIPTS_DIR);
+	const name = builtScriptName(CLAUDE_BRIDGE);
+	const content = readFileSync(bridge);
+	rmSync(join(dir, name));
+	writeFileSync(join(dir, name), content);
+	const manifestPath = join(dir, HOST_SCRIPTS_MANIFEST);
+	const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+	manifest.scripts[name] = sha256Hex(content);
+	rmSync(manifestPath);
+	writeFileSync(manifestPath, JSON.stringify(manifest));
+	return join(output, "server/index.mjs");
+}
+
 async function main(): Promise<number> {
 	if (!existsSync(ENTRY)) fail("no production build. Fix: bun run build");
 	liveSandboxOrFail();
@@ -217,7 +246,7 @@ await import(${JSON.stringify(BRIDGE)});
 			process.execPath,
 			`--preload=${join(SUPPORT, "caged-server-preload.ts")}`,
 			"run",
-			ENTRY,
+			buildWithBridge(base, bridge),
 		],
 		{
 			cwd: ROOT,
@@ -231,7 +260,6 @@ await import(${JSON.stringify(BRIDGE)});
 				MFW_TMUX_SOCKET: tmuxSocket,
 				TMUX_TMPDIR: tmuxDir,
 				MFW_CAGE_CONFIG: cageConfig,
-				MFW_CLAUDE_BRIDGE_SCRIPT: bridge,
 			},
 			stdout: Bun.file(logFile),
 			stderr: Bun.file(logFile),

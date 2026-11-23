@@ -32,7 +32,7 @@ import {
  * SSH identity lives next to it under `$MFW_HOME/hosts/keys/`, 0600 in a 0700
  * directory, and never leaves this machine.
  *
- * Trust model (backstage architecture.md, "Security model", "SSH hosts"): the agent runs with every
+ * Trust model: the agent runs with every
  * permission the box user has, so the box user is the blast radius. A host
  * is schedulable only when its last probe is fresh and passed:
  *   - the user is not root and `sudo -n true` fails (no passwordless sudo);

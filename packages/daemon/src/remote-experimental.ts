@@ -1,7 +1,6 @@
 /**
  * Remote execution targets (SSH, RunPod) are experimental in 1.0: off unless
- * explicitly enabled, and never autonomous (backstage architecture.md,
- * "Resources, targets and recovery of capacity"). They still run the agent in a
+ * explicitly enabled, and never autonomous. They still run the agent in a
  * same-uid bwrap with open egress, so they have no sandbox-profile parity.
  * Only starting new work is gated; observe, collect, dispose and reconcile keep
  * working so an existing lease can always be cleaned up.

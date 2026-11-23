@@ -49,7 +49,7 @@ export function evaluateRefs(
 				const id = m.groups?.id;
 				if (!span || id === undefined) continue;
 				// The pattern's own boundaries are the author's; the id's must hold
-				// regardless, so POOT-641 is never read out of POOT-6410.
+				// regardless, so TSK-641 is never read out of TSK-6410.
 				if (WORD.test(line[span[1]] ?? "") && WORD.test(id.slice(-1))) continue;
 				if (
 					span[0] > 0 &&

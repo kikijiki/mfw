@@ -20,6 +20,8 @@ import { engineKv, runSteps, runs } from "@mfw/db/schema";
 import { and, eq } from "drizzle-orm";
 import { AgentHost } from "../src/agent-host.ts";
 import { ClarifyService } from "../src/clarify.ts";
+import { PROJECT_DEFAULTS } from "../src/config.ts";
+import type { CheckRunner } from "../src/containment/check-runner.ts";
 import { ensureRunDirLayout } from "../src/containment/run-dir.ts";
 import type { RunKind } from "../src/finalize/machine.ts";
 import {
@@ -30,8 +32,13 @@ import {
 import { git } from "../src/git.ts";
 import type { LeftoverProcess } from "../src/leftover-processes.ts";
 import { silentLogger } from "../src/log.ts";
+import { runProc } from "../src/proc.ts";
 import { runProvenanceView } from "../src/run-provenance-view.ts";
 import { RunRegistry, type RunRow } from "../src/run-registry.ts";
+import {
+	clearRunWorkspace,
+	configureRunWorkspace,
+} from "../src/run-workspace/factory.ts";
 import { TaskService } from "../src/task-service.ts";
 import { WorktreeManager } from "../src/worktree.ts";
 import { makeTasks } from "./fixtures/board.ts";
@@ -2715,5 +2722,150 @@ describe("provenance: a forged outbox never renders as host-observed", () => {
 		expect(after.exit.observed).toEqual({ kind: "exit", code: 3 });
 		expect(after.exit.agentSays).toEqual({ kind: "exit", code: 0 });
 		await env.cleanup();
+	});
+});
+
+describe("an autonomous worktree run on the default config", () => {
+	const dodOn = (word: string) => ({
+		verifier: "deterministic" as const,
+		checks: [{ run: `grep -q ${word} state.txt`, expect_exit: 0 }],
+	});
+
+	/** Default mode and workspace, with a stand-in for the verifier sandbox. */
+	async function defaultEnv() {
+		expect(PROJECT_DEFAULTS.approvalMode).toBe("autonomous");
+		expect(PROJECT_DEFAULTS.runWorkspace).toBe("worktree");
+		const env = await makeEnv();
+		const workspaces = await mkdtemp(join(tmpdir(), "mfw-sr-clones-"));
+		const trees: string[] = [];
+		const checkRunner: CheckRunner = (req) => {
+			trees.push(req.tree);
+			return runProc(["sh", "-c", req.command], {
+				cwd: req.tree,
+				timeoutMs: req.timeoutMs,
+				maxOutputBytes: req.maxOutputBytes,
+			});
+		};
+		configureRunWorkspace(env.root, {
+			kind: PROJECT_DEFAULTS.runWorkspace,
+			clone: { workspaceRoot: workspaces, checkRunner },
+		});
+		return {
+			env,
+			trees,
+			workspaces,
+			runner: env.runner,
+			done: async () => {
+				clearRunWorkspace(env.root);
+				await rm(workspaces, { recursive: true, force: true });
+				await env.cleanup();
+			},
+		};
+	}
+
+	async function endedRun(
+		env: Env,
+		name: string,
+		dod: ReturnType<typeof dodOn>,
+		content: string,
+	) {
+		const wt = await addWorktree(env.root, name);
+		await commitIn(wt.path, "state.txt", content);
+		const runId = ulid();
+		const taskId = await claimedTask(env, runId, { title: name, dod });
+		const run = await seedRun(env, {
+			kind: "task",
+			runId,
+			taskId,
+			wt,
+			events: doneEvent("done"),
+			exit: "exit:0",
+			approvalMode: PROJECT_DEFAULTS.approvalMode,
+		});
+		return { wt, run };
+	}
+
+	const verifyFacts = async (env: Env, runId: string) =>
+		(await settledEvents(env, runId))[0]?.payload.facts.verify;
+
+	test("a passing check passes, and runs only in the sandbox on a clone", async () => {
+		const t = await defaultEnv();
+		const { wt, run } = await endedRun(
+			t.env,
+			"d-pass",
+			dodOn("good"),
+			"good\n",
+		);
+
+		await t.runner.finalize(run.id);
+
+		expect(t.env.merges.map((m) => m.runId)).toEqual([run.id]);
+		expect(t.trees.length).toBe(1);
+		expect(t.trees[0]?.startsWith(t.workspaces)).toBe(true);
+		expect(t.trees[0]).not.toBe(wt.path);
+		await t.done();
+	});
+
+	test("a failing check fails", async () => {
+		const t = await defaultEnv();
+		const { run } = await endedRun(t.env, "d-fail", dodOn("good"), "bad\n");
+
+		await t.runner.finalize(run.id);
+
+		expect(t.env.merges).toEqual([]);
+		expect(t.trees.length).toBe(1);
+		expect((await verifyFacts(t.env, run.id))?.passed).toBe(false);
+		await t.done();
+	});
+
+	test("an uncommitted edit cannot turn a failing commit green", async () => {
+		const t = await defaultEnv();
+		const { wt, run } = await endedRun(
+			t.env,
+			"d-dirty",
+			dodOn("good"),
+			"bad\n",
+		);
+		await writeFile(join(wt.path, "state.txt"), "good\n");
+
+		await t.runner.finalize(run.id);
+
+		expect(t.env.merges).toEqual([]);
+		expect((await verifyFacts(t.env, run.id))?.passed).toBe(false);
+		await t.done();
+	});
+
+	test("missing dependencies are an infrastructure result that names the fix", async () => {
+		const t = await defaultEnv();
+		const { wt, run } = await endedRun(t.env, "d-deps", dodOn("good"), "bad\n");
+		await commitIn(wt.path, "package.json", "{}\n");
+
+		await t.runner.finalize(run.id);
+
+		expect(t.env.merges).toEqual([]);
+		const events = await eventsSince(t.env.handle.db, 0, 5000);
+		const check = events.find(
+			(e) => e.type === "verify.check" && e.runId === run.id,
+		) as unknown as { payload: { classification?: string; detail?: string } };
+		expect(check.payload.classification).toBe("crashed");
+		expect(check.payload.detail).toContain("until P8");
+		await t.done();
+	});
+
+	test("with no check clones registered the check is refused, never run on the host", async () => {
+		const t = await defaultEnv();
+		clearRunWorkspace(t.env.root);
+		const marker = join(t.env.root, "ran-on-host");
+		const dod = {
+			verifier: "deterministic" as const,
+			checks: [{ run: `touch '${marker}'`, expect_exit: 0 }],
+		};
+		const { run } = await endedRun(t.env, "d-none", dod, "good\n");
+
+		await t.runner.finalize(run.id);
+
+		expect(existsSync(marker)).toBe(false);
+		expect(t.env.merges).toEqual([]);
+		await t.done();
 	});
 });

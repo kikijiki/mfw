@@ -23,8 +23,8 @@ export type RunWorkspaceKind = "worktree" | "clone";
  *     CLIs, on NixOS and Ubuntu, with no skips under MFW_REQUIRE_LIVE_SANDBOX=1.
  *  4. P8 supplies dependencies and the dev shell. Until then a check that needs
  *     them is an infrastructure result, so real projects cannot go green.
- *  5. W4-2 pins the check entry points. Until then a passing check proves only
- *     what candidate-controlled code reported.
+ *  5. Check entry points are pinned (W4-2, merged), so a passing check no
+ *     longer rests on candidate-controlled code alone.
  *
  * What P7 does establish: DoD checks for clone runs, the merge queue's checks,
  * the regression sweep, its corroboration rerun and armed reopen checks all run

@@ -116,7 +116,7 @@ types:
       model_tier:
         values: [light, standard, strong]
         optional: true
-      # Routing pins (see backstage architecture.md, "Routing"): a harness (claude-cli,
+      # Routing pins: a harness (claude-cli,
       # codex-cli) or a project endpoint id, and an exact model id. Unset =
       # the project decides (tier map, then catalogue).
       provider: { optional: true, pattern: '[A-Za-z0-9_-]+' }

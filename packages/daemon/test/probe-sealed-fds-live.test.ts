@@ -28,6 +28,7 @@ import {
 } from "../src/containment/probe-runtime.ts";
 import { parseSandboxProfile } from "../src/containment/profile.ts";
 import { discoverToolchain } from "../src/containment/toolchain.ts";
+import { liveGate } from "./support/live-gate.ts";
 
 /** Security review P7, m6: 101 MB stayed open in the daemon until a later GC.
  * Every path out of a probe must release the descriptors by itself: no gc call,
@@ -35,7 +36,7 @@ import { discoverToolchain } from "../src/containment/toolchain.ts";
 
 const BWRAP = Bun.which("bwrap");
 const ENV = Bun.which("env");
-const usable =
+const capable =
 	process.arch === "x64" &&
 	!!BWRAP &&
 	Bun.spawnSync([
@@ -51,6 +52,11 @@ const usable =
 		"--",
 		"true",
 	]).exitCode === 0;
+const usable =
+	liveGate(
+		"probe-sealed-fds-live",
+		capable ? null : "no working bwrap on x86_64",
+	) === null;
 
 const pass = <T>(value: T): Check<T> => ({
 	ok: true,

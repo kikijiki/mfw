@@ -33,6 +33,7 @@ import {
 } from "../src/containment/egress-run.ts";
 import { ensureRunDirLayout } from "../src/containment/run-dir.ts";
 import { type CageConfig, cagedSteps } from "./support/caged-launch.ts";
+import { liveGate } from "./support/live-gate.ts";
 import { clientHello } from "./support/tls-hello.ts";
 
 /**
@@ -70,11 +71,7 @@ function skipReason(): string | null {
 	]);
 	return r.exitCode === 0 ? null : "bwrap cannot run here";
 }
-const skip = skipReason();
-if (skip && process.env.MFW_REQUIRE_LIVE_SANDBOX === "1") {
-	throw new Error(`MFW_REQUIRE_LIVE_SANDBOX is set, but ${skip}`);
-}
-if (skip) console.log(`[egress-live] skipped: ${skip}`);
+const skip = liveGate("egress-live", skipReason());
 
 /** Runs inside the sandbox. Reports what it could reach as JSON in the outbox. */
 const AGENT = String.raw`

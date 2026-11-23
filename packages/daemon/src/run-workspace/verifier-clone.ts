@@ -1,6 +1,5 @@
 /**
- * Disposable, host-owned clones for verification (backstage architecture.md,
- * "Run workspace").
+ * Disposable, host-owned clones for verification.
  *
  * A DoD check runs the candidate's own code, so it must not run in the run's
  * workspace (agent-writable, possibly tampered) nor in the host's integration

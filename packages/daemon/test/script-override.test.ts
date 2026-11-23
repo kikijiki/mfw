@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { resolveScript } from "../src/agents/adapter.ts";
+import { CLAUDE_BRIDGE } from "../src/containment/host-script.ts";
 
 /**
  * Wave 2 exit review, m6: `MFW_*_SCRIPT` picks what runs on the host. The
- * production bundle ignores it, loudly; running from source keeps it.
+ * production bundle never uses it and says so; running from source keeps it.
  */
 
 const VAR = "MFW_TEST_OVERRIDE_SCRIPT";
@@ -17,26 +18,24 @@ afterEach(async () => {
 	for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
 });
 
-async function layout() {
+async function planted(): Promise<{ base: string; path: string }> {
 	const base = await mkdtemp(join(tmpdir(), "mfw-override-"));
 	dirs.push(base);
-	const planted = join(base, "planted.ts");
-	await writeFile(planted, "// not ours\n");
-	const real = join(base, "real.ts");
-	await writeFile(real, "// ours\n");
-	return { base, planted, real };
+	const path = join(base, "planted.ts");
+	await writeFile(path, "// not ours\n");
+	return { base, path };
 }
 
 describe("a script override", () => {
-	test("is ignored and reported in a production bundle", async () => {
-		const { base, planted } = await layout();
-		const bundled = join(base, "apps/start/.output/server/real.ts");
-		await Bun.write(bundled, "// built\n");
-		process.env[VAR] = planted;
+	test("is refused and reported in a production bundle", async () => {
+		const { base, path } = await planted();
+		const chunk = join(base, "apps/start/.output/server/chunk.mjs");
+		process.env[VAR] = path;
 		const err = spyOn(console, "error").mockImplementation(() => {});
 		try {
-			const got = resolveScript(pathToFileURL(bundled).href, "real.ts", VAR);
-			expect(got).toBe(bundled);
+			expect(() =>
+				resolveScript(pathToFileURL(chunk).href, CLAUDE_BRIDGE, VAR),
+			).toThrow(`refusing ${VAR}`);
 			expect(err.mock.calls.flat().join(" ")).toContain(VAR);
 		} finally {
 			err.mockRestore();
@@ -44,10 +43,9 @@ describe("a script override", () => {
 	});
 
 	test("still applies when running from source", async () => {
-		const { planted, real } = await layout();
-		process.env[VAR] = planted;
-		expect(resolveScript(pathToFileURL(real).href, "real.ts", VAR)).toBe(
-			planted,
-		);
+		const { base, path } = await planted();
+		process.env[VAR] = path;
+		const source = pathToFileURL(join(base, "adapter.ts")).href;
+		expect(resolveScript(source, CLAUDE_BRIDGE, VAR)).toBe(path);
 	});
 });

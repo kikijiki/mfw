@@ -1,5 +1,5 @@
 /**
- * The exact remedy for every dispatch/admission refusal (backstage architecture.md, "Resources, targets and recovery of capacity").
+ * The exact remedy for every dispatch/admission refusal.
  * A refusal is only useful if the operator can act on it, so each code maps to
  * one sentence naming what to change, where, or that nothing needs doing.
  * Derived from the persisted `holdCode`, so no schema change is needed and an

@@ -11,8 +11,15 @@ export interface RunFacts {
 	run: RunRow | null;
 	/** The run ended and its finalize reached a terminal state. */
 	settled: boolean;
-	/** The deterministic checks passed (or none were configured and it exited 0). */
+	/**
+	 * Eligible to be selected: the deterministic checks passed, or none were
+	 * configured and the run exited 0. This is a gate, not a claim: a clean exit
+	 * with no checks is `basis: "clean_exit"` and must never be worded
+	 * "verified" on a surface (only `claims-evidence` may do that).
+	 */
 	verified: boolean;
+	/** Why `verified` holds: a check ran and passed, or only a clean exit with no checks. */
+	basis: "checks" | "clean_exit" | null;
 	verifyRan: boolean;
 	/** Files changed outside the task's own `owns`; 0 when no scope was declared. */
 	scopeOutside: number;
@@ -41,6 +48,7 @@ export async function runFacts(
 			run: null,
 			settled: false,
 			verified: false,
+			basis: null,
 			verifyRan: false,
 			scopeOutside: 0,
 			review: null,
@@ -59,6 +67,13 @@ export async function runFacts(
 		run,
 		settled: TERMINAL.has(run.state) || run.state === "merging",
 		verified: verify ? verify.passed === true : !opts.hasChecks && exited,
+		basis: verify
+			? verify.passed === true
+				? "checks"
+				: null
+			: !opts.hasChecks && exited
+				? "clean_exit"
+				: null,
 		verifyRan: verify !== undefined,
 		scopeOutside:
 			scope && typeof scope.outside === "number" ? scope.outside : 0,

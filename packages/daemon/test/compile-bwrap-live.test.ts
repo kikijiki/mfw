@@ -38,6 +38,7 @@ import {
 	hostNamespaces,
 	realHomes,
 } from "./compile-bwrap-guard.ts";
+import { liveGate } from "./support/live-gate.ts";
 
 /**
  * The compiled profile under real bwrap. The scenarios are destructive on
@@ -83,15 +84,8 @@ function liveSkipReason(): string | null {
 		: `bwrap cannot run here: ${r.stderr.toString().trim()}`;
 }
 
-const skip = liveSkipReason();
-// CI sets this where the live layer must run, so a broken host cannot pass by skipping.
-const required = process.env.MFW_REQUIRE_LIVE_SANDBOX === "1";
-if (skip && !required) console.log(`[compile-bwrap-live] skipped: ${skip}`);
-if (skip && required) {
-	test("the live sandbox suite is required here", () => {
-		throw new Error(`MFW_REQUIRE_LIVE_SANDBOX is set, but ${skip}`);
-	});
-}
+// CI requires this layer, so a broken host cannot pass by skipping.
+const skip = liveGate("compile-bwrap-live", liveSkipReason());
 
 const pass = <T>(value: T): Check<T> => ({
 	ok: true,

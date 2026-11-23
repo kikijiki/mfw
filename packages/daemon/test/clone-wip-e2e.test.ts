@@ -49,6 +49,7 @@ import {
 } from "../src/run-workspace/wip-snapshot.ts";
 import { MFW_EXCLUDE } from "./fixtures/board.ts";
 import { type CageConfig, cagedSteps } from "./support/caged-launch.ts";
+import { liveGate } from "./support/live-gate.ts";
 
 /**
  * The clone result path end to end: a fake agent CLI under real bwrap, the real
@@ -84,11 +85,7 @@ function skipReason(): string | null {
 	]);
 	return r.exitCode === 0 ? null : "bwrap cannot run here";
 }
-const skip = skipReason();
-if (skip && process.env.MFW_REQUIRE_LIVE_SANDBOX === "1") {
-	throw new Error(`MFW_REQUIRE_LIVE_SANDBOX is set, but ${skip}`);
-}
-if (skip) console.log(`[clone-wip-e2e] skipped: ${skip}`);
+const skip = liveGate("clone-wip-e2e", skipReason());
 
 function toolDirs(): string[] {
 	const dirs = AGENT_BASE_TOOLS.flatMap((tool) => {

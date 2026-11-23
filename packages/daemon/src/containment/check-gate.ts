@@ -1,5 +1,5 @@
 /**
- * The gate on DoD checks (backstage architecture.md, "Host-executed paths").
+ * The gate on DoD checks.
  *
  * A check exists to run the candidate's code, so its test files cannot be
  * pinned the way a trigger's script is. What can be held fixed is what the

@@ -34,8 +34,10 @@ import type { TaskRow, TaskService } from "./task-service.ts";
  * and a project with no configured brain route dispatches nothing (status
  * `blocked: no_brain_route`).
  *
- * Host resources are admitted by the resource coordinator (`resources/`), which
- * grants leases against its own store: this class holds no slot table.
+ * Resource capacity is not counted here: the per-project `resource_slots`
+ * semaphore is gone (migration 0025 drops it). The scheduler holds a task whose
+ * budget is spent or whose resource cannot be leased, and the leases live in
+ * the resource store (`resources/store.ts`, `rp_*` tables in the host database).
  */
 
 export interface SchedulerConfig {

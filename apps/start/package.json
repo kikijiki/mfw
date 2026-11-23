@@ -7,7 +7,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
-		"build": "NITRO_PRESET=bun vite build",
+		"build": "NITRO_PRESET=bun vite build && bun run ../../tools/relativize-build-paths.ts .output/server . && bun run ../../tools/build-host-scripts.ts && bun run ../../tools/third-party-notices.ts .output/THIRD_PARTY_NOTICES.txt",
 		"start": "HOST=${HOST:-127.0.0.1} bun run .output/server/index.mjs",
 		"typecheck": "tsc --noEmit"
 	},

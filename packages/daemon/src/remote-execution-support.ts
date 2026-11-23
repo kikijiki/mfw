@@ -1,6 +1,6 @@
 import { isAbsolute, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
+import { hostScript, REMOTE_RUNTIME } from "./containment/host-script.ts";
 import {
 	redactSecretValues,
 	type SecretEnvironment,
@@ -31,14 +31,15 @@ export async function bundleRemoteSupport(
 	return new Uint8Array(await built.outputs[0].arrayBuffer());
 }
 
-function runtimeEntrypoint(): string {
-	return fileURLToPath(new URL("./runpod-remote-runtime.ts", import.meta.url));
+/** From the bundle this is the verified built copy: no source sits beside a chunk. */
+export function remoteRuntimeEntrypoint(moduleUrl = import.meta.url): string {
+	return hostScript(moduleUrl, REMOTE_RUNTIME);
 }
 
 let runtimeBundle: Promise<Uint8Array> | undefined;
 /** The argv-only remote runtime (`runpod-remote-runtime.ts`), bundled once. */
 export function bundledRemoteRuntime(): Promise<Uint8Array> {
-	runtimeBundle ??= bundleRemoteSupport(runtimeEntrypoint());
+	runtimeBundle ??= bundleRemoteSupport(remoteRuntimeEntrypoint());
 	return runtimeBundle;
 }
 

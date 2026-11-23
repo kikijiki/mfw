@@ -18,6 +18,7 @@ import { git } from "../src/git.ts";
 import { VerifierClones } from "../src/run-workspace/verifier-clone.ts";
 import { verifyInClone } from "../src/verifier.ts";
 import { cagedSteps } from "./support/caged-launch.ts";
+import { liveGate } from "./support/live-gate.ts";
 
 /**
  * Hostile DoD checks under real bwrap, through the real compile, probe, gate
@@ -49,8 +50,7 @@ function skipReason(): string | null {
 	]);
 	return r.exitCode === 0 ? null : "bwrap cannot run here";
 }
-const skip = skipReason();
-if (skip) console.log(`[check-sandbox-live] skipped: ${skip}`);
+const skip = liveGate("check-sandbox-live", skipReason());
 
 const dod = (run: string, timeout?: number) =>
 	({

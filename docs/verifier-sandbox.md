@@ -10,6 +10,7 @@ environment, and its clone holds that commit's files with no project history.
 | Check | Where it runs |
 | --- | --- |
 | A clone run's checks | Verifier sandbox |
+| An autonomous worktree run's checks (the default) | Verifier sandbox, run on the run's committed tip |
 | The merge queue's re-check and merge-commit check | `merge-verify` sandbox |
 | The regression sweep and its corroboration rerun | `merge-verify` sandbox |
 | Armed reopen commands | `merge-verify` sandbox |

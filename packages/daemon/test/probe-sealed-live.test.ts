@@ -30,6 +30,7 @@ import {
 } from "../src/containment/probe-runtime.ts";
 import { parseSandboxProfile } from "../src/containment/profile.ts";
 import { discoverToolchain } from "../src/containment/toolchain.ts";
+import { liveGate } from "./support/live-gate.ts";
 
 /**
  * The probe's runtime arrives as sealed descriptors, so a role with no runtime
@@ -59,8 +60,7 @@ function skipReason(): string | null {
 	]);
 	return r.exitCode === 0 ? null : "bwrap cannot run here";
 }
-const skip = skipReason();
-if (skip) console.log(`[probe-sealed-live] skipped: ${skip}`);
+const skip = liveGate("probe-sealed-live", skipReason());
 
 const pass = <T>(value: T): Check<T> => ({
 	ok: true,

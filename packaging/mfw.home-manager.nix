@@ -39,13 +39,18 @@
   # autonomous runs are refused with a fix, never run unsandboxed.
   binPath = lib.makeBinPath [pkgs.bun pkgs.tmux pkgs.git pkgs.bash pkgs.coreutils pkgs.direnv pkgs.bubblewrap];
 
-  # First boot self-builds when the Nitro output is missing; re-run
+  # First boot self-builds when the Nitro output or its host script manifest is
+  # missing (the server refuses to launch agents without the manifest); re-run
   # `bun run build` (then restart the service) to pick up new commits.
   buildIfMissing = pkgs.writeShellScript "mfw-build-if-missing" ''
     set -eu
     cd ${dir}
-    if [ ! -f ${out} ]; then
-      ${pkgs.bun}/bin/bun install --frozen-lockfile || ${pkgs.bun}/bin/bun install
+    if [ ! -f ${out} ] || [ ! -f ${dir}/apps/start/.output/server/host-scripts/manifest.json ]; then
+      # Fail closed: exactly the committed lockfile, and no dependency
+      # lifecycle scripts (they would run arbitrary code as this user). If the
+      # lockfile is out of date the unit fails; fix the lockfile, never fall
+      # back to an unfrozen, script-running install.
+      ${pkgs.bun}/bin/bun install --frozen-lockfile --ignore-scripts
       ${pkgs.bun}/bin/bun run build
     fi
   '';

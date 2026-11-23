@@ -47,6 +47,7 @@ import {
 	type SandboxProfile,
 } from "../src/containment/profile.ts";
 import { discoverToolchain } from "../src/containment/toolchain.ts";
+import { liveGate } from "./support/live-gate.ts";
 
 /**
  * The probe under real bwrap, against throwaway fixtures. Each negative
@@ -92,12 +93,9 @@ function systemdSkipReason(): string {
 		: `no systemd user manager (${state || "unavailable"})`;
 }
 
-const skip = liveSkipReason();
-if (skip) console.log(`[probe-live] skipped: ${skip}`);
-const noScope = skip ?? systemdSkipReason();
-if (noScope) {
-	console.log(`[probe-live] real scope chain NOT VERIFIED: ${noScope}`);
-}
+const skip = liveGate("probe-live", liveSkipReason());
+const noScope =
+	skip ?? liveGate("probe-live", systemdSkipReason(), "systemd-scope");
 
 const pass = <T>(value: T): Check<T> => ({
 	ok: true,

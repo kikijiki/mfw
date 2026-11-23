@@ -54,6 +54,7 @@ import {
 } from "../run-exit-evidence.ts";
 import type { BeginStepResult, RunRegistry, RunRow } from "../run-registry.ts";
 import {
+	createCheckClones,
 	createVerifierClones,
 	workspaceForRun,
 } from "../run-workspace/factory.ts";
@@ -1397,7 +1398,16 @@ export class StepRunner {
 		};
 		// A clone's tree is agent-writable: the checks run in a disposable
 		// host-owned clone of the imported tip, never in the run's workspace.
-		const clones = createVerifierClones(this.deps.projectRoot, run);
+		// An autonomous worktree run is verified the same way, from its committed
+		// branch tip, because only an interactive run may execute on the host.
+		// The run's own mode: the project's may have changed since it launched,
+		// and a run with none recorded counts as autonomous.
+		const hostExecution = worktreeHostExecution(run.approvalMode ?? undefined);
+		const clones =
+			createVerifierClones(this.deps.projectRoot, run) ??
+			(hostExecution.hostExecution
+				? null
+				: createCheckClones(this.deps.projectRoot));
 		let candidate: string | null = null;
 		if (clones) {
 			const imported = await workspaceForRun(
@@ -1432,12 +1442,10 @@ export class StepRunner {
 						run.baseSha ?? "",
 						verifyOpts,
 					)
-				: // Only a worktree run launched interactive may execute its checks
-					// on the host. The run's own mode: the project's may have changed
-					// since, and a run with none recorded counts as autonomous.
+				: // Only a worktree run launched interactive may execute on the host.
 					verify(run.worktreePath as string, dod, run.baseSha ?? "", {
 						...verifyOpts,
-						...worktreeHostExecution(run.approvalMode ?? undefined),
+						...hostExecution,
 					});
 		const result = this.deps.verification
 			? await this.deps.verification.foreground(runVerification)

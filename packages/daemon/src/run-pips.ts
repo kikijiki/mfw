@@ -31,6 +31,9 @@ export interface RunPip {
  * no verdict yet and is the agent strip's business, not a pip.
  */
 const GLYPH: Partial<Record<RunState, PipGlyph>> = {
+	// `ok` means the run finished cleanly, nothing more: `completed` also covers
+	// a question, the review gate and a queued merge. The UI labels it
+	// "finished"; verified/merged come only from the claim guard.
 	completed: "ok",
 	failed: "fail",
 	finalize_error: "fail",
