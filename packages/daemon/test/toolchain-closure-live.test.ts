@@ -6,6 +6,7 @@ import {
 	type ToolchainPlan,
 	toolchainBwrapArgs,
 } from "../src/containment/toolchain.ts";
+import { liveGate } from "./support/live-gate.ts";
 
 /**
  * The closure bind under real bwrap on a real Nix store: declared tools run,
@@ -31,14 +32,7 @@ function skipReason(): string | null {
 	return r.exitCode === 0 ? null : "bwrap cannot run here";
 }
 
-const skip = skipReason();
-if (skip && process.env.MFW_REQUIRE_LIVE_SANDBOX === "1") {
-	test("the live closure suite is required here", () => {
-		throw new Error(`MFW_REQUIRE_LIVE_SANDBOX is set, but ${skip}`);
-	});
-} else if (skip) {
-	console.log(`[toolchain-closure-live] skipped: ${skip}`);
-}
+const skip = liveGate("toolchain-closure-live", skipReason());
 
 function inSandbox(plan: ToolchainPlan, script: string) {
 	const sh = plan.resolved.find((b) => b.name === "sh")?.path as string;

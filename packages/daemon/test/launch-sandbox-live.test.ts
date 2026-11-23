@@ -32,6 +32,7 @@ import {
 	hostNamespaces,
 	realHomes,
 } from "./compile-bwrap-guard.ts";
+import { liveGate } from "./support/live-gate.ts";
 
 /**
  * The launcher under real bwrap. Every fixture is throwaway, and each launch
@@ -69,9 +70,8 @@ function liveSkipReason(): string | null {
 		: `bwrap cannot run here: ${r.stderr.toString().trim()}`;
 }
 
-const skip = liveSkipReason();
-if (skip) console.log(`[launch-sandbox-live] skipped: ${skip}`);
-if (!SCRIPT) console.log("[launch-sandbox-live] tty tests skipped: no script");
+const skip = liveGate("launch-sandbox-live", liveSkipReason());
+liveGate("launch-sandbox-live", SCRIPT ? null : "no script for the tty tests");
 
 const pass = <T>(value: T): Check<T> => ({
 	ok: true,
@@ -386,7 +386,6 @@ describe.skipIf(skip !== null)("launchSandbox under bwrap", () => {
  * cannot be escaped by this test.
  */
 function scopeSkipReason(): string | null {
-	if (skip) return skip;
 	if (!Bun.which("systemd-run")) return "no systemd-run";
 	if (!process.env.XDG_RUNTIME_DIR && !process.env.DBUS_SESSION_BUS_ADDRESS) {
 		return "no user manager in this environment (XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS are unset)";
@@ -398,10 +397,8 @@ function scopeSkipReason(): string | null {
 		: `no usable user manager (state: ${s || "unreachable"})`;
 }
 
-const scopeSkip = scopeSkipReason();
-if (scopeSkip) {
-	console.log(`[launch-sandbox-live] systemd-run chain skipped: ${scopeSkip}`);
-}
+const scopeSkip =
+	skip ?? liveGate("launch-sandbox-live", scopeSkipReason(), "systemd-scope");
 
 describe.skipIf(scopeSkip !== null)("launchSandbox through systemd-run", () => {
 	test("fd 3, fd 4 and the pins survive the real scope", async () => {

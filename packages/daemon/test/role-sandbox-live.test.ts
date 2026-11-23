@@ -21,6 +21,7 @@ import { TEMPORARY_FLEET_WRITABLE } from "../src/containment/agent-profile.ts";
 import type { ReadOnlyAgentRole } from "../src/containment/role-profiles.ts";
 import { ensureRunDirLayout } from "../src/containment/run-dir.ts";
 import { type CageConfig, cagedSteps } from "./support/caged-launch.ts";
+import { liveGate } from "./support/live-gate.ts";
 
 /**
  * Fake agents in every read-only role, under real bwrap and through the real
@@ -55,8 +56,7 @@ function skipReason(): string | null {
 	]);
 	return r.exitCode === 0 ? null : "bwrap cannot run here";
 }
-const skip = skipReason();
-if (skip) console.log(`[role-sandbox-live] skipped: ${skip}`);
+const skip = liveGate("role-sandbox-live", skipReason());
 
 const ROLES: ReadOnlyAgentRole[] = [
 	"reviewer",

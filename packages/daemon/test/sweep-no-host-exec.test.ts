@@ -29,6 +29,7 @@ import {
 } from "../src/verifier.ts";
 import { MFW_EXCLUDE, makeTasks } from "./fixtures/board.ts";
 import { cagedSteps } from "./support/caged-launch.ts";
+import { liveGate } from "./support/live-gate.ts";
 
 /**
  * Security review P7, B1 (X1b). The owner's command is the harmless
@@ -59,8 +60,7 @@ function skipReason(): string | null {
 	]);
 	return r.exitCode === 0 ? null : "bwrap cannot run here";
 }
-const skip = skipReason();
-if (skip) console.log(`[sweep-no-host-exec] skipped: ${skip}`);
+const skip = liveGate("sweep-no-host-exec", skipReason());
 
 const dod = {
 	verifier: "deterministic" as const,
