@@ -301,7 +301,10 @@ export async function launchAgentSandbox(
 
 	const child =
 		gate.authorization === null
-			? deps.launch(compiled, { approvalMode: "interactive" })
+			? deps.launch(compiled, {
+					approvalMode: "interactive",
+					expectPins: attested.pins,
+				})
 			: deps.launch(compiled, {
 					approvalMode: "autonomous",
 					authorization: gate.authorization,

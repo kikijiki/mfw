@@ -598,6 +598,30 @@ chmod +x /fleet/claude/projects/planted.sh
 		expect(again?.n).toBe(2);
 	}, 60_000);
 
+	test("m4: an interactive launch also refuses a workspace swapped after the probe", async () => {
+		installAgent(f, "true");
+		const steps = cagedSteps(f.cage);
+		const moved = `${f.tree}.moved`;
+		const r = await launchAgentSandbox(
+			{ ...request(f), approvalMode: "interactive" },
+			["claude"],
+			{
+				...steps,
+				attest: (async (req: Parameters<typeof steps.attest>[0]) => {
+					const out = await steps.attest(req);
+					Bun.spawnSync(["mv", f.tree, moved]);
+					mkdirSync(f.tree);
+					return out;
+				}) as typeof steps.attest,
+				db: f.handle.db,
+				secretValue: () => undefined,
+				warn: () => {},
+			},
+		).catch((e: Error & { code?: string }) => ({ thrown: e.code }));
+		if ("child" in r) r.child.kill("SIGKILL");
+		expect("thrown" in r ? r.thrown : "launched").toBe("pin_changed");
+	}, 60_000);
+
 	test("a workspace swapped after the probe is refused by its pin", async () => {
 		installAgent(f, "true");
 		const steps = cagedSteps(f.cage);

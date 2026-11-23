@@ -70,6 +70,11 @@ export interface LaunchOptions {
 	scope?: "systemd" | "none";
 	/** Where the unnamed option files are created. */
 	tmpDir?: string;
+	/**
+	 * The directories an interactive launch was probed against. An autonomous
+	 * launch takes them from its authorization instead.
+	 */
+	expectPins?: readonly PinIdentity[];
 	/** Told which directories were opened, before anything runs. */
 	observePins?: (pins: PinIdentity[]) => void;
 }
@@ -265,7 +270,7 @@ export function launchSandbox(
 			"an autonomous launch must run under the systemd scope and its limits",
 		);
 	}
-	const expectPins = approvedPins(compiled, options);
+	const expectPins = approvedPins(compiled, options) ?? options.expectPins;
 
 	const opened = openSandboxFds(compiled, options.tmpDir);
 	if (expectPins && !samePins(expectPins, opened.pins)) {

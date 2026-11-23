@@ -148,7 +148,7 @@ export function cagedSteps(cage: CageConfig): LauncherSteps {
 			pins,
 			createdAt: new Date(),
 		});
-		return { ok: true, attestationId, outcome, items, fingerprint };
+		return { ok: true, attestationId, outcome, items, fingerprint, pins };
 	}) as LauncherSteps["attest"];
 
 	return {

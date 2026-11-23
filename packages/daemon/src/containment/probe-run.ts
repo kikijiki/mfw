@@ -442,6 +442,8 @@ export interface AttestResult {
 	outcome: "pass" | "fail";
 	items: ProbeItemResult[];
 	fingerprint: SandboxFingerprint;
+	/** The directories the probe really ran against. */
+	pins: PinIdentity[];
 }
 
 export interface AttestRequest {
@@ -534,7 +536,7 @@ export async function attestSandbox(
 		pins,
 		createdAt: new Date(),
 	});
-	return { ok: true, attestationId, outcome, items, fingerprint };
+	return { ok: true, attestationId, outcome, items, fingerprint, pins };
 }
 
 function compileRefused(r: CompileRefusal): AttestRefusal {
