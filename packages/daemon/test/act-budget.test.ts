@@ -94,11 +94,10 @@ describe("act budget: enforcement and release order", () => {
 		expect(plan.admitted.map((a) => a.id)).toEqual(["a"]);
 	});
 
-	test("release follows priority: decision, approval, question, then oldest", () => {
+	test("release follows priority: decision, question, then oldest", () => {
 		const items = [
 			item("old-review", { ageMs: 5 * HOUR }),
 			item("question", { kind: "needs_answer", ageMs: 1000 }),
-			item("approval", { kind: "approval_pending", ageMs: 2000 }),
 			item("decision", { kind: "brain_decision", ageMs: 3000 }),
 		];
 		const plan = planActBudget({
@@ -108,8 +107,72 @@ describe("act budget: enforcement and release order", () => {
 			config: config({ maxVisible: 1, minVisible: 1, debtStep: 100 }),
 		});
 		expect(visibleIds(plan)).toEqual(["decision"]);
-		expect(heldIds(plan)).toEqual(["approval", "question", "old-review"]);
-		expect(plan.held.map((h) => h.kind)[0]).toBe("approval_pending");
+		expect(heldIds(plan)).toEqual(["question", "old-review"]);
+	});
+
+	test("an approval beyond the limit stays visible and takes no slot", () => {
+		const plan = planActBudget({
+			items: [
+				item("a1", { kind: "approval_pending", ageMs: 1000 }),
+				item("a2", { kind: "approval_pending", ageMs: 2000 }),
+				item("r1", { ageMs: 3000 }),
+				item("r2", { ageMs: 2500 }),
+			],
+			surfaced: {},
+			now: NOW,
+			config: config({ maxVisible: 1, minVisible: 1, debtStep: 100 }),
+		});
+		expect(visibleIds(plan)).toEqual(["a1", "a2", "r1"]);
+		expect(heldIds(plan)).toEqual(["r2"]);
+	});
+
+	test("an approval stays visible when the window is exhausted", () => {
+		const plan = planActBudget({
+			items: [item("a", { kind: "approval_pending" }), item("r")],
+			surfaced: { alpha: { x: NOW - HOUR } },
+			now: NOW,
+			config: config({ perWindow: 1, debtStep: 100 }),
+		});
+		expect(visibleIds(plan)).toEqual(["a"]);
+		expect(heldIds(plan)).toEqual(["r"]);
+	});
+
+	test("critical and approval items do not consume the window", () => {
+		const plan = planActBudget({
+			items: [
+				item("red", { kind: "main_red", severity: "critical" }),
+				item("a", { kind: "approval_pending" }),
+				item("r"),
+			],
+			surfaced: {},
+			now: NOW,
+			config: config({ perWindow: 1, debtStep: 100 }),
+		});
+		expect(plan.admitted.map((i) => i.id)).toEqual(["r"]);
+		expect(plan.summary.usedInWindow).toBe(0);
+		expect(plan.summary.heldBack).toBe(0);
+	});
+
+	test("an item shown earlier stops spending the window once it escalates", () => {
+		const plan = planActBudget({
+			items: [item("x", { kind: "blocked", severity: "critical" }), item("r")],
+			surfaced: { alpha: { x: NOW - HOUR } },
+			now: NOW,
+			config: config({ perWindow: 1, debtStep: 100 }),
+		});
+		expect(plan.summary.usedInWindow).toBe(0);
+		expect(heldIds(plan)).toEqual([]);
+	});
+
+	test("an aged approval is review debt, also for its project's headline", () => {
+		const plan = planActBudget({
+			items: [item("a", { kind: "approval_pending", ageMs: 6 * HOUR })],
+			surfaced: {},
+			now: NOW,
+			config: config(),
+		});
+		expect(plan.summary.debt).toEqual({ count: 1, oldestAgeMs: 6 * HOUR });
+		expect(plan.summary.byProject.alpha?.debt.count).toBe(1);
 	});
 
 	test("clearing a visible item releases the next one", () => {
@@ -404,6 +467,28 @@ describe("act budget: durable ledger", () => {
 			.where(eq(engineKv.key, ACT_BUDGET_LEDGER_KEY));
 		expect(Object.keys((row?.value as { surfaced: object }).surfaced)).toEqual([
 			"b",
+		]);
+	});
+
+	test("approvals and critical items are never written to the ledger", async () => {
+		const handle = await db();
+		await applyActBudget(
+			[{ name: "alpha", handle }],
+			[
+				[
+					item("a", { kind: "approval_pending" }),
+					item("red", { kind: "main_red", severity: "critical" }),
+					item("r"),
+				],
+			],
+			{ now: NOW, config: cfg },
+		);
+		const [row] = await handle.db
+			.select()
+			.from(engineKv)
+			.where(eq(engineKv.key, ACT_BUDGET_LEDGER_KEY));
+		expect(Object.keys((row?.value as { surfaced: object }).surfaced)).toEqual([
+			"r",
 		]);
 	});
 

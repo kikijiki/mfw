@@ -11,7 +11,9 @@ import { type InboxItem, type InboxKind, mergeInboxes } from "./inbox.ts";
  * answerable, and is released in priority order as the owner clears items.
  *
  * Critical items (mfw is stuck, the breaker is open) are outside the budget:
- * always visible, never charged, and not review debt.
+ * always visible, never charged, and not review debt. Tool approvals are
+ * outside it too, because a folded approval stalls a live run: always visible
+ * and never charged, but they do count as review debt once aged.
  *
  * `planActBudget` is pure. The only state is which items were already shown,
  * a ledger in each project's `engine_kv`, so a restart keeps the same picture.
@@ -55,7 +57,7 @@ export interface HeldGroup {
 }
 
 export interface ActBudgetSummary {
-	/** Non-critical `act` items that may be visible now, after debt tightening. */
+	/** Budgeted `act` items (not critical, not approvals) visible now, after debt tightening. */
 	limit: number;
 	/** Items charged to the rolling window, over all projects. */
 	usedInWindow: number;
@@ -74,6 +76,8 @@ export type SurfacedLedger = Record<string, Record<string, number>>;
 export interface ActBudgetPlan {
 	/** `itemKey`s in front of the owner. */
 	visible: Set<string>;
+	/** `itemKey`s outside the budget: critical items and tool approvals. */
+	bypassed: Set<string>;
 	/** In release order. */
 	held: InboxItem[];
 	/** Shown for the first time by this plan: the ledger's new entries. */
@@ -87,11 +91,14 @@ const itemKey = (i: Pick<InboxItem, "project" | "id">) =>
 /** What waits on the owner most directly goes first. */
 const KIND_PRIORITY: Partial<Record<InboxKind, number>> = {
 	brain_decision: 0,
-	approval_pending: 1,
-	needs_answer: 2,
-	clarify: 3,
+	needs_answer: 1,
+	clarify: 2,
 };
-const OTHER_KINDS = 4;
+const OTHER_KINDS = 3;
+
+/** Always shown and never charged to the window. */
+const bypassesBudget = (i: InboxItem) =>
+	i.severity === "critical" || i.kind === "approval_pending";
 
 function releaseOrder(a: InboxItem, b: InboxItem): number {
 	return (
@@ -122,10 +129,12 @@ export function planActBudget(input: {
 }): ActBudgetPlan {
 	const { items, surfaced, now, config: c } = input;
 	const act = items.filter((i) => i.attention === "act");
-	const critical = act.filter((i) => i.severity === "critical");
-	const budgeted = act.filter((i) => i.severity !== "critical");
+	const bypass = act.filter(bypassesBudget);
+	const bypassKeys = new Set(bypass.map(itemKey));
+	const budgeted = act.filter((i) => !bypassesBudget(i));
+	const debtItems = act.filter((i) => i.severity !== "critical");
 
-	const debt = debtOf(budgeted, now, c.debtGraceMs);
+	const debt = debtOf(debtItems, now, c.debtGraceMs);
 	const stale = debt.oldestAgeMs !== null && debt.oldestAgeMs >= c.debtStaleMs;
 	const limit = Math.max(
 		Math.min(c.minVisible, c.maxVisible),
@@ -134,12 +143,15 @@ export function planActBudget(input: {
 
 	const windowStart = now - c.windowMs;
 	let used = 0;
-	for (const entries of Object.values(surfaced)) {
-		for (const at of Object.values(entries)) if (at > windowStart) used++;
+	for (const [project, entries] of Object.entries(surfaced)) {
+		for (const [id, at] of Object.entries(entries)) {
+			// Shown earlier, then escalated: it no longer spends the window.
+			if (at > windowStart && !bypassKeys.has(itemKey({ project, id }))) used++;
+		}
 	}
 	const usedInWindow = used;
 
-	const visible = new Set(critical.map(itemKey));
+	const visible = new Set(bypassKeys);
 	const perProject = new Map<string, number>();
 	const show = (i: InboxItem) => {
 		visible.add(itemKey(i));
@@ -153,7 +165,7 @@ export function planActBudget(input: {
 		if (surfaced[i.project]?.[i.id] !== undefined) show(i);
 		else waiting.push(i);
 	}
-	let open = visible.size - critical.length;
+	let open = visible.size - bypass.length;
 
 	const admitted: InboxItem[] = [];
 	const admit = (i: InboxItem) => {
@@ -197,11 +209,11 @@ export function planActBudget(input: {
 	}
 
 	const byProject: ActBudgetSummary["byProject"] = {};
-	for (const project of new Set(budgeted.map((i) => i.project))) {
+	for (const project of new Set(debtItems.map((i) => i.project))) {
 		byProject[project] = {
 			heldBack: held.filter((i) => i.project === project).length,
 			debt: debtOf(
-				budgeted.filter((i) => i.project === project),
+				debtItems.filter((i) => i.project === project),
 				now,
 				c.debtGraceMs,
 			),
@@ -210,6 +222,7 @@ export function planActBudget(input: {
 
 	return {
 		visible,
+		bypassed: bypassKeys,
 		held,
 		admitted,
 		summary: {
@@ -302,6 +315,8 @@ export function applyActBudget(
 			);
 			const next: Record<string, number> = {};
 			for (const [id, at] of Object.entries(before)) {
+				// An escalated item leaves the ledger so it stops spending the window after it clears.
+				if (plan.bypassed.has(itemKey({ project: s.name, id }))) continue;
 				if (open.has(id) || at > windowStart) next[id] = at;
 			}
 			for (const i of plan.admitted) {

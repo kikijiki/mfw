@@ -379,7 +379,7 @@ export function isolationConfigProblem(p: {
  * absent one takes `DEFAULT_ACT_BUDGET`. Read on each inbox request.
  */
 export const actBudgetSchema = z.object({
-	/** Non-critical `act` items in front of the owner at once. Default 5. */
+	/** Budgeted `act` items in front of the owner at once; critical items and tool approvals are extra. Default 5. */
 	maxVisible: z.number().int().positive().optional(),
 	/** The floor review debt can tighten `maxVisible` to. Default 2. */
 	minVisible: z.number().int().positive().optional(),
