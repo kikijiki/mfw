@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { findOwnershipConflicts, type OwnershipConflict } from "@mfw/board";
@@ -122,6 +123,8 @@ export interface TaskRow {
 	createdBy?: string | null;
 	/** The last brain action that edited it (`brain:<actionId>`). */
 	editedBy?: string | null;
+	/** The last API token that wrote to it. Makes the task untrusted for good. */
+	tokenAuthoredBy?: string | null;
 	/** The task that replaced this one in a merge. */
 	supersededBy?: string | null;
 	/** Conditions that move this task from a parked state back to ready. */
@@ -444,6 +447,68 @@ export class DraftStatusError extends Error {
 /** `in_progress` is an ownership state, not a board choice. The only valid
  * entrance is `tryClaim()`, which installs the run claim and changes the
  * status as one operation. */
+export class TokenTaskStateError extends Error {
+	constructor(
+		readonly taskId: string,
+		reason: string,
+	) {
+		super(`${taskId}: ${reason}`);
+		this.name = "TokenTaskStateError";
+	}
+}
+
+/** The API token behind a write. `mayDispatch` is its `runs:act` scope. */
+export interface TokenAuthor {
+	id: string;
+	mayDispatch: boolean;
+}
+
+/**
+ * Whether a token without `runs:act` may change what a task tells an agent.
+ * Only a task parked by hand with no way to wake up: every other state either
+ * is dispatchable now or becomes so on a later tick (`promoteReady`, a reopen
+ * condition, draft expansion). Read under the board lock.
+ */
+function assertTokenMayRewrite(rec: TaskRecord, token: TokenAuthor): void {
+	if (token.mayDispatch) return;
+	const fm = rec.file.frontmatter;
+	if (
+		rec.status === "backlog" &&
+		fm.ready_mode === "manual" &&
+		fm.reopen_when.length === 0
+	)
+		return;
+	throw new TokenTaskStateError(
+		rec.id,
+		"changing the instructions of a task that can be dispatched needs the runs:act scope",
+	);
+}
+
+/** Parking must not re-arm finished work or a pending reopen condition. */
+function assertTokenMayMove(
+	rec: TaskRecord,
+	to: TaskStatus,
+	token: TokenAuthor,
+): void {
+	if (rec.status === to) return;
+	if (to === "ready" && !token.mayDispatch)
+		throw new TokenTaskStateError(
+			rec.id,
+			"moving a task to ready needs the runs:act scope",
+		);
+	if (to !== "backlog") return;
+	if (["done", "archived", "review"].includes(rec.status))
+		throw new TokenTaskStateError(
+			rec.id,
+			`an API token cannot move a ${rec.status} task back to backlog`,
+		);
+	if (rec.file.frontmatter.reopen_when.length > 0)
+		throw new TokenTaskStateError(
+			rec.id,
+			"an API token cannot park a task that has a reopen condition",
+		);
+}
+
 export class HumanInProgressError extends Error {
 	constructor(readonly taskId: string) {
 		super(
@@ -568,6 +633,7 @@ export function toRow(
 		discoveryKey: fm.discovery_key ?? null,
 		createdBy: fm.created_by ?? null,
 		editedBy: fm.edited_by ?? null,
+		tokenAuthoredBy: rec.state.tokenAuthoredBy ?? null,
 		supersededBy: fm.superseded_by ?? null,
 		reopenWhen: fm.reopen_when,
 		body: rec.file.body,
@@ -886,7 +952,15 @@ export class TaskService {
 	// create / read
 	// ---------------------------------------------------------------------
 
-	async create(input: CreateTaskInput): Promise<TaskWithRefs> {
+	async create(
+		input: CreateTaskInput,
+		opts: { token?: TokenAuthor } = {},
+	): Promise<TaskWithRefs> {
+		// In the document itself, so the task is never on the board unmarked. It
+		// is also an idempotency key, so each create needs its own value.
+		const createdBy = opts.token
+			? `token:${opts.token.id}#${randomUUID()}`
+			: input.createdBy;
 		const spec: CreateInput = {
 			title: input.title,
 			body: input.body,
@@ -922,10 +996,16 @@ export class TaskService {
 			discoveredFrom: input.discoveredFrom ?? null,
 			discoveryKey: input.discoveryKey ?? null,
 			reopenWhen: (input.reopenWhen ?? []).map(canonicalReopen),
-			...(input.createdBy ? { createdBy: input.createdBy } : {}),
+			...(createdBy ? { createdBy } : {}),
 			...(input.id ? { id: input.id } : {}),
 		};
-		const { record: rec, replayed } = await this.store.createWithOutcome(spec);
+		const created = await this.store.createWithOutcome(spec);
+		const { replayed } = created;
+		const rec = opts.token
+			? ((await this.store.patchState(created.record.id, {
+					tokenAuthoredBy: opts.token.id,
+				})) ?? created.record)
+			: created.record;
 		// A replay (the key was already on the board) was announced the first time.
 		if (!replayed) {
 			await this.emit({
@@ -934,7 +1014,7 @@ export class TaskService {
 				payload: {
 					source: rec.file.frontmatter.source,
 					title: rec.file.frontmatter.title,
-					...(input.createdBy ? { createdBy: input.createdBy } : {}),
+					...(createdBy ? { createdBy } : {}),
 				},
 			});
 		}
@@ -1633,22 +1713,32 @@ export class TaskService {
 			source?: "api" | "file" | "brain";
 			/** The brain action making the edit (`brain:<actionId>`), stamped as `edited_by`. */
 			editedBy?: string;
+			/** Set when an API token makes this edit. */
+			token?: TokenAuthor;
 		},
 	): Promise<TaskWithRefs> {
 		const before = await this.assertEditable(id, opts?.source);
+		const token = opts?.token;
+		const rewrites = patch.body !== undefined || patch.title !== undefined;
 		let result: { record: TaskRecord; fields: string[] };
 		try {
 			result = await this.store.update(
 				id,
-				(draft) => {
+				async (draft, rec) => {
+					if (token && rewrites) assertTokenMayRewrite(rec, token);
 					const fields = applyPatch(draft, patch);
+					const editedBy =
+						opts?.editedBy ?? (token ? `token:${token.id}` : undefined);
 					if (
 						fields.length > 0 &&
-						opts?.editedBy &&
+						editedBy &&
 						this.store.declaresField("edited_by")
 					) {
-						draft.frontmatter.edited_by = opts.editedBy;
+						draft.frontmatter.edited_by = editedBy;
 					}
+					// Before the write: a crash leaves the task over-marked, never under.
+					if (token && fields.length > 0)
+						await this.store.patchState(id, { tokenAuthoredBy: token.id });
 					if (
 						before?.status === "draft" &&
 						opts?.source !== "brain" &&
@@ -1733,19 +1823,40 @@ export class TaskService {
 	async editCriteria(
 		id: string,
 		op: CriteriaOp,
-		opts?: { baseRev?: number; source?: "api" | "brain" },
+		opts?: { baseRev?: number; source?: "api" | "brain"; token?: TokenAuthor },
 	): Promise<{ task: TaskWithRefs; itemId: string }> {
 		await this.assertEditable(id, opts?.source);
+		const token = opts?.token;
 		let itemId = "";
 		let result: { record: TaskRecord; fields: string[] };
 		try {
 			result = await this.store.update(
 				id,
-				(draft) => {
+				async (draft, rec) => {
+					// Criteria count: `promoteReady` accepts a body OR a criterion.
+					if (token) assertTokenMayRewrite(rec, token);
 					const next = applyCriteriaOp(draft.criteria, op);
 					itemId = next.itemId;
 					if (eqJson(next.items, draft.criteria)) return [];
+					// A passed criterion must keep saying what was actually checked.
+					if (
+						token &&
+						!token.mayDispatch &&
+						op.op === "edit" &&
+						draft.criteria.some(
+							(c, i) => c.checked && next.items[i]?.text !== c.text,
+						)
+					)
+						throw new TokenTaskStateError(
+							id,
+							"rewording a checked criterion needs the runs:act scope",
+						);
 					draft.criteria = next.items;
+					if (token) {
+						if (this.store.declaresField("edited_by"))
+							draft.frontmatter.edited_by = `token:${token.id}`;
+						await this.store.patchState(id, { tokenAuthoredBy: token.id });
+					}
 					return ["criteria"];
 				},
 				opts?.baseRev === undefined ? {} : { baseRev: opts.baseRev },
@@ -1901,11 +2012,11 @@ export class TaskService {
 		to: TaskStatus,
 		actor: StatusActor,
 		reason?: string,
-		opts: { discard?: boolean } = {},
+		opts: { discard?: boolean; token?: TokenAuthor } = {},
 	): Promise<TaskWithRefs> {
 		const guard = this.closeGuard;
 		if (actor !== "human" || (to !== "done" && to !== "archived") || !guard)
-			return this.moveChecked(id, to, actor, reason);
+			return this.moveChecked(id, to, actor, reason, undefined, opts.token);
 		const cur = this.store.get(id);
 		if (!cur) throw new Error(`unknown task ${id}`);
 		if (cur.status === to) return toRow(cur);
@@ -1928,7 +2039,7 @@ export class TaskService {
 		return this.store.withClaimLock(async () => {
 			const again = await guard.unmergedBranch(id);
 			if (again) throw new TaskUnmergedError(id, again);
-			return this.moveChecked(id, to, actor, reason);
+			return this.moveChecked(id, to, actor, reason, undefined, opts.token);
 		});
 	}
 
@@ -1946,10 +2057,15 @@ export class TaskService {
 		actor: StatusActor,
 		reason?: string,
 		editedBy?: string,
+		token?: TokenAuthor,
 	): Promise<TaskWithRefs> {
 		const cur = this.store.get(id);
 		if (!cur) throw new Error(`unknown task ${id}`);
 		if (cur.status === to && (to !== "blocked" || !reason)) return toRow(cur);
+		const tokenCheck = token
+			? (rec: TaskRecord) => assertTokenMayMove(rec, to, token)
+			: undefined;
+		tokenCheck?.(cur);
 		if (actor === "human" && to === "in_progress") {
 			throw new HumanInProgressError(id);
 		}
@@ -1974,7 +2090,8 @@ export class TaskService {
 		}
 		if (actor === "human" && (to === "backlog" || to === "ready")) {
 			const readyMode = to === "backlog" ? "manual" : "automatic";
-			const intent = await this.store.update(id, (draft) => {
+			const intent = await this.store.update(id, (draft, locked) => {
+				tokenCheck?.(locked);
 				if (draft.frontmatter.ready_mode === readyMode) return [];
 				draft.frontmatter.ready_mode = readyMode;
 				return ["ready_mode"];
@@ -1993,7 +2110,13 @@ export class TaskService {
 			}
 		}
 		const from = cur.status;
-		const rec = await this.store.setStatus(id, to, reason ?? null, editedBy);
+		const rec = await this.store.setStatus(
+			id,
+			to,
+			reason ?? null,
+			editedBy,
+			tokenCheck,
+		);
 		if (!rec) throw new Error(`unknown task ${id}`);
 		await this.clearFeedbackOnClose(id, to);
 		if (from !== to) {

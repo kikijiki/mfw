@@ -47,7 +47,7 @@ export async function brainUnit(
 		taskKey?: string;
 		/** Mutable: set `.reason` to a string to stop dispatch, null to resume. */
 		dispatchBlock?: { reason: string | null };
-		/** Give turns the unix socket (and no TCP url) instead of the TCP stub. */
+		/** A real unix socket for turns, instead of the inert stub. */
 		socket?: BrainSocket;
 		/** What `select_winner` sees a run changed; null = cannot be listed. */
 		changedFiles?: (runId: string) => string[] | null;
@@ -279,10 +279,17 @@ export async function brainUnit(
 		},
 		hostname: opts.hostname ?? "host-a",
 		now: () => clock.t,
-		mcp: opts.socket
-			? { script: "/nonexistent/mcp.ts" }
-			: { url: "http://127.0.0.1:1/trpc", script: "/nonexistent/mcp.ts" },
-		...(opts.socket ? { brainSocket: opts.socket } : {}),
+		mcp: { script: "/nonexistent/mcp.ts" },
+		brainSocket:
+			opts.socket ??
+			({
+				ready: true,
+				issue: async () => ({
+					socketPath: "/nonexistent/brain.sock",
+					tokenFile: "/nonexistent/brain.token",
+				}),
+				revoke: async () => {},
+			} as unknown as BrainSocket),
 	});
 
 	const api = {

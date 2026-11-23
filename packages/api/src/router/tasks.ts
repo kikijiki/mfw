@@ -1,7 +1,7 @@
 import { recordHumanAction } from "@mfw/daemon/human-actions";
 import { RoutingError, resolveProviderRef } from "@mfw/daemon/routing";
 import type { ProjectServices } from "@mfw/daemon/services";
-import { TaskClaimedError } from "@mfw/daemon/task-service";
+import { TaskClaimedError, type TokenAuthor } from "@mfw/daemon/task-service";
 import {
 	LocalStagingResourceRequirementSchema,
 	MODEL_TIERS,
@@ -12,7 +12,7 @@ import {
 } from "@mfw/daemon/tasks/types";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { createTRPCRouter, projectProcedure } from "../trpc.ts";
+import { createTRPCRouter, projectProcedure, tokenAuthor } from "../trpc.ts";
 
 /** Tasks router. Inputs are validated here; the server owns markdown serialization. */
 
@@ -69,10 +69,15 @@ type MoveInput = {
 };
 
 /** The guarded human move, with the cancel-run escape. */
-async function moveTask(svc: ProjectServices, input: MoveInput) {
+async function moveTask(
+	svc: ProjectServices,
+	input: MoveInput,
+	token?: TokenAuthor,
+) {
 	try {
 		return await svc.tasks.move(input.id, input.to, "human", input.reason, {
 			discard: input.discard,
+			...(token ? { token } : {}),
 		});
 	} catch (e) {
 		if (!(e instanceof TaskClaimedError) || !input.cancelRun) throw e;
@@ -196,11 +201,19 @@ export const tasksRouter = createTRPCRouter({
 		)
 		.mutation(async ({ ctx, input }) => {
 			await assertRoutable(ctx.svc, input.provider);
-			const created = await ctx.svc.tasks.create({
-				...input,
-				readyMode: input.status === "backlog" ? "manual" : "automatic",
-				source: "human",
-			});
+			const token = tokenAuthor(ctx.principal);
+			const created = await ctx.svc.tasks.create(
+				{
+					...input,
+					// A token's task never promotes itself: dispatch is a separate scope.
+					readyMode:
+						input.status === "backlog" || ctx.principal.kind === "token"
+							? "manual"
+							: "automatic",
+					source: "human",
+				},
+				token ? { token } : {},
+			);
 			await recordHumanAction(ctx.svc, {
 				action: "tasks.create",
 				taskId: created.id,
@@ -276,9 +289,11 @@ export const tasksRouter = createTRPCRouter({
 		)
 		.mutation(async ({ ctx, input }) => {
 			await assertRoutable(ctx.svc, input.patch.provider);
+			const token = tokenAuthor(ctx.principal);
 			const edited = await ctx.svc.tasks.edit(input.id, input.patch, {
 				baseRev: input.baseRev,
 				source: "api",
+				...(token ? { token } : {}),
 			});
 			await recordHumanAction(ctx.svc, {
 				action: "tasks.update",
@@ -300,12 +315,14 @@ export const tasksRouter = createTRPCRouter({
 				op: criteriaOpInput,
 			}),
 		)
-		.mutation(({ ctx, input }) =>
-			ctx.svc.tasks.editCriteria(input.id, input.op, {
+		.mutation(({ ctx, input }) => {
+			const token = tokenAuthor(ctx.principal);
+			return ctx.svc.tasks.editCriteria(input.id, input.op, {
 				baseRev: input.baseRev,
 				source: "api",
-			}),
-		),
+				...(token ? { token } : {}),
+			});
+		}),
 
 	/** Moving a claimed task fails with `PRECONDITION_FAILED` (`TaskClaimedError`) unless `cancelRun` is set, which kills the run and releases the claim with the status change. */
 	move: projectProcedure
@@ -320,7 +337,7 @@ export const tasksRouter = createTRPCRouter({
 			}),
 		)
 		.mutation(async ({ ctx, input }) => {
-			const moved = await moveTask(ctx.svc, input);
+			const moved = await moveTask(ctx.svc, input, tokenAuthor(ctx.principal));
 			await recordHumanAction(ctx.svc, {
 				action: "tasks.move",
 				taskId: input.id,

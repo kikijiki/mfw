@@ -33,6 +33,8 @@ const STATUS: Record<AuthRefused["code"], number> = {
 	weak_password: 400,
 	locked: 429,
 	busy: 429,
+	invalid_token_request: 400,
+	too_many_tokens: 409,
 };
 
 function refusal(e: AuthRefused): Response {
@@ -95,6 +97,18 @@ function hasAuthIntent(req: Request): boolean {
 	);
 }
 
+/** The attached project names, or null when they cannot be read. */
+async function projectNames(
+	projects: (() => Promise<string[]>) | undefined,
+): Promise<Set<string> | null> {
+	if (!projects) return null;
+	try {
+		return new Set(await projects());
+	} catch {
+		return null;
+	}
+}
+
 const badRequest = () =>
 	jsonResponse(400, { error: "bad_request", message: "malformed request" });
 
@@ -106,6 +120,8 @@ export async function handleAuthAction(
 	base = appBase(),
 	/** The throttle identity; injectable for tests. */
 	peer: AuthSource | undefined = throttleIdentity(req),
+	/** The attached projects, to validate a project-bound token. */
+	projects?: () => Promise<string[]>,
 ): Promise<Response> {
 	const method = req.method.toUpperCase();
 	if (action === "state" && (method === "GET" || method === "HEAD")) {
@@ -151,6 +167,72 @@ export async function handleAuthAction(
 				peer,
 			);
 			return jsonResponse(200, { ok: true });
+		} catch (e) {
+			if (isAuthRefused(e)) return refusal(e);
+			throw e;
+		}
+	}
+
+	// Token management: a private path, so the guard has required the session
+	// and its request key. A bearer token never gets here (`guardBearer`).
+	if (
+		action === "tokens" ||
+		action === "token-revoke" ||
+		action === "token-audit"
+	) {
+		const session = guarded.session;
+		if (!session)
+			return jsonResponse(401, {
+				error: "unauthenticated",
+				message: "sign in to manage API tokens",
+			});
+		if (action === "tokens" && method === "GET") {
+			const names = await projectNames(projects);
+			const tokens = await auth.listTokens();
+			return jsonResponse(200, {
+				tokens: tokens.map((t) => ({
+					...t,
+					// It would gain access if a project of that name were attached later.
+					unbound:
+						names !== null && t.project !== null && !names.has(t.project),
+				})),
+			});
+		}
+		if (action === "token-audit")
+			return method === "GET"
+				? jsonResponse(200, {
+						actions: await auth.listTokenAudit({ limit: 200 }),
+						counters: await auth.tokenAuditCounters(),
+					})
+				: jsonResponse(404, { error: "not_found", message: "not found" });
+		if (method !== "POST")
+			return jsonResponse(404, { error: "not_found", message: "not found" });
+		if (!hasAuthIntent(req)) return badRequest();
+		const body = await readJson(req);
+		if (!body) return badRequest();
+		if (action === "token-revoke") {
+			if (typeof body.id !== "string") return badRequest();
+			return jsonResponse(200, { revoked: await auth.revokeToken(body.id) });
+		}
+		if (body.project !== undefined && body.project !== null) {
+			const names = await projectNames(projects);
+			if (typeof body.project !== "string" || !names?.has(body.project))
+				return jsonResponse(400, {
+					error: "invalid_token_request",
+					message: "there is no project with that name",
+				});
+		}
+		try {
+			const { token, info } = await auth.createToken(
+				{
+					name: body.name,
+					scopes: body.scopes,
+					project: body.project,
+					ttlMs: body.ttlMs,
+				},
+				{ sessionId: session.sessionId },
+			);
+			return jsonResponse(200, { token, info });
 		} catch (e) {
 			if (isAuthRefused(e)) return refusal(e);
 			throw e;

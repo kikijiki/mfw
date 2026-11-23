@@ -198,6 +198,7 @@ Run these on the host, outside any agent sandbox:
 | `mfw auth unlock` | clear failed sign-in attempts, if you are locked out |
 | `mfw auth sign-out-everywhere` | revoke every session, including a stolen one |
 | `mfw auth setup-token` | issue a new first-run token (before an owner exists) |
+| `mfw auth token ...` | create, list and revoke API tokens (see below) |
 | `mfw auth reset --yes` | forget the password and all sessions, then repeat setup |
 
 Failed sign-ins are limited per address (behind a trusted proxy, per forwarded
@@ -213,8 +214,60 @@ tmux sockets itself, whatever your shell's environment says, and refuses if unsu
 a surviving agent could otherwise claim the owner account during setup. Do not
 delete `auth.db` by hand: that skips this check.
 
-`mfw mcp` over HTTP has no way to sign in yet and is refused until scoped tokens
-land. The project brain is unaffected: it uses its own unix socket.
+### API tokens
+
+MCP clients and scripts use scoped API tokens instead of a session. Create them
+under Settings > API tokens, or on the host:
+
+```sh
+mfw auth token create --name editor --scope board:read --write-file
+mfw auth token list
+mfw auth token revoke <id>
+mfw auth token audit
+```
+
+A token is shown once and stored only as a hash. It expires after 24 hours unless
+you pass `--ttl` (for example `30m`, `7d`, at most `90d`), and `--project` limits it
+to one project, which must exist when you create the token in Settings. The CLI
+warns instead, and both lists mark a token whose project is not attached. Send a
+token only as `Authorization: Bearer <token>`.
+
+| Scope | Allows |
+| --- | --- |
+| `status:read` | health, inbox, what is running |
+| `board:read` | tasks, ADRs, clarifications, audit events |
+| `board:write` | file tasks in backlog; edit the text of tasks parked by hand; change priority and size |
+| `runs:act` | start and stop task runs, read their transcripts, edit dispatchable tasks, move a task to ready |
+
+No scope reaches settings, hosts, triggers, merges, approvals, passwords or token
+management, or the brain's and other internal runs. A token cannot set verification
+commands, routing or review labels. Changing the password or signing out
+everywhere revokes every token.
+
+`board:write` cannot cause work to start. Without `runs:act`, a token can change a
+task's title, body or criteria only while the task is in backlog, parked by hand,
+with no reopen condition. It cannot reword a checked criterion, and it cannot move
+a finished task or one with a reopen condition back to backlog.
+
+**Text written by a token is untrusted.** A task a token has created or edited stays
+marked for good, even if you edit it afterwards. The brain treats it like
+agent-written text, so consequential actions after reading it need your approval.
+
+`mfw auth token audit` and Settings > API tokens show what each token changed and
+which streams it opened. Refused calls are a per-token count, so they cannot push
+real actions out of the log. Successful reads are not recorded.
+
+`mfw mcp` takes its token from `--token-file <path>`, then `MFW_TOKEN`, then
+`$MFW_HOME/mcp-token`, which must be a 0600 file. That stored file is used only for
+the default `http://localhost:7777` URL. For any other `MFW_URL`, name the token
+explicitly, and create the file with `--write-file --origin <url>`: a file that
+records an origin is never sent anywhere else. `mfw mcp` also refuses to send a token over
+plain HTTP except to loopback. The tools need these scopes: `list_tasks`,
+`get_task`, `graph` and `task_trace` need `board:read`; `create_task`, `edit_task`,
+`criteria` and `move_task` need `board:write`; `inbox` and `health` need
+`status:read`; `list_runs` and `run_entries` need `runs:act`.
+
+The project brain does not use tokens: it talks over its own unix socket.
 
 ## How it is built
 

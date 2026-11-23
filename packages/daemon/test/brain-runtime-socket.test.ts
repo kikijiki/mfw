@@ -24,10 +24,10 @@ afterEach(async () => {
 	else process.env.MFW_BRAIN_TCP = saved;
 });
 
-async function started(opts: { ready?: boolean } = {}) {
+async function started() {
 	home = await mkdtemp(join(tmpdir(), "mfw-brs-"));
 	socket = new BrainSocket(home);
-	if (opts.ready ?? true) socket.setHandler(async () => new Response("{}"));
+	socket.setHandler(async () => new Response("{}"));
 	u = await brainUnit({ socket });
 	await u.runtime.tick(); // creates the session at the current head
 	await u.human();
@@ -88,19 +88,26 @@ describe("a brain turn's MCP server", () => {
 	});
 });
 
-describe("temporary TCP fallback (until auth v1)", () => {
-	test("MFW_BRAIN_TCP=1 keeps the old URL transport and mints no token", async () => {
+describe("the unix socket is the brain's only transport", () => {
+	test("MFW_BRAIN_TCP=1 no longer selects TCP", async () => {
 		process.env.MFW_BRAIN_TCP = "1";
 		const t = await started();
-		expect(t.launch.mcp.env.MFW_URL).toMatch(/^http:\/\//);
-		expect(t.launch.mcp.env.MFW_SOCKET).toBeUndefined();
-		expect(t.launch.mcp.env.MFW_BRAIN_TOKEN_FILE).toBeUndefined();
-		expect(existsSync(join(home ?? "", "run"))).toBe(false);
+		expect(t.launch.mcp.env.MFW_URL).toBeUndefined();
+		expect(t.launch.mcp.env.MFW_SOCKET).toBe(
+			join(home ?? "", "run", "brain.sock"),
+		);
 	});
 
-	test("with no router wired to the socket the turn falls back to TCP rather than a dead socket", async () => {
-		const t = await started({ ready: false });
-		expect(t.launch.mcp.env.MFW_URL).toMatch(/^http:\/\//);
-		expect(t.launch.mcp.env.MFW_SOCKET).toBeUndefined();
+	test("with no router wired to the socket no turn is launched and no token is minted", async () => {
+		home = await mkdtemp(join(tmpdir(), "mfw-brs-"));
+		socket = new BrainSocket(home);
+		u = await brainUnit({ socket });
+		await u.runtime.tick();
+		await u.human();
+		u.advance(60_000);
+		await u.runtime.tick();
+		expect(u.launched).toHaveLength(0);
+		expect(socket.liveTurns()).toEqual([]);
+		expect(existsSync(join(home, "run", "brain.sock"))).toBe(false);
 	});
 });
