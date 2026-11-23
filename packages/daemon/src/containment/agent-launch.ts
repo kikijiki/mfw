@@ -24,6 +24,7 @@ import {
 	buildRunProfile,
 	cloneLayout,
 	declaredAgentBinaries,
+	ensureFleetPrivateState,
 	findLaunchSecret,
 	findWritableBindParent,
 	UNATTESTED_CONFIG_MARKER,
@@ -167,6 +168,11 @@ export async function launchAgentSandbox(
 	let profile: SandboxProfile;
 	try {
 		cloneLayout(req.tree);
+		ensureFleetPrivateState(
+			req.tree,
+			req.cli,
+			join(req.mfwHome, "agents", req.cli),
+		);
 		const looked = await deps.compileHost(
 			req,
 			agentToolCandidates(required),
@@ -189,7 +195,13 @@ export async function launchAgentSandbox(
 			cli: req.cli,
 			fleetDir: join(req.mfwHome, "agents", req.cli),
 			binaries,
-			env: { ...req.env, ...secrets },
+			env: {
+				...req.env,
+				...(req.cli === "claude"
+					? { CLAUDE_CODE_PROJECT_DIR_NAME: `mfw-run-${req.runId}` }
+					: {}),
+				...secrets,
+			},
 			...(req.egressSocketDir ? { egressSocketDir: req.egressSocketDir } : {}),
 		});
 	} catch (err) {
@@ -267,12 +279,13 @@ export async function launchAgentSandbox(
 		return refuse("probe_refused", attested.reason, attested.fix);
 	}
 	if (attested.outcome !== "pass") {
+		// Names the offending path: the detail is the host's own rendering.
 		const failed = attested.items
 			.filter((i) => i.status !== "pass")
-			.map((i) => i.id);
+			.map((i) => `${i.id} (${i.detail.slice(0, 400)})`);
 		return refuse(
 			"probe_failed",
-			`the sandbox probe failed: ${failed.join(", ")}`,
+			`the sandbox probe failed: ${failed.join(", ").slice(0, 2000)}`,
 			"run `mfw doctor`, fix the failing items, then retry",
 		);
 	}

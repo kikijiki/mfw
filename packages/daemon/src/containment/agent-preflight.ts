@@ -23,7 +23,7 @@ import {
 	agentToolCandidates,
 	buildRunProfile,
 	declaredAgentBinaries,
-	TEMPORARY_FLEET_WRITABLE,
+	ensureFleetPrivateState,
 } from "./agent-profile.ts";
 import type { CompileHost } from "./compile-bwrap.ts";
 import { attestSandbox } from "./probe-run.ts";
@@ -97,9 +97,8 @@ async function probeLayout(
 		const runDir = join(stateDir, "runs/preflight");
 		ensureRunDirLayout(runDir);
 		const fleet = join(base, "agents/claude");
-		for (const rel of TEMPORARY_FLEET_WRITABLE.claude) {
-			mkdirSync(join(fleet, rel), { recursive: true, mode: 0o700 });
-		}
+		mkdirSync(fleet, { recursive: true, mode: 0o700 });
+		ensureFleetPrivateState(join(clone, "tree"), "claude", fleet);
 		const required = ["bun", "git"];
 		let host: CompileHost;
 		try {

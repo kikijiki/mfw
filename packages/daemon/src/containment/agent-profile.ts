@@ -7,7 +7,7 @@
  * Egress exists only when the caller hands in a proxy socket directory.
  */
 
-import { lstatSync } from "node:fs";
+import { lstatSync, mkdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { PinnedBind } from "./pinned-binds.ts";
 import { parseSandboxProfile, type SandboxProfile } from "./profile.ts";
@@ -20,10 +20,16 @@ export const UNATTESTED_CONFIG_MARKER = "unattested-config";
  * provisional directories from the sandbox experiments and are not attested
  * for an authenticated CLI. Files in the config root (`.claude.json`,
  * `auth.json`, Codex's sqlite state) stay read-only, so a CLI that must rewrite
- * them fails rather than gaining a writable config root.
+ * them fails rather than gaining a writable config root. `plugins/store` is
+ * left out because a CLI loads code from it.
+ *
+ * Each run mounts a private, empty copy of these directories over the shared
+ * ones (see {@link fleetPrivateState}): a CLI loads instructions and scripts
+ * from them, so what one run writes must never reach another. Task and repair
+ * runs start fresh sessions, so nothing is imported.
  */
 export const TEMPORARY_FLEET_WRITABLE = {
-	claude: ["backups", "plugins/store", "projects", "sessions"],
+	claude: ["backups", "projects", "sessions"],
 	codex: ["cache", "sessions", "shell_snapshots", "thread-writer-locks", "tmp"],
 } as const;
 
@@ -158,6 +164,26 @@ export function cloneLayout(tree: string): CloneLayout {
 	return { root, tree, gitDir };
 }
 
+/** This run's private fleet state: beside its clone, never bound as a whole. */
+export function fleetPrivateState(tree: string, cli: FleetCli): string {
+	return join(dirname(tree), "fleet-state", cli);
+}
+
+/** Create the private directories, and the mount points they need. */
+export function ensureFleetPrivateState(
+	tree: string,
+	cli: FleetCli,
+	fleetDir: string,
+): void {
+	const state = fleetPrivateState(tree, cli);
+	for (const rel of TEMPORARY_FLEET_WRITABLE[cli]) {
+		mkdirSync(join(state, rel), { recursive: true, mode: 0o700 });
+		if (isRealDir(fleetDir)) {
+			mkdirSync(join(fleetDir, rel), { recursive: true, mode: 0o700 });
+		}
+	}
+}
+
 export interface RunProfileInput {
 	role: "task" | "repair";
 	tree: string;
@@ -187,6 +213,7 @@ export function buildRunProfile(input: RunProfileInput): SandboxProfile {
 				cli: input.cli,
 				source: input.fleetDir,
 				writable: [...TEMPORARY_FLEET_WRITABLE[input.cli]],
+				privateState: fleetPrivateState(clone.tree, input.cli),
 			},
 			...(input.deny?.length ? { deny: [...input.deny] } : {}),
 		},
