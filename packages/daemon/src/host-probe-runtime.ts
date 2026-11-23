@@ -61,6 +61,19 @@ function failure(error: unknown): ProbeCapture {
 	};
 }
 
+/**
+ * What an aborted capture reports. A caller whose abort is its own deadline
+ * (`AbortSignal.timeout`, or an `abort` with a `TimeoutError` reason) gets
+ * `timeout`, so it does not race the per-command timer for which of the two
+ * names the same expiry; any other abort stays an execution error.
+ */
+export function abortedOutcome(signal: AbortSignal): ProbeCapture {
+	const reason = signal.reason as { name?: string } | undefined;
+	return {
+		outcome: reason?.name === "TimeoutError" ? "timeout" : "execution-error",
+	};
+}
+
 async function readStreamBounded(
 	stream: ReadableStream<Uint8Array>,
 	limit: number,
@@ -116,7 +129,7 @@ export function createProductionHostProbeRuntime(): HostProbeRuntime {
 		timer,
 		files: {
 			async readFile(path, maxBytes, signal) {
-				if (signal.aborted) return { outcome: "execution-error" };
+				if (signal.aborted) return abortedOutcome(signal);
 				let handle: Awaited<ReturnType<typeof open>> | undefined;
 				try {
 					handle = await open(path, "r");
@@ -127,7 +140,7 @@ export function createProductionHostProbeRuntime(): HostProbeRuntime {
 						bytes.byteLength,
 						0,
 					);
-					if (signal.aborted) return { outcome: "execution-error" };
+					if (signal.aborted) return abortedOutcome(signal);
 					return {
 						outcome: "ok",
 						stdout: new TextDecoder().decode(
@@ -164,7 +177,7 @@ export function createProductionHostProbeRuntime(): HostProbeRuntime {
 		},
 		commands: {
 			async run(request, signal) {
-				if (signal.aborted) return { outcome: "execution-error" };
+				if (signal.aborted) return abortedOutcome(signal);
 				let child: ReturnType<typeof Bun.spawn>;
 				try {
 					child = Bun.spawn([request.command, ...request.args], {
@@ -212,7 +225,7 @@ export function createProductionHostProbeRuntime(): HostProbeRuntime {
 						child.exited,
 					]);
 					if (timedOut) return { outcome: "timeout" };
-					if (aborted) return { outcome: "execution-error" };
+					if (aborted) return abortedOutcome(signal);
 					const truncated = stdout.truncated || stderr.truncated;
 					if (truncated) terminate();
 					if (exitCode === 0) {
