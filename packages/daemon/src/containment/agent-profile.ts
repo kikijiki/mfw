@@ -228,7 +228,7 @@ const TOKEN_SHAPES = [
 	/\bgithub_pat_[A-Za-z0-9_]{20,}/,
 	/\bxox[abprs]-[A-Za-z0-9-]{10,}/,
 	/\bAKIA[0-9A-Z]{16}\b/,
-	/-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+	/-----BEGIN [A-Z ]*PRIVATE\sKEY-----/,
 ];
 
 export interface LaunchSecretCheck {
