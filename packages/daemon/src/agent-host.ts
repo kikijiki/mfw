@@ -281,14 +281,17 @@ const EGRESS_START_POLLS = 400;
 /** 0.05 s each: past the proxy's hard exit deadline. */
 const EGRESS_STOP_POLLS = 80;
 
-/** Harness id to its fleet dir; a harness without one has no sandboxed launch. */
-const FLEET_CLI: Readonly<Record<string, FleetCli>> = Object.fromEntries(
+const FLEET_CLI: ReadonlyMap<string, FleetCli> = new Map(
 	builtinHarnessRegistry()
 		.list()
 		.flatMap((m) =>
 			m.fleet.cli ? [[m.id, m.fleet.cli as FleetCli] as const] : [],
 		),
 );
+
+/** A harness's fleet dir. Without one it has no sandboxed launch. */
+export const fleetCliOf = (id: string): FleetCli | undefined =>
+	FLEET_CLI.get(id);
 
 const exists = (path: string) =>
 	lstat(path).then(
@@ -754,7 +757,7 @@ export class AgentHost {
 		made: { roleClone?: string },
 	): Promise<HostBridge> {
 		const mfwHome = spec.isolation?.mfwHome;
-		const cli = FLEET_CLI[spec.providerId ?? ""];
+		const cli = fleetCliOf(spec.providerId ?? "");
 		if (!mfwHome || !cli) {
 			throw new SandboxUnavailableError(
 				`provider ${spec.providerId ?? "(none)"} has no sandbox profile yet: sandboxed runs support claude-cli and codex-cli`,

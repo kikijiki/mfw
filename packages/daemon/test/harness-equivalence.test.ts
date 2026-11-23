@@ -180,10 +180,10 @@ describe("the manifests agree with the code they describe", () => {
 
 	test("the sandbox profile's fleet list is the manifests' list", () => {
 		const fleet = registry.list().flatMap((m) => m.fleet.cli ?? []);
-		expect(fleet.sort()).toEqual(Object.keys(FLEET_ENV_CEILING).sort());
+		expect(fleet.sort()).toEqual([...FLEET_ENV_CEILING.keys()].sort());
 		for (const m of registry.list())
 			if (m.fleet.cli)
-				expect(m.fleet.env).toBe(FLEET_ENV_CEILING[m.fleet.cli] as string);
+				expect(m.fleet.env).toBe(FLEET_ENV_CEILING.get(m.fleet.cli) as string);
 	});
 
 	test("every project path and directory is host-executed", () => {

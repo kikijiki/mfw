@@ -82,7 +82,7 @@ function acpProfile(m: HarnessManifestInput): AcpProfile {
 }
 
 /** Read without the validator: the bridge bundles this file. */
-const PROFILES: Readonly<Record<string, AcpProfile>> = Object.fromEntries(
+const PROFILES: ReadonlyMap<string, AcpProfile> = new Map(
 	BUILTIN_HARNESS_MANIFESTS.filter((m) => m.dialect === "acp").map((m) => [
 		m.id,
 		acpProfile(m),
@@ -91,7 +91,7 @@ const PROFILES: Readonly<Record<string, AcpProfile>> = Object.fromEntries(
 
 export function profileFor(name: string | undefined): AcpProfile {
 	return (
-		(name && PROFILES[name]) || {
+		(name && PROFILES.get(name)) || {
 			id: "acp",
 			label: "ACP agent",
 			brainEligible: false,

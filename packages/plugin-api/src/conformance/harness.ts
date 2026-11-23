@@ -30,38 +30,48 @@ import type { CheckResult } from "./kit.ts";
  */
 
 /** Bypass arguments each known harness must declare, one argv per entry. */
-export const KNOWN_BYPASS_ARGV: Readonly<
-	Record<string, readonly (readonly string[])[]>
-> = {
-	"claude-cli": [
-		["--dangerously-skip-permissions"],
-		["--allow-dangerously-skip-permissions"],
-		["--permission-mode", "bypassPermissions"],
-		["--permission-mode", "auto"],
-		["--permission-mode", "acceptEdits"],
+export const KNOWN_BYPASS_ARGV: ReadonlyMap<
+	string,
+	readonly (readonly string[])[]
+> = new Map<string, readonly (readonly string[])[]>([
+	[
+		"claude-cli",
+		[
+			["--dangerously-skip-permissions"],
+			["--allow-dangerously-skip-permissions"],
+			["--permission-mode", "bypassPermissions"],
+			["--permission-mode", "auto"],
+			["--permission-mode", "acceptEdits"],
+		],
 	],
-	"codex-cli": [
-		["--dangerously-bypass-approvals-and-sandbox"],
-		["--full-auto"],
-		["--yolo"],
-		["--approve-for-me"],
-		["--ask-for-approval", "never"],
-		["-a", "never"],
-		["--sandbox", "danger-full-access"],
-		["-s", "danger-full-access"],
-		["-c", 'approval_policy="never"'],
-		["--config", 'sandbox_mode="danger-full-access"'],
+	[
+		"codex-cli",
+		[
+			["--dangerously-bypass-approvals-and-sandbox"],
+			["--full-auto"],
+			["--yolo"],
+			["--approve-for-me"],
+			["--ask-for-approval", "never"],
+			["-a", "never"],
+			["--sandbox", "danger-full-access"],
+			["-s", "danger-full-access"],
+			["-c", 'approval_policy="never"'],
+			["--config", 'sandbox_mode="danger-full-access"'],
+		],
 	],
-	"gemini-cli": [
-		["--yolo"],
-		["-y"],
-		["--approval-mode", "yolo"],
-		["--approval-mode", "auto_edit"],
+	[
+		"gemini-cli",
+		[
+			["--yolo"],
+			["-y"],
+			["--approval-mode", "yolo"],
+			["--approval-mode", "auto_edit"],
+		],
 	],
-	"cursor-agent": [["--force"], ["-f"], ["--yolo"], ["--approve-mcps"]],
-	opencode: [["--dangerously-skip-permissions"]],
-	pi: [["--approve"]],
-};
+	["cursor-agent", [["--force"], ["-f"], ["--yolo"], ["--approve-mcps"]]],
+	["opencode", [["--dangerously-skip-permissions"]]],
+	["pi", [["--approve"]]],
+]);
 
 export interface HarnessDetectResult {
 	installed: boolean;
@@ -244,7 +254,7 @@ export async function runHarnessConformance(
 			values: new Set(m.autonomy.values.map((v) => `${v.option}\0${v.value}`)),
 			config: new Set(m.autonomy.config.map((c) => `${c.key}\0${c.value}`)),
 		};
-		for (const argv of KNOWN_BYPASS_ARGV[m.id] ?? []) {
+		for (const argv of KNOWN_BYPASS_ARGV.get(m.id) ?? []) {
 			assert(
 				findAutonomyFlags(own, argv).length > 0,
 				`the gate does not recognise ${argv.join(" ")}`,

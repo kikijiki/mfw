@@ -58,10 +58,10 @@ const CLAUDE_VALUES: ReadonlyMap<string, ValueCheck> = new Map([
 	["--disallowedTools", (v: string) => /^[A-Za-z]+(,[A-Za-z]+)*$/.test(v)],
 ]);
 
-const VALUE_OPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
-	claude: new Set(CLAUDE_VALUES.keys()),
-	codex: new Set(["-m", "-c"]),
-};
+const VALUE_OPTIONS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+	["claude", new Set(CLAUDE_VALUES.keys())],
+	["codex", new Set(["-m", "-c"])],
+]);
 
 const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
@@ -203,7 +203,8 @@ export function withoutLaunchFlags(
 		const space = flag.indexOf(" ");
 		return space < 0 ? [flag] : [flag.slice(0, space), flag.slice(space + 1)];
 	});
-	const valued = VALUE_OPTIONS[manifest.fleet.cli ?? ""] ?? new Set<string>();
+	const valued =
+		VALUE_OPTIONS.get(manifest.fleet.cli ?? "") ?? new Set<string>();
 	const out: string[] = [];
 	for (let i = 0; i < argv.length; ) {
 		const found = launch.find((parts) =>

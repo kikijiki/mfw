@@ -592,7 +592,7 @@ function buildEnv(
 	}
 	if (fs?.fleetConfig) {
 		// The registry holds this to the ceiling for that CLI.
-		const fleetEnv = FLEET_ENV_CEILING[fs.fleetConfig.cli] as string;
+		const fleetEnv = FLEET_ENV_CEILING.get(fs.fleetConfig.cli) as string;
 		env[fleetEnv] = `${SANDBOX_PATHS.fleet}/${fs.fleetConfig.cli}`;
 	}
 	if (fs?.runDir) {

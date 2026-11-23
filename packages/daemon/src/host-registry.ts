@@ -67,18 +67,22 @@ export interface RemoteHarness {
  * Harnesses a host can run, keyed by the catalogue id routing uses. Sorted by
  * id, so the probe script does not change when the manifests are reordered.
  */
-export const REMOTE_HARNESSES = Object.fromEntries(
-	[...builtinHarnessRegistry().list()]
-		.sort((a, b) => (a.id < b.id ? -1 : 1))
-		.map((m) => {
-			const identity = harnessBinaryIdentity(m.id);
-			const facts: RemoteHarness = {
-				binary: m.detect.bin,
-				authPaths: m.auth.remoteLoginFiles,
-				...(identity ? { identity } : {}),
-			};
-			return [m.id, facts];
-		}),
+export const REMOTE_HARNESSES = Object.assign(
+	// No prototype: an id is data and must not resolve to `constructor`.
+	Object.create(null),
+	Object.fromEntries(
+		[...builtinHarnessRegistry().list()]
+			.sort((a, b) => (a.id < b.id ? -1 : 1))
+			.map((m) => {
+				const identity = harnessBinaryIdentity(m.id);
+				const facts: RemoteHarness = {
+					binary: m.detect.bin,
+					authPaths: m.auth.remoteLoginFiles,
+					...(identity ? { identity } : {}),
+				};
+				return [m.id, facts];
+			}),
+	),
 ) as Readonly<Record<RemoteHarnessId, RemoteHarness>>;
 
 export const HostConfigSchema = z

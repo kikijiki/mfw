@@ -50,7 +50,7 @@ describe("harness conformance", () => {
 
 	test("the per-harness bypass lists add up to the core floor", () => {
 		const listed = new Set(
-			Object.values(KNOWN_BYPASS_ARGV).flatMap((rows) =>
+			[...KNOWN_BYPASS_ARGV.values()].flatMap((rows) =>
 				rows.filter((r) => r.length === 1).map((r) => r[0]),
 			),
 		);

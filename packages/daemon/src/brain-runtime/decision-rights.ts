@@ -121,10 +121,14 @@ export interface RightsFacts {
  * `merge-host-executed-gate.test.ts` fails if a manifest names a path they miss.
  */
 export const HARNESS_CONFIG_PATHS: Readonly<Record<string, readonly string[]>> =
-	Object.fromEntries(
-		builtinHarnessRegistry()
-			.list()
-			.map((m) => [m.id, m.install.projectConfig]),
+	// No prototype: an id is data and must not resolve to `constructor`.
+	Object.assign(
+		Object.create(null),
+		Object.fromEntries(
+			builtinHarnessRegistry()
+				.list()
+				.map((m) => [m.id, m.install.projectConfig]),
+		),
 	);
 
 const HOST_EXECUTED_DIRS = [

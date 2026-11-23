@@ -66,10 +66,10 @@ export const FLEET_WRITABLE_CEILING: ReadonlySet<string> = new Set([
 ]);
 
 /** The fleet CLIs the sandbox profile knows, and the variable locating each. */
-export const FLEET_ENV_CEILING: Readonly<Record<string, string>> = {
-	claude: "CLAUDE_CONFIG_DIR",
-	codex: "CODEX_HOME",
-};
+export const FLEET_ENV_CEILING: ReadonlyMap<string, string> = new Map([
+	["claude", "CLAUDE_CONFIG_DIR"],
+	["codex", "CODEX_HOME"],
+]);
 
 /** Name endings that never lead to a vendor endpoint. */
 const PRIVATE_HOST_SUFFIXES = [
@@ -143,7 +143,7 @@ export function harnessCeilingViolations(
 	if (m.fleet.writable.length > 0 && m.fleet.cli === undefined)
 		out.push("fleet.writable needs a fleet dir");
 	if (m.fleet.cli !== undefined) {
-		const env = FLEET_ENV_CEILING[m.fleet.cli];
+		const env = FLEET_ENV_CEILING.get(m.fleet.cli);
 		if (env === undefined)
 			out.push(`fleet.cli ${m.fleet.cli}: the sandbox has no such fleet dir`);
 		else if (m.fleet.env !== env)
