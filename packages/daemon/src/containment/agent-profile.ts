@@ -310,17 +310,78 @@ export function findLaunchSecret(check: LaunchSecretCheck): string | null {
 /** Flags that make a CLI act without asking. Only an authorized launch may carry them. */
 const AUTONOMY_FLAGS = [
 	"--dangerously-skip-permissions",
+	"--allow-dangerously-skip-permissions",
 	"--dangerously-bypass-approvals-and-sandbox",
+	"--full-auto",
 	"--yolo",
 ];
 
-const isAutonomyFlag = (arg: string) =>
-	AUTONOMY_FLAGS.some((f) => arg === f || arg.startsWith(`${f}=`));
+/** Options that grant autonomy only with one of these values. */
+const AUTONOMY_VALUES: Readonly<Record<string, string>> = {
+	"--permission-mode": "bypassPermissions",
+	"--ask-for-approval": "never",
+	"-a": "never",
+	"--sandbox": "danger-full-access",
+	"-s": "danger-full-access",
+};
+
+/** Codex `-c key=value` overrides that do the same. */
+const AUTONOMY_CONFIG: Readonly<Record<string, string>> = {
+	approval_policy: "never",
+	sandbox_mode: "danger-full-access",
+};
+
+const CONFIG_OPTIONS = ["-c", "--config"];
+
+const unquoted = (value: string) => value.trim().replace(/^["']|["']$/g, "");
+
+function isAutonomyConfig(setting: string): boolean {
+	const at = setting.indexOf("=");
+	if (at < 0) return false;
+	const wanted = AUTONOMY_CONFIG[setting.slice(0, at).trim()];
+	return wanted !== undefined && unquoted(setting.slice(at + 1)) === wanted;
+}
+
+/** How many arguments at `i` grant autonomy: 0, 1, or 2 for an option and value. */
+function autonomySpan(argv: readonly string[], i: number): number {
+	const arg = argv[i] as string;
+	if (AUTONOMY_FLAGS.some((f) => arg === f || arg.startsWith(`${f}=`)))
+		return 1;
+	const next = argv[i + 1];
+	if (AUTONOMY_VALUES[arg] !== undefined) {
+		return next !== undefined && unquoted(next) === AUTONOMY_VALUES[arg]
+			? 2
+			: 0;
+	}
+	if (CONFIG_OPTIONS.includes(arg)) {
+		return next !== undefined && isAutonomyConfig(next) ? 2 : 0;
+	}
+	const eq = arg.indexOf("=");
+	if (eq < 0) return 0;
+	const name = arg.slice(0, eq);
+	const value = arg.slice(eq + 1);
+	if (AUTONOMY_VALUES[name] !== undefined) {
+		return unquoted(value) === AUTONOMY_VALUES[name] ? 1 : 0;
+	}
+	return CONFIG_OPTIONS.includes(name) && isAutonomyConfig(value) ? 1 : 0;
+}
 
 export function autonomyFlags(argv: readonly string[]): string[] {
-	return argv.filter(isAutonomyFlag);
+	const out: string[] = [];
+	for (let i = 0; i < argv.length; ) {
+		const span = autonomySpan(argv, i);
+		if (span > 0) out.push(argv.slice(i, i + span).join(" "));
+		i += span || 1;
+	}
+	return out;
 }
 
 export function withoutAutonomyFlags(argv: readonly string[]): string[] {
-	return argv.filter((a) => !isAutonomyFlag(a));
+	const out: string[] = [];
+	for (let i = 0; i < argv.length; ) {
+		const span = autonomySpan(argv, i);
+		if (span === 0) out.push(argv[i] as string);
+		i += span || 1;
+	}
+	return out;
 }

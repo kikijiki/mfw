@@ -241,6 +241,35 @@ describe("autonomy flags", () => {
 		).toHaveLength(1);
 	});
 
+	test.each([
+		[["claude", "--permission-mode", "bypassPermissions"]],
+		[["claude", "--permission-mode=bypassPermissions"]],
+		[["codex", "-c", "approval_policy=never"]],
+		[["codex", "--config", 'approval_policy="never"']],
+		[["codex", "--config=approval_policy=never"]],
+		[["codex", "-c", "sandbox_mode=danger-full-access"]],
+		[["codex", "-c", 'sandbox_mode="danger-full-access"']],
+		[["codex", "--sandbox", "danger-full-access"]],
+		[["codex", "-s", "danger-full-access"]],
+		[["codex", "--sandbox=danger-full-access"]],
+		[["codex", "--ask-for-approval", "never"]],
+		[["codex", "-a", "never"]],
+		[["codex", "--full-auto"]],
+	])("m3: %j is an autonomy override, removed whole", (argv) => {
+		expect(autonomyFlags(argv).length).toBeGreaterThan(0);
+		expect(withoutAutonomyFlags(argv)).toEqual([argv[0] as string]);
+	});
+
+	test.each([
+		[["claude", "--permission-mode", "plan"]],
+		[["codex", "-c", "approval_policy=on-request"]],
+		[["codex", "--sandbox", "read-only"]],
+		[["codex", "-c", "model=gpt"]],
+	])("m3: %j is not an autonomy override", (argv) => {
+		expect(autonomyFlags(argv)).toEqual([]);
+		expect(withoutAutonomyFlags(argv)).toEqual(argv);
+	});
+
 	test("cover the inline form of a flag", () => {
 		expect(
 			autonomyFlags(["claude", "--dangerously-skip-permissions=true"]),

@@ -1140,6 +1140,42 @@ describe.skipIf(skip !== null)("the real drivers and bridges", () => {
 		expect(r.events.at(-1)).toMatchObject({ type: "done", reason: "error" });
 	}, 40_000);
 
+	test("m3: the Codex bridge never asks for danger-full-access", async () => {
+		writeFileSync(
+			join(f.bin, "fake-codex.ts"),
+			`import { writeFileSync } from "node:fs";
+let buf = "";
+for await (const bytes of Bun.stdin.stream()) {
+  buf += new TextDecoder().decode(bytes);
+  let at;
+  while ((at = buf.indexOf("\\n")) >= 0) {
+    const line = buf.slice(0, at); buf = buf.slice(at + 1);
+    if (!line.trim()) continue;
+    const m = JSON.parse(line);
+    if (m.method === "initialize") console.log(JSON.stringify({ id: m.id, result: {} }));
+    else if (m.method === "thread/start") {
+      writeFileSync("/work/thread-start.json", JSON.stringify(m.params));
+      console.log(JSON.stringify({ id: m.id, result: { thread: { id: "t1" } } }));
+    } else if (m.method === "turn/start") {
+      console.log(JSON.stringify({ id: m.id, result: { turn: { id: "u1" } } }));
+      console.log(JSON.stringify({ method: "turn/completed", params: { turn: { id: "u1", status: "completed" } } }));
+    }
+  }
+}`,
+		);
+		const script = join(f.bin, "codex");
+		writeFileSync(
+			script,
+			`#!/bin/sh\nexec bun --config=/dev/null --no-env-file run '${join(f.bin, "fake-codex.ts")}'\n`,
+		);
+		chmodSync(script, 0o755);
+		await runBridged("codex", { maxWaitMs: 20_000 });
+		const params = JSON.parse(
+			readFileSync(join(f.tree, "thread-start.json"), "utf8"),
+		);
+		expect(params.sandbox).not.toBe("danger-full-access");
+	}, 40_000);
+
 	test("codex runs under the bridge, in the sandbox", async () => {
 		copyFileSync(
 			resolve(import.meta.dir, "fixtures/fake-codex-app-server.ts"),

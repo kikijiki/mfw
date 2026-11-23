@@ -111,7 +111,9 @@ async function handleCanonical(req: AppServerRequest): Promise<void> {
 					cwd: str(p.cwd),
 					model: typeof p.model === "string" ? p.model : undefined,
 					approvalPolicy,
-					sandbox: "danger-full-access",
+					// Never `danger-full-access`: mfw's sandbox is the boundary, and this
+					// bridge does not widen what Codex itself is told it may do.
+					sandbox: "workspace-write",
 				});
 				const thread =
 					isRecord(result) && isRecord(result.thread)
