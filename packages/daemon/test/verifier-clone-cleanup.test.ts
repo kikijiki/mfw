@@ -4,6 +4,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	realpathSync,
 	statSync,
 	symlinkSync,
@@ -89,6 +90,17 @@ describe("removing a clone a check tampered with", () => {
 		const first = await t.clones.create(t.sha, "a-poisoned");
 		const second = await t.clones.create(t.sha, "b-plain");
 		poison(first.path);
+		// A crashed daemon's leftovers: their owner is gone.
+		const dead = Bun.spawn(["true"]);
+		await dead.exited;
+		for (const c of [first, second]) {
+			const file = join(dirname(c.path), "mfw-workspace.json");
+			const meta = JSON.parse(readFileSync(file, "utf8"));
+			writeFileSync(
+				file,
+				JSON.stringify({ ...meta, owner: { instance: "gone", pid: dead.pid } }),
+			);
+		}
 		const removed = await t.clones.sweep();
 		expect(removed).toBe(2);
 		expect(existsSync(dirname(first.path))).toBe(false);

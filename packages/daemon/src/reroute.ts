@@ -4,6 +4,7 @@ import { ulid } from "@mfw/db/ids";
 import { finishHumanOverride, recordHumanOverride } from "./human-override.ts";
 import type { RouteInput } from "./routing.ts";
 import type { GroupRunSpec, RunEngine } from "./run-engine.ts";
+import { TaskNotClaimableError } from "./run-engine.ts";
 import type { RunRegistry } from "./run-registry.ts";
 import { CLAIM_HOLDING_RUN_STATES } from "./run-registry.ts";
 
@@ -22,6 +23,7 @@ export type RerouteCode =
 	| "not_a_task_run"
 	| "nothing_to_change"
 	| "not_settled"
+	| "already_finished"
 	| "group_closed";
 
 export class RerouteError extends Error {
@@ -128,6 +130,13 @@ export async function rerouteRun(
 	}
 	const joining = group?.kind === "competing" ? group : null;
 
+	const finished = (): RerouteError =>
+		new RerouteError(
+			"already_finished",
+			`${run.id} had already finished by the time it was stopped`,
+			"Its task is no longer waiting on it. Open the task and start it again, or reopen it first, if more work is needed.",
+		);
+
 	// 1. stop, keeping the worktree.
 	if (await live(run.id)) {
 		await deps.engine.stop(run.id);
@@ -142,6 +151,11 @@ export async function rerouteRun(
 				);
 			}
 			await Bun.sleep(deps.pollMs ?? 100);
+		}
+		// The run completed on its own before the stop landed: its task has
+		// moved on, so there is nothing left to continue.
+		if ((await deps.registry.get(run.id))?.state === "completed") {
+			throw finished();
 		}
 	}
 
@@ -210,6 +224,9 @@ export async function rerouteRun(
 			ok: false,
 			error: e instanceof Error ? e.message : String(e),
 		});
+		// The task left `ready` since the run began (it finished, or someone
+		// moved it): say so, not "not claimable".
+		if (e instanceof TaskNotClaimableError) throw finished();
 		throw e;
 	}
 	await finishHumanOverride(deps.handle, decisionId, {

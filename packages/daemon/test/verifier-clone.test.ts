@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readFile,
+	rm,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { CheckRunner } from "../src/containment/check-runner.ts";
 import { git, gitOk } from "../src/git.ts";
 import { runProc } from "../src/proc.ts";
@@ -41,6 +48,23 @@ async function setup() {
 		checkRunner,
 	});
 	return { root, primary, base, wsRoot, clones };
+}
+
+/** Rewrite who a clone says owns it (the clone's `mfw-workspace.json`). */
+async function rewriteOwner(
+	treePath: string,
+	owner: { instance: string; pid: number },
+) {
+	const file = join(dirname(treePath), "mfw-workspace.json");
+	const meta = JSON.parse(await readFile(file, "utf8"));
+	await writeFile(file, `${JSON.stringify({ ...meta, owner })}\n`);
+}
+
+/** What a daemon that died mid-verification leaves: an owner that is gone. */
+async function abandonAsCrashed(treePath: string) {
+	const dead = Bun.spawn(["true"]);
+	await dead.exited;
+	await rewriteOwner(treePath, { instance: "gone", pid: dead.pid });
 }
 
 const dod = (checks: unknown[]) =>
@@ -105,6 +129,7 @@ describe("VerifierClones", () => {
 	test("sweep removes leftovers of a crashed daemon but not run workspaces", async () => {
 		const t = await setup();
 		const c = await t.clones.create(t.base, "stale");
+		await abandonAsCrashed(c.path);
 		const keep = join(t.wsRoot, "run-keep");
 		await mkdir(keep, { recursive: true });
 		expect(await t.clones.sweep()).toBe(1);
@@ -113,6 +138,59 @@ describe("VerifierClones", () => {
 		expect(await gitOk(["for-each-ref", "refs/mfw/verify/"], t.primary)).toBe(
 			"",
 		);
+	});
+
+	test("sweep spares a verification that is running, even when another project attaches", async () => {
+		const t = await setup();
+		const secondPrimary = join(t.root, "second");
+		await mkdir(secondPrimary);
+		await git(["init", "-q", "-b", "main", "."], secondPrimary);
+		await git(["config", "user.email", "t@t"], secondPrimary);
+		await git(["config", "user.name", "t"], secondPrimary);
+		await writeFile(join(secondPrimary, "b.txt"), "b\n");
+		await git(["add", "-A"], secondPrimary);
+		await git(["commit", "-q", "-m", "init"], secondPrimary);
+		// The second project attaches to the same workspace root and sweeps.
+		const attaching = new VerifierClones({
+			workspaceRoot: t.wsRoot,
+			primaryRoot: secondPrimary,
+		});
+		const live = await t.clones.create(t.base, "in-flight");
+		expect(await attaching.sweep()).toBe(0);
+		expect(await t.clones.sweep()).toBe(0);
+		expect(existsSync(join(live.path, "a.txt"))).toBe(true);
+		expect(
+			await gitOk(["for-each-ref", "refs/mfw/verify/"], t.primary),
+		).toContain(live.id);
+		await live.dispose();
+		expect(existsSync(live.path)).toBe(false);
+	});
+
+	test("sweep spares a clone another live daemon owns, until the age bound", async () => {
+		const t = await setup();
+		const c = await t.clones.create(t.base, "theirs");
+		// Owned by another process that is alive: this test's parent.
+		await rewriteOwner(c.path, { instance: "other", pid: process.ppid });
+		expect(await t.clones.sweep()).toBe(0);
+		expect(existsSync(c.path)).toBe(true);
+		const aged = new VerifierClones({
+			workspaceRoot: t.wsRoot,
+			primaryRoot: t.primary,
+			orphanAgeMs: 0,
+		});
+		expect(await aged.sweep()).toBe(1);
+		expect(existsSync(c.path)).toBe(false);
+		expect(await gitOk(["for-each-ref", "refs/mfw/verify/"], t.primary)).toBe(
+			"",
+		);
+	});
+
+	test("sweep leaves a half-seeded clone with no owner record for a grace period", async () => {
+		const t = await setup();
+		const half = join(t.wsRoot, "verify-half-deadbeef");
+		await mkdir(join(half, "tree"), { recursive: true });
+		expect(await t.clones.sweep()).toBe(0);
+		expect(existsSync(half)).toBe(true);
 	});
 });
 
