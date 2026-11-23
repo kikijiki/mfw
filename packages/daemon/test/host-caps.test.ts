@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+	bwrapSupportsBindFd,
 	detectArch,
 	detectBwrap,
 	detectHostCaps,
@@ -188,6 +189,39 @@ describe("single detectors", () => {
 		expect(old.ok).toBe(false);
 		expect(old.fix).toContain("0.8.0");
 		expect((await detectBwrap(readers({ run: BWRAP_OK }))).ok).toBe(true);
+	});
+
+	test("bind-fd support comes from help, then from the version", async () => {
+		const detect = async (version: string, help?: string) =>
+			(
+				await detectBwrap(
+					readers({
+						run: {
+							"bwrap --version": {
+								code: 0,
+								stdout: `bubblewrap ${version}\n`,
+							},
+							...(help === undefined
+								? {}
+								: { "bwrap --help": { code: 0, stdout: help } }),
+						},
+					}),
+				)
+			).value;
+		const both = "--disable-userns --bind-fd FD DEST --ro-bind-fd FD DEST";
+		// A distribution backport: an old version whose help lists the flags.
+		expect(bwrapSupportsBindFd(await detect("0.8.0", both))).toBe(true);
+		expect(
+			bwrapSupportsBindFd(await detect("0.11.0", "--disable-userns")),
+		).toBe(false);
+		expect(
+			bwrapSupportsBindFd(
+				await detect("0.11.0", "--disable-userns --ro-bind-fd FD DEST"),
+			),
+		).toBe(false);
+		// Unreadable help: the upstream version decides.
+		expect(bwrapSupportsBindFd(await detect("0.10.0"))).toBe(true);
+		expect(bwrapSupportsBindFd(await detect("0.9.0"))).toBe(false);
 	});
 
 	test("version helpers", () => {

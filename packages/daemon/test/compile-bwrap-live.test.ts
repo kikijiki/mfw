@@ -7,7 +7,9 @@ import {
 	readdirSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -17,6 +19,12 @@ import {
 	compileBwrap,
 } from "../src/containment/compile-bwrap.ts";
 import type { Check } from "../src/containment/host-caps.ts";
+import {
+	type OpenPins,
+	openPinnedBinds,
+	type PinnedBind,
+	PinnedBindError,
+} from "../src/containment/pinned-binds.ts";
 import { parseSandboxProfile } from "../src/containment/profile.ts";
 import { discoverToolchain } from "../src/containment/toolchain.ts";
 import {
@@ -197,10 +205,21 @@ function sandboxFds(c: CompiledSandbox): unknown[] {
 	return fds;
 }
 
-/** Spawn without any guard. Only for harmless commands and guarded callers. */
-function spawnSandbox(argv: string[], c: CompiledSandbox) {
+/** The binds a compiled sandbox declares; empty before pinning existed. */
+const pinsOf = (c: CompiledSandbox): readonly PinnedBind[] =>
+	(c as { pinnedBinds?: readonly PinnedBind[] }).pinnedBinds ?? [];
+
+/**
+ * Spawn without any guard. Only for harmless commands and guarded callers.
+ * `held` is a set of pins opened earlier, for a swap after the pin.
+ */
+function spawnSandbox(argv: string[], c: CompiledSandbox, held?: OpenPins) {
+	const pins = held ?? openPinnedBinds(pinsOf(c));
+	const stdio = ["ignore", "pipe", "pipe", ...sandboxFds(c), ...pins.parentFds];
+	// spawnSync closes the numeric entries itself.
+	pins.release();
 	const child = Bun.spawnSync(argv, {
-		stdio: ["ignore", "pipe", "pipe", ...sandboxFds(c)] as never,
+		stdio: stdio as never,
 		timeout: 30_000,
 	});
 	return {
@@ -310,9 +329,17 @@ describe.skipIf(skip !== null)("compiled profile under bwrap", () => {
 			process: { env: { OPENAI_API_KEY: secret } },
 		});
 		const argv = assertContained(c, guardSpec());
+		const pins = openPinnedBinds(pinsOf(c));
 		const child = Bun.spawn(argv, {
-			stdio: ["pipe", "pipe", "pipe", ...sandboxFds(c)] as never,
+			stdio: [
+				"pipe",
+				"pipe",
+				"pipe",
+				...sandboxFds(c),
+				...pins.parentFds,
+			] as never,
 		});
+		pins.close();
 		try {
 			const reader = (child.stdout as ReadableStream<Uint8Array>).getReader();
 			const first = await reader.read();
@@ -480,6 +507,75 @@ describe.skipIf(skip !== null)("compiled profile under bwrap", () => {
 		);
 		expect(r.code).toBe(0);
 		expect(checkControlReport(r.out, spec).join()).toContain("/stand-in");
+	});
+
+	describe("a bind source swapped for a symlink after compile (M1)", () => {
+		const WRITE = "echo pwned > /work/pwned";
+
+		/** Compile, prove containment with the control, and return the scenario. */
+		function controlled(): { scenario: CompiledSandbox; argv: string[] } {
+			const spec = guardSpec();
+			const scenario = compile(["sh", "-c", WRITE]);
+			const probe = compile(["sh", "-c", buildControlScript(spec)]);
+			const argv = assertContained(scenario, spec);
+			const control = spawnSandbox(assertContained(probe, spec), probe);
+			expect(control.code).toBe(0);
+			expect(checkControlReport(control.out, spec)).toEqual([]);
+			return { scenario, argv };
+		}
+
+		function swapSource(): string {
+			const moved = `${work}.pinned`;
+			renameSync(work, moved);
+			symlinkSync(join(home, ".ssh"), work);
+			return moved;
+		}
+
+		test("positive control: a path bind follows the swap", () => {
+			const { scenario, argv } = controlled();
+			swapSource();
+			// Harmless write into the fixture's stand-in, through a plain path bind.
+			const options = decodeOptions(scenario.bwrapArgs);
+			const at = options.findIndex(
+				(o, i) =>
+					(o === "--bind" || o === "--bind-fd") && options[i + 2] === "/work",
+			);
+			expect(at).toBeGreaterThan(0);
+			const pathBind: CompiledSandbox = {
+				...scenario,
+				bwrapArgs: encodeOptions([
+					...options.slice(0, at),
+					"--bind",
+					work,
+					"/work",
+					...options.slice(at + 3),
+				]),
+				pinnedBinds: [],
+			} as CompiledSandbox;
+			const r = spawnSandbox(argv, pathBind);
+			expect(r.code).toBe(0);
+			expect(existsSync(join(home, ".ssh/pwned"))).toBe(true);
+		});
+
+		test("a swap before the pin is refused and nothing launches", () => {
+			const { scenario } = controlled();
+			swapSource();
+			expect(() => openPinnedBinds(pinsOf(scenario))).toThrow(PinnedBindError);
+			expect(existsSync(join(home, ".ssh/pwned"))).toBe(false);
+			canaryIntact();
+		});
+
+		test("a swap after the pin writes to the pinned directory only", () => {
+			const { scenario, argv } = controlled();
+			const pins = openPinnedBinds(pinsOf(scenario));
+			const moved = swapSource();
+			const r = spawnSandbox(argv, scenario, pins);
+			expect(r.err).toBe("");
+			expect(r.code).toBe(0);
+			expect(existsSync(join(home, ".ssh/pwned"))).toBe(false);
+			expect(readFileSync(join(moved, "pwned"), "utf8")).toBe("pwned\n");
+			canaryIntact();
+		});
 	});
 
 	test("a mis-expansion scenario that deletes nothing does not pass", () => {

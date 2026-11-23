@@ -14,6 +14,7 @@
 import { readlinkSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { isAbsolute, posix } from "node:path";
+import type { PinnedBind } from "../src/containment/pinned-binds.ts";
 
 /** The mounts every compiled sandbox has writable, whatever its profile. */
 export const BASE_WRITABLE: readonly string[] = [
@@ -110,6 +111,8 @@ function checkReadOnlySource(source: string, spec: GuardSpec): void {
 export interface LaunchShape {
 	argv: string[];
 	bwrapArgs: Buffer;
+	/** The only descriptors an `--bind-fd` or `--ro-bind-fd` option may name. */
+	pinnedBinds?: readonly PinnedBind[];
 }
 
 /** Split the `--args` stream, which must be NUL-terminated. */
@@ -154,6 +157,7 @@ export function assertContained(
 	const argv = decodeOptions(compiled.bwrapArgs);
 
 	const seen = new Set<string>();
+	const usedFds = new Set<string>();
 	let rootReadOnly = false;
 	let runReadOnly = false;
 	let i = 0;
@@ -216,6 +220,23 @@ export function assertContained(
 				const dest = value();
 				if (!rootReadOnly) refuse("writable bind before --remount-ro /");
 				checkBindSource(source, dest, spec);
+				break;
+			}
+			case "--bind-fd":
+			case "--ro-bind-fd": {
+				const fd = value();
+				const dest = value();
+				const writable = opt === "--bind-fd";
+				const pin = compiled.pinnedBinds?.find(
+					(p) =>
+						String(p.fd) === fd && p.dest === dest && p.writable === writable,
+				);
+				if (!pin) refuse(`${opt} ${fd} ${dest} is not a declared pin`);
+				if (usedFds.has(fd)) refuse(`descriptor ${fd} is bound twice`);
+				usedFds.add(fd);
+				if (!rootReadOnly) refuse(`${opt} before --remount-ro /`);
+				if (writable) checkBindSource(pin.source, dest, spec);
+				else checkReadOnlySource(pin.source, spec);
 				break;
 			}
 			default:
