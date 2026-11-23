@@ -33,6 +33,7 @@ import {
 } from "../src/containment/egress-run.ts";
 import { ensureRunDirLayout } from "../src/containment/run-dir.ts";
 import { type CageConfig, cagedSteps } from "./support/caged-launch.ts";
+import { clientHello } from "./support/tls-hello.ts";
 
 /**
  * Egress through the real launcher, probe and bwrap, with a fake agent and a
@@ -157,8 +158,25 @@ function redirectTarget() {
   });
 }
 
+/** A tunnel whose first bytes are this TLS hello. True if the upstream answered. */
+function helloThrough(authority, b64) {
+  return new Promise((done) => {
+    let buf = "", sent = false, settled = false;
+    const finish = (v) => { if (!settled) { settled = true; c.destroy(); done(v); } };
+    const c = net.connect(3128, "127.0.0.1", () => c.write("CONNECT " + authority + " HTTP/1.1\r\n\r\n"));
+    c.on("data", (d) => {
+      buf += d.toString("latin1");
+      if (!sent && buf.includes("\r\n\r\n")) { sent = true; buf = ""; c.write(Buffer.from(b64, "base64")); return; }
+      if (sent && buf.includes("pong:")) finish(true);
+    });
+    c.on("error", () => finish(false));
+    c.on("close", () => finish(false));
+    setTimeout(() => finish(false), 4000);
+  });
+}
+
 (async () => {
-  const out = { targets: {}, direct: {}, visible: {}, raw: {} };
+  const out = { targets: {}, direct: {}, visible: {}, raw: {}, hello: {} };
   out.routes = fs.readFileSync("/proc/net/route", "utf8").trim().split("\n").length - 1;
   out.proxyEnv = process.env.HTTPS_PROXY;
   out.nodeEnvProxy = process.env.NODE_USE_ENV_PROXY;
@@ -179,6 +197,10 @@ function redirectTarget() {
     out.raw.redirectLocation = location;
     out.raw.redirectFollowed = await viaRelay(location + ":80");
     out.raw.afterAbuse = await viaRelay("allowed.test:443");
+  }
+  if (spec.hellos) {
+    out.hello.matching = await helloThrough("allowed.test:443", spec.hellos.matching);
+    out.hello.mismatched = await helloThrough("allowed.test:443", spec.hellos.mismatched);
   }
   for (const p of spec.hidden) out.visible[p] = fs.existsSync(p);
   fs.writeFileSync("/mfw-run/outbox/result.json", JSON.stringify(out));
@@ -212,6 +234,7 @@ interface AgentReport {
 	>;
 	direct: { upstream?: string; external?: string };
 	visible: Record<string, boolean>;
+	hello: { matching?: boolean; mismatched?: boolean };
 	raw: {
 		oversized?: RawAnswer;
 		plainHttp?: RawAnswer;
@@ -305,11 +328,12 @@ describe.skipIf(skip !== null)("egress through the real launch path", () => {
 		targets: string[],
 		hidden: string[] = [],
 		hostile = false,
+		hellos?: { matching: string; mismatched: string },
 	): Promise<AgentReport> {
 		const script = join(home, ".local/bin/claude");
 		writeFileSync(
 			script,
-			`#!${BUN}\n${AGENT.replace("__SPEC__", JSON.stringify({ targets, upstreamPort, hidden, hostile }))}`,
+			`#!${BUN}\n${AGENT.replace("__SPEC__", JSON.stringify({ targets, upstreamPort, hidden, hostile, hellos }))}`,
 		);
 		chmodSync(script, 0o755);
 		const req: AgentLaunchRequest = {
@@ -472,6 +496,47 @@ describe.skipIf(skip !== null)("egress through the real launch path", () => {
 			]),
 		);
 		await until(() => run.proxy.active === 0);
+	}, 90_000);
+
+	test("the real proxy process behind the real launcher enforces SNI", async () => {
+		const run = await makeRun();
+		await run.proxy.close();
+		const egress = prepareRunEgress({
+			mfwHome,
+			runDir: run.runDir,
+			runId: run.runId,
+			allow: [{ host: "allowed.test", port: 443 }],
+		});
+		const proxy = Bun.spawn(
+			[
+				process.execPath,
+				"run",
+				resolve(import.meta.dir, "support/egress-proxy-fake-net.ts"),
+				egress.configPath,
+				String(upstreamPort),
+			],
+			{ stdin: "pipe", stdout: "ignore", stderr: "ignore" },
+		);
+		try {
+			await until(
+				() =>
+					existsSync(egress.socketPath) &&
+					readFileSync(egress.indexPath, "utf8").includes('"pid"'),
+				15_000,
+			);
+			const out = await runAgent({ ...run, egress }, [], [], false, {
+				matching: clientHello("allowed.test").toString("base64"),
+				mismatched: clientHello("attacker-site.example").toString("base64"),
+			});
+			expect(out.routes).toBe(0);
+			expect(out.hello).toEqual({ matching: true, mismatched: false });
+		} finally {
+			(proxy.stdin as import("bun").FileSink).end();
+			await proxy.exited;
+		}
+		const stats = JSON.parse(readFileSync(egress.statsPath, "utf8"));
+		expect(stats.denied["allowed.test:443"].lastReason).toBe("sni-mismatch");
+		expect(stats.allowed["allowed.test:443"].bytesUp).toBeGreaterThan(0);
 	}, 90_000);
 
 	test("a run sees neither another run's socket nor its counters", async () => {

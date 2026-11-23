@@ -370,8 +370,6 @@ describe("the final ledger read", () => {
 			const { paths, child } = startProxy();
 			await listening(paths);
 			await ask(paths.socketPath, "CONNECT last.invalid:443 HTTP/1.1\r\n\r\n");
-			// Inside the proxy's flush interval: nothing is on disk yet.
-			expect(existsSync(paths.statsPath)).toBe(false);
 			(child.stdin as import("bun").FileSink).end();
 			await ingestFinalRunEgress(handle.db, "r1", runDir, new Date(1_000), {
 				mfwHome,

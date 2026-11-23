@@ -82,8 +82,24 @@ function storeBinaries(pkg: RegExp, bin: string): string[] {
 	return readdirSync("/nix/store")
 		.filter((e) => pkg.test(e))
 		.map((e) => `/nix/store/${e}/bin/${bin}`)
-		.filter((p) => existsSync(p))
-		.slice(0, 8);
+		.filter((p) => existsSync(p));
+}
+
+/**
+ * None of `paths` exists in the sandbox. Read from a list in the sandbox's
+ * stdin-free argv in batches; the control proves each shell really ran.
+ */
+function expectAbsent(plan: ToolchainPlan, paths: readonly string[]): void {
+	for (let i = 0; i < paths.length; i += 200) {
+		const batch = paths.slice(i, i + 200);
+		const quoted = batch.map((f) => `'${f}'`).join(" ");
+		const r = inSandbox(
+			plan,
+			`echo alive; for f in ${quoted}; do if [ -e "$f" ] || [ -L "$f" ]; then echo "present $f"; fi; done`,
+		);
+		expect(r.code).toBe(0);
+		expect(r.out).toBe("alive\n");
+	}
 }
 
 describe.skipIf(skip !== null)("store closure under bwrap", () => {
@@ -115,33 +131,38 @@ describe.skipIf(skip !== null)("store closure under bwrap", () => {
 		expect(readdirSync("/nix/store").length).toBeGreaterThan(bound);
 	});
 
-	test.each([
-		["curl", /-curl-\d[^/]*$/, "curl"],
-		["python3", /-python3-\d[^/]*$/, "python3"],
-		["ssh", /-openssh-\d[^/]*$/, "ssh"],
-		["perl", /-perl-\d[^/]*$/, "perl"],
-	] as const)("undeclared %s cannot run by absolute path", (_n, pkg, bin) => {
+	test("every executable the closure hides is absent, python in git's included", () => {
 		const p = plan();
-		const candidates = storeBinaries(pkg, bin);
-		if (candidates.length === 0) {
-			console.log(`[toolchain-closure-live] no ${bin} in this store`);
-			return;
-		}
-		for (const path of candidates) {
-			// The control proves the shell ran, so a dead sandbox cannot pass.
-			const r = inSandbox(
-				p,
-				`echo alive; if [ -e '${path}' ]; then echo present; fi`,
-			);
-			expect(r.code).toBe(0);
-			expect(r.out).toBe("alive\n");
-		}
+		const masks = p.masks ?? [];
+		expect(masks.length).toBeGreaterThan(0);
+		const hidden = masks.flatMap((dir) =>
+			readdirSync(dir).map((name) => `${dir}/${name}`),
+		);
+		expect(hidden.length).toBeGreaterThan(0);
+		// git's own runtime closure carries python3, which nobody declared.
+		const python = hidden.filter((f) =>
+			/-python3-[^/]*\/bin\/python3$/.test(f),
+		);
+		expect(python.length).toBeGreaterThan(0);
+		expectAbsent(p, hidden);
+	});
+
+	test("no undeclared network tool or interpreter in the store can run", () => {
+		const p = plan();
+		const found = [
+			...storeBinaries(/-curl-\d[^/]*$/, "curl"),
+			...storeBinaries(/-python3-\d[^/]*$/, "python3"),
+			...storeBinaries(/-openssh-\d[^/]*$/, "ssh"),
+			...storeBinaries(/-perl-\d[^/]*$/, "perl"),
+		];
+		expect(found.length).toBeGreaterThan(0);
+		expectAbsent(p, found);
 	});
 
 	test("a hidden directory cannot be written", () => {
 		const p = plan();
 		const mask = p.masks?.[0];
-		if (!mask) return;
+		expect(mask).toBeDefined();
 		const r = inSandbox(
 			p,
 			`[ -d '${mask}' ] || exit 90; if (echo x > '${mask}/planted') 2>/dev/null; then exit 91; fi; exit 0`,
