@@ -3,14 +3,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
+import type { HostResourceDefinition } from "../src/resources/host-types.ts";
+import { ResourceError } from "../src/resources/types.ts";
 import {
 	HostResourceCoordinator,
-	type HostResourceDefinition,
-	HostStoreError,
-	type LeaseLivenessInspector,
-	type LivenessEvidence,
+	type LegacyLiveness as LeaseLivenessInspector,
+	type LegacyEvidence as LivenessEvidence,
 	openHostResourceStore,
-} from "../src/host-resources/index.ts";
+} from "./support/legacy-host.ts";
 import { withRealSqliteSync } from "./support/real-sqlite-sync.ts";
 
 const homes: string[] = [];
@@ -104,7 +104,7 @@ describe("host resource store", () => {
 			projectId: "project-b",
 			requirements: [{ resourceId: "gpu", amount: 1n }],
 		});
-		const generation = (await a.store.readModel()).generation;
+		const generation = (await a.store.freshModel()).generation;
 
 		const [ga, gb] = await Promise.all([
 			a.tryGrant(wa.id, generation),
@@ -124,8 +124,18 @@ describe("host resource store", () => {
 	test("oldest-overlap FIFO blocks backfill while disjoint resources progress", async () => {
 		const path = await home();
 		const c = await coordinator(path, "process-a");
-		await c.putDefinition(definition("gpu", 1n));
+		await c.putDefinition({
+			...definition("gpu", 2n),
+			accounting: "quantity",
+			quantityUnit: "integer",
+		});
 		await c.putDefinition(definition("cpu", 1n));
+		const holder = await c.putWaiter({
+			requestKey: "holder",
+			projectId: "a",
+			requirements: [{ resourceId: "gpu", amount: 1n }],
+		});
+		expect("kind" in (await c.tryGrant(holder.id))).toBe(false);
 
 		const oldest = await c.putWaiter({
 			requestKey: "old-large",
@@ -146,8 +156,9 @@ describe("host resource store", () => {
 		const generation = c.readModel().generation;
 		expect(await c.tryGrant(oldest.id, generation)).toMatchObject({
 			kind: "held",
-			reason: "definition",
+			reason: "capacity",
 		});
+		// One unit is free and fits the younger waiter, which still may not pass.
 		expect(await c.tryGrant(same.id, generation)).toMatchObject({
 			kind: "held",
 			reason: "fifo",
@@ -237,9 +248,9 @@ describe("host resource store", () => {
 			enabled: true,
 			version: 1n,
 		}));
-		const generation = (await store.readModel()).generation;
+		const generation = (await store.freshModel()).generation;
 		await store.client.execute(`CREATE TEMP TRIGGER fail_second_detected_binding
-			BEFORE INSERT ON resource_bindings
+			BEFORE INSERT ON rp_host_bindings
 			WHEN NEW.id = 'gpu-amd-b'
 			BEGIN SELECT RAISE(ABORT, 'injected detected binding failure'); END`);
 
@@ -248,7 +259,7 @@ describe("host resource store", () => {
 				expectedGeneration: generation,
 			}),
 		).rejects.toThrow("injected detected binding failure");
-		const rolledBack = await store.readModel();
+		const rolledBack = await store.freshModel();
 		expect(rolledBack.generation).toBe(generation);
 		expect(rolledBack.definitions).toEqual([]);
 		expect(rolledBack.bindings).toEqual([]);
@@ -267,7 +278,7 @@ describe("host resource store", () => {
 				expectedGeneration: generation,
 			}),
 		).resolves.toEqual({ definitionCreated: true, bindingsCreated: 2 });
-		const applied = await store.readModel();
+		const applied = await store.freshModel();
 		expect(applied.definitions.map((item) => item.id)).toEqual(["gpu-amd"]);
 		expect(applied.bindings.map((item) => item.id)).toEqual([
 			"gpu-amd-a",
@@ -282,9 +293,9 @@ describe("host resource store", () => {
 			processBootId: "process-a",
 			kernelBootId: "kernel-a",
 		});
-		const generation = (await store.readModel()).generation;
+		const generation = (await store.freshModel()).generation;
 		await store.client.execute(`CREATE TEMP TRIGGER fail_second_detected_resource
-			BEFORE INSERT ON resource_definitions
+			BEFORE INSERT ON rp_host_definitions
 			WHEN NEW.id = 'ram'
 			BEGIN SELECT RAISE(ABORT, 'injected second recommendation failure'); END`);
 
@@ -298,7 +309,7 @@ describe("host resource store", () => {
 			),
 		).rejects.toThrow("injected second recommendation failure");
 
-		const rolledBack = await store.readModel();
+		const rolledBack = await store.freshModel();
 		expect(rolledBack.generation).toBe(generation);
 		expect(rolledBack.definitions).toEqual([]);
 		expect(rolledBack.bindings).toEqual([]);
@@ -336,7 +347,7 @@ describe("host resource store", () => {
 		expect(successor.fence).toBeGreaterThan(first.fence);
 		await expect(
 			c.cancelOrRelease(successor.id, first.fence, "stale owner"),
-		).rejects.toBeInstanceOf(HostStoreError);
+		).rejects.toBeInstanceOf(ResourceError);
 		expect((await c.store.lease(successor.id))?.state).toBe("provisional");
 		await c.activate(successor.id, successor.fence, {
 			runId: "run-successor",
@@ -430,7 +441,7 @@ describe("host resource store", () => {
 				projectId: "a",
 				requirements: [{ resourceId: "gpu", amount: 1n }],
 			}),
-		).rejects.toThrow("different immutable request");
+		).rejects.toThrow("different request");
 		await c.observations.recordHealth({
 			kind: "amd-gpu",
 			result: "degraded",
@@ -546,7 +557,7 @@ describe("host resource store", () => {
 
 		const first = await c.store.recordObservationBatch(health, [sample]);
 		expect(first.meaningfulChange).toBe(true);
-		const generation = (await c.store.readModel()).generation;
+		const generation = (await c.store.freshModel()).generation;
 		const auditCount = (await c.store.auditEntries()).filter(
 			(entry) => entry.action === "observation.batch",
 		).length;
@@ -561,7 +572,7 @@ describe("host resource store", () => {
 		]);
 		expect(retryA.meaningfulChange).toBe(false);
 		expect(retryB.meaningfulChange).toBe(false);
-		expect((await c.store.readModel()).generation).toBe(generation);
+		expect((await c.store.freshModel()).generation).toBe(generation);
 		expect(
 			(await c.store.auditEntries()).filter(
 				(entry) => entry.action === "observation.batch",
@@ -590,7 +601,7 @@ describe("host resource store", () => {
 				[sample],
 			),
 		).rejects.toThrow("mixed generation");
-		const afterConflict = await c.store.readModel();
+		const afterConflict = await c.store.freshModel();
 		expect(afterConflict.generation).toBe(generation);
 		expect(afterConflict.observations[0]?.metrics).toEqual({
 			occupied: false,
@@ -620,7 +631,9 @@ describe("host resource store", () => {
 			],
 		);
 		expect(newer.meaningfulChange).toBe(true);
-		expect((await c.store.readModel()).generation).toBe(generation + 1n);
+		expect((await c.store.freshModel()).observations[0]?.metrics).toEqual({
+			occupied: true,
+		});
 		expect(
 			(await c.store.auditEntries()).filter(
 				(entry) => entry.action === "observation.batch",
@@ -655,7 +668,7 @@ describe("host resource store", () => {
 				},
 			]),
 		).resolves.toEqual({ meaningfulChange: true });
-		const recovered = await restarted.store.readModel();
+		const recovered = await restarted.store.freshModel();
 		expect(recovered.health[0]).toMatchObject({
 			processBootId: "process-b",
 			checkedAt: 1_500,

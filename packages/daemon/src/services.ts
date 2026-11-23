@@ -15,10 +15,6 @@ import type { ClarifyService } from "./clarify.ts";
 import type { DocsService } from "./docs.ts";
 import type { GlobalDispatch } from "./global-dispatch.ts";
 import type { Health } from "./health.ts";
-import type {
-	HostResourceCoordinator,
-	HostResourceCoordinatorPort,
-} from "./host-resources/index.ts";
 import type { HostService } from "./host-service.ts";
 import type { InboxService } from "./inbox.ts";
 import type { LifecycleService } from "./lifecycle.ts";
@@ -30,6 +26,7 @@ import type { OpenRouterAccountService } from "./openrouter-account-service.ts";
 import type { ProjectDispatchAdmission } from "./project-dispatch-admission.ts";
 import type { ProviderHoldStore } from "./provider-holds.ts";
 import type { RepoViewService } from "./repo-view.ts";
+import type { HostLedger } from "./resources/host-ledger.ts";
 import type { ResourceService } from "./resources.ts";
 import type { ReviewService } from "./review.ts";
 import type { RunEngine } from "./run-engine.ts";
@@ -64,7 +61,7 @@ export interface ProjectServices {
 	bus: EventBus;
 	log: Logger;
 	/** Narrow global admission/recovery port; never a ProjectServices backref. */
-	hostResources: HostResourceCoordinatorPort;
+	hostResources: HostLedger;
 	/** Detach removes only this wake subscription, never the project's leases. */
 	releaseHostWake: () => void;
 	tasks: TaskService;
@@ -143,7 +140,7 @@ export interface Orchestrator {
 	/** Provider API keys, presence-only (the store itself is process-global,
 	 *  not per project: `~/.local/share/mfw/credentials.json`, chmod 600). */
 	providers: ProviderSettings;
-	/** Machine-wide per-provider rate-limit holds (`$MFW_HOME/provider-holds.json`). */
+	/** Machine-wide per-provider rate-limit holds, as pool holds in the core. */
 	providerHolds: ProviderHoldStore;
 	/** The one machine-wide provider-truth service; never project-scoped. */
 	runpod: RunPodAccountService;
@@ -158,7 +155,7 @@ export interface Orchestrator {
 	 */
 	globalDispatch: GlobalDispatch;
 	/** The sole process-global host coordinator and observation-service owner. */
-	hostResources: HostResourceCoordinator;
+	hostResources: HostLedger;
 	/** Registry SSH hosts (`$MFW_HOME/hosts.json`): declare, probe, place. */
 	hosts: HostService;
 	get(name: string): ProjectServices;

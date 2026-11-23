@@ -8,7 +8,7 @@ import {
 import { type BearerHeader, parseBearer } from "@mfw/daemon/auth/tokens";
 import { mfwHome } from "@mfw/daemon/config";
 import { relativePath } from "../lib/auth-paths";
-import { checkRequest } from "./request-guard";
+import { checkRequest, requestContext } from "./request-guard";
 
 /**
  * The session-aware front of every request: Host and Origin first
@@ -57,17 +57,11 @@ export function appBase(): string {
 }
 
 /**
- * TLS as the browser sees it. A forged `X-Forwarded-Proto` can only make the
- * cookie stricter (`Secure`, which a plain-HTTP browser then refuses to store).
- *
- * TODO(C4): honour `X-Forwarded-Proto` only from the configured trusted proxy.
- * It stays accepted from anyone until then because the documented `tailscale
- * serve` setup depends on it and there is no way yet to name that proxy.
+ * TLS as the browser sees it: this server's own, or reported by a peer named in
+ * `MFW_TRUSTED_PROXIES`. `X-Forwarded-Proto` from anyone else means nothing.
  */
 export function isTls(req: Request): boolean {
-	if (new URL(req.url).protocol === "https:") return true;
-	const forwarded = req.headers.get("x-forwarded-proto");
-	return forwarded?.split(",")[0]?.trim().toLowerCase() === "https";
+	return requestContext(req).scheme === "https:";
 }
 
 /** How many values of the session cookie are considered. */

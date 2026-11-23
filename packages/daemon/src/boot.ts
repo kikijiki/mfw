@@ -73,20 +73,6 @@ import {
 	type RegisteredHost,
 } from "./host-registry.ts";
 import type { ProbeTransport } from "./host-registry-probe.ts";
-import {
-	acquireDaemonLock,
-	type HostAdmissionSnapshot,
-	HostResourceCoordinator,
-	type HostResourceCoordinatorPort,
-	type HostResourceStore,
-	type HostTransition,
-	type LeaseLivenessInspector,
-	openHostResourceStore,
-	type ProjectIdentity,
-	readKernelBootId,
-	SystemLeaseLiveness,
-	stableProjectIdentity,
-} from "./host-resources/index.ts";
 import { HostService, registryTransport } from "./host-service.ts";
 import { InboxService } from "./inbox.ts";
 import {
@@ -116,9 +102,30 @@ import {
 	type AdmissionTransition,
 	ProjectDispatchAdmission,
 } from "./project-dispatch-admission.ts";
-import { ProjectResourceSlots } from "./project-resource-slots.ts";
-import { ProviderHoldStore } from "./provider-holds.ts";
 import { RepoViewService } from "./repo-view.ts";
+import { BudgetWindows } from "./resources/budget-windows.ts";
+import {
+	OpenRouterResource,
+	openRouterPoolClient,
+} from "./resources/builtin/openrouter.ts";
+import { builtinPluginHost } from "./resources/builtin/plugin-host.ts";
+import {
+	type LeaseLiveness,
+	ResourceCoordinator,
+} from "./resources/coordinator.ts";
+import { acquireDaemonLock } from "./resources/daemon-lock.ts";
+import { HostLedger } from "./resources/host-ledger.ts";
+import type { ProjectIdentity } from "./resources/host-types.ts";
+import {
+	readKernelBootId,
+	stableProjectIdentity,
+} from "./resources/identity.ts";
+import {
+	type SessionLiveness,
+	SystemLeaseLiveness,
+} from "./resources/liveness.ts";
+import { RunPodCoreBridge } from "./resources/runpod-bridge.ts";
+import { openResourceStore, type ResourceStore } from "./resources/store.ts";
 import { ResourceService } from "./resources.ts";
 import { ReviewService } from "./review.ts";
 import {
@@ -293,16 +300,11 @@ export interface BootOptions {
 	/** Explicit coordination domain; production defaults to configured MFW_HOME. */
 	mfwHome?: string;
 	/** Recovery seams for deterministic boot/reboot tests. */
-	hostLiveness?: LeaseLivenessInspector;
+	hostLiveness?: LeaseLiveness;
 	kernelBootId?: string | null;
 	hostNow?: () => number;
 	hostLeaseMs?: number;
-	hostLivenessMaxAgeMs?: number;
 	daemonLockTimeoutMs?: number;
-	afterHostTransition?: (
-		transition: HostTransition,
-		lease: import("./host-resources/index.ts").HostLease,
-	) => void | Promise<void>;
 	/** Deterministic seams for the sole process-global hardware poller. */
 	hostProbes?: HostObservationServiceOptions & {
 		runtime?: HostProbeRuntime;
@@ -330,16 +332,6 @@ export interface BootOptions {
 		host: RegisteredHost,
 		pinned: readonly HostConfig[],
 	) => SshExecutionTransport & ProbeTransport;
-}
-
-/** Composition-only extension; ProjectServices receives the narrower port. */
-export interface HostResourceAttachPort extends HostResourceCoordinatorPort {
-	registerProject(input: {
-		identity: ProjectIdentity;
-		root: string;
-		displayName: string;
-		metadata?: Record<string, unknown>;
-	}): Promise<void>;
 }
 
 const DEFAULTS = PROJECT_DEFAULTS;
@@ -436,7 +428,11 @@ export async function attachProject(
 		/** Machine-wide master stop; all schedulers share this one getter. */
 		globalPaused?: () => { reason: string } | null;
 		/** The one process-global coordinator constructed by Orchestrator. */
-		hostResources: HostResourceAttachPort;
+		hostResources: HostLedger;
+		/** Budget usage as core windows, shared by every project. */
+		budgetWindows: BudgetWindows;
+		/** RunPod capacity and cleanup records in the core. */
+		runpodCore?: RunPodCoreBridge;
 		mfwHome: string;
 		afterAdmissionTransition?: BootOptions["afterAdmissionTransition"];
 		/** The one process-global RunPod control plane. */
@@ -593,11 +589,6 @@ export async function attachProject(
 		bus,
 		runsDir: join(mfwDir, "runs"),
 	});
-	const projectSlots = new ProjectResourceSlots({
-		handle,
-		bus,
-		log: plog,
-	});
 	const host = new AgentHost(plog);
 	configureRunWorkspace(root, {
 		kind: cfg.runWorkspace ?? DEFAULTS.runWorkspace,
@@ -700,7 +691,7 @@ export async function attachProject(
 		reasoningEffort: cfg.reasoningEffort ?? DEFAULTS.reasoningEffort,
 		routing: cfg.routing ?? null,
 	});
-	const providerHolds = ProviderHoldStore.at(opts.mfwHome);
+	const providerHolds = opts.hostResources.providerHolds;
 	const brainInference = (): InferenceClient => {
 		const endpoint = liveRouting.provider.endpoint;
 		if (!endpoint)
@@ -974,6 +965,8 @@ export async function attachProject(
 			: []),
 	]);
 	const budgets: BudgetService = new BudgetService({
+		heldResources: (runId) =>
+			opts.hostResources.resourcesHeldBy(projectIdentity.id, runId),
 		handle,
 		bus,
 		log: plog,
@@ -981,6 +974,7 @@ export async function attachProject(
 		project: cfg.name,
 		stored: cfg.budgets,
 		holds: providerHolds,
+		windows: opts.budgetWindows,
 		registry,
 		// Late-bound: the engine and brain runtime are built below.
 		stopRun: (runId): Promise<void> => engine.stop(runId),
@@ -1150,8 +1144,15 @@ export async function attachProject(
 			tasks,
 			registry,
 			engine,
-			host: opts.hostResources,
-			projectSlots,
+			host: opts.hostResources.coordinator,
+			hostModel: () => opts.hostResources.readModel(),
+			targetClaims: (target) =>
+				target.kind === "runpod"
+					? (opts.runpodCore?.claimsFor(target.requestedShape) ?? [])
+					: [],
+			claimFor: (id, amount) => opts.hostResources.claimFor(id, amount),
+			projectSlotsOf: (leaseId) =>
+				opts.hostResources.projectSlotsOf(projectIdentity.id, leaseId),
 			sessionId: (runId) => host.session(runId),
 			log: plog,
 		},
@@ -1308,13 +1309,7 @@ export async function attachProject(
 			projectRoot: root,
 			integrationBranch,
 			engine: {
-				startGroupRun: (spec, o) =>
-					engine.startGroupRun(
-						spec,
-						o?.hostSnapshot
-							? { hostSnapshot: o.hostSnapshot as HostAdmissionSnapshot }
-							: {},
-					),
+				startGroupRun: (spec) => engine.startGroupRun(spec),
 				stop: (runId) => engine.stop(runId),
 				steer: (runId, message) => engine.steer(runId, message),
 				startImport: (o) =>
@@ -1514,7 +1509,7 @@ export async function attachProject(
 		// The brain's accepted spawn actions are the only source of runs.
 		spawns: {
 			pending: () => brainRuntime.executor.pendingSpawns(),
-			launch: (actionId, ctx) => brainRuntime.executor.launch(actionId, ctx),
+			launch: (actionId) => brainRuntime.executor.launch(actionId),
 			holds: () => brainRuntime.executor.holds(),
 		},
 		// No brain route, no decider: dispatch is blocked and says why.
@@ -1611,7 +1606,12 @@ export async function attachProject(
 		registry,
 		handle,
 	});
-	const resources = new ResourceService({ handle, scheduler });
+	const resources = new ResourceService({
+		handle,
+		bus,
+		projectId: projectIdentity.id,
+		ledger: opts.hostResources,
+	});
 	const settings = new SettingsService({
 		mfwHome: opts.mfwHome,
 		project: cfg.name,
@@ -1719,6 +1719,7 @@ export async function attachProject(
 		await releaseLock();
 		throw error;
 	}
+	await resources.syncPools();
 	await admission.reconcile();
 	new OutcomeRecorder({ handle, bus, tasks, log: plog }).start();
 	const releaseHostWake = opts.hostResources.subscribe(projectIdentity.id, () =>
@@ -2269,15 +2270,18 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 		processBootId: bootId,
 		timeoutMs: opts.daemonLockTimeoutMs,
 	});
-	let hostResources!: HostResourceCoordinator;
-	let hostStore: HostResourceStore | undefined;
+	let hostResources!: HostLedger;
+	let resourceStore: ResourceStore | undefined;
 	try {
-		hostStore = await openHostResourceStore(home, {
+		resourceStore = await openResourceStore(home, {
 			processBootId: bootId,
 			kernelBootId,
-			now: opts.hostNow,
+			...(opts.hostNow ? { now: opts.hostNow } : {}),
 		});
 		const livenessHost = new AgentHost(log);
+		const sessions: SessionLiveness = {
+			isAlive: (_sessionId, runId) => livenessHost.sessionLiveness(runId),
+		};
 		const probeRuntime =
 			opts.hostProbes?.runtime ?? createProductionHostProbeRuntime();
 		const {
@@ -2285,20 +2289,19 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 			adapters: injectedAdapters,
 			...observationOptions
 		} = opts.hostProbes ?? {};
-		hostResources = await HostResourceCoordinator.create(hostStore, {
+		const now = opts.hostNow ?? Date.now;
+		const pluginHost = builtinPluginHost(log.child({ svc: "resources" }), now);
+		const coordinator = new ResourceCoordinator(resourceStore, {
+			host: pluginHost,
 			liveness:
 				opts.hostLiveness ??
-				new SystemLeaseLiveness({
-					kernelBootId,
-					now: opts.hostNow,
-					sessions: {
-						isAlive: (_sessionId, runId) => livenessHost.sessionLiveness(runId),
-					},
-				}),
-			now: opts.hostNow,
-			leaseMs: opts.hostLeaseMs,
-			livenessMaxAgeMs: opts.hostLivenessMaxAgeMs,
-			afterTransition: opts.afterHostTransition,
+				new SystemLeaseLiveness({ kernelBootId, sessions }),
+			...(opts.hostLeaseMs ? { leaseMs: opts.hostLeaseMs } : {}),
+		});
+		hostResources = new HostLedger({
+			store: resourceStore,
+			coordinator,
+			host: pluginHost,
 			observations: {
 				...observationOptions,
 				adapters:
@@ -2317,11 +2320,12 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 				log: observationOptions.log ?? log.child({ svc: "host-observation" }),
 			},
 		});
+		await hostResources.load();
 		if (opts.autostart !== false) await hostResources.observations.start();
 		await hostResources.reconcile("startup");
 	} catch (error) {
 		if (hostResources) await hostResources.shutdown().catch(() => {});
-		else hostStore?.close();
+		else resourceStore?.close();
 		await daemonLock.release();
 		throw error;
 	}
@@ -2393,7 +2397,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 		probes: usageOn
 			? defaultUsageProbes({ ...opts.usage, claudeObserver: claudeRateLimits })
 			: [],
-		holds: ProviderHoldStore.at(home),
+		holds: hostResources.providerHolds,
 		log: log.child({ svc: "usage" }),
 	});
 	// Keyed by stable run-ownership identity, not the editable project name.
@@ -2405,14 +2409,23 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 	const unavailableConfiguredProjects = new Set(
 		opts.projects.map((project) => project.name),
 	);
+	const budgetWindows = new BudgetWindows(hostResources.coordinator.store);
+	const runpodClient =
+		opts.runpodClient ??
+		new RunPodClient({
+			credentials: runPodCredentialSource(credentialStore),
+		});
+	const runpodCore = new RunPodCoreBridge({
+		coordinator: hostResources.coordinator,
+		client: runpodClient,
+		policy: opts.runpod ?? { enabled: false },
+		now: () => Date.now(),
+	});
 	const runpod = new RunPodAccountService({
 		mfwHome: home,
 		policy: opts.runpod ?? { enabled: false },
-		client:
-			opts.runpodClient ??
-			new RunPodClient({
-				credentials: runPodCredentialSource(credentialStore),
-			}),
+		client: runpodClient,
+		core: runpodCore,
 		log: log.child({ svc: "runpod-account" }),
 		projectPolicy: (projectId) => runpodProjectPolicies.get(projectId),
 		resolveOwner: async (owner, leaseRef, projectNameHint) => {
@@ -2506,6 +2519,8 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 				schedulerIntervalMs: opts.schedulerIntervalMs,
 				globalPaused: globalDispatch.gate,
 				hostResources,
+				budgetWindows,
+				runpodCore,
 				mfwHome: home,
 				afterAdmissionTransition: opts.afterAdmissionTransition,
 				runpod,
@@ -2609,6 +2624,13 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 	try {
 		// Provider inventory precedes any remote dispatch; a failure closes only the RunPod gate.
 		// Provider cleanup is machine safety and runs even when autostart is off.
+		await runpodCore.start();
+		await hostResources.coordinator.registerPlugin(
+			new OpenRouterResource({
+				client: openRouterPoolClient(() => openrouter.readModel()),
+			}),
+			{ maxObservationAgeMs: null },
+		);
 		await Promise.all([runpod.start(), openrouter.start()]);
 		// Not awaited: a slow `codex` spawn must not delay boot.
 		if (opts.autostart !== false && usageOn) void usage.start();
@@ -2643,7 +2665,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 		mfwHome: home,
 		projects,
 		log,
-		providerHolds: ProviderHoldStore.at(home),
+		providerHolds: hostResources.providerHolds,
 		// Process-global, not per project: one credentials file for the machine.
 		providers: new ProviderSettings(credentialStore, {
 			runpod,
@@ -2711,6 +2733,8 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 						schedulerIntervalMs: opts.schedulerIntervalMs,
 						globalPaused: globalDispatch.gate,
 						hostResources,
+						budgetWindows,
+						runpodCore,
 						mfwHome: home,
 						afterAdmissionTransition: opts.afterAdmissionTransition,
 						runpod,

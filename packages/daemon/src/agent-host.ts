@@ -48,6 +48,11 @@ import {
 	prepareRunEgress,
 } from "./containment/egress-run.ts";
 import {
+	BRAIN_TRANSCRIPT,
+	EGRESS_PROXY,
+	hostScript,
+} from "./containment/host-script.ts";
+import {
 	isReadOnlyAgentRole,
 	sandboxRoleOfKind,
 } from "./containment/role-profiles.ts";
@@ -267,18 +272,6 @@ interface HostBridge {
 		cli: "claude" | "codex";
 	};
 }
-
-const EGRESS_PROXY_MAIN = join(
-	import.meta.dir,
-	"containment",
-	"egress-proxy-main.ts",
-);
-
-const BRAIN_TRANSCRIPT_MAIN = join(
-	import.meta.dir,
-	"containment",
-	"brain-transcript-main.ts",
-);
 
 /** 0.05 s each: how long `run.sh` waits for the proxy socket. */
 const EGRESS_START_POLLS = 400;
@@ -589,7 +582,7 @@ export class AgentHost {
 							bunBin,
 							...HOST_BUN_FLAGS,
 							"run",
-							BRAIN_TRANSCRIPT_MAIN,
+							hostScript(import.meta.url, BRAIN_TRANSCRIPT),
 							bridge.brainTranscript.turnState,
 							bridge.brainTranscript.store,
 							bridge.brainTranscript.cli,
@@ -706,7 +699,7 @@ export class AgentHost {
 			bunBin,
 			...HOST_BUN_FLAGS,
 			"run",
-			EGRESS_PROXY_MAIN,
+			hostScript(import.meta.url, EGRESS_PROXY),
 			egress.configPath,
 		]
 			.map(q)

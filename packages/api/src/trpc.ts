@@ -130,18 +130,19 @@ const mapErrors = t.middleware(async ({ next }) => {
 	if (result.ok) return result;
 	const cause = result.error.cause;
 	let code = cause?.name ? ERROR_CODES[cause.name] : undefined;
-	if (cause?.name === "HostStoreError") {
-		const hostCode = (cause as Error & { code?: string }).code;
+	if (cause?.name === "ResourceError") {
+		const resourceCode = (cause as Error & { code?: string }).code;
 		code =
-			hostCode === "NOT_FOUND"
+			resourceCode === "NOT_FOUND"
 				? "NOT_FOUND"
-				: hostCode === "STALE_VERSION" ||
-						hostCode === "STALE_FENCE" ||
-						hostCode === "BUSY"
+				: resourceCode === "CONFLICT" ||
+						resourceCode === "STALE_FENCE" ||
+						resourceCode === "BUSY"
 					? "CONFLICT"
-					: hostCode === "INVALID_TRANSITION"
+					: resourceCode === "INVALID_TRANSITION" ||
+							resourceCode === "FORBIDDEN"
 						? "PRECONDITION_FAILED"
-						: hostCode === "INVALID_REQUEST"
+						: resourceCode === "REFUSED"
 							? "BAD_REQUEST"
 							: undefined;
 	}

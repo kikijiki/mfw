@@ -6,24 +6,23 @@
 #
 # Usage: import this module from your home-manager config and adjust `dir`:
 #   imports = [ /path/to/mfw/packaging/mfw.home-manager.nix ];
-# then `home-manager switch`. The app answers at http://<tailnet-ip>:7777/mfw,
-# the `/mfw` prefix is Vite's `base`, baked in at build time (`/` redirects to
-# it). Rebuild with MFW_BASE_PATH=/ to mount at the root instead.
+# then `home-manager switch`. The app answers at http://127.0.0.1:7777/mfw, the
+# `/mfw` prefix is Vite's `base`, baked in at build time (`/` redirects to it).
+# Rebuild with MFW_BASE_PATH=/ to mount at the root instead.
 #
-# To put it behind HTTPS on the tailnet, bind loopback (HOST=127.0.0.1, dropping
-# the wrapper below) and run:
-#   tailscale serve --bg --set-path /mfw http://127.0.0.1:7777/mfw
-# The target repeats the prefix on purpose, Serve strips the mount path.
+# To reach it from another device, keep this loopback bind and publish it through
+# a TLS proxy on its own origin. Set the two variables below, then run:
+#   sudo tailscale serve --bg --https=8443 unix:$HOME/.local/share/mfw/serve/mfw.sock
+# The private socket stops local processes from forging client addresses. See
+# docs/exposure.md, including why mfw needs its own origin.
 #
 # First run: the setup token is in $MFW_HOME/setup-token (never in the log), or
 # run `mfw auth setup-token`.
 #
 # Safety: it starts with the scheduler OFF (no task dispatch until you enable it
-# in the UI; that choice is persisted + restored on reboot) and binds the HTTP
-# listener to your TAILNET IP ONLY, mfw runs agents with
-# --dangerously-skip-permissions and full repo access, so it must never be
-# exposed on the LAN. Drop the tailscale wrapper for HOST=0.0.0.0 only if you
-# understand that risk (see the comment below).
+# in the UI; that choice is persisted + restored on reboot) and binds LOOPBACK
+# ONLY. mfw runs agents with full repo access, and the server refuses a
+# non-loopback bind that has neither TLS nor a trusted proxy.
 {
   config,
   lib,
@@ -50,28 +49,11 @@
       ${pkgs.bun}/bin/bun run build
     fi
   '';
-
-  # Bind to the tailnet IP only (Nitro honors $HOST). Refuse to start until the
-  # tailscale IP is up (systemd retries) instead of binding 0.0.0.0.
-  startTailscaleBound = pkgs.writeShellScript "mfw-start" ''
-    set -eu
-    ip="$(${pkgs.tailscale}/bin/tailscale ip -4 2>/dev/null | head -n1 || true)"
-    if [ -z "''${ip}" ]; then
-      echo "mfw: no tailnet IPv4 yet (is tailscaled up?), refusing to bind, will retry"
-      exit 1
-    fi
-    export HOST="''${ip}"
-    exec ${pkgs.bun}/bin/bun run ${out}
-    # LAN/all-interfaces alternative (NOT recommended): replace the two lines
-    # above with `export HOST=0.0.0.0; exec ${pkgs.bun}/bin/bun run ${out}`.
-  '';
 in {
   systemd.user.services.mfw-server = {
     Unit = {
-      Description = "mfw: local autonomous project orchestrator (tailnet-only)";
-      After = ["network-online.target" "tailscaled.service"];
-      Wants = ["network-online.target"];
-      StartLimitIntervalSec = 0; # retry indefinitely while waiting for the tailnet IP
+      Description = "mfw: local autonomous project orchestrator (loopback)";
+      After = ["network.target"];
     };
     Service = {
       Type = "simple";
@@ -80,14 +62,14 @@ in {
         "PATH=${binPath}:${config.home.profileDirectory}/bin:/run/current-system/sw/bin"
         "MFW_HOME=%h/.local/share/mfw"
         "PORT=7777"
-        # Required when you open the UI by the tailnet name or IP: the app
-        # refuses any Host that is not loopback or listed here (comma separated,
-        # host or host:port; a bare host matches any port). Add your tailnet
-        # MagicDNS name and IP, for example "MFW_ALLOWED_HOSTS=mybox.tail1234.ts.net,100.64.0.1".
-        # "MFW_ALLOWED_HOSTS=..."
+        "HOST=127.0.0.1"
+        # Behind a TLS proxy on this machine, give it a private socket and name the
+        # exact external host:port (no wildcards).
+        # "MFW_LISTEN_SOCKET=%h/.local/share/mfw/serve/mfw.sock"
+        # "MFW_ALLOWED_HOSTS=mybox.tail1234.ts.net:8443"
       ];
       ExecStartPre = "${buildIfMissing}";
-      ExecStart = "${startTailscaleBound}";
+      ExecStart = "${pkgs.bun}/bin/bun run ${out}";
       Restart = "on-failure";
       RestartSec = 5;
 

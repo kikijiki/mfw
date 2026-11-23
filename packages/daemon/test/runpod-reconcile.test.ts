@@ -11,6 +11,7 @@ import {
 	accountFixture,
 	FakeRunPodProvider,
 	reconcilePolicy,
+	reconcileRequest,
 	testIntent,
 	untrackedPod,
 } from "./fixtures/runpod-account.ts";
@@ -22,6 +23,27 @@ afterEach(async () => {
 		await rm(home, { recursive: true, force: true });
 	}
 });
+
+/** What dispatch admission does first: reserve the run's account capacity. */
+async function admitInCore(
+	orchestrator: Awaited<ReturnType<typeof boot>>,
+	runId: string,
+	projectId: string,
+): Promise<void> {
+	const { coordinator } = orchestrator.hostResources;
+	const poolId = `runpod.${reconcilePolicy.accountId}`;
+	const waiter = await coordinator.putWaiter({
+		requestKey: `admit-${runId}`,
+		projectId,
+		claims: [
+			{ poolId, dimension: "burn", amount: reconcileRequest.maxHourlyPrice },
+			{ poolId, dimension: "pods", amount: 1 },
+		],
+	});
+	const grant = await coordinator.tryGrant(waiter.id);
+	if ("kind" in grant) throw new Error(`held: ${grant.status}`);
+	await coordinator.activate(grant, { runId });
+}
 
 describe("process-global RunPod reconciliation", () => {
 	test("an unhinted owned Pod is not attributed to the first unrelated unavailable project", async () => {
@@ -79,6 +101,7 @@ describe("process-global RunPod reconciliation", () => {
 			runpodClient: provider,
 		});
 		const ownerId = first.get("configured-owner").projectId;
+		await admitInCore(first, "survives-attach-failure", ownerId);
 		const lease = await first.runpod.putLeaseIntent(
 			testIntent("survives-attach-failure", ownerId),
 		);
@@ -100,6 +123,12 @@ describe("process-global RunPod reconciliation", () => {
 		const projectDb = join(root, ".mfw", "mfw.db");
 		// A valid WAL can recover a damaged main file. Remove the sidecars so this
 		// fixture reliably creates the migration failure it claims to exercise.
+		// Unlink the main file too rather than overwrite it in place: libsql never
+		// closes the connection a transaction took over, so one still holds the
+		// old inode after shutdown and a late close checkpoints its pages back
+		// over an in-place overwrite, healing the corruption (3 in 600 under load).
+		// A new inode is out of its reach.
+		await rm(projectDb, { force: true });
 		await rm(`${projectDb}-wal`, { force: true });
 		await rm(`${projectDb}-shm`, { force: true });
 		await writeFile(projectDb, "not a sqlite database");
@@ -146,6 +175,7 @@ describe("process-global RunPod reconciliation", () => {
 			runpodClient: provider,
 		});
 		const projectId = first.get("detach-owner").projectId;
+		await admitInCore(first, "partial-detach", projectId);
 		const lease = await first.runpod.putLeaseIntent(
 			testIntent("partial-detach", projectId),
 		);

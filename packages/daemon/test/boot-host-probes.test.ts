@@ -18,11 +18,8 @@ import type {
 	ProbeTimer,
 } from "../src/host-probe-runtime.ts";
 import { LinuxCpuProbeAdapter } from "../src/host-probes.ts";
-import {
-	HostResourceCoordinator,
-	openHostResourceStore,
-} from "../src/host-resources/index.ts";
 import { silentLogger } from "../src/log.ts";
+import { openTestLedger } from "./support/host-ledger.ts";
 
 const paths: string[] = [];
 afterEach(async () => {
@@ -243,14 +240,6 @@ class RestartingAmdAdapter
 	}
 }
 
-const liveness = {
-	inspect: async () => ({
-		status: "unavailable" as const,
-		checkedAt: 1_700_000_000_000,
-		kernelBootId: "kernel-test",
-	}),
-};
-
 describe("process-global host observation lifecycle", () => {
 	test("service keeps CPU pressure in warm-up until a bounded later sample", async () => {
 		const home = await temp("mfw-host-cpu-warmup-");
@@ -282,22 +271,21 @@ describe("process-global host observation lifecycle", () => {
 			cpuMinSampleIntervalMs: 100,
 			sequence: { next: () => ++sequence },
 		});
-		const store = await openHostResourceStore(home, {
-			processBootId: "process-a",
-			kernelBootId: "kernel-test",
-			now: time.now,
-		});
-		const coordinator = await HostResourceCoordinator.create(store, {
-			liveness,
-			now: time.now,
-			observations: {
-				adapters: [adapter],
-				clock: time,
-				timer: time,
-				pollIntervalMs: 1_000,
-				jitterFraction: 0,
-			},
-		});
+		const coordinator = (
+			await openTestLedger(home, {
+				processBootId: "process-a",
+				kernelBootId: "kernel-test",
+				now: time.now,
+
+				observations: {
+					adapters: [adapter],
+					clock: time,
+					timer: time,
+					pollIntervalMs: 1_000,
+					jitterFraction: 0,
+				},
+			})
+		).ledger;
 		await coordinator.observations.start();
 		expect(coordinator.readModel().health[0]?.result).toBe("error");
 		expect(
@@ -332,22 +320,21 @@ describe("process-global host observation lifecycle", () => {
 		const home = await temp("mfw-host-observation-store-");
 		const time = new ManualTime();
 		const adapter = new MemoryAdapter(time, "process-a");
-		let store = await openHostResourceStore(home, {
-			processBootId: "process-a",
-			kernelBootId: "kernel-test",
-			now: time.now,
-		});
-		let coordinator = await HostResourceCoordinator.create(store, {
-			liveness,
-			now: time.now,
-			observations: {
-				adapters: [adapter],
-				clock: time,
-				timer: time,
-				pollIntervalMs: 1_000,
-				jitterFraction: 0,
-			},
-		});
+		let coordinator = (
+			await openTestLedger(home, {
+				processBootId: "process-a",
+				kernelBootId: "kernel-test",
+				now: time.now,
+
+				observations: {
+					adapters: [adapter],
+					clock: time,
+					timer: time,
+					pollIntervalMs: 1_000,
+					jitterFraction: 0,
+				},
+			})
+		).ledger;
 		await coordinator.putDefinition({
 			id: "ram",
 			accounting: "quantity",
@@ -389,15 +376,13 @@ describe("process-global host observation lifecycle", () => {
 		await coordinator.shutdown();
 		expect(time.tasks.size).toBe(0);
 
-		store = await openHostResourceStore(home, {
-			processBootId: "process-b",
-			kernelBootId: "kernel-test",
-			now: time.now,
-		});
-		coordinator = await HostResourceCoordinator.create(store, {
-			liveness,
-			now: time.now,
-		});
+		coordinator = (
+			await openTestLedger(home, {
+				processBootId: "process-b",
+				kernelBootId: "kernel-test",
+				now: time.now,
+			})
+		).ledger;
 		const restarted = coordinator.readModel();
 		expect(restarted.observations[0]?.processBootId).toBe("process-a");
 		expect(restarted.observations[0]?.processBootId).not.toBe(
@@ -409,22 +394,21 @@ describe("process-global host observation lifecycle", () => {
 	test("a restarted AMD poller replaces a higher prior-process sequence and refresh stays coherent", async () => {
 		const home = await temp("mfw-host-amd-restart-");
 		const time = new ManualTime();
-		let store = await openHostResourceStore(home, {
-			processBootId: "process-a",
-			kernelBootId: "kernel-test",
-			now: time.now,
-		});
-		let coordinator = await HostResourceCoordinator.create(store, {
-			liveness,
-			now: time.now,
-			observations: {
-				adapters: [new RestartingAmdAdapter(time, "process-a", 498n)],
-				clock: time,
-				timer: time,
-				pollIntervalMs: 1_000,
-				jitterFraction: 0,
-			},
-		});
+		let coordinator = (
+			await openTestLedger(home, {
+				processBootId: "process-a",
+				kernelBootId: "kernel-test",
+				now: time.now,
+
+				observations: {
+					adapters: [new RestartingAmdAdapter(time, "process-a", 498n)],
+					clock: time,
+					timer: time,
+					pollIntervalMs: 1_000,
+					jitterFraction: 0,
+				},
+			})
+		).ledger;
 		await coordinator.putDefinition({
 			id: "gpu-amd",
 			accounting: "slot",
@@ -450,22 +434,21 @@ describe("process-global host observation lifecycle", () => {
 		await coordinator.shutdown();
 
 		time.nowMs += 1_000;
-		store = await openHostResourceStore(home, {
-			processBootId: "process-b",
-			kernelBootId: "kernel-test",
-			now: time.now,
-		});
-		coordinator = await HostResourceCoordinator.create(store, {
-			liveness,
-			now: time.now,
-			observations: {
-				adapters: [new RestartingAmdAdapter(time, "process-b", 0n)],
-				clock: time,
-				timer: time,
-				pollIntervalMs: 1_000,
-				jitterFraction: 0,
-			},
-		});
+		coordinator = (
+			await openTestLedger(home, {
+				processBootId: "process-b",
+				kernelBootId: "kernel-test",
+				now: time.now,
+
+				observations: {
+					adapters: [new RestartingAmdAdapter(time, "process-b", 0n)],
+					clock: time,
+					timer: time,
+					pollIntervalMs: 1_000,
+					jitterFraction: 0,
+				},
+			})
+		).ledger;
 		await coordinator.observations.start();
 		await coordinator.observations.refresh();
 		const recovered = coordinator.readModel();
@@ -480,7 +463,7 @@ describe("process-global host observation lifecycle", () => {
 		expect(recovered.effectiveCapacities[0]?.holdReason).toBe(
 			"unknown-occupancy",
 		);
-		const batches = (await coordinator.store.auditEntries()).filter(
+		const batches = (await coordinator.auditEntries()).filter(
 			(entry) => entry.action === "observation.batch",
 		);
 		expect(batches).toHaveLength(2);
@@ -493,23 +476,22 @@ describe("process-global host observation lifecycle", () => {
 		const time = new ManualTime();
 		const adapter = new MemoryAdapter(time, "process-a");
 		adapter.status = "unsupported";
-		const store = await openHostResourceStore(home, {
-			processBootId: "process-a",
-			kernelBootId: "kernel-test",
-			now: time.now,
-		});
-		const coordinator = await HostResourceCoordinator.create(store, {
-			liveness,
-			now: time.now,
-			observations: {
-				adapters: [adapter],
-				clock: time,
-				timer: time,
-				pollIntervalMs: 100,
-				maxBackoffMs: 1_000,
-				jitterFraction: 0,
-			},
-		});
+		const coordinator = (
+			await openTestLedger(home, {
+				processBootId: "process-a",
+				kernelBootId: "kernel-test",
+				now: time.now,
+
+				observations: {
+					adapters: [adapter],
+					clock: time,
+					timer: time,
+					pollIntervalMs: 100,
+					maxBackoffMs: 1_000,
+					jitterFraction: 0,
+				},
+			})
+		).ledger;
 		await coordinator.observations.start();
 		expect(time.scheduledDelays.at(-1)).toBe(200);
 		expect(time.tasks.size).toBe(1);
@@ -538,21 +520,20 @@ describe("process-global host observation lifecycle", () => {
 				throw new Error("sample must not run");
 			},
 		};
-		const store = await openHostResourceStore(home, {
-			processBootId: "process-a",
-			kernelBootId: "kernel-test",
-			now: time.now,
-		});
-		const coordinator = await HostResourceCoordinator.create(store, {
-			liveness,
-			now: time.now,
-			observations: {
-				adapters: [adapter],
-				clock: time,
-				timer: time,
-				pollTimeoutMs: 1_000,
-			},
-		});
+		const coordinator = (
+			await openTestLedger(home, {
+				processBootId: "process-a",
+				kernelBootId: "kernel-test",
+				now: time.now,
+
+				observations: {
+					adapters: [adapter],
+					clock: time,
+					timer: time,
+					pollTimeoutMs: 1_000,
+				},
+			})
+		).ledger;
 		const starting = coordinator.observations.start();
 		await Bun.sleep(0);
 		await coordinator.shutdown();

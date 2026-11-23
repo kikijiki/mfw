@@ -43,6 +43,7 @@ import {
 	SANDBOX_PATHS,
 } from "./compile-bwrap.ts";
 import { EGRESS_SOCKET_NAME } from "./egress-run.ts";
+import { EGRESS_RELAY, hostScript } from "./host-script.ts";
 import { launchSandbox } from "./launch-sandbox.ts";
 import { attestSandbox } from "./probe-run.ts";
 import { ProfileRejectedError, type SandboxProfile } from "./profile.ts";
@@ -175,7 +176,7 @@ export function withEgressRelay(
 ): string[] {
 	const copy = join(req.runDir, RUN_CONTROL_DIR, RELAY_FILE);
 	rmSync(copy, { force: true });
-	copyFileSync(join(import.meta.dir, RELAY_FILE), copy);
+	copyFileSync(hostScript(import.meta.url, EGRESS_RELAY), copy);
 	chmodSync(copy, 0o444);
 	return [
 		bun,

@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ProviderHoldStore } from "../src/provider-holds.ts";
+import { createClient } from "@libsql/client";
+import { openTestHolds } from "./support/host-ledger.ts";
 
 async function store() {
 	const home = await mkdtemp(join(tmpdir(), "mfw-holds-"));
@@ -10,7 +11,7 @@ async function store() {
 	return {
 		home,
 		now,
-		holds: ProviderHoldStore.at(home, () => now.value),
+		holds: await openTestHolds(home, () => now.value),
 		cleanup: () => rm(home, { recursive: true, force: true }),
 	};
 }
@@ -50,16 +51,25 @@ describe("ProviderHoldStore", () => {
 		await s.cleanup();
 	});
 
-	test("absent or corrupt file means no holds, and the next hold rewrites it", async () => {
+	test("no holds reads as empty, and an unreadable hold fails closed", async () => {
 		const s = await store();
 		expect(await s.holds.active()).toEqual({});
-		await writeFile(join(s.home, "provider-holds.json"), "{nope");
-		expect(await s.holds.active()).toEqual({});
 		await s.holds.hold("claude-cli", { until: 2_000_000, reason: "r" });
-		const raw = JSON.parse(
-			await readFile(join(s.home, "provider-holds.json"), "utf8"),
-		);
-		expect(raw.holds["claude-cli"].until).toBe(2_000_000);
+		const client = createClient({
+			url: `file:${join(s.home, "host", "host.db")}`,
+		});
+		await client.execute("UPDATE rp_holds SET detail='{nope'");
+		client.close();
+		await expect(s.holds.active()).rejects.toMatchObject({ code: "CORRUPT" });
+		await expect(s.holds.snapshot()).rejects.toMatchObject({ code: "CORRUPT" });
+		await s.cleanup();
+	});
+
+	test("a hold survives a restart of the store", async () => {
+		const s = await store();
+		await s.holds.hold("claude-cli", { until: 2_000_000, reason: "r" });
+		const reopened = await openTestHolds(s.home, () => s.now.value);
+		expect((await reopened.active())["claude-cli"]?.reason).toBe("r");
 		await s.cleanup();
 	});
 });

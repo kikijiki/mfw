@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
 	DispatchPreflightError,
 	preflightDispatch,
+	preflightRemoteAutonomy,
 	readMemAvailable,
 } from "../src/dispatch-preflight.ts";
 import { git } from "../src/git.ts";
@@ -38,6 +39,33 @@ async function refusal(
 	expect(error).toBeInstanceOf(DispatchPreflightError);
 	return error as DispatchPreflightError;
 }
+
+describe("remote autonomy preflight", () => {
+	for (const kind of ["ssh", "runpod", "some-future-target"]) {
+		test(`an autonomous run on '${kind}' is refused with a fix`, () => {
+			let error: unknown;
+			try {
+				preflightRemoteAutonomy(kind, "autonomous");
+			} catch (caught) {
+				error = caught;
+			}
+			expect(error).toBeInstanceOf(DispatchPreflightError);
+			expect(error).toMatchObject({
+				code: "remote_autonomy_unsupported",
+				waitingFor: [kind],
+				fix: { kind: "setting", text: expect.stringContaining("interactive") },
+			});
+		});
+
+		test(`an interactive run on '${kind}' may proceed`, () => {
+			expect(() => preflightRemoteAutonomy(kind, "interactive")).not.toThrow();
+		});
+	}
+
+	test("the local target has its own sandbox gate and passes here", () => {
+		expect(() => preflightRemoteAutonomy("local", "autonomous")).not.toThrow();
+	});
+});
 
 describe("dispatch preflight", () => {
 	test("a healthy repo passes", async () => {

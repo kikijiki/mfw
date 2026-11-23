@@ -158,6 +158,11 @@ const THROTTLE_RESET_MS = 24 * 60 * 60 * 1000;
 const PASSWORD_CHECK_INTERVAL_MS = 100;
 /** About six seconds of waiting at that rate. */
 const MAX_QUEUED_PASSWORD_CHECKS = 64;
+/** Failed proxied attempts, across all clients, before pacing starts. */
+export const PROXIED_FREE_FAILURES = 20;
+/** Once paced, proxied attempts run at most this often. It delays, never locks. */
+const PROXIED_CHECK_INTERVAL_MS = 2000;
+const MAX_QUEUED_PROXIED_CHECKS = 16;
 /** How often an open stream re-checks its session (revocation is immediate). */
 const STREAM_RECHECK_MS = 15 * 1000;
 /** A token can be revoked from the CLI, another process: notice within a second. */
@@ -197,6 +202,8 @@ export interface AuthServiceOptions {
 	passwordCheckIntervalMs?: number;
 	/** Password checks allowed to wait at once; further ones are refused. */
 	maxQueuedPasswordChecks?: number;
+	/** Minimum spacing of proxied attempts once the shared budget is spent. */
+	proxiedCheckIntervalMs?: number;
 	/** Runs after a password verifies, before anything is written (tests). */
 	afterPasswordCheck?: () => Promise<void>;
 	/** Where a first-run setup token is written (0600). */
@@ -236,15 +243,30 @@ function ipv6Groups(raw: string): number[] | null {
 export const LOOPBACK_SOURCE = "loopback";
 
 /**
+ * A socket peer, or a client address reported by a trusted proxy. The second
+ * can be forged by anything able to connect from the proxy's address (a local
+ * process, when the proxy is on loopback), so per-address limits alone do not
+ * bound it: every proxied attempt also draws on one shared budget.
+ */
+export type AuthSource = string | { address: string; viaProxy: true };
+
+/** Not addresses, so no client can land in these buckets by choosing one. */
+const PROXIED_LOGIN_SCOPE = "login:via-proxy";
+const PROXIED_SETUP_SCOPE = "setup:via-proxy";
+
+const sourceAddress = (source: AuthSource | undefined) =>
+	typeof source === "object" ? source.address : source;
+const isProxied = (source: AuthSource | undefined) =>
+	typeof source === "object";
+
+/**
  * Addresses to one throttle key. All of loopback is ONE source: any local
  * process can bind any 127.x address, so separate keys would let it rotate past
  * the lock. Agents therefore share the owner's bucket until their network
  * namespace lands (E7b); `mfw auth unlock` is the owner's way back in.
  * IPv4-mapped IPv6 becomes IPv4, and IPv6 its /64 (one host commonly controls a
- * whole /64). A missing or unparseable address is one shared bucket.
- *
- * TODO(C4): behind a trusted proxy every peer is the proxy. Trusted-proxy mode
- * must pass the forwarded client address here, and only from that proxy.
+ * whole /64), except Tailscale's range, which is keyed by full address. A missing or unparseable address is one shared bucket. Behind a
+ * trusted proxy this receives the forwarded client (see `AuthSource`).
  */
 export function throttleSource(address: string | null | undefined): string {
 	const raw = address
@@ -277,6 +299,10 @@ export function throttleSource(address: string | null | undefined): string {
 		if (first === 127) return LOOPBACK_SOURCE;
 		return `${first}.${g6 & 255}.${g7 >> 8}.${g7 & 255}`;
 	}
+	// Tailscale allocates every node from this /48, so nodes normally share a
+	// /64 and one must not be able to lock out the owner's other devices.
+	if (g0 === 0xfd7a && g1 === 0x115c && g2 === 0xa1e0)
+		return g.map((n) => n.toString(16)).join(":");
 	return `${g
 		.slice(0, 4)
 		.map((n) => n.toString(16))
@@ -334,6 +360,9 @@ export class AuthService {
 	readonly setupTokenFile: string | null;
 	private readonly afterPasswordCheck: (() => Promise<void>) | undefined;
 	private readonly passwordChecks: PasswordCheckQueue;
+	private readonly proxiedChecks: PasswordCheckQueue;
+	/** Proxied attempts started and not yet recorded. */
+	private readonly proxiedInFlight = { setup: 0, login: 0 };
 	/** Throttle scopes with an attempt in flight: one per source at a time. */
 	private readonly inFlight = new Set<string>();
 
@@ -356,6 +385,10 @@ export class AuthService {
 		this.passwordChecks = new PasswordCheckQueue(
 			opts.passwordCheckIntervalMs ?? PASSWORD_CHECK_INTERVAL_MS,
 			opts.maxQueuedPasswordChecks ?? MAX_QUEUED_PASSWORD_CHECKS,
+		);
+		this.proxiedChecks = new PasswordCheckQueue(
+			opts.proxiedCheckIntervalMs ?? PROXIED_CHECK_INTERVAL_MS,
+			MAX_QUEUED_PROXIED_CHECKS,
 		);
 	}
 
@@ -457,13 +490,12 @@ export class AuthService {
 	async setup(
 		setupToken: string,
 		password: string,
-		source?: string,
+		source?: AuthSource,
 	): Promise<IssuedSession> {
 		if (await this.hasOwner())
 			throw new AuthRefused("already_set_up", "setup is already complete");
-		const scope = `setup:${throttleSource(source)}`;
-		return this.oneAtATime(scope, async () => {
-			await this.assertNotLocked(scope);
+		const scope = `setup:${throttleSource(sourceAddress(source))}`;
+		return this.oneAtATime("setup", scope, source, async () => {
 			const now = this.now();
 			const row = await this.db.client.execute(
 				"SELECT token_hash, expires_at FROM setup_tokens WHERE id = 1",
@@ -475,6 +507,7 @@ export class AuthService {
 				safeEqual(sha(setupToken), String(stored.token_hash));
 			if (!valid) {
 				await this.recordFailure(scope);
+				if (isProxied(source)) await this.recordFailure(PROXIED_SETUP_SCOPE);
 				throw new AuthRefused(
 					"invalid_token",
 					"that setup token is not valid; run `mfw auth setup-token` for a new one",
@@ -518,16 +551,16 @@ export class AuthService {
 	async login(
 		password: string,
 		presented?: string,
-		source?: string,
+		source?: AuthSource,
 	): Promise<IssuedSession> {
 		if (!(await this.hasOwner()))
 			throw new AuthRefused("setup_required", "finish first-run setup");
-		const scope = `login:${throttleSource(source)}`;
-		return this.oneAtATime(scope, async () => {
-			await this.assertNotLocked(scope);
+		const scope = `login:${throttleSource(sourceAddress(source))}`;
+		return this.oneAtATime("login", scope, source, async () => {
 			const owner = await this.checkOwnerPassword(password);
 			if (!owner) {
 				await this.recordFailure(scope);
+				if (isProxied(source)) await this.recordFailure(PROXIED_LOGIN_SCOPE);
 				throw new AuthRefused("invalid_password", "wrong password");
 			}
 			await this.afterPasswordCheck?.();
@@ -570,16 +603,16 @@ export class AuthService {
 		current: string,
 		next: string,
 		keepSessionId: string,
-		source?: string,
+		source?: AuthSource,
 	): Promise<void> {
 		if (!(await this.hasOwner()))
 			throw new AuthRefused("setup_required", "finish first-run setup");
-		const scope = `login:${throttleSource(source)}`;
-		await this.oneAtATime(scope, async () => {
-			await this.assertNotLocked(scope);
+		const scope = `login:${throttleSource(sourceAddress(source))}`;
+		await this.oneAtATime("login", scope, source, async () => {
 			const owner = await this.checkOwnerPassword(current);
 			if (!owner) {
 				await this.recordFailure(scope);
+				if (isProxied(source)) await this.recordFailure(PROXIED_LOGIN_SCOPE);
 				throw new AuthRefused("invalid_password", "wrong password");
 			}
 			await this.afterPasswordCheck?.();
@@ -1145,7 +1178,9 @@ export class AuthService {
 
 	/** A source has one attempt in flight, so parallel guesses cannot race its count. */
 	private async oneAtATime<T>(
+		kind: "setup" | "login",
 		scope: string,
+		source: AuthSource | undefined,
 		run: () => Promise<T>,
 	): Promise<T> {
 		if (this.inFlight.has(scope))
@@ -1155,11 +1190,40 @@ export class AuthService {
 				1000,
 			);
 		this.inFlight.add(scope);
+		const proxied = isProxied(source);
+		// Taken before the first await: every earlier attempt is either counted
+		// here or already recorded, so concurrent requests cannot overshoot.
+		const earlier = proxied ? this.proxiedInFlight[kind]++ : 0;
 		try {
+			await this.assertNotLocked(scope);
+			if (proxied) await this.paceProxied(kind, earlier);
 			return await run();
 		} finally {
+			if (proxied) this.proxiedInFlight[kind]--;
 			this.inFlight.delete(scope);
 		}
+	}
+
+	/**
+	 * Forged client addresses each get a fresh per-address bucket, so proxied
+	 * attempts share one failure count. Past it they are spaced out rather than
+	 * locked: a lock here would let a forger keep the real owner out.
+	 */
+	private async paceProxied(
+		kind: "setup" | "login",
+		inFlightBefore: number,
+	): Promise<void> {
+		const r = await this.db.client.execute({
+			sql: "SELECT failures, last_failure_at FROM auth_throttle WHERE scope = ?",
+			args: [kind === "setup" ? PROXIED_SETUP_SCOPE : PROXIED_LOGIN_SCOPE],
+		});
+		const row = r.rows[0];
+		const recorded =
+			row && this.now() - Number(row.last_failure_at) < THROTTLE_RESET_MS
+				? Number(row.failures)
+				: 0;
+		if (recorded + inFlightBefore >= PROXIED_FREE_FAILURES)
+			await this.proxiedChecks.run(async () => undefined);
 	}
 
 	private async assertNotLocked(scope: string): Promise<void> {

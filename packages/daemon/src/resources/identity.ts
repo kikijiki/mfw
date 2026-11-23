@@ -1,7 +1,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
-import type { ProjectIdentity } from "./types.ts";
+import type { ProjectIdentity } from "./host-types.ts";
 
 export async function readKernelBootId(): Promise<string | null> {
 	try {

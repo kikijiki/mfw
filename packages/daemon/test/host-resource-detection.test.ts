@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { detectHostResourceRecommendations } from "../src/host-resource-detection.ts";
-import type { HostResourceReadModel } from "../src/host-resources/types.ts";
+import type { HostResourceReadModel } from "../src/resources/host-types.ts";
 
 function model(
 	overrides: Partial<HostResourceReadModel> = {},

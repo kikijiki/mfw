@@ -387,11 +387,12 @@ describe("guard edges", () => {
 
 	test("over TLS the plain cookie name is ignored", async () => {
 		const r = await guardOnly(
-			new Request(`${ORIGIN}/api/files/x/y`, {
+			new Request("https://localhost:7777/api/files/x/y", {
 				headers: {
 					host: "localhost:7777",
-					"x-forwarded-proto": "https",
 					cookie: `mfw_session=${session.token}`,
+					// The valid key: only the cookie's name can cause this refusal.
+					[REQUEST_KEY_HEADER]: session.requestKey,
 				},
 			}),
 		);

@@ -56,6 +56,8 @@ const enabledMachinePolicySchema = z
 		maxAggregateHourlyPrice: finitePositive,
 		maxRuntimeMinutes: z.number().int().positive(),
 		maxRunSpend: finitePositive,
+		/** Account-wide spend per calendar day, enforced by the resource core. */
+		maxDailySpend: finitePositive.optional(),
 		reconcileIntervalMs: z.number().int().min(1_000).max(3_600_000).optional(),
 	})
 	.strict();

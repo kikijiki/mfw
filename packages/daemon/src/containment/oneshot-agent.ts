@@ -25,9 +25,9 @@ import type { FleetCli } from "./agent-profile.ts";
 import { drainTail } from "./check-runner.ts";
 import { harnessAllowlist, harnessEgressEnv } from "./egress-allowlists.ts";
 import { prepareRunEgress } from "./egress-run.ts";
+import { EGRESS_PROXY_BESIDE, hostScript } from "./host-script.ts";
 import { ensureRunDirLayout } from "./run-dir.ts";
 
-const EGRESS_PROXY_MAIN = join(import.meta.dir, "egress-proxy-main.ts");
 const PROXY_START_MS = 20_000;
 
 export interface OneShotAgentRequest {
@@ -65,7 +65,7 @@ async function startRealProxy(
 			process.execPath,
 			...HOST_BUN_FLAGS,
 			"run",
-			EGRESS_PROXY_MAIN,
+			hostScript(import.meta.url, EGRESS_PROXY_BESIDE),
 			configPath,
 		],
 		{ stdin: "pipe", stdout: "ignore", stderr: "ignore" },

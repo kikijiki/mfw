@@ -134,25 +134,6 @@ export interface Held {
 	diagnostics: HostHoldDiagnostic[];
 }
 
-/**
- * A scheduler wave pins observation/definition identities while each grant
- * transaction re-reads promises, so earlier grants in the wave count and a
- * poll or operator edit cannot mix snapshots.
- */
-export interface HostAdmissionSnapshot {
-	generation: bigint;
-	capturedAt: number;
-	processBootId: string;
-	kernelBootId: string | null;
-	definitions: Record<string, bigint>;
-	bindings: Record<string, bigint>;
-	health: Record<
-		string,
-		{ checkedAt: number; sequence: bigint | null; result: ObservationResult }
-	>;
-	observations: Record<string, bigint>;
-}
-
 export type ObservationResult = "ok" | "degraded" | "error" | "unsupported";
 
 export interface StoredObservation {
@@ -171,6 +152,10 @@ export interface StoredObservation {
 }
 
 export type HostCapacityHoldReason =
+	| "operator"
+	| "rate_limit"
+	| "auth"
+	| "budget"
 	| "disabled"
 	| "draining"
 	| "dynamic-unprovisioned"
@@ -370,6 +355,8 @@ export interface ObservationConflictIncident {
 		leaseIds: string[];
 		cpuPressure?: CpuPressureDiagnostic;
 		gpuOccupancy?: GpuOccupancyDiagnostic[];
+		/** The leased GPU units showing use their leases do not explain. */
+		blockedUnits?: string[];
 	};
 }
 
@@ -460,27 +447,6 @@ export interface ReconcileReport {
 }
 
 export type Unsubscribe = () => void;
-
-/** The only host-resource capability injected into a project. */
-export interface HostResourceCoordinatorPort {
-	readModel(): HostResourceReadModel;
-	captureAdmissionSnapshot(): HostAdmissionSnapshot;
-	putWaiter(request: ImmutableHostRequest): Promise<Waiter>;
-	tryGrant(
-		waiterId: string,
-		expectedGeneration: bigint,
-		snapshot?: HostAdmissionSnapshot,
-	): Promise<Grant | Held>;
-	activate(grantId: string, fence: bigint, run: RunRef): Promise<ActiveLease>;
-	renewOrAdopt(
-		leaseId: string,
-		fence: bigint,
-		owner: OwnerProof,
-	): Promise<void>;
-	cancelOrRelease(id: string, fence: bigint, reason: string): Promise<void>;
-	reconcile(cause: ReconcileCause): Promise<ReconcileReport>;
-	subscribe(projectId: string, wake: () => void): Unsubscribe;
-}
 
 export interface ProjectIdentity {
 	id: string;

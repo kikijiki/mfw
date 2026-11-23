@@ -16,6 +16,7 @@ import {
 	type DispatchPreflightDeps,
 	DispatchPreflightError,
 	preflightDispatch,
+	preflightRemoteAutonomy,
 } from "./dispatch-preflight.ts";
 import type { SecretEnvironment } from "./execution-environment.ts";
 import {
@@ -31,7 +32,6 @@ import {
 	targetOperationId,
 	UnknownExecutionTargetError,
 } from "./execution-target.ts";
-import type { HostAdmissionSnapshot } from "./host-resources/index.ts";
 import {
 	createLocalExecutionTarget,
 	type LocalExecutionHost,
@@ -224,10 +224,8 @@ export interface TaskDispatchAdmissionPort {
 		opts?: {
 			model?: string;
 			actor?: StatusActor;
-			hostSnapshot?: HostAdmissionSnapshot;
 		},
 	): Promise<{ runId: string }>;
-	captureAdmissionSnapshot?(): HostAdmissionSnapshot;
 	/**
 	 * Admit one run of a task that may have siblings (an attempt group): the
 	 * planned run id is its own admission, so sibling attempts of one task
@@ -238,7 +236,6 @@ export interface TaskDispatchAdmissionPort {
 		runId: string;
 		target: ResolvedExecutionTarget;
 		prepare: () => Promise<PreparedTaskRun>;
-		hostSnapshot?: HostAdmissionSnapshot;
 	}): Promise<{ runId: string }>;
 	startContinuation?(input: {
 		taskId: string;
@@ -311,10 +308,6 @@ export class RunEngine {
 	 */
 	readonly eventTail: RunEventTail;
 
-	get admissionIntegrated(): boolean {
-		return this.taskAdmission !== null;
-	}
-
 	constructor(private readonly deps: RunEngineDeps) {
 		this.eventTail = new RunEventTail((runId, offset) =>
 			deps.registry.readOutput(runId, "events.jsonl", offset),
@@ -342,7 +335,6 @@ export class RunEngine {
 		opts: {
 			model?: string;
 			actor?: StatusActor;
-			hostSnapshot?: HostAdmissionSnapshot;
 		} = {},
 	): Promise<{ runId: string }> {
 		if (this.taskAdmission) return this.taskAdmission.startTask(taskId, opts);
@@ -360,10 +352,7 @@ export class RunEngine {
 	 * Idempotent by `runId`: a replay after a crash finds the prepared or
 	 * running row and finishes the launch instead of minting a second run.
 	 */
-	async startGroupRun(
-		spec: GroupRunSpec,
-		opts: { hostSnapshot?: HostAdmissionSnapshot } = {},
-	): Promise<{ runId: string }> {
+	async startGroupRun(spec: GroupRunSpec): Promise<{ runId: string }> {
 		const existing = await this.deps.registry.get(spec.runId);
 		if (existing?.state === "running") return { runId: existing.id };
 		if (existing && existing.state !== "starting") {
@@ -381,7 +370,6 @@ export class RunEngine {
 				runId: spec.runId,
 				target,
 				prepare,
-				...(opts.hostSnapshot ? { hostSnapshot: opts.hostSnapshot } : {}),
 			});
 		}
 		if (existing) return this.launchPreparedRun({ runId: existing.id });
@@ -493,10 +481,6 @@ export class RunEngine {
 			},
 			target,
 		);
-	}
-
-	captureAdmissionSnapshot(): HostAdmissionSnapshot | undefined {
-		return this.taskAdmission?.captureAdmissionSnapshot?.();
 	}
 
 	/** Production composition installs exactly one admission owner. */
@@ -649,6 +633,10 @@ export class RunEngine {
 		taskId?: string,
 		actor?: StatusActor,
 	): Promise<void> {
+		preflightRemoteAutonomy(
+			target.kind,
+			this.deps.defaults.approvalMode ?? "autonomous",
+		);
 		if (taskId) {
 			const task = await this.deps.tasks.get(taskId);
 			const route = await this.routeTask(task, {

@@ -119,10 +119,16 @@ describe("cookies", () => {
 		expect(c).toContain("Path=/;");
 	});
 
-	test("Secure with the __Secure- name behind TLS", async () => {
-		const c = liveSetCookie(await issue({ "x-forwarded-proto": "https" }));
+	test("Secure with the __Secure- name behind TLS", () => {
+		const c = sessionCookie(new Request("https://localhost:7777/x"), "t", "/");
 		expect(c).toStartWith("__Secure-mfw_session=");
 		expect(c).toContain("; Secure");
+	});
+
+	test("X-Forwarded-Proto from an untrusted peer changes nothing", async () => {
+		const c = liveSetCookie(await issue({ "x-forwarded-proto": "https" }));
+		expect(c).toStartWith("mfw_session=");
+		expect(c).not.toContain("Secure");
 	});
 
 	test("scoped to the base path", () => {

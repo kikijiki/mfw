@@ -7,17 +7,16 @@ import type {
 	HostProbeKind,
 } from "@mfw/core/host-observation";
 import type { AnyHostProbeAdapter } from "@mfw/daemon/host-probes";
-import {
-	HostResourceCoordinator,
-	type LeaseLivenessInspector,
-	type LivenessEvidence,
-	openHostResourceStore,
-} from "@mfw/daemon/host-resources/index";
 import type { Orchestrator } from "@mfw/daemon/services";
+import type { LeaseLiveness } from "../../daemon/src/resources/coordinator.ts";
+import { claimOf } from "../../daemon/src/resources/host-definitions.ts";
+import type { HostLedger } from "../../daemon/src/resources/host-ledger.ts";
+import type { LeaseEvidenceReport } from "../../daemon/src/resources/types.ts";
+import { openTestLedger } from "../../daemon/test/support/host-ledger.ts";
 import { createCaller } from "../src/root.ts";
 
 const homes: string[] = [];
-const coordinators: HostResourceCoordinator[] = [];
+const coordinators: HostLedger[] = [];
 
 afterEach(async () => {
 	for (const coordinator of coordinators.splice(0))
@@ -27,8 +26,8 @@ afterEach(async () => {
 	}
 });
 
-class FakeLiveness implements LeaseLivenessInspector {
-	evidence: LivenessEvidence = {
+class FakeLiveness implements LeaseLiveness {
+	evidence: LeaseEvidenceReport = {
 		status: "live",
 		checkedAt: 10_000,
 		kernelBootId: "kernel-a",
@@ -36,7 +35,7 @@ class FakeLiveness implements LeaseLivenessInspector {
 	};
 	inspections = 0;
 
-	async inspect(): Promise<LivenessEvidence> {
+	async inspect(): Promise<LeaseEvidenceReport> {
 		this.inspections++;
 		return this.evidence;
 	}
@@ -81,14 +80,11 @@ async function fixture(adapters: readonly AnyHostProbeAdapter[] = []) {
 	const home = await mkdtemp(join(tmpdir(), "mfw-host-api-"));
 	homes.push(home);
 	const liveness = new FakeLiveness();
-	const store = await openHostResourceStore(home, {
+	const { ledger: hostResources } = await openTestLedger(home, {
 		processBootId: "process-a",
 		kernelBootId: "kernel-a",
 		now: () => 10_000,
-	});
-	const hostResources = await HostResourceCoordinator.create(store, {
 		liveness,
-		now: () => 10_000,
 		livenessMaxAgeMs: 1_000,
 		observations: { adapters },
 	});
@@ -109,6 +105,41 @@ async function fixture(adapters: readonly AnyHostProbeAdapter[] = []) {
 		liveness,
 		projectLookups: () => projectLookups,
 	};
+}
+
+/** A host requirement as a core claim, optionally pinned to one bound device. */
+async function putHostWaiter(
+	ledger: HostLedger,
+	input: {
+		requestKey: string;
+		projectId: string;
+		requirements: { resourceId: string; amount: bigint; bindingId?: string }[];
+	},
+) {
+	const waiter = await ledger.coordinator.putWaiter({
+		requestKey: input.requestKey,
+		projectId: input.projectId,
+		// Written directly: a waiter may queue on a resource that is draining.
+		claims: input.requirements.map((item) => {
+			const definition = ledger
+				.readModel()
+				.definitions.find((d) => d.id === item.resourceId);
+			if (!definition) throw new Error(`unknown ${item.resourceId}`);
+			return {
+				...claimOf(definition, item.amount),
+				...(item.bindingId ? { unit: item.bindingId } : {}),
+			};
+		}),
+	});
+	await ledger.applyObservations();
+	return waiter;
+}
+
+/** A grant with the bigint fence the API speaks. */
+async function tryHostGrant(ledger: HostLedger, waiterId: string) {
+	const result = await ledger.coordinator.tryGrant(waiterId);
+	await ledger.applyObservations();
+	return "kind" in result ? result : { ...result, fence: BigInt(result.fence) };
 }
 
 const slot = {
@@ -497,13 +528,13 @@ describe("process-global host resources API", () => {
 	test("keeps project semaphore procedures unable to mutate host definitions or leases", async () => {
 		const f = await fixture();
 		await f.api.hostResources.createDefinition({ ...slot, actor: "operator" });
-		const waiter = await f.hostResources.putWaiter({
+		const waiter = await putHostWaiter(f.hostResources, {
 			requestKey: "detached/host-lease",
 			projectId: "detached-project",
 			requirements: [{ resourceId: "gpu", amount: 1n }],
 		});
-		const grant = await f.hostResources.tryGrant(waiter.id, waiter.generation);
-		if ("kind" in grant) throw new Error(`unexpected hold: ${grant.reason}`);
+		const grant = await tryHostGrant(f.hostResources, waiter.id);
+		if ("kind" in grant) throw new Error(`unexpected hold: ${grant.status}`);
 		await expect(
 			f.api.resources.register({
 				project: "missing",
@@ -538,13 +569,13 @@ describe("process-global host resources API", () => {
 			enabled: true,
 			actor: "ops@example",
 		});
-		const waiter = await f.hostResources.putWaiter({
+		const waiter = await putHostWaiter(f.hostResources, {
 			requestKey: "detached-project/run-1",
 			projectId: "stable-project-id",
 			requirements: [{ resourceId: "gpu", amount: 1n }],
 		});
-		const grant = await f.hostResources.tryGrant(waiter.id, waiter.generation);
-		if ("kind" in grant) throw new Error(`unexpected hold: ${grant.reason}`);
+		const grant = await tryHostGrant(f.hostResources, waiter.id);
+		if ("kind" in grant) throw new Error(`unexpected hold: ${grant.status}`);
 
 		const model = await f.api.hostResources.read();
 		expect(definition.version).toBe(1n);
@@ -720,13 +751,13 @@ describe("process-global host resources API", () => {
 			enabled: true,
 			actor: "alice",
 		});
-		const waiter = await f.hostResources.putWaiter({
+		const waiter = await putHostWaiter(f.hostResources, {
 			requestKey: "bound/run",
 			projectId: "bound",
 			requirements: [{ resourceId: "gpu", bindingId: "gpu-a", amount: 1n }],
 		});
-		const grant = await f.hostResources.tryGrant(waiter.id, waiter.generation);
-		if ("kind" in grant) throw new Error(`unexpected hold: ${grant.reason}`);
+		const grant = await tryHostGrant(f.hostResources, waiter.id);
+		if ("kind" in grant) throw new Error(`unexpected hold: ${grant.status}`);
 		await expect(
 			f.api.hostResources.updateBinding({
 				id: "gpu-a",
@@ -784,7 +815,7 @@ describe("process-global host resources API", () => {
 		});
 		expect(drained.version).toBe(2n);
 
-		const waiter = await f.hostResources.putWaiter({
+		const waiter = await putHostWaiter(f.hostResources, {
 			requestKey: "project/run",
 			projectId: "project",
 			requirements: [{ resourceId: "gpu", amount: 1n }],
@@ -797,11 +828,8 @@ describe("process-global host resources API", () => {
 			draining: false,
 			actor: "alice",
 		});
-		const grant = await f.hostResources.tryGrant(
-			waiter.id,
-			f.hostResources.readModel().generation,
-		);
-		if ("kind" in grant) throw new Error(`unexpected hold: ${grant.reason}`);
+		const grant = await tryHostGrant(f.hostResources, waiter.id);
+		if ("kind" in grant) throw new Error(`unexpected hold: ${grant.status}`);
 		await f.api.hostResources.setDrain({
 			resourceId: "gpu",
 			expectedVersion: 3n,
@@ -832,13 +860,13 @@ describe("process-global host resources API", () => {
 			...quantity,
 			actor: "alice",
 		});
-		const waiter = await f.hostResources.putWaiter({
+		const waiter = await putHostWaiter(f.hostResources, {
 			requestKey: "project/cpu-heavy",
 			projectId: "project",
 			requirements: [{ resourceId: "cpu", amount: 3n }],
 		});
-		const grant = await f.hostResources.tryGrant(waiter.id, waiter.generation);
-		if ("kind" in grant) throw new Error(`unexpected hold: ${grant.reason}`);
+		const grant = await tryHostGrant(f.hostResources, waiter.id);
+		if ("kind" in grant) throw new Error(`unexpected hold: ${grant.status}`);
 
 		await expect(
 			f.api.hostResources.updateDefinition({
@@ -867,20 +895,24 @@ describe("process-global host resources API", () => {
 	test("guarded force requires confirmation, current fence, fresh conclusive liveness, actor and reason", async () => {
 		const f = await fixture();
 		await f.api.hostResources.createDefinition({ ...slot, actor: "alice" });
-		const waiter = await f.hostResources.putWaiter({
+		const waiter = await putHostWaiter(f.hostResources, {
 			requestKey: "project/run",
 			projectId: "project",
 			requirements: [{ resourceId: "gpu", amount: 1n }],
 		});
-		const grant = await f.hostResources.tryGrant(waiter.id, waiter.generation);
-		if ("kind" in grant) throw new Error(`unexpected hold: ${grant.reason}`);
-		await f.hostResources.activate(grant.id, grant.fence, {
-			runId: "run-1",
-			runDir: "/detached/run-1",
-			pid: 123,
-			processStartTime: "456",
-			kernelBootId: "kernel-a",
-		});
+		const grant = await tryHostGrant(f.hostResources, waiter.id);
+		if ("kind" in grant) throw new Error(`unexpected hold: ${grant.status}`);
+		await f.hostResources.coordinator.activate(
+			{ id: grant.id, fence: Number(grant.fence) },
+			{
+				runId: "run-1",
+				runDir: "/detached/run-1",
+				pid: 123,
+				processStartTime: "456",
+				kernelBootId: "kernel-a",
+			},
+		);
+		await f.hostResources.applyObservations();
 
 		const force = f.api.hostResources.forceRelease as unknown as (
 			input: Record<string, unknown>,
@@ -1021,14 +1053,22 @@ describe("process-global host resources API", () => {
 			enabled: true,
 			actor: "alice",
 		});
-		const first = await f.api.hostResources.audit({ after: 0n, limit: 1 });
-		expect(first).toHaveLength(1);
-		expect(first[0]?.action).toBe("definition.put");
-		const second = await f.api.hostResources.audit({
-			after: first[0]?.seq ?? 0n,
-			limit: 1,
-		});
-		expect(second).toHaveLength(1);
-		expect(second[0]?.action).toBe("binding.put");
+		const everything = await f.api.hostResources.audit({ limit: 1_000 });
+		const paged: typeof everything = [];
+		let after = 0n;
+		for (;;) {
+			const page = await f.api.hostResources.audit({ after, limit: 1 });
+			const entry = page[0];
+			if (!entry) break;
+			expect(page).toHaveLength(1);
+			paged.push(entry);
+			after = entry.seq;
+		}
+		expect(paged).toEqual(everything);
+		const actions = paged.map((entry) => entry.action);
+		expect(actions.indexOf("definition.put")).toBeGreaterThanOrEqual(0);
+		expect(actions.indexOf("binding.put")).toBeGreaterThan(
+			actions.indexOf("definition.put"),
+		);
 	});
 });
