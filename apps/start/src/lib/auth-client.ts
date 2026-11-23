@@ -197,6 +197,8 @@ export interface ApiToken {
 	expiresAt: number;
 	lastUsedAt: number | null;
 	status: "active" | "expired" | "revoked";
+	/** Names a project this install does not have. */
+	unbound?: boolean;
 }
 
 export interface ApiTokenAudit {

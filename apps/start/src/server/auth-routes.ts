@@ -88,6 +88,18 @@ function hasAuthIntent(req: Request): boolean {
 	);
 }
 
+/** The attached project names, or null when they cannot be read. */
+async function projectNames(
+	projects: (() => Promise<string[]>) | undefined,
+): Promise<Set<string> | null> {
+	if (!projects) return null;
+	try {
+		return new Set(await projects());
+	} catch {
+		return null;
+	}
+}
+
 const badRequest = () =>
 	jsonResponse(400, { error: "bad_request", message: "malformed request" });
 
@@ -99,6 +111,8 @@ export async function handleAuthAction(
 	base = appBase(),
 	/** The socket peer; injectable for tests. */
 	peer: string | undefined = peerAddress(req),
+	/** The attached projects, to validate a project-bound token. */
+	projects?: () => Promise<string[]>,
 ): Promise<Response> {
 	const method = req.method.toUpperCase();
 	if (action === "state" && (method === "GET" || method === "HEAD")) {
@@ -163,8 +177,18 @@ export async function handleAuthAction(
 				error: "unauthenticated",
 				message: "sign in to manage API tokens",
 			});
-		if (action === "tokens" && method === "GET")
-			return jsonResponse(200, { tokens: await auth.listTokens() });
+		if (action === "tokens" && method === "GET") {
+			const names = await projectNames(projects);
+			const tokens = await auth.listTokens();
+			return jsonResponse(200, {
+				tokens: tokens.map((t) => ({
+					...t,
+					// It would gain access if a project of that name were attached later.
+					unbound:
+						names !== null && t.project !== null && !names.has(t.project),
+				})),
+			});
+		}
 		if (action === "token-audit")
 			return method === "GET"
 				? jsonResponse(200, {
@@ -180,6 +204,14 @@ export async function handleAuthAction(
 		if (action === "token-revoke") {
 			if (typeof body.id !== "string") return badRequest();
 			return jsonResponse(200, { revoked: await auth.revokeToken(body.id) });
+		}
+		if (body.project !== undefined && body.project !== null) {
+			const names = await projectNames(projects);
+			if (typeof body.project !== "string" || !names?.has(body.project))
+				return jsonResponse(400, {
+					error: "invalid_token_request",
+					message: "there is no project with that name",
+				});
 		}
 		try {
 			const { token, info } = await auth.createToken(

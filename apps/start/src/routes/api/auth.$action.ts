@@ -1,11 +1,23 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { guard, serverAuth } from "~/server/auth-guard";
-import { handleAuthAction } from "~/server/auth-routes";
+import { handleAuthAction, peerAddress } from "~/server/auth-routes";
+import { getOrchestrator } from "~/server/orchestrator";
+
+const attachedProjects = async () =>
+	(await getOrchestrator()).list().map((svc) => svc.name);
 
 const handler = async (request: Request, action: string) => {
 	const guarded = await guard(request, { api: true });
 	if (!guarded.ok) return guarded.response;
-	return handleAuthAction(action, request, guarded, await serverAuth());
+	return handleAuthAction(
+		action,
+		request,
+		guarded,
+		await serverAuth(),
+		undefined,
+		peerAddress(request),
+		attachedProjects,
+	);
 };
 
 export const Route = createFileRoute("/api/auth/$action")({

@@ -280,6 +280,16 @@ function writeTokenFile(home: string, token: string, origin: string): string {
 	return path;
 }
 
+/** The configured project names, or null when the config cannot be read. */
+async function configuredProjects(home: string): Promise<Set<string> | null> {
+	try {
+		const { loadConfig } = await import("../config.ts");
+		return new Set((await loadConfig(home)).projects.map((p) => p.name));
+	} catch {
+		return null;
+	}
+}
+
 async function runTokenCommand(
 	args: readonly string[],
 	d: AuthCliDeps,
@@ -299,6 +309,13 @@ async function runTokenCommand(
 						project: parsed.project,
 						ttlMs: parsed.ttlMs,
 					});
+					if (
+						info.project &&
+						!(await configuredProjects(d.home))?.has(info.project)
+					)
+						d.err(
+							`mfw auth: warning: no project named '${info.project}' is attached. The token gains access if one is attached later.`,
+						);
 					const summary = `${info.id} '${info.name}' [${info.scopes.join(", ")}] ${info.project ? `project ${info.project}` : "all projects"}, expires ${new Date(info.expiresAt).toISOString()}`;
 					if (parsed.writeFile) {
 						const path = writeTokenFile(
@@ -324,9 +341,16 @@ async function runTokenCommand(
 			return withStore(d, async (auth) => {
 				const tokens = await auth.listTokens();
 				if (tokens.length === 0) d.out("mfw auth: no tokens.");
+				const names = await configuredProjects(d.home);
+				const where = (project: string | null) =>
+					project === null
+						? "all projects"
+						: names && !names.has(project)
+							? `${project} (not attached)`
+							: project;
 				for (const t of tokens)
 					d.out(
-						`${t.id}  ${t.status}  '${t.name}'  [${t.scopes.join(", ")}]  ${t.project ?? "all projects"}  expires ${new Date(t.expiresAt).toISOString()}  last used ${t.lastUsedAt ? new Date(t.lastUsedAt).toISOString() : "never"}`,
+						`${t.id}  ${t.status}  '${t.name}'  [${t.scopes.join(", ")}]  ${where(t.project)}  expires ${new Date(t.expiresAt).toISOString()}  last used ${t.lastUsedAt ? new Date(t.lastUsedAt).toISOString() : "never"}`,
 					);
 				return 0;
 			});

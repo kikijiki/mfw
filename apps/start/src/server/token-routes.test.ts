@@ -120,6 +120,98 @@ describe("the owner manages tokens", () => {
 		});
 });
 
+describe("a project-bound token", () => {
+	const attached = async () => ["alpha"];
+	const withProjects = async (
+		action: string,
+		method: string,
+		body: unknown,
+		projects: (() => Promise<string[]>) | undefined,
+	) => {
+		const req = new Request(`${ORIGIN}/api/auth/${action}`, {
+			method,
+			headers: {
+				...owner(),
+				...(body !== undefined
+					? { "content-type": "application/json", [AUTH_INTENT_HEADER]: "1" }
+					: {}),
+			},
+			...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+		});
+		const guarded = await guardRequest(req, {
+			auth,
+			base: "/",
+			env: {},
+			api: true,
+		});
+		if (!guarded.ok) return guarded.response;
+		return handleAuthAction(
+			action,
+			req,
+			guarded,
+			auth,
+			"/",
+			"127.0.0.1",
+			projects,
+		);
+	};
+
+	test("can be created for an attached project", async () => {
+		const res = await withProjects(
+			"tokens",
+			"POST",
+			{ ...create, project: "alpha" },
+			attached,
+		);
+		expect(res.status).toBe(200);
+	});
+
+	test("cannot name a project that does not exist", async () => {
+		const res = await withProjects(
+			"tokens",
+			"POST",
+			{ ...create, project: "later" },
+			attached,
+		);
+		expect(res.status).toBe(400);
+		expect(await auth.listTokens()).toHaveLength(0);
+	});
+
+	test("is refused when the project list cannot be read", async () => {
+		const res = await withProjects(
+			"tokens",
+			"POST",
+			{ ...create, project: "alpha" },
+			async () => {
+				throw new Error("not booted");
+			},
+		);
+		expect(res.status).toBe(400);
+		expect(await auth.listTokens()).toHaveLength(0);
+	});
+
+	test("an all-projects token needs no project list", async () => {
+		expect(
+			(await withProjects("tokens", "POST", create, undefined)).status,
+		).toBe(200);
+	});
+
+	test("the list marks a token whose project is gone", async () => {
+		await auth.createToken({ ...create, name: "bound", project: "alpha" });
+		await auth.createToken({ ...create, name: "stale", project: "removed" });
+		await auth.createToken({ ...create, name: "all" });
+		const res = await withProjects("tokens", "GET", undefined, attached);
+		const { tokens } = (await res.json()) as {
+			tokens: { name: string; unbound: boolean }[];
+		};
+		expect(Object.fromEntries(tokens.map((t) => [t.name, t.unbound]))).toEqual({
+			bound: false,
+			stale: true,
+			all: false,
+		});
+	});
+});
+
 describe("only an owner session can", () => {
 	const anon = { host: "localhost:7777" };
 

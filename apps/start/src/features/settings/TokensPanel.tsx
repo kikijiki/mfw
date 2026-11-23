@@ -193,7 +193,8 @@ export function TokensPanel() {
 								<span className="font-medium">{t.name}</span>{" "}
 								<span className="text-muted-foreground">
 									{t.status} · {t.scopes.join(", ")} ·{" "}
-									{t.project ?? "all projects"} · expires{" "}
+									{t.project ?? "all projects"}
+									{t.unbound ? " (project not found)" : ""} · expires{" "}
 									{new Date(t.expiresAt).toLocaleString()}
 								</span>
 							</span>

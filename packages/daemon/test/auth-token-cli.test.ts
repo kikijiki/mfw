@@ -142,6 +142,34 @@ describe("mfw auth token", () => {
 	});
 });
 
+describe("a token for a project this install does not have", () => {
+	const write = (names: string[]) =>
+		writeFileSync(
+			join(home, "config.json"),
+			JSON.stringify({
+				projects: names.map((name) => ({ name, root: join(home, name) })),
+			}),
+		);
+
+	test("create warns, and list marks it", async () => {
+		write(["alpha"]);
+		expect(await run(...create, "--project", "later")).toBe(0);
+		expect(err.join("\n")).toContain("no project named 'later'");
+		out = [];
+		await run("token", "list");
+		expect(out.join("\n")).toContain("later (not attached)");
+	});
+
+	test("an attached project gets neither", async () => {
+		write(["alpha"]);
+		await run(...create, "--project", "alpha");
+		expect(err.join("\n")).not.toContain("no project named");
+		out = [];
+		await run("token", "list");
+		expect(out.join("\n")).not.toContain("not attached");
+	});
+});
+
 describe("mfw auth token audit", () => {
 	async function activity() {
 		const auth = await AuthService.open(authDbPath(home));
