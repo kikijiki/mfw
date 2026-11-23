@@ -138,20 +138,27 @@ bun packages/board/src/cli.ts --help
 
 ### Reach it from your phone
 
-Keep the server on loopback and let Tailscale publish it with a real certificate:
+Keep the server on loopback and let Tailscale publish it with a real certificate,
+on an HTTPS port of its own. Start the server with:
 
 ```sh
-tailscale serve --bg --set-path /mfw http://127.0.0.1:7777/mfw
+HOST=127.0.0.1 MFW_TRUSTED_PROXIES=127.0.0.1 \
+  MFW_ALLOWED_HOSTS=<machine>.<tailnet>.ts.net:8443 mfw server
 ```
 
-Open `https://<machine>.<tailnet>.ts.net/mfw` from any device on your tailnet. The
-`/mfw` in the target is deliberate: the app is built to live under that prefix, and
-without it every asset 404s.
+Then publish it:
 
-To reach it without a proxy, set `HOST` to the machine's Tailscale IPv4 address (for
-example `HOST="$(tailscale ip -4 | head -n1)"`) and open `http://<machine>:7777/mfw`.
-It is plain HTTP, but the tailnet encrypts it. Never set `HOST=0.0.0.0`: agents run
-with your permissions, so the listener must not be reachable from the LAN.
+```sh
+tailscale serve --bg --https=8443 --set-path /mfw http://127.0.0.1:7777/mfw
+```
+
+Open `https://<machine>.<tailnet>.ts.net:8443/mfw/` from any device on your tailnet.
+The `/mfw` in the target is deliberate: the app is built to live under that prefix,
+and without it every asset 404s.
+
+The server refuses to start on a non-loopback address without TLS or a trusted
+proxy, and never listens on `0.0.0.0`. [docs/exposure.md](docs/exposure.md) covers
+other proxies, why mfw needs its own origin, the threat notes and a manual check.
 
 ### Run it as a service
 
@@ -167,10 +174,11 @@ Both keep the scheduler off until you enable it in the UI.
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `MFW_HOME` | `~/.local/share/mfw` | where mfw keeps its settings, database and run records |
-| `PORT` / `HOST` | `7777` / runtime default | the address the server listens on |
+| `PORT` / `HOST` | `7777` / `127.0.0.1` with `mfw server` or `bun run start` | the address the server listens on; the built server refuses an unset `HOST` |
 | `MFW_BASE_PATH` | `/mfw/` | the URL prefix, fixed when you run `bun run build` (`/` for the root) |
 | `MFW_URL` | `http://localhost:7777/mfw/api/trpc` | where the MCP server finds the app |
-| `MFW_ALLOWED_HOSTS` | none | extra host names the UI may be reached on (comma separated); loopback is always allowed |
+| `MFW_ALLOWED_HOSTS` | none | exact `host` or `host:port` names the UI may be reached on (comma separated, no wildcards); loopback is always allowed |
+| `MFW_TRUSTED_PROXIES` | none | proxy peer addresses or CIDRs whose forwarded headers are honoured; loopback is not trusted by default |
 
 Agent network access, its per-project settings and its limits are described
 in [docs/egress.md](docs/egress.md).
@@ -192,8 +200,8 @@ Run these on the host, outside any agent sandbox:
 | `mfw auth setup-token` | issue a new first-run token (before an owner exists) |
 | `mfw auth reset --yes` | forget the password and all sessions, then repeat setup |
 
-Failed sign-ins are limited per address, and all of loopback counts as one
-address. Until agents get their own network namespace they share that limit with
+Failed sign-ins are limited per address (behind a trusted proxy, per forwarded
+client), and all of loopback counts as one address. Until agents get their own network namespace they share that limit with
 you, so a misbehaving agent can slow your sign-in on loopback: `mfw auth unlock`
 clears it.
 
