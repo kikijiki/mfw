@@ -53,15 +53,24 @@ export function installWipHelper(controlDir: string): void {
 	renameSync(staging, final);
 }
 
-/** The one-shot snapshot command, for a sandbox with no agent in it. */
-export function wipSnapshotArgv(bun: string): string[] {
+/**
+ * The one-shot snapshot command, for a sandbox with no agent in it. The
+ * helper's settings are set here because a profile's env may not name them.
+ */
+export function wipSnapshotArgv(
+	sh: string,
+	bun: string,
+	runId: string,
+): string[] {
 	return [
+		sh,
+		"-c",
+		'MFW_WIP_RUN_ID="$1" MFW_WIP_OUTBOX="$2" exec "$3" --config=/dev/null --no-env-file "$4" snapshot final',
+		"mfw-snapshot",
+		runId,
+		SANDBOX_PATHS.runOutbox,
 		bun,
-		"--config=/dev/null",
-		"--no-env-file",
 		`${SANDBOX_PATHS.runControl}/${WIP_HELPER_FILE}`,
-		"snapshot",
-		"final",
 	];
 }
 

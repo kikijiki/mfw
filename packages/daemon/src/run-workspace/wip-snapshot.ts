@@ -16,6 +16,9 @@ import type { FinalSnapshot } from "./clone-impl.ts";
 const REQUEST_FILE = "wip-launch.json";
 /** The launcher's exit code for a launch it refused. */
 const LAUNCH_REFUSED = 78;
+/** The probe items that fail on the clone's content rather than on the host. */
+const AGENT_CAUSED_REFUSAL =
+	/probe_failed: the sandbox probe failed: .*\b(?:exec_sweep|socket_sweep)\b/;
 /** Past the helper's own per-command limit, so it reports first when it can. */
 const DEFAULT_TIMEOUT_MS = 180_000;
 
@@ -70,8 +73,16 @@ export function sandboxFinalSnapshot(
 				env,
 				stdin: "ignore",
 				stdout: "ignore",
-				stderr: "ignore",
+				stderr: "pipe",
 			});
+			// Drained so the launcher never blocks; only the tail is kept.
+			let tail = "";
+			const drained = (async () => {
+				const decoder = new TextDecoder();
+				for await (const chunk of proc.stderr) {
+					tail = (tail + decoder.decode(chunk, { stream: true })).slice(-600);
+				}
+			})().catch(() => {});
 			let timedOut = false;
 			const timer = setTimeout(() => {
 				timedOut = true;
@@ -80,9 +91,15 @@ export function sandboxFinalSnapshot(
 			}, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 			const code = await proc.exited;
 			clearTimeout(timer);
+			await Promise.race([drained, Bun.sleep(1_000)]);
 			if (timedOut) return "failed";
 			if (code === LAUNCH_REFUSED) {
-				throw new Error(`the snapshot sandbox for run ${runId} was refused`);
+				// What the agent left in its clone: a retry would see the same.
+				if (AGENT_CAUSED_REFUSAL.test(tail)) return "refused";
+				// A refusal is the launcher's own line: the sandbox never started.
+				throw new Error(
+					`the snapshot sandbox for run ${runId} was refused: ${tail.trim()}`,
+				);
 			}
 			return code === 0 ? "ok" : "failed";
 		},

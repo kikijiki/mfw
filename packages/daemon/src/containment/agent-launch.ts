@@ -35,11 +35,7 @@ import {
 	UNATTESTED_CONFIG_MARKER,
 } from "./agent-profile.ts";
 import { authorizeAutonomousLaunch } from "./attestation-gate.ts";
-import {
-	type CompileHost,
-	compileBwrap,
-	SANDBOX_PATHS,
-} from "./compile-bwrap.ts";
+import { type CompileHost, compileBwrap } from "./compile-bwrap.ts";
 import { launchSandbox } from "./launch-sandbox.ts";
 import { attestSandbox } from "./probe-run.ts";
 import { ProfileRejectedError, type SandboxProfile } from "./profile.ts";
@@ -212,12 +208,6 @@ export async function launchAgentSandbox(
 			binaries,
 			env: {
 				...req.env,
-				...(snapshot
-					? {
-							MFW_WIP_RUN_ID: req.runId,
-							MFW_WIP_OUTBOX: SANDBOX_PATHS.runOutbox,
-						}
-					: {}),
 				...(req.cli === "claude"
 					? { CLAUDE_CODE_PROJECT_DIR_NAME: `mfw-run-${req.runId}` }
 					: {}),
@@ -282,7 +272,7 @@ export async function launchAgentSandbox(
 	}
 	installWipHelper(runDirLayout(req.runDir).control);
 	const sandboxArgv = snapshot
-		? wipSnapshotArgv(bunPath)
+		? wipSnapshotArgv(shPath, bunPath, req.runId)
 		: wipSupervisorArgv(shPath, bunPath, req.runId, finalArgv);
 	const compiled = compileBwrap(profile, sandboxArgv, host);
 	if (!compiled.ok) {

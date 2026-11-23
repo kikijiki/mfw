@@ -5,6 +5,7 @@ import {
 	mkdir,
 	readdir,
 	readFile,
+	rename,
 	rm,
 	writeFile,
 } from "node:fs/promises";
@@ -33,7 +34,7 @@ import type {
 	WorkspaceName,
 	WorktreeReportIdentity,
 } from "./run-workspace.ts";
-import { seedWorkspace } from "./seed.ts";
+import { cloneConfig, seedWorkspace } from "./seed.ts";
 import { type WipAck, wipAckFile, wipControlLine } from "./wip-helper.ts";
 
 /**
@@ -58,6 +59,8 @@ import { type WipAck, wipAckFile, wipControlLine } from "./wip-helper.ts";
 
 const MARKER = "mfw-workspace.json";
 const BUNDLE_REL = "outbox/result.bundle";
+/** Beside the clone, never bound: the hooks and config taken out before the final snapshot. */
+const HELD_GIT_DIR = "held-git";
 
 interface Marker {
 	version: 1;
@@ -75,12 +78,13 @@ interface Marker {
 /**
  * Takes the end-of-run snapshot in a fresh sandbox, after every run process is
  * dead, so no agent process can race it. `run` resolves `failed` when the clone
- * cannot produce a result (a deleted or corrupt gitdir, a hung filter) and
- * throws when the sandbox could not start, which is worth retrying.
+ * cannot produce a result (a deleted or corrupt gitdir), `refused` when the
+ * probe refuses what the agent left in the clone, and throws when the sandbox
+ * could not start for any other reason, which is worth retrying.
  */
 export interface FinalSnapshot {
 	available(runId: string): boolean | Promise<boolean>;
-	run(runId: string): Promise<"ok" | "failed">;
+	run(runId: string): Promise<"ok" | "failed" | "refused">;
 }
 
 /** What the host observed about an import, for the run's provenance record. */
@@ -429,8 +433,16 @@ export class CloneRunWorkspace implements RunWorkspace {
 				recursive: true,
 				force: true,
 			});
-			if ((await snapshot.run(runId)) === "failed") {
+			if (!(await this.neutralizeGit(marker))) {
 				await this.refuseImport(marker, "snapshot_failed");
+				return;
+			}
+			const outcome = await snapshot.run(runId);
+			if (outcome !== "ok") {
+				await this.refuseImport(
+					marker,
+					outcome === "refused" ? "snapshot_refused" : "snapshot_failed",
+				);
 				return;
 			}
 			claim = await readAck(join(root, "outbox", wipAckFile()), "final");
@@ -475,6 +487,41 @@ export class CloneRunWorkspace implements RunWorkspace {
 			}
 			throw e;
 		}
+	}
+
+	/**
+	 * Take what the agent left that git would execute out of the clone, so the
+	 * snapshot sandbox passes the unchanged probe because the files are really
+	 * gone. Only with every run process dead. `rename` follows no links, and the
+	 * files land beside the clone, where no sandbox binds them and nothing runs
+	 * them. False when the clone has no real gitdir or tree.
+	 */
+	private async neutralizeGit(marker: Marker): Promise<boolean> {
+		const dir = this.dirOf(marker.runId);
+		const gitDir = join(dir, "git");
+		const tree = join(dir, "tree");
+		for (const path of [gitDir, tree]) {
+			const st = await lstat(path).catch(() => null);
+			if (!st?.isDirectory()) return false;
+		}
+		const hold = join(dir, HELD_GIT_DIR, randomBytes(6).toString("hex"));
+		await mkdir(hold, { recursive: true, mode: 0o700 });
+		for (const [from, name] of [
+			[join(gitDir, "hooks"), "hooks"],
+			[join(gitDir, "config"), "config"],
+			[join(gitDir, "config.worktree"), "config.worktree"],
+			[join(tree, ".git"), "tree-dot-git"],
+		] as const) {
+			await rename(from, join(hold, name)).catch((e: NodeJS.ErrnoException) => {
+				if (e.code !== "ENOENT") throw e;
+			});
+		}
+		await writeFile(
+			join(gitDir, "config"),
+			cloneConfig(marker.baseSha.length === 64),
+			{ flag: "wx", mode: 0o600 },
+		);
+		return true;
 	}
 
 	private async refuseImport(marker: Marker, failure: string): Promise<void> {

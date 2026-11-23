@@ -170,7 +170,8 @@ describe("the end-of-run import", () => {
 		expect(res).toMatchObject({ sha: null, failure: "snapshot_failed" });
 		expect(await s.refs()).toEqual([]);
 		await s.ws.fetchResult(s.handle);
-		expect(s.state.snapshots).toBe(1);
+		// No gitdir to neutralize, so no sandbox is started for it, then or later.
+		expect(s.state.snapshots).toBe(0);
 		expect(await s.ws.hasLocalChanges(s.handle)).toBe(true);
 	});
 
