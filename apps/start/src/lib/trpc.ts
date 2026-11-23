@@ -15,6 +15,7 @@ import {
 } from "@trpc/tanstack-react-query";
 import SuperJSON from "superjson";
 
+import { authedFetch, sessionAwareEventSource } from "./auth-client";
 import { humanizeError, toastBus } from "./toast";
 
 /**
@@ -40,8 +41,16 @@ export function makeTRPCClient() {
 			}),
 			splitLink({
 				condition: (op) => op.type === "subscription",
-				true: httpSubscriptionLink({ transformer: SuperJSON, url }),
-				false: httpBatchLink({ transformer: SuperJSON, url }),
+				true: httpSubscriptionLink({
+					transformer: SuperJSON,
+					url,
+					EventSource: sessionAwareEventSource(),
+				}),
+				false: httpBatchLink({
+					transformer: SuperJSON,
+					url,
+					fetch: authedFetch,
+				}),
 			}),
 		],
 	});

@@ -1,4 +1,6 @@
 import { Page, PageHeader, Panel, Scroller } from "../../components/Page";
+import { Button } from "../../components/ui/button";
+import { signOut } from "../../lib/auth-client";
 import { useTheme } from "../../lib/theme";
 import { Segmented, Setting } from "./controls";
 import { OpenRouterSettingsPanel } from "./OpenRouterSettingsPanel";
@@ -68,6 +70,11 @@ export function SettingsPage({ tab, onTabChange }: SettingsPageProps) {
 						<AppearanceSection />
 					</Panel>
 				</section>
+				<Panel title="Session">
+					<Button variant="outline" size="sm" onClick={() => void signOut()}>
+						Sign out
+					</Button>
+				</Panel>
 			</Scroller>
 		</Page>
 	);
