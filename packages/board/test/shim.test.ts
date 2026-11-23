@@ -10,6 +10,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { boardCliArgv } from "./support/cli-argv.ts";
 
 const CLI = join(import.meta.dir, "../src/cli.ts");
 
@@ -19,7 +20,7 @@ afterEach(async () => {
 });
 
 async function run(args: string[], path?: string) {
-	const p = Bun.spawn([process.execPath, "run", CLI, ...args], {
+	const p = Bun.spawn(boardCliArgv(CLI, args), {
 		cwd: tmpdir(),
 		env: { ...process.env, ...(path ? { PATH: path } : {}) },
 		stdout: "pipe",
