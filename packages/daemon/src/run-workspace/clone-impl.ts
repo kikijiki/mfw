@@ -150,6 +150,9 @@ const PROTECTED_NAMES = new Set([
 	".lfsconfig",
 ]);
 
+/** A result changing more paths than this is refused rather than half-read. */
+export const MAX_RESULT_ENTRIES = 20_000;
+
 /**
  * The default bounds on a fetched result, checked in the bare repo with no
  * checkout. A run may not touch `.gitmodules`, `.gitattributes` or
@@ -162,11 +165,14 @@ export async function validateRunResult(
 	baseSha: string,
 ): Promise<void> {
 	for (const ref of [ctx.headRef, ...ctx.wipRefs]) {
-		const raw = await ctx.host.runOk(
+		// Streamed and bounded: a tail-kept listing drops the entries that sort first.
+		const parts: string[] = [];
+		await ctx.host.records(
 			["diff-tree", "-r", "-z", "--raw", "--no-renames", baseSha, ref],
 			{ cwd: ctx.bareRepo, repo: ctx.bareRepo },
+			{ maxRecords: MAX_RESULT_ENTRIES * 2 },
+			(record) => parts.push(record),
 		);
-		const parts = raw.split("\0");
 		for (let i = 0; i + 1 < parts.length; i += 2) {
 			const meta = (parts[i] ?? "").split(" ");
 			const path = parts[i + 1] ?? "";
