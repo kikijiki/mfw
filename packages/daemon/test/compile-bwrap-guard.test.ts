@@ -88,6 +88,47 @@ const argv = (opts: string[], command = ["sh", "-c", "true"]): LaunchShape => ({
 });
 
 describe("assertContained", () => {
+	const MASK = `/nix/store/${"a".repeat(32)}-python3-3.14/bin`;
+
+	test("accepts a store mask that is read-only at once", () => {
+		const o = options();
+		o.splice(
+			o.indexOf("--remount-ro"),
+			0,
+			"--tmpfs",
+			MASK,
+			"--remount-ro",
+			MASK,
+		);
+		expect(() => assertContained(argv(o), spec)).not.toThrow();
+	});
+
+	test.each([
+		["left writable", ["--tmpfs", MASK]],
+		["remounts another path", ["--tmpfs", MASK, "--remount-ro", "/tmp"]],
+		[
+			"not an executable directory",
+			[
+				"--tmpfs",
+				MASK.replace(/bin$/, "lib"),
+				"--remount-ro",
+				MASK.replace(/bin$/, "lib"),
+			],
+		],
+		[
+			"the store itself",
+			["--tmpfs", "/nix/store", "--remount-ro", "/nix/store"],
+		],
+		[
+			"a traversal",
+			["--tmpfs", `${MASK}/../../x/bin`, "--remount-ro", `${MASK}/../../x/bin`],
+		],
+	])("refuses a store mask that is %s", (_name, mask) => {
+		const o = options();
+		o.splice(o.indexOf("--remount-ro"), 0, ...mask);
+		expect(() => assertContained(argv(o), spec)).toThrow("refusing to launch");
+	});
+
 	test("accepts the compiled shape and strips the scope", () => {
 		const out = assertContained(argv(options()), spec);
 		expect(out[0]).toBe("/e/env");
