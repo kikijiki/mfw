@@ -16,6 +16,7 @@ import {
 	type ExecPin,
 	type ExecRefusal,
 	pathMayChange,
+	pinDigest,
 	verifyExecPin,
 } from "../containment/exec-pin.ts";
 import type { QuarantinedDefinition } from "../definitions.ts";
@@ -167,6 +168,36 @@ export class TriggerReviewStaleError extends Error {
 		this.name = "TriggerReviewStaleError";
 	}
 }
+
+/** The files changed after the owner reviewed them; the reviewed digest is the authorization. */
+export class TriggerPinStaleError extends Error {
+	constructor(
+		readonly defId: string,
+		readonly expected: string | undefined,
+		readonly current: string,
+	) {
+		super(
+			expected
+				? `${defId}: the files it executes changed while it was being reviewed; reopen the review`
+				: `${defId}: arming needs the approved pin digest; open the review and approve it`,
+		);
+		this.name = "TriggerPinStaleError";
+	}
+}
+
+/** What arming would pin, shown to the owner before they approve it. */
+export type TriggerPinPreview =
+	| {
+			ok: true;
+			digest: string;
+			commit: string | null;
+			tree: string | null;
+			files: { path: string; sha256: string; role: string }[];
+			external: { path: string; real: string }[];
+			tools: string[];
+			mayChange: string[];
+	  }
+	| { ok: false; reason: string; fix: string };
 
 /** Arming refused: the files this trigger executes cannot be pinned. */
 export class TriggerPinRefusedError extends Error {
@@ -507,6 +538,10 @@ export class TriggerService {
 			expectedHash?: string;
 			/** Paths that may differ from the armed commit. Omitted keeps the current list. */
 			mayChange?: string[];
+			/** The pin digest the owner reviewed. */
+			expectedPinDigest?: string;
+			/** Refuse a script trigger without one (every operator path sets this). */
+			requirePinDigest?: boolean;
 		} = {},
 	): Promise<TriggerView> {
 		const { defs } = await this.reconcile();
@@ -529,6 +564,13 @@ export class TriggerService {
 				...(mayChange ? { mayChange } : {}),
 			});
 			if (!built.ok) throw new TriggerPinRefusedError(defId, built);
+			const digest = pinDigest(built.pin);
+			if (
+				(opts.requirePinDigest || opts.expectedPinDigest !== undefined) &&
+				opts.expectedPinDigest !== digest
+			) {
+				throw new TriggerPinStaleError(defId, opts.expectedPinDigest, digest);
+			}
 			execPin = built.pin;
 		}
 		await this.ensureCursor(def);
@@ -543,6 +585,44 @@ export class TriggerService {
 		const view = views.find((v) => v.id === defId);
 		if (!view) throw new Error(`trigger '${defId}' vanished while arming`);
 		return view;
+	}
+
+	/** The exact pin arming would record now. Pass `mayChange` to preview a new list. */
+	async previewPin(
+		defId: string,
+		opts: { mayChange?: string[] } = {},
+	): Promise<TriggerPinPreview | null> {
+		const { defs } = await this.reconcile();
+		const def = defs.find((d) => d.id === defId);
+		if (!def) {
+			throw new NotFoundError(
+				`no loadable trigger definition '${defId}' in .mfw/triggers/`,
+			);
+		}
+		if (def.action.kind !== "script") return null;
+		const current = (await this.arming.load())[defId]?.execPin?.mayChange;
+		const mayChange = opts.mayChange ?? current;
+		const built = await buildExecPin({
+			root: this.deps.projectRoot,
+			run: def.action.run,
+			...(mayChange ? { mayChange } : {}),
+		});
+		if (!built.ok) return { ok: false, reason: built.reason, fix: built.fix };
+		const { pin } = built;
+		return {
+			ok: true,
+			digest: pinDigest(pin),
+			commit: pin.commit,
+			tree: pin.tree,
+			files: pin.files.map(({ path, sha256, role }) => ({
+				path,
+				sha256,
+				role,
+			})),
+			external: pin.external.map(({ path, real }) => ({ path, real })),
+			tools: pin.tools,
+			mayChange: pin.mayChange,
+		};
 	}
 
 	async disarm(defId: string): Promise<void> {

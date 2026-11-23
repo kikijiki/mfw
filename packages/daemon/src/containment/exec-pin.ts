@@ -90,6 +90,19 @@ export const ExecPinSchema = z.object({
 
 export type ExecPin = z.infer<typeof ExecPinSchema>;
 
+/** What the owner approves: a digest over everything the pin holds. */
+export function pinDigest(pin: ExecPin): string {
+	const canonical = JSON.stringify({
+		commit: pin.commit,
+		tree: pin.tree,
+		mayChange: [...pin.mayChange].sort(),
+		files: pin.files.map((f) => [f.path, f.sha256, f.mode, f.role]),
+		external: pin.external.map((x) => [x.path, x.real, x.sha256]),
+		tools: pin.tools,
+	});
+	return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
+}
+
 export type ExecRefusalCode =
 	| "unanalyzable"
 	| "unresolved"

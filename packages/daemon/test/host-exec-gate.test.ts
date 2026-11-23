@@ -386,3 +386,37 @@ describe("merges", () => {
 		).toBe(0);
 	});
 });
+
+describe("the owner approves the pin digest", () => {
+	test("the preview names the files and the digest arming will record", async () => {
+		const preview = await svc.previewPin("deploy");
+		expect(preview?.ok).toBe(true);
+		if (!preview?.ok) throw new Error("no preview");
+		expect(preview.files.map((f) => f.path)).toEqual(["deploy.sh"]);
+		await svc.arm("deploy", {
+			expectedPinDigest: preview.digest,
+			requirePinDigest: true,
+		});
+		expect((await stateOf())?.state).toBe("armed");
+	});
+
+	test("a script changed after the review is not approved silently", async () => {
+		const preview = await svc.previewPin("deploy");
+		if (!preview?.ok) throw new Error("no preview");
+		await writeFile(join(root, "deploy.sh"), script(evil));
+		await commit("changed after review");
+		await expect(
+			svc.arm("deploy", {
+				expectedPinDigest: preview.digest,
+				requirePinDigest: true,
+			}),
+		).rejects.toThrow("reopen the review");
+		expect((await arming.load()).deploy).toBeUndefined();
+	});
+
+	test("an operator path cannot arm a script without a digest", async () => {
+		await expect(svc.arm("deploy", { requirePinDigest: true })).rejects.toThrow(
+			"approved pin digest",
+		);
+	});
+});
