@@ -102,6 +102,18 @@ export function groupByAttention<T extends Pick<InboxItem, "attention">>(
 	})).filter((g) => g.items.length > 0);
 }
 
+/** `act` rows split into what is shown and what the budget holds, in release order. */
+export function splitHeldBack<
+	T extends Pick<InboxItem, "heldBack" | "heldRank">,
+>(items: readonly T[]): { shown: T[]; held: T[] } {
+	return {
+		shown: items.filter((i) => !i.heldBack),
+		held: items
+			.filter((i) => i.heldBack)
+			.sort((a, b) => (a.heldRank ?? 0) - (b.heldRank ?? 0)),
+	};
+}
+
 /** Where a headline number leads (every number links to its list). */
 export function headlineTarget(project: string, link: HeadlineLink): string {
 	switch (link) {
