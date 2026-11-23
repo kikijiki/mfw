@@ -759,6 +759,327 @@ async function loginRacingPasswordChange(
 	);
 }
 
+const EXTERNAL = "box.example.test:8443";
+/** Real socket peers: only the first is named in MFW_TRUSTED_PROXIES. */
+const PROXY_PEER = "127.0.0.2";
+const OTHER_PEER = "127.0.0.3";
+
+function viaProxy(
+	client: string,
+	extra: Record<string, string> = {},
+): Record<string, string> {
+	return {
+		Host: EXTERNAL,
+		"X-Forwarded-For": client,
+		"X-Forwarded-Proto": "https",
+		"X-Forwarded-Host": EXTERNAL,
+		...extra,
+	};
+}
+
+/** The server must exit with the fix, and never accept a connection. */
+async function refusesToStart(
+	name: string,
+	base: Record<string, string>,
+	bind: Record<string, string>,
+	scratch: string,
+): Promise<void> {
+	const port = await freePort();
+	const logFile = join(scratch, `refused-${passed}-${failures.length}.log`);
+	const p = Bun.spawn([process.execPath, "run", ENTRY], {
+		cwd: ROOT,
+		env: { ...base, ...bind, PORT: String(port) },
+		stdout: Bun.file(logFile),
+		stderr: Bun.file(logFile),
+	});
+	const exit = await Promise.race([p.exited, Bun.sleep(15000).then(() => -1)]);
+	if (exit === -1) p.kill("SIGKILL");
+	await p.exited;
+	const log = readFileSync(logFile, "utf8");
+	check(`${name}: exits 1`, exit === 1, exit);
+	check(`${name}: prints the fix`, log.includes("refusing to start"), log);
+	const open = await raw(port, request("GET", "/mfw/api/health"), {
+		ms: 300,
+	}).catch(() => null);
+	check(`${name}: nothing is listening`, open === null, open?.status);
+}
+
+/** C4: the production build behind a fake TLS proxy, over real socket peers. */
+async function trustedProxy(): Promise<void> {
+	const scratch = validateTestHome(mkdtempSync(join(tmpdir(), "mfw-test-")));
+	const fakeHome = join(scratch, "home");
+	const mfwHome = join(scratch, "mfw");
+	mkdirSync(fakeHome);
+	const port = await freePort();
+	const base = {
+		PATH: safePath(),
+		HOME: fakeHome,
+		MFW_HOME: mfwHome,
+		MFW_USAGE_MONITOR: "0",
+		MFW_DISABLE_ORCHESTRATOR: "1",
+		TMUX_TMPDIR: scratch,
+		MFW_TMUX_SOCKET: `mfw-smoke-proxy-${process.pid}`,
+	};
+	const logFile = join(scratch, "server.log");
+	const server = Bun.spawn([process.execPath, "run", ENTRY], {
+		cwd: ROOT,
+		env: {
+			...base,
+			PORT: String(port),
+			HOST: "127.0.0.1",
+			MFW_TRUSTED_PROXIES: PROXY_PEER,
+			MFW_ALLOWED_HOSTS: EXTERNAL,
+		},
+		stdout: Bun.file(logFile),
+		stderr: Bun.file(logFile),
+	});
+	const get = (headers: Record<string, string>, from = PROXY_PEER) =>
+		raw(port, request("GET", "/mfw/api/auth/state", headers), { from });
+	try {
+		let up = false;
+		for (let i = 0; i < 200 && !up; i++) {
+			const r = await raw(port, request("GET", "/mfw/api/health"), {
+				ms: 500,
+			}).catch(() => null);
+			up = r?.status === 200;
+			if (!up) await Bun.sleep(100);
+		}
+		if (!up)
+			throw new Error(
+				`proxied server did not start:\n${readFileSync(logFile, "utf8").slice(-1500)}`,
+			);
+		const tokenFile = join(mfwHome, "setup-token");
+		for (let i = 0; i < 50 && !existsSync(tokenFile); i++) await Bun.sleep(100);
+		const token = readFileSync(tokenFile, "utf8").trim();
+
+		const forged = await authPost(
+			port,
+			"setup",
+			{ token: "x".repeat(43), password: PASSWORD },
+			viaProxy("203.0.113.1"),
+			OTHER_PEER,
+		);
+		check(
+			"proxy: an untrusted peer's headers are refused",
+			forged.status === 403,
+			forged.status,
+		);
+
+		const setup = await authPost(
+			port,
+			"setup",
+			{ token, password: PASSWORD },
+			viaProxy("203.0.113.1", { Origin: `https://${EXTERNAL}` }),
+			PROXY_PEER,
+		);
+		check("proxy: setup through the proxy", setup.status === 200, setup.status);
+		const set = /set-cookie: (__Secure-mfw_session=[^\r\n]+)/i.exec(
+			setup.head.replace(/set-cookie: [^\r\n]*Max-Age=0[^\r\n]*\r\n/gi, ""),
+		)?.[1];
+		check(
+			"proxy: cookie has the __Secure- name",
+			!!set,
+			setup.head.slice(0, 200),
+		);
+		check("proxy: cookie is Secure", /; Secure/.test(set ?? ""), set);
+		check("proxy: cookie is HttpOnly", /; HttpOnly/.test(set ?? ""), set);
+		check(
+			"proxy: cookie is SameSite=Strict",
+			/SameSite=Strict/.test(set ?? ""),
+			set,
+		);
+		check(
+			"proxy: cookie Path is the base",
+			/Path=\/mfw(;|$)/.test(set ?? ""),
+			set,
+		);
+
+		const api = (headers: Record<string, string>, from = PROXY_PEER) =>
+			raw(port, request("GET", `/mfw/api/trpc/${Q}`, headers), { from });
+		const signedIn = { Cookie: setup.cookie, "x-mfw-key": setup.key };
+		const ok = await api(viaProxy("203.0.113.1", signedIn));
+		check("proxy: cookie and key read the API", ok.status === 200, ok.status);
+		const planted = await api(
+			viaProxy("203.0.113.1", {
+				Cookie: `__Secure-mfw_session=${"A".repeat(43)}; ${setup.cookie}`,
+				"x-mfw-key": setup.key,
+			}),
+		);
+		check(
+			"proxy: a cookie planted by a sibling port is harmless",
+			planted.status === 200,
+			planted.status,
+		);
+		const stolen = await api(viaProxy("203.0.113.1", { Cookie: setup.cookie }));
+		check(
+			"proxy: the cookie alone is refused",
+			stolen.status === 403,
+			stolen.status,
+		);
+
+		for (const [name, headers, want] of [
+			["same origin", { Origin: `https://${EXTERNAL}` }, 200],
+			["http Origin", { Origin: `http://${EXTERNAL}` }, 403],
+			["sibling HTTPS port", { Origin: "https://box.example.test:9443" }, 403],
+			["foreign Origin", { Origin: "https://evil.example" }, 403],
+			["unlisted forwarded host", { "X-Forwarded-Host": "evil.example" }, 403],
+			[
+				"sibling forwarded port",
+				{ "X-Forwarded-Host": "box.example.test:9443" },
+				403,
+			],
+			["forwarded loopback", { "X-Forwarded-Host": "localhost" }, 403],
+			["proto http", { "X-Forwarded-Proto": "http" }, 403],
+			["malformed client", { "X-Forwarded-For": "not-an-address" }, 403],
+			["client with a port", { "X-Forwarded-For": "203.0.113.1:99" }, 403],
+			[
+				"both header families",
+				{ Forwarded: "for=203.0.113.1;proto=https" },
+				403,
+			],
+		] as const) {
+			const r = await get(viaProxy("203.0.113.1", headers));
+			check(`proxy: ${name} -> ${want}`, r.status === want, r.status);
+		}
+
+		// Bun keeps only the last of repeated lines and the app cannot see the
+		// others, so what can be enforced is that a bad final value never passes.
+		for (const [name, line] of [
+			["X-Forwarded-Proto", "X-Forwarded-Proto: http"],
+			["X-Forwarded-Host", "X-Forwarded-Host: evil.example"],
+			["X-Forwarded-For", "X-Forwarded-For: not-an-address"],
+		] as const) {
+			const payload = request(
+				"GET",
+				"/mfw/api/auth/state",
+				viaProxy("203.0.113.1"),
+			);
+			const r = await raw(
+				port,
+				payload.replace("\r\n\r\n", `\r\n${line}\r\n\r\n`),
+				{
+					from: PROXY_PEER,
+				},
+			);
+			check(
+				`proxy: a repeated ${name} ending in a bad value is refused`,
+				r.status === 403,
+				r.status,
+			);
+		}
+
+		const direct = await get({ Host: EXTERNAL }, PROXY_PEER);
+		check(
+			"proxy: a listed host without forwarded headers is refused",
+			direct.status === 403,
+			direct.status,
+		);
+		const local = await get({ Host: "localhost" }, OTHER_PEER);
+		check(
+			"proxy: the local browser path still works",
+			local.status === 200,
+			local.status,
+		);
+
+		for (let i = 0; i < 5; i++)
+			await authPost(
+				port,
+				"login",
+				{ password: "wrong password!" },
+				viaProxy("203.0.113.7"),
+				PROXY_PEER,
+			);
+		const locked = await authPost(
+			port,
+			"login",
+			{ password: PASSWORD },
+			viaProxy("203.0.113.7"),
+			PROXY_PEER,
+		);
+		check(
+			"proxy: a client locks its own bucket",
+			locked.status === 429,
+			locked.status,
+		);
+		const other = await authPost(
+			port,
+			"login",
+			{ password: PASSWORD },
+			viaProxy("203.0.113.8"),
+			PROXY_PEER,
+		);
+		check(
+			"proxy: another client is not locked",
+			other.status === 200,
+			other.status,
+		);
+		const hidden = await authPost(
+			port,
+			"login",
+			{ password: PASSWORD },
+			viaProxy("10.1.1.1, 203.0.113.7"),
+			PROXY_PEER,
+		);
+		check(
+			"proxy: a forged left entry stays in the client's bucket",
+			hidden.status === 429,
+			hidden.status,
+		);
+
+		let evaluated = 0;
+		for (let i = 0; i < 9; i++) {
+			const r = await authPost(
+				port,
+				"login",
+				{ password: "wrong password!" },
+				{ "X-Forwarded-For": `198.51.100.${i}` },
+				OTHER_PEER,
+			);
+			if (r.status === 401) evaluated++;
+		}
+		check(
+			"proxy: rotating the header from an untrusted peer does not rotate its bucket",
+			evaluated <= 5,
+			evaluated,
+		);
+	} finally {
+		server.kill("SIGTERM");
+		await Promise.race([server.exited, Bun.sleep(5000)]);
+		server.kill("SIGKILL");
+		await server.exited;
+	}
+	try {
+		await refusesToStart(
+			"plain HTTP on a non-loopback address",
+			base,
+			{ HOST: "192.0.2.1" },
+			scratch,
+		);
+		await refusesToStart("every interface", base, { HOST: "0.0.0.0" }, scratch);
+		await refusesToStart(
+			"every interface over IPv6",
+			base,
+			{ HOST: "::" },
+			scratch,
+		);
+		await refusesToStart("no HOST", base, {}, scratch);
+		await refusesToStart(
+			"a wildcard allowed host",
+			base,
+			{ HOST: "127.0.0.1", MFW_ALLOWED_HOSTS: "*.ts.net" },
+			scratch,
+		);
+		await refusesToStart(
+			"a trust-everyone proxy list",
+			base,
+			{ HOST: "127.0.0.1", MFW_TRUSTED_PROXIES: "0.0.0.0/0" },
+			scratch,
+		);
+	} finally {
+		rmSync(validateTestHome(scratch), { recursive: true, force: true });
+	}
+}
+
 async function main(): Promise<number> {
 	if (!existsSync(ENTRY)) {
 		console.error("auth-smoke: no production build. Fix: bun run build");
@@ -871,6 +1192,7 @@ async function main(): Promise<number> {
 		await server.exited;
 		rmSync(validateTestHome(scratch), { recursive: true, force: true });
 	}
+	await trustedProxy();
 	console.log(`auth-smoke: ${passed} passed, ${failures.length} failed`);
 	for (const f of failures.slice(0, 40)) console.log(`  FAIL ${f}`);
 	return failures.length ? 1 : 0;

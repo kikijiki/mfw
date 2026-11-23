@@ -246,7 +246,9 @@ function parseXForwarded(h: Headers, list: readonly TrustedProxy[]): Forwarded {
 	const host = h.get("x-forwarded-host");
 	if (xff === null || proto === null)
 		return invalid("a proxy must send X-Forwarded-For and X-Forwarded-Proto");
-	// A repeated header arrives comma-joined, so these refuse duplicates too.
+	// Bun keeps only the LAST of repeated lines, so duplicates cannot be seen
+	// here. A runtime that joins them with a comma is refused below. The proxy
+	// must replace these headers, not add a line before the client's.
 	if (proto !== "https")
 		return invalid("X-Forwarded-Proto must be exactly https");
 	if (host !== null && !/^[^\s,@/]+$/.test(host))
