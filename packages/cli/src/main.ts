@@ -184,7 +184,11 @@ function realDeps(): Deps {
 }
 
 if (import.meta.main) {
+	// Read first: `runMcp` replaces `process.argv` for the MCP entry point.
+	const isMcp = process.argv[2] === "mcp";
+	const wantsHelp =
+		process.argv.includes("--help") || process.argv.includes("-h");
 	const code = await dispatch(process.argv.slice(2), realDeps());
 	// `mcp` keeps the process alive on its stdio transport; everything else exits.
-	if (process.argv[2] !== "mcp") process.exit(code);
+	if (!isMcp || wantsHelp) process.exit(code);
 }
