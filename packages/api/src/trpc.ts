@@ -115,6 +115,8 @@ const ERROR_CODES: Record<string, TRPCError["code"]> = {
 	RerouteError: "PRECONDITION_FAILED",
 	// Path resolved outside the workspace. FORBIDDEN, not NOT_FOUND, so clients can tell them apart.
 	PathEscapeError: "FORBIDDEN",
+	// An API token's write that the task's current state does not allow.
+	TokenTaskStateError: "FORBIDDEN",
 };
 
 const mapErrors = t.middleware(async ({ next }) => {
@@ -148,6 +150,18 @@ const mapErrors = t.middleware(async ({ next }) => {
 		marker: result.marker,
 	};
 });
+
+/** The API token behind a call, in the form the task service enforces on. */
+export function tokenAuthor(
+	principal: Principal,
+): { id: string; mayDispatch: boolean } | undefined {
+	return principal.kind === "token"
+		? {
+				id: principal.tokenId,
+				mayDispatch: principal.scopes.includes("runs:act"),
+			}
+		: undefined;
+}
 
 export const createTRPCRouter = t.router;
 export const createCallerFactory = t.createCallerFactory;

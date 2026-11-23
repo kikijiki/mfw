@@ -18,6 +18,10 @@ type Check = (
 	scopes: readonly TokenScope[],
 ) => string | null;
 
+// These rules see input only. What a write may do given the task's CURRENT
+// state (dispatchable, parked, finished) is enforced under the board lock in
+// `TaskService`, from the `token` option the task procedures pass.
+
 interface TokenRule {
 	scope: TokenScope;
 	/** `global` reads across projects, so a project-restricted token cannot call it. */
