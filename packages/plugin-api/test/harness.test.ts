@@ -8,6 +8,20 @@ import {
 } from "../src/harness.ts";
 
 const base = () => ({
+	schemaVersion: 1,
+	manifestVersion: 1,
+	displayName: "Codex",
+	description: "A manifest for these tests.",
+	resume: { method: "thread-arg", detail: "exec resume <thread>" },
+	sandbox: { needsUserns: false, executables: ["codex"] },
+	autonomy: {
+		flags: [],
+		values: [],
+		config: [],
+		configOptions: [],
+		launchFlags: [],
+	},
+	install: { projectConfig: [], projectDirs: [] },
 	id: "codex-cli",
 	detect: {
 		bin: "codex",
