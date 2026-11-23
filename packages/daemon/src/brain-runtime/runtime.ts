@@ -56,6 +56,7 @@ import {
 	type DigestRunFact,
 	renderDigest,
 } from "./digest.ts";
+import { BrainDirections } from "./directions.ts";
 import { BrainActionExecutor, type BrainExecutorDeps } from "./executor.ts";
 import {
 	memoryTainted,
@@ -228,6 +229,8 @@ export class BrainRuntime {
 	readonly executor: BrainActionExecutor;
 	/** A person's levers: override a decision, message the brain. */
 	readonly human: HumanOverrideService;
+	/** The owner's one-sentence directions, and how each is going. */
+	readonly directions: BrainDirections;
 	private readonly now: () => number;
 	private readonly host: string;
 	private inflight: Promise<TickOutcome> | null = null;
@@ -290,6 +293,12 @@ export class BrainRuntime {
 				? { wakeScheduler: deps.exec.wakeScheduler }
 				: {}),
 			now: deps.now,
+		});
+		this.directions = new BrainDirections({
+			handle: deps.handle,
+			bus: deps.bus,
+			taskStatus: async (id) => (await deps.tasks.get(id))?.status ?? null,
+			...(deps.now ? { now: deps.now } : {}),
 		});
 	}
 

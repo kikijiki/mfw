@@ -150,6 +150,12 @@ How to work:
   reading them return \`held\`: the owner decides on a card, so do not retry
   or work around it. If act tools return \`breaker_open\`, end your turn.`;
 
+/**
+ * In the digest, not the charter: a resumed session never sees a new charter.
+ */
+export const DIRECTION_HINT =
+	"Lines about `direction:<id>` are the owner's high-level direction. As tech lead, draft it now: tasks with specs through `create_tasks`, or a `plan` run if it needs exploring. Do not ask for detail you can decide.";
+
 const clock = (ms: number) => new Date(ms).toISOString().slice(11, 19);
 
 function mins(ms: number): string {
@@ -294,6 +300,12 @@ export function renderDigest(input: DigestInput): {
 			return `- #${e.seq} ${clock(e.ts)}${about ? ` about ${about}` : ""}: ${text}`;
 		});
 
+	const hasDirection = input.events.some(
+		(e) =>
+			e.type === "human.brain_message" &&
+			String(e.payload.about ?? "").startsWith("direction:"),
+	);
+
 	const sections: Section[] = [
 		...(owner.length > 0
 			? [
@@ -301,7 +313,7 @@ export function renderDigest(input: DigestInput): {
 						title: "From the owner",
 						priority: 0,
 						keep: "tail" as const,
-						lines: owner,
+						lines: hasDirection ? [DIRECTION_HINT, ...owner] : owner,
 						provenance: ["owner" as const],
 					},
 				]
