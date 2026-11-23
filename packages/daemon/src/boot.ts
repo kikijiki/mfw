@@ -43,6 +43,7 @@ import {
 	PROJECT_DEFAULTS,
 } from "./config.ts";
 import { agentSandboxRefusal } from "./containment/agent-preflight.ts";
+import { createCheckSandbox } from "./containment/check-sandbox.ts";
 import { runDirLayout } from "./containment/run-dir.ts";
 import { assertRunDead } from "./containment/run-liveness.ts";
 import { CredentialStore, WorkloadSecretGrantStore } from "./credentials.ts";
@@ -602,6 +603,13 @@ export async function attachProject(
 		// this setting must still be handled as the clone it is.
 		clone: {
 			workspaceRoot: join(opts.mfwHome, "workspaces"),
+			// A candidate's checks run only in the attested verifier role.
+			checkRunner: createCheckSandbox({
+				db: handle.db,
+				mfwHome: opts.mfwHome,
+				projectRoot: root,
+				stateDir: mfwDir,
+			}),
 			runDirOf: (runId) => registry.runDir(runId),
 			controlPath: (runId) =>
 				join(runDirLayout(registry.runDir(runId)).control, "control.jsonl"),
@@ -838,7 +846,11 @@ export async function attachProject(
 					`merge-${job.runId}`,
 					dod,
 					run.baseSha as string,
-					{ checkPrefix: cfg.checkPrefix, envPolicy: cfg.envPolicy },
+					{
+						checkPrefix: cfg.checkPrefix,
+						envPolicy: cfg.envPolicy,
+						role: "merge-verify",
+					},
 				),
 			);
 			return verdictOf(result);

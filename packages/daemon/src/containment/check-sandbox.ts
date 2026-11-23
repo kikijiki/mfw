@@ -1,0 +1,242 @@
+/**
+ * Runs one DoD check inside the verifier role (design "Role profiles", review
+ * WIPW H4). A check executes the candidate's code, so the host never does:
+ *
+ *   profile -> compile -> probe -> attestation -> single-use gate -> launch
+ *
+ * The launch is always autonomous, because no human approves a check, whatever
+ * the project's approval mode. Every step refuses rather than falling back, and
+ * a refusal says nothing about the code under test.
+ *
+ * The check sees its clone's tree (writable, for build outputs), a read-only
+ * gitdir, a synthetic home and tmpfs scratch. It has no network, no credentials
+ * and no ambient environment: `envPolicy` no longer reaches it.
+ *
+ * `checkPrefix` still wraps the command, but inside the sandbox, where it is
+ * only a convenience. Entering a real dev shell there is P8.
+ */
+
+import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { dirname } from "node:path";
+import type { ProjectDb } from "@mfw/db/client";
+import { protectedPaths, realLaunchSteps } from "./agent-launch.ts";
+import { liveCompileHost } from "./agent-launch-host.ts";
+import type { LauncherSteps } from "./agent-launch-run.ts";
+import { AgentProfileError } from "./agent-profile.ts";
+import { type CheckRunner, CheckSandboxRefusal } from "./check-runner.ts";
+import { type CompileHost, compileBwrap } from "./compile-bwrap.ts";
+import { ProfileRejectedError } from "./profile.ts";
+import { buildVerifierProfile, VERIFIER_TOOLS } from "./role-profiles.ts";
+
+export interface CheckSandboxDeps {
+	db: ProjectDb;
+	mfwHome: string;
+	projectRoot: string;
+	stateDir: string;
+	steps?: LauncherSteps;
+}
+
+/**
+ * Set inside, so no value crosses from the host. A check has no terminal and
+ * nobody to answer a prompt: `true` is a no-op editor.
+ */
+const CHECK_ENTRY =
+	'export MFW_VERIFY=1 EDITOR=true GIT_EDITOR=true VISUAL=true GIT_TERMINAL_PROMPT=0; exec "$0" -c "$1"';
+
+const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+/** The shell text a check runs as, with its prefix quoted around it. */
+export function checkShellText(command: string, prefix?: string): string {
+	const wrapper = prefix?.trim();
+	return wrapper ? `${wrapper} sh -c ${quote(command)}` : command;
+}
+
+/** Drain a stream, keeping the last `max` bytes. */
+async function tail(
+	stream: ReadableStream<Uint8Array>,
+	max: number,
+): Promise<{ text: string; truncated: boolean }> {
+	const chunks: Uint8Array[] = [];
+	let held = 0;
+	let truncated = false;
+	for await (const chunk of stream) {
+		chunks.push(chunk);
+		held += chunk.length;
+		while (held > max && chunks.length > 1) {
+			held -= (chunks.shift() as Uint8Array).length;
+			truncated = true;
+		}
+	}
+	let bytes = Buffer.concat(chunks);
+	if (bytes.length > max) {
+		bytes = bytes.subarray(bytes.length - max);
+		truncated = true;
+	}
+	return { text: bytes.toString(), truncated };
+}
+
+export function createCheckSandbox(deps: CheckSandboxDeps): CheckRunner {
+	const steps: LauncherSteps = deps.steps ?? {
+		...realLaunchSteps,
+		compileHost: liveCompileHost,
+	};
+	return async (req) => {
+		const runId = `verify-${randomUUID()}`;
+		const refuse = (code: string, reason: string, fix: string): never => {
+			throw new CheckSandboxRefusal(code, reason, fix);
+		};
+
+		let tree: string;
+		let mfwHome: string;
+		try {
+			tree = realpathSync(req.tree);
+			mfwHome = realpathSync(deps.mfwHome);
+		} catch {
+			return refuse(
+				"workspace_missing",
+				`the verification clone ${req.tree} is gone`,
+				"retry the verification",
+			);
+		}
+		const looked = await steps.compileHost(
+			{
+				mfwHome,
+				cli: "claude",
+				stateDir: deps.stateDir,
+			} as never,
+			VERIFIER_TOOLS,
+			[dirname(tree)],
+		);
+		const found = new Set(looked.toolchain.resolved.map((b) => b.name));
+		const binaries = VERIFIER_TOOLS.filter((t) => found.has(t));
+		const sh = looked.toolchain.resolved.find((b) => b.name === "sh");
+		if (!sh) {
+			return refuse(
+				"toolchain",
+				"no sh in the sandbox toolchain",
+				"install a shell in a known toolchain root",
+			);
+		}
+		const host: CompileHost = {
+			...looked,
+			toolchain: {
+				...looked.toolchain,
+				resolved: looked.toolchain.resolved.filter((b) =>
+					binaries.includes(b.name as (typeof binaries)[number]),
+				),
+			},
+		};
+		let profile: ReturnType<typeof buildVerifierProfile>;
+		try {
+			profile = buildVerifierProfile({ role: req.role, tree, binaries });
+		} catch (err) {
+			if (
+				err instanceof AgentProfileError ||
+				err instanceof ProfileRejectedError
+			) {
+				return refuse("profile", err.message, "verify in a host-owned clone");
+			}
+			throw err;
+		}
+		const compiled = compileBwrap(
+			profile,
+			[
+				sh.path,
+				"-c",
+				CHECK_ENTRY,
+				sh.path,
+				checkShellText(req.command, req.prefix),
+			],
+			host,
+		);
+		if (!compiled.ok) {
+			return refuse(compiled.code, compiled.reason, compiled.fix);
+		}
+		const attested = await steps.attest({
+			db: deps.db,
+			runId,
+			profile,
+			host,
+			targets: {
+				home: host.home,
+				mfwHome: host.mfwHome,
+				protectedPaths: protectedPaths(
+					{ projectRoot: deps.projectRoot, stateDir: deps.stateDir },
+					host.home,
+				),
+				fleetExecBaseline: [],
+			},
+		});
+		if (!attested.ok)
+			return refuse(attested.code, attested.reason, attested.fix);
+		if (attested.outcome !== "pass") {
+			const failed = attested.items
+				.filter((i) => i.status !== "pass")
+				.map((i) => `${i.id} (${i.detail.slice(0, 200)})`);
+			return refuse(
+				"probe_failed",
+				`the verifier sandbox probe failed: ${failed.join(", ").slice(0, 1000)}`,
+				"run `mfw doctor`, fix the failing items, then retry",
+			);
+		}
+		const gate = await steps.authorize(deps.db, {
+			runId,
+			approvalMode: "autonomous",
+			profile,
+			compiled,
+			bwrapVersion: host.caps.bwrap.value.version ?? "unknown",
+		});
+		if (!gate.ok) return refuse(gate.code, gate.reason, gate.fix);
+		if (gate.authorization === null) {
+			return refuse(
+				"not_authorized",
+				"the gate granted no authorization",
+				"retry the verification",
+			);
+		}
+		if (req.signal?.aborted) {
+			return {
+				exitCode: null,
+				stdout: "",
+				stderr: "",
+				timedOut: false,
+				truncated: false,
+				signalCode: "SIGTERM",
+			};
+		}
+
+		const child = steps.launch(compiled, {
+			approvalMode: "autonomous",
+			authorization: gate.authorization,
+		});
+		(child.stdin as unknown as { end(): void }).end();
+		let timedOut = false;
+		// bwrap dies with its parent and takes the check's pid namespace with it.
+		const kill = () => child.kill("SIGKILL");
+		const timer = setTimeout(() => {
+			timedOut = true;
+			kill();
+		}, req.timeoutMs);
+		req.signal?.addEventListener("abort", kill, { once: true });
+		try {
+			const [out, err, exitCode] = await Promise.all([
+				tail(child.stdout as never, req.maxOutputBytes),
+				tail(child.stderr as never, req.maxOutputBytes),
+				child.exited,
+			]);
+			const signalCode = (child.signalCode ?? null) as NodeJS.Signals | null;
+			return {
+				exitCode: signalCode ? null : exitCode,
+				stdout: out.text,
+				stderr: err.text,
+				timedOut,
+				truncated: out.truncated || err.truncated,
+				signalCode,
+			};
+		} finally {
+			clearTimeout(timer);
+			req.signal?.removeEventListener("abort", kill);
+		}
+	};
+}

@@ -17,8 +17,9 @@
  * it exists, so an unreferenced merge commit survives the seed and a crash
  * leaves a ref `sweep` can find.
  */
-import { mkdir, readdir, rm } from "node:fs/promises";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import type { CheckRunner } from "../containment/check-runner.ts";
 import { git } from "../git.ts";
 import { assertRunId } from "../host-git/fetch.ts";
 import type { HostGit } from "../host-git/runner.ts";
@@ -38,6 +39,8 @@ export interface VerifierCloneOptions {
 	gitBin?: string;
 	host?: HostGit;
 	log?: (msg: string) => void;
+	/** Runs a check in the verifier sandbox. Without it, checks are refused. */
+	checkRunner?: CheckRunner;
 }
 
 /** One verification clone: check it out of `path`, then `dispose` it. */
@@ -61,9 +64,12 @@ export function isVerifierCloneId(id: string): boolean {
 
 export class VerifierClones {
 	private readonly root: string;
+	/** Null means no check may run: the host never runs a candidate's code. */
+	readonly checkRunner: CheckRunner | null;
 
 	constructor(private readonly opts: VerifierCloneOptions) {
 		this.root = resolve(opts.workspaceRoot);
+		this.checkRunner = opts.checkRunner ?? null;
 	}
 
 	/** Seed a clone of `rev` (a commit in the primary, or a ref that names one). */
@@ -100,6 +106,13 @@ export class VerifierClones {
 			await git(["update-ref", "-d", ref], this.opts.primaryRoot);
 			throw e;
 		}
+		// Beside `tree/` and `git/`, never bound: what marks this as a host-owned
+		// clone to the sandbox builders.
+		await writeFile(
+			join(seeded.dir, "mfw-workspace.json"),
+			`${JSON.stringify({ version: 1, runId: id, role: "verifier", baseSha: sha })}\n`,
+			{ mode: 0o600 },
+		);
 		let disposed = false;
 		return {
 			id,

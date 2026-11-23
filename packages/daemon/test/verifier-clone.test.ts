@@ -3,7 +3,9 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { CheckRunner } from "../src/containment/check-runner.ts";
 import { git, gitOk } from "../src/git.ts";
+import { runProc } from "../src/proc.ts";
 import { cloneScopeFiles } from "../src/run-workspace/scope-files.ts";
 import { VerifierClones } from "../src/run-workspace/verifier-clone.ts";
 import { changedFilesInRef } from "../src/scope-watchdog.ts";
@@ -27,9 +29,16 @@ async function setup() {
 	await git(["commit", "-q", "-m", "init"], primary);
 	const base = await gitOk(["rev-parse", "HEAD"], primary);
 	const wsRoot = join(root, "home", "workspaces");
+	// The double for the sandbox; check-sandbox-live.test.ts runs the real one.
+	const checkRunner: CheckRunner = (req) =>
+		runProc(["sh", "-c", req.command], {
+			cwd: req.tree,
+			timeoutMs: req.timeoutMs,
+		});
 	const clones = new VerifierClones({
 		workspaceRoot: wsRoot,
 		primaryRoot: primary,
+		checkRunner,
 	});
 	return { root, primary, base, wsRoot, clones };
 }
@@ -108,6 +117,26 @@ describe("VerifierClones", () => {
 });
 
 describe("verifier in a clone", () => {
+	test("without a sandbox the check is refused and nothing runs", async () => {
+		const t = await setup();
+		const canary = join(t.root, "ran-on-host");
+		const bare = new VerifierClones({
+			workspaceRoot: t.wsRoot,
+			primaryRoot: t.primary,
+		});
+		const r = await verifyInClone(
+			bare,
+			t.base,
+			"r",
+			dod([{ run: `touch ${canary}` }]),
+			t.base,
+		);
+		expect(r.passed).toBe(false);
+		expect(r.crashed).toBe(true);
+		expect(r.checks[0]?.detail).toContain("no_verifier_sandbox");
+		expect(existsSync(canary)).toBe(false);
+	});
+
 	test("checks run in the clone, not in the primary", async () => {
 		const t = await setup();
 		const r = await verifyInClone(
