@@ -1,8 +1,10 @@
+import { runAsTokenActor } from "@mfw/daemon/auth/actor";
 import type { Principal } from "@mfw/daemon/auth/service";
 import type { Orchestrator, ProjectServices } from "@mfw/daemon/services";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import { ZodError, z } from "zod";
+import { tokenRefusal } from "./token-access.ts";
 
 /**
  * The context carries the Orchestrator; `projectProcedure` resolves one
@@ -14,6 +16,19 @@ export interface Context {
 	orchestrator: Orchestrator;
 	/** Who is calling. Null means unauthenticated, and every procedure refuses it. */
 	principal: Principal | null;
+	/** Where a token's actions are recorded. A token call without one is refused. */
+	tokenAudit?: TokenAuditSink;
+}
+
+export interface TokenAuditSink {
+	begin(entry: {
+		tokenId: string;
+		name: string;
+		path: string;
+		project: string | null;
+		outcome?: string;
+	}): Promise<number>;
+	finish(id: number, outcome: string): Promise<void>;
 }
 
 function refusalFix(
@@ -144,19 +159,62 @@ const BRAIN_PATHS: ReadonlySet<string> = new Set(["brain.read", "brain.act"]);
  * even if a route forgot its guard. Every procedure derives from this one, so
  * despite the historical name nothing on the router is anonymous.
  */
-const requirePrincipal = t.middleware(({ ctx, path, next }) => {
-	if (!ctx.principal)
-		throw new TRPCError({
-			code: "UNAUTHORIZED",
-			message: "sign in to use the mfw API",
-		});
-	if (ctx.principal.kind === "brain" && !BRAIN_PATHS.has(path))
-		throw new TRPCError({
-			code: "FORBIDDEN",
-			message: `'${path}' is not available to a brain turn`,
-		});
-	return next({ ctx: { ...ctx, principal: ctx.principal } });
-});
+const requirePrincipal = t.middleware(
+	async ({ ctx, path, type, getRawInput, next }) => {
+		const principal = ctx.principal;
+		if (!principal)
+			throw new TRPCError({
+				code: "UNAUTHORIZED",
+				message: "sign in to use the mfw API",
+			});
+		if (principal.kind === "brain" && !BRAIN_PATHS.has(path))
+			throw new TRPCError({
+				code: "FORBIDDEN",
+				message: `'${path}' is not available to a brain turn`,
+			});
+		// Widened: narrowing here would drop `token` from every procedure's context.
+		const authed = { ...ctx, principal: principal as Principal };
+		if (principal.kind !== "token") return next({ ctx: authed });
+
+		const audit = ctx.tokenAudit;
+		if (!audit)
+			throw new TRPCError({
+				code: "FORBIDDEN",
+				message: "this transport cannot audit API tokens",
+			});
+		// After the transformer: exactly what the input parsers will receive.
+		const input = await getRawInput();
+		const claimed = (input as { project?: unknown } | null | undefined)
+			?.project;
+		const entry = {
+			tokenId: principal.tokenId,
+			name: principal.name,
+			path,
+			project: typeof claimed === "string" ? claimed.slice(0, 128) : null,
+		};
+		const refusal = tokenRefusal(principal, path, input);
+		if (refusal) {
+			await audit.begin({ ...entry, outcome: "refused" }).catch(() => {});
+			throw new TRPCError({ code: "FORBIDDEN", message: refusal });
+		}
+		const actor = {
+			kind: "token" as const,
+			id: principal.id,
+			name: principal.name,
+		};
+		const proceed = () => runAsTokenActor(actor, () => next({ ctx: authed }));
+		if (type !== "mutation") return proceed();
+		// Written first: a mutation that cannot be attributed does not happen.
+		const auditId = await audit.begin(entry);
+		const result = await proceed();
+		await audit
+			.finish(auditId, result.ok ? "ok" : "error")
+			.catch((e: Error) =>
+				console.error("[mfw] token audit update failed:", e.message),
+			);
+		return result;
+	},
+);
 
 export const publicProcedure = t.procedure.use(requirePrincipal).use(mapErrors);
 
@@ -174,6 +232,16 @@ export const projectProcedure = publicProcedure
 			throw new TRPCError({
 				code: "FORBIDDEN",
 				message: "the token was not issued for that project and turn",
+			});
+		// The second lock on a restricted token, on the parsed input.
+		if (
+			ctx.principal.kind === "token" &&
+			ctx.principal.project !== null &&
+			ctx.principal.project !== input.project
+		)
+			throw new TRPCError({
+				code: "FORBIDDEN",
+				message: "the token was not issued for that project",
 			});
 		let svc: ProjectServices;
 		try {
