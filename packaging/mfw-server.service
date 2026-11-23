@@ -18,6 +18,10 @@ WorkingDirectory=%h/dev/mfw
 ExecStart=/usr/bin/env bun run apps/start/.output/server/index.mjs
 Restart=on-failure
 RestartSec=2
+# A user manager's PATH is minimal. bun, bwrap and tmux must all be found here:
+# without bwrap autonomous runs are refused. Add the directory that holds them
+# if yours is elsewhere, and keep it free of directories agents can write.
+Environment=PATH=%h/.nix-profile/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin:/usr/local/bin:/usr/bin:/bin
 Environment=MFW_HOME=%h/.local/share/mfw
 Environment=PORT=7777
 Environment=HOST=127.0.0.1

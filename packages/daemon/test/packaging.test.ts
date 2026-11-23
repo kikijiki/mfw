@@ -4,6 +4,37 @@ import { resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "../../..");
 
+describe("the units' tool path", () => {
+	test("the systemd unit sets a PATH, since a user manager's is minimal", async () => {
+		const unit = await readFile(
+			resolve(root, "packaging/mfw-server.service"),
+			"utf8",
+		);
+		const path = unit.match(/^Environment=PATH=(.+)$/m)?.[1];
+		expect(path).toBeDefined();
+		expect(path?.split(":")).toContain("/usr/bin");
+	});
+
+	test("the home-manager unit puts bun, tmux and bubblewrap on its PATH", async () => {
+		const nix = await readFile(
+			resolve(root, "packaging/mfw.home-manager.nix"),
+			"utf8",
+		);
+		for (const tool of ["pkgs.bun", "pkgs.tmux", "pkgs.bubblewrap"]) {
+			expect(nix).toContain(tool);
+		}
+		expect(nix).toContain('"PATH=${binPath}');
+	});
+
+	test("the home-manager unit rebuilds an output with no host script manifest", async () => {
+		const nix = await readFile(
+			resolve(root, "packaging/mfw.home-manager.nix"),
+			"utf8",
+		);
+		expect(nix).toContain("host-scripts/manifest.json");
+	});
+});
+
 describe("packaged listener safety", () => {
 	test("plain systemd binds loopback and documented host controls are real", async () => {
 		const [service, homeManager, readme] = await Promise.all([
