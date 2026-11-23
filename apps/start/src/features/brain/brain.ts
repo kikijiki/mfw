@@ -21,6 +21,7 @@ export const BRAIN_OFF_HINT =
 
 export type ActionState =
 	| "proposed"
+	| "held"
 	| "applied"
 	| "accepted"
 	| "rejected"
@@ -28,6 +29,7 @@ export type ActionState =
 
 const ACTION_STATES: ReadonlySet<string> = new Set([
 	"proposed",
+	"held",
 	"applied",
 	"accepted",
 	"rejected",
@@ -105,6 +107,7 @@ export function outcomeChip(
 	if (state === "rejected") return { label: "rejected", tone: "critical" };
 	if (state === "failed") return { label: "failed", tone: "critical" };
 	if (state === "proposed") return { label: "proposed", tone: "info" };
+	if (state === "held") return { label: "waiting on you", tone: "warn" };
 	const o = d.outcome as {
 		final?: string;
 		firstPass?: boolean;

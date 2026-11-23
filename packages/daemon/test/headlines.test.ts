@@ -47,6 +47,8 @@ describe("attention classes", () => {
 		"auth_hold",
 		"brain_stuck",
 		"brain_notice",
+		"brain_decision",
+		"brain_breaker",
 	];
 	const SEVERITIES: InboxSeverity[] = ["critical", "attention", "info"];
 
