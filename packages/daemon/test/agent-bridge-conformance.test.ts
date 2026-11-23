@@ -1,12 +1,5 @@
-import {
-	afterAll,
-	afterEach,
-	beforeEach,
-	describe,
-	expect,
-	test,
-} from "bun:test";
-import { createHash } from "node:crypto";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	chmodSync,
 	copyFileSync,
@@ -41,7 +34,6 @@ import {
 	runEventsPath,
 } from "../src/containment/run-dir.ts";
 import { SecretEnvironment } from "../src/execution-environment.ts";
-import { controlRootPath } from "../src/sandbox.ts";
 import { type CageConfig, cagedSteps } from "./support/caged-launch.ts";
 import { runShTmux } from "./support/run-sh-tmux.ts";
 
@@ -79,6 +71,9 @@ function skipReason(): string | null {
 	return r.exitCode === 0 ? null : "bwrap cannot run here";
 }
 const skip = skipReason();
+if (skip && process.env.MFW_REQUIRE_LIVE_SANDBOX === "1") {
+	throw new Error(`MFW_REQUIRE_LIVE_SANDBOX is set, but ${skip}`);
+}
 if (skip) console.log(`[agent-bridge-conformance] skipped: ${skip}`);
 
 /** The real directories of the base tools, so a fixture home cannot shadow them. */
@@ -108,7 +103,9 @@ interface Fixture {
 
 let f: Fixture;
 
-async function makeFixture(runId = "r1"): Promise<Fixture> {
+async function makeFixture(
+	runId = `conf-${randomUUID().slice(0, 12)}`,
+): Promise<Fixture> {
 	// Not under /tmp: the sandbox has its own /tmp, where a write to a fixture
 	// path would land on a private tmpfs and look like an escape.
 	mkdirSync(FIXTURES, { recursive: true });
@@ -220,7 +217,7 @@ function protectedState(x: Fixture): string[] {
 }
 
 /** Another run of the same project, sharing the fleet config dirs. */
-function secondRun(x: Fixture, runId = "r2"): Fixture {
+function secondRun(x: Fixture, runId = `${x.runId}-b`): Fixture {
 	const clone = join(x.mfwHome, "workspaces", runId);
 	const tree = join(clone, "tree");
 	const gitDir = join(clone, "git");
@@ -484,7 +481,10 @@ ln -s '${f.home}/.ssh/id_canary' /mfw-run/outbox/events.jsonl
 `);
 		writeFileSync(join(f.runDir, "control/driver.json"), "{}");
 		writeFileSync(join(f.runDir, "control/host-bridge"), "1\n");
-		const host = new AgentHost(undefined, { tmuxRunner: runShTmux().runner });
+		const host = new AgentHost(undefined, {
+			tmuxRunner: runShTmux().runner,
+			controlRoot: join(f.base, "control"),
+		});
 		const evidence = await host.readExitEvidence(f.runDir);
 		expect(evidence.exit.kind).toBe("running");
 		expect(runEventsPath(f.runDir)).toBe(join(f.runDir, "events.jsonl"));
@@ -555,7 +555,7 @@ ${tryWrite("/fleet/claude/settings.json", "settings")}
 			f,
 			'echo "slug=$CLAUDE_CODE_PROJECT_DIR_NAME" >> "$RESULT"',
 		);
-		expect(r.result).toContain("slug=mfw-run-r1");
+		expect(r.result).toContain(`slug=mfw-run-${f.runId}`);
 	}, 60_000);
 
 	test("M2: a planted executable cannot deny the next run", async () => {
@@ -588,12 +588,12 @@ chmod +x /fleet/claude/projects/planted.sh
 	test("an attestation is single-use across launches", async () => {
 		await runAgent(f, "true");
 		const [row] = await f.handle.db.all<{ n: number }>(
-			sql`SELECT count(*) AS n FROM sandbox_attestation_uses WHERE run_id = 'r1'`,
+			sql`SELECT count(*) AS n FROM sandbox_attestation_uses WHERE run_id = ${f.runId}`,
 		);
 		expect(row?.n).toBe(1);
 		await runAgent(f, "true");
 		const [again] = await f.handle.db.all<{ n: number }>(
-			sql`SELECT count(*) AS n FROM sandbox_attestation_uses WHERE run_id = 'r1'`,
+			sql`SELECT count(*) AS n FROM sandbox_attestation_uses WHERE run_id = ${f.runId}`,
 		);
 		expect(again?.n).toBe(2);
 	}, 60_000);
@@ -885,7 +885,7 @@ describe.skipIf(noManager !== null)("the real systemd scope chain", () => {
 			"contained\n",
 		);
 		const [row] = await f.handle.db.all<{ n: number }>(
-			sql`SELECT count(*) AS n FROM sandbox_attestation_uses WHERE run_id = 'r1'`,
+			sql`SELECT count(*) AS n FROM sandbox_attestation_uses WHERE run_id = ${f.runId}`,
 		);
 		expect(row?.n).toBe(1);
 	}, 60_000);
@@ -928,12 +928,6 @@ describe.skipIf(skip !== null)("the real drivers and bridges", () => {
 		f.handle.close();
 		rmSync(f.base, { recursive: true, force: true });
 	});
-	afterAll(() => {
-		for (const name of ["agent-launch-r1.json", "run-r1.sh", "exit-r1"]) {
-			rmSync(join(controlRootPath(), name), { force: true });
-		}
-	});
-
 	const preload = resolve(import.meta.dir, "support/caged-launcher-preload.ts");
 	const src = resolve(import.meta.dir, "../src/agents");
 
@@ -970,9 +964,12 @@ describe.skipIf(skip !== null)("the real drivers and bridges", () => {
 			{},
 			{ MFW_CAGE_CONFIG: readFileSync(f.cageFile, "utf8").trim() },
 		);
-		const host = new AgentHost(undefined, { tmuxRunner: runner });
+		const host = new AgentHost(undefined, {
+			tmuxRunner: runner,
+			controlRoot: join(f.base, "control"),
+		});
 		await host.launch({
-			runId: "r1",
+			runId: f.runId,
 			runDir: f.runDir,
 			cwd: f.tree,
 			projectRoot: f.project,
@@ -981,7 +978,7 @@ describe.skipIf(skip !== null)("the real drivers and bridges", () => {
 			bridgeArgv: ["bun", "run", `--preload=${preload}`, bridge],
 			providerArgv,
 			env: {
-				MFW_RUN_ID: "r1",
+				MFW_RUN_ID: f.runId,
 				MFW_REPORT_PATH: join(f.tree, "MFW_REPORT.json"),
 			},
 			model: "fake",
@@ -997,7 +994,7 @@ describe.skipIf(skip !== null)("the real drivers and bridges", () => {
 			providerId: `${cli}-cli`,
 		});
 		await opts.whileRunning?.(host);
-		const session = procs.get("mfw_r1");
+		const session = procs.get(`mfw_${f.runId}`);
 		let timedOut = false;
 		if (opts.maxWaitMs) {
 			const limit = Bun.sleep(opts.maxWaitMs).then(() => "late" as const);
@@ -1049,7 +1046,7 @@ describe.skipIf(skip !== null)("the real drivers and bridges", () => {
 		});
 		expect(proof.argv).toContain("--dangerously-skip-permissions");
 		const [row] = await f.handle.db.all<{ n: number }>(
-			sql`SELECT count(*) AS n FROM sandbox_attestation_uses WHERE run_id = 'r1'`,
+			sql`SELECT count(*) AS n FROM sandbox_attestation_uses WHERE run_id = ${f.runId}`,
 		);
 		expect(row?.n).toBe(1);
 	}, 90_000);

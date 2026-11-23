@@ -160,6 +160,8 @@ export interface AgentHostOptions {
 	};
 	/** Where secret FIFOs are made; defaults to the host-only control directory. Must be private and is masked inside every sandbox. */
 	secretCarrierRoot?: string;
+	/** The host-only control directory. Defaults to the per-user one; tests use a private one. */
+	controlRoot?: string;
 	/** Bound for run.sh to open and acknowledge the FIFO reader. */
 	secretHandoffTimeoutMs?: number;
 	/** Injectable only so failure tests can model EOF and truncated pipe writes. */
@@ -237,6 +239,7 @@ function usesHostBridge(spec: LaunchSpec): boolean {
 export class AgentHost {
 	private readonly runTmux: AgentTmuxRunner;
 	private readonly carrierRootOverride: string | null;
+	private readonly controlRootOverride: string | null;
 	private readonly secretHandoffTimeoutMs: number;
 	private readonly secretHandoffWriter: AgentSecretHandoffWriter;
 	private readonly sandbox: NonNullable<AgentHostOptions["sandbox"]>;
@@ -245,6 +248,7 @@ export class AgentHost {
 		this.runTmux = opts.tmuxRunner ?? tmux;
 		this.sandbox = opts.sandbox ?? { bwrapAvailable, wrapWithBwrap };
 		this.carrierRootOverride = opts.secretCarrierRoot ?? null;
+		this.controlRootOverride = opts.controlRoot ?? null;
 		this.secretHandoffTimeoutMs = opts.secretHandoffTimeoutMs ?? 5_000;
 		this.secretHandoffWriter =
 			opts.secretHandoffWriter ??
@@ -267,7 +271,7 @@ export class AgentHost {
 	 */
 	private async controlRoot(): Promise<string> {
 		const uid = process.getuid?.() ?? 0;
-		const root = controlRootPath(uid);
+		const root = this.controlRootOverride ?? controlRootPath(uid);
 		await mkdir(root, { recursive: true, mode: 0o700 });
 		const st = await lstat(root);
 		if (
