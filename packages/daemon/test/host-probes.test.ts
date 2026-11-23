@@ -581,3 +581,32 @@ describe("production command capture bounds", () => {
 		expect(performance.now() - started).toBeLessThan(2_000);
 	});
 });
+
+describe("production capture aborts", () => {
+	const command = {
+		command: "sleep",
+		args: ["30"],
+		timeoutMs: 60_000,
+		maxOutputBytes: 64,
+	};
+
+	test("a caller deadline abort is a timeout, whichever timer fires first", async () => {
+		const runtime = createProductionHostProbeRuntime();
+		const controller = new AbortController();
+		const pending = runtime.commands.run(command, controller.signal);
+		controller.abort(new DOMException("deadline", "TimeoutError"));
+		expect((await pending).outcome).toBe("timeout");
+		// Already expired before the command starts: same answer, nothing spawned.
+		expect(
+			(await runtime.commands.run(command, controller.signal)).outcome,
+		).toBe("timeout");
+	});
+
+	test("any other abort stays an execution error", async () => {
+		const runtime = createProductionHostProbeRuntime();
+		const controller = new AbortController();
+		const pending = runtime.commands.run(command, controller.signal);
+		controller.abort();
+		expect((await pending).outcome).toBe("execution-error");
+	});
+});
