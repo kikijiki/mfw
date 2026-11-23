@@ -102,6 +102,34 @@ const CONNECTION_PRAGMAS = [
 	"PRAGMA busy_timeout=5000;",
 ].join("\n");
 
+/**
+ * Split a schema script into statements at the semicolons outside single
+ * quotes. Only for plain DDL and DML: a comment or a trigger body holds
+ * semicolons that are not statement ends, so such a script is refused rather
+ * than run in pieces.
+ */
+export function splitStatements(script: string): string[] {
+	if (/--|\/\*|\btrigger\b/i.test(script.replace(/'(?:[^']|'')*'/g, "''"))) {
+		throw new Error(
+			"a script with a comment or a trigger cannot run inside a transaction",
+		);
+	}
+	const out: string[] = [];
+	let current = "";
+	let quoted = false;
+	for (const ch of script) {
+		if (ch === "'") quoted = !quoted;
+		if (ch === ";" && !quoted) {
+			if (current.trim()) out.push(current.trim());
+			current = "";
+		} else {
+			current += ch;
+		}
+	}
+	if (current.trim()) out.push(current.trim());
+	return out;
+}
+
 /** What libsql's `Client.transaction` takes. */
 type TxMode = "write" | "read" | "deferred";
 
@@ -132,6 +160,30 @@ const IDLE_TX_CONNECTIONS = 2;
  * `reconnect()` still replaces the connection and gets the pragmas again.
  */
 function withConnectionPragmas(raw: Client, url: string): Client {
+	return pooledTransactions(raw, {
+		open: () => createClient({ url }),
+		pragmas: CONNECTION_PRAGMAS,
+	});
+}
+
+export interface PooledTransactionsOptions {
+	/** A new client on the same database, with the same options as `raw`. */
+	open: () => Client;
+	/** Connection-level pragmas, applied to each dedicated client and on `reconnect()`. */
+	pragmas: string;
+}
+
+/**
+ * Wrap `raw` so `transaction()` runs on a dedicated, pooled client and never
+ * takes over (and strands) the main connection; see {@link withConnectionPragmas}
+ * for why. Every store that opens its own libsql client uses this, so none
+ * leaks a connection per transaction.
+ */
+export function pooledTransactions(
+	raw: Client,
+	options: PooledTransactionsOptions,
+): Client {
+	const { pragmas } = options;
 	const idle: Client[] = [];
 	const open = new Set<Client>();
 	let closed = false;
@@ -139,10 +191,10 @@ function withConnectionPragmas(raw: Client, url: string): Client {
 	const dedicated = async (): Promise<Client> => {
 		const reused = idle.pop();
 		if (reused) return reused;
-		const c = createClient({ url });
+		const c = options.open();
 		open.add(c);
 		try {
-			await c.executeMultiple(CONNECTION_PRAGMAS);
+			await c.executeMultiple(pragmas);
 		} catch (e) {
 			open.delete(c);
 			c.close();
@@ -198,11 +250,12 @@ function withConnectionPragmas(raw: Client, url: string): Client {
 				for (const stmt of stmts) out.push(await c.execute(stmt));
 				return out;
 			},
-			// libsql's own executeMultiple rolls back an open transaction when it ends.
-			executeMultiple: () =>
-				Promise.reject(
-					new Error("executeMultiple is not available inside a transaction"),
-				),
+			// libsql's own executeMultiple rolls back an open transaction when it
+			// ends, so a script runs statement by statement instead.
+			executeMultiple: async (script) => {
+				const c = live();
+				for (const stmt of splitStatements(script)) await c.execute(stmt);
+			},
 			rollback: async () => {
 				if (!done) await finish("ROLLBACK");
 			},
@@ -210,8 +263,13 @@ function withConnectionPragmas(raw: Client, url: string): Client {
 			close: () => {
 				if (done) return;
 				done = true;
-				// Rolls back with the connection; nothing to hand back to the pool.
-				release(conn, false);
+				// A read-only caller only closes. End the transaction and keep the
+				// connection: closing a libsql connection frees its descriptors only
+				// when the collector runs, so a close per read would strand them.
+				conn.execute("ROLLBACK").then(
+					() => release(conn, true),
+					() => release(conn, false),
+				);
 			},
 		};
 	};
@@ -231,7 +289,7 @@ function withConnectionPragmas(raw: Client, url: string): Client {
 			if (prop === "reconnect") {
 				return async () => {
 					await target.reconnect();
-					await target.executeMultiple(CONNECTION_PRAGMAS);
+					await target.executeMultiple(pragmas);
 				};
 			}
 			const value = Reflect.get(target, prop, target);

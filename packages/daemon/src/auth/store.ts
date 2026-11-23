@@ -1,6 +1,7 @@
 import { chmodSync, closeSync, mkdirSync, openSync } from "node:fs";
 import { dirname } from "node:path";
 import { type Client, createClient } from "@libsql/client";
+import { pooledTransactions } from "@mfw/db/client";
 
 /**
  * The machine-wide auth database, `$MFW_HOME/auth.db`.
@@ -108,6 +109,10 @@ const MIGRATIONS: readonly (readonly string[])[] = [
 
 export const AUTH_SCHEMA_VERSION = MIGRATIONS.length;
 
+/** What every connection of auth.db needs; `journal_mode` persists in the file. */
+const AUTH_CONNECTION_PRAGMAS =
+	"PRAGMA foreign_keys=ON;\nPRAGMA busy_timeout=5000;";
+
 export interface AuthDb {
 	client: Client;
 	close: () => void;
@@ -119,7 +124,11 @@ export async function openAuthDb(path: string): Promise<AuthDb> {
 	// Create with the final mode first: SQLite's -wal and -shm copy this file's.
 	closeSync(openSync(path, "a", 0o600));
 	chmodSync(path, 0o600);
-	const client = createClient({ url: `file:${path}` });
+	const url = `file:${path}`;
+	const client = pooledTransactions(createClient({ url }), {
+		open: () => createClient({ url }),
+		pragmas: AUTH_CONNECTION_PRAGMAS,
+	});
 	try {
 		await client.execute("PRAGMA journal_mode=WAL");
 		await client.execute("PRAGMA foreign_keys=ON");
