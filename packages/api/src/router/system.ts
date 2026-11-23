@@ -1,6 +1,7 @@
 import { mkdir, readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { ModelId } from "@mfw/core/model-id";
 import { inspectBoardFolder } from "@mfw/daemon/board-inspect";
 import { BOARD_TEMPLATES } from "@mfw/daemon/board-templates";
 import {
@@ -251,7 +252,7 @@ export const systemRouter = createTRPCRouter({
 				/** Display options (`project-appearance.ts`); refused when unknown. */
 				icon: z.string().min(1).max(32).optional(),
 				color: z.string().min(1).max(16).optional(),
-				model: z.string().min(1).optional(),
+				model: ModelId.optional(),
 				schedulerAutostart: z.boolean().optional(),
 				assistance: z
 					.object({

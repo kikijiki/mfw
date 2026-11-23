@@ -445,6 +445,10 @@ export function renderHarnessArgv(
 	manifest: Pick<HarnessManifest, "modes">,
 	values: HarnessArgvValues,
 ): string[] {
+	if (values.model !== undefined && /^\s*-/.test(values.model))
+		throw new Error(
+			"a model id cannot start with '-': it would be read as a command-line option",
+		);
 	const fill = (entry: string) =>
 		entry.replace(PLACEHOLDER_RE, (_all, name: string) => {
 			const value =

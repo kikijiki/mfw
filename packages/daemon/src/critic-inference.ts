@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
+import { assertModelId } from "@mfw/core/model-id";
 import type { ProviderConfig } from "./agents/adapter.ts";
 import {
 	type InferenceClient,
@@ -48,6 +49,7 @@ export class SandboxedCriticInference implements InferenceClient {
 	constructor(private readonly host: CriticHost) {}
 
 	async complete(prompt: string, opts: InferenceOpts): Promise<InferenceReply> {
+		assertModelId(opts.model);
 		const empty = await createEmptyRoleTree(
 			this.host.projectRoot,
 			`critic-${randomUUID()}`,

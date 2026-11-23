@@ -3,6 +3,7 @@ import {
 	type RunActivity,
 	type RunActivityDetail,
 } from "@mfw/core/activity";
+import { ModelId } from "@mfw/core/model-id";
 import { parseAgentEvents } from "@mfw/daemon/agents/events";
 import { recordHumanAction, taskOfRun } from "@mfw/daemon/human-actions";
 import { rerouteRun } from "@mfw/daemon/reroute";
@@ -267,7 +268,7 @@ export const runsRouter = createTRPCRouter({
 
 	/** The Run button: the hand-started path, attributed to "human" in the audit trail. */
 	startTask: projectProcedure
-		.input(z.object({ taskId: z.string(), model: z.string().optional() }))
+		.input(z.object({ taskId: z.string(), model: ModelId.optional() }))
 		.mutation(async ({ ctx, input }) => {
 			const started = await ctx.svc.engine.startTask(input.taskId, {
 				model: input.model,
@@ -283,9 +284,7 @@ export const runsRouter = createTRPCRouter({
 		}),
 
 	startAction: projectProcedure
-		.input(
-			z.object({ prompt: z.string().min(1), model: z.string().optional() }),
-		)
+		.input(z.object({ prompt: z.string().min(1), model: ModelId.optional() }))
 		.mutation(async ({ ctx, input }) => {
 			const started = await ctx.svc.engine.startAction(input.prompt, {
 				model: input.model,
@@ -301,7 +300,7 @@ export const runsRouter = createTRPCRouter({
 		}),
 
 	startPlan: projectProcedure
-		.input(z.object({ goal: z.string().min(1), model: z.string().optional() }))
+		.input(z.object({ goal: z.string().min(1), model: ModelId.optional() }))
 		.mutation(async ({ ctx, input }) => {
 			const started = await ctx.svc.engine.startPlan(input.goal, {
 				model: input.model,
@@ -319,7 +318,7 @@ export const runsRouter = createTRPCRouter({
 	startImport: projectProcedure
 		.input(
 			z.object({
-				model: z.string().optional(),
+				model: ModelId.optional(),
 				/** Ids of `docs.suggestions` to record as doc sources along with the survey. */
 				docSources: z.array(z.string().min(1)).max(40).optional(),
 			}),
@@ -355,7 +354,7 @@ export const runsRouter = createTRPCRouter({
 			z.object({
 				runId: z.string().min(1),
 				harness: z.string().min(1).optional(),
-				model: z.string().min(1).optional(),
+				model: ModelId.optional(),
 				effort: z
 					.enum(["none", "low", "medium", "high", "xhigh", "max"])
 					.optional(),

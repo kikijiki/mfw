@@ -1,3 +1,4 @@
+import { ModelId } from "@mfw/core/model-id";
 import {
 	brainSchema,
 	docSourceSchema,
@@ -69,25 +70,25 @@ export const settingsRouter = createTRPCRouter({
 					/** Endpoints, fallbacks per tier, repair escalation. Applies live. Keys never: an endpoint names a grant. */
 					routing: routingSchema.nullish(),
 					/** Free text: the catalogue list is only a suggestion, so newer models stay usable. */
-					model: z.string().min(1).optional(),
+					model: ModelId.optional(),
 					/** Model per task `model_tier`. A missing tier falls back to the
 					 *  project model for standard, or provider tier default then model for light/strong. */
 					modelTiers: z
 						.object({
-							light: z.string().min(1).optional(),
-							standard: z.string().min(1).optional(),
-							strong: z.string().min(1).optional(),
+							light: ModelId.optional(),
+							standard: ModelId.optional(),
+							strong: ModelId.optional(),
 						})
 						.nullish(),
 					/** Model for the semantic change review (critic); unset = the brain's own model. */
-					reviewModel: z.string().min(1).nullish(),
+					reviewModel: ModelId.nullish(),
 					/** Change review policy: mode, independence, fix rounds, fallback reviewer models. */
 					review: z
 						.object({
 							mode: z.enum(["critic", "agent"]).optional(),
 							requireIndependent: z.boolean().optional(),
 							maxRounds: z.number().int().nonnegative().max(10).optional(),
-							fallbackModels: z.array(z.string().min(1)).max(10).optional(),
+							fallbackModels: z.array(ModelId).max(10).optional(),
 						})
 						.optional(),
 					reasoningEffort: z

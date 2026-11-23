@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { assertModelId } from "@mfw/core/model-id";
 import { renderHarnessArgv } from "@mfw/plugin-api/harness";
 import { PI_ACP_VERSION } from "@mfw/plugin-api/harness-builtins";
 import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
@@ -499,6 +500,7 @@ export class AdapterRegistry {
 		prompt: string,
 		opts: InvocationOpts,
 	): Invocation {
+		assertModelId(model);
 		const adapter = ADAPTERS.get(cfg.id);
 		if (!adapter) {
 			throw new Error(

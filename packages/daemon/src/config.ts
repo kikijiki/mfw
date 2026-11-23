@@ -2,6 +2,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
+import { ModelId, OptionalModelId } from "@mfw/core/model-id";
 import { z } from "zod";
 import type { ProjectConfig } from "./boot.ts";
 import { colorProblem, iconProblem } from "./project-appearance.ts";
@@ -60,7 +61,7 @@ const effortSchema = z.enum(["none", "low", "medium", "high", "xhigh", "max"]);
 const routeTargetSchema = z.object({
 	/** A catalogue harness id or an endpoint id. */
 	provider: z.string().regex(ROUTE_ID),
-	model: z.string().min(1).optional(),
+	model: ModelId.optional(),
 	effort: effortSchema.optional(),
 });
 
@@ -92,7 +93,7 @@ export const routingSchema = z.object({
 					.string()
 					.regex(/^[A-Za-z0-9._-]+$/)
 					.optional(),
-				model: z.string().min(1).optional(),
+				model: ModelId.optional(),
 				vendor: z.string().min(1).optional(),
 			}),
 		)
@@ -185,7 +186,7 @@ export const reviewSchema = z.object({
 	mode: z.enum(["critic", "agent"]).optional(),
 	requireIndependent: z.boolean().optional(),
 	maxRounds: z.number().int().nonnegative().optional(),
-	fallbackModels: z.array(z.string().min(1)).optional(),
+	fallbackModels: z.array(ModelId).optional(),
 });
 export type StoredReviewPolicy = z.infer<typeof reviewSchema>;
 
@@ -266,17 +267,17 @@ const projectSchema = z.object({
 			message: "invalid project colour",
 		})
 		.optional(),
-	model: z.string().optional(),
+	model: OptionalModelId.optional(),
 	/** Model per task `model_tier`; standard defaults to `model`, while light/strong use the provider tier default, then `model`. */
 	modelTiers: z
 		.object({
-			light: z.string().min(1).optional(),
-			standard: z.string().min(1).optional(),
-			strong: z.string().min(1).optional(),
+			light: ModelId.optional(),
+			standard: ModelId.optional(),
+			strong: ModelId.optional(),
 		})
 		.optional(),
 	/** Model for the semantic change review (critic); unset = the brain's `model`. */
-	reviewModel: z.string().min(1).optional(),
+	reviewModel: ModelId.optional(),
 	/** Change review policy when `assistance.changeReview` is `assisted`. */
 	review: reviewSchema.optional(),
 	reasoningEffort: z

@@ -142,6 +142,56 @@ describe("a host-bridged launch", () => {
 		expect(request().approvalMode).toBe("interactive");
 	});
 
+	test.each([
+		"-f",
+		"-y",
+		"--force",
+		"--yolo",
+	])("F1: an interactive run with the model %s is refused, never rewritten", async (model) => {
+		const argv = [
+			"claude",
+			"--print",
+			"--dangerously-skip-permissions",
+			"--model",
+			model,
+			"--disallowedTools",
+			"Agent,Bash",
+		];
+		await expect(
+			new AgentHost(undefined, { tmuxRunner: runner }).launch(
+				spec({
+					approvalMode: "interactive",
+					agentArgv: argv,
+					providerArgv: argv,
+				}),
+			),
+		).rejects.toThrow("refusing");
+		expect(calls).toEqual([]);
+	});
+
+	test("F1: an interactive run keeps every option after the model", async () => {
+		const argv = [
+			"claude",
+			"--print",
+			"--dangerously-skip-permissions",
+			"--model",
+			"opus",
+			"--mcp-config",
+			"/fixture/mcp.json",
+			"--disallowedTools",
+			"Agent,Bash",
+		];
+		const s = spec({
+			approvalMode: "interactive",
+			agentArgv: argv,
+			providerArgv: argv,
+		});
+		await new AgentHost(undefined, { tmuxRunner: runner }).launch(s);
+		expect(driver(s).providerArgv).toEqual(
+			argv.filter((a) => a !== "--dangerously-skip-permissions"),
+		);
+	});
+
 	test("a secret's value is in neither the request nor the driver config", async () => {
 		const canary = "bridge-unit-secret-canary";
 		const s = spec({

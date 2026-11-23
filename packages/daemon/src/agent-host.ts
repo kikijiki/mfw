@@ -14,6 +14,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
+import { withoutLaunchFlags } from "@mfw/plugin-api/harness-launch";
 import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 import type { AgentLaunchRequest } from "./containment/agent-launch.ts";
 import {
@@ -27,10 +28,10 @@ import {
 } from "./containment/agent-preflight.ts";
 import {
 	AgentProfileError,
+	autonomyFlags,
 	cloneLayout,
 	type FleetCli,
 	fleetPrivateState,
-	withoutAutonomyFlags,
 } from "./containment/agent-profile.ts";
 import {
 	BrainLaunchError,
@@ -786,8 +787,20 @@ export class AgentHost {
 			);
 		}
 		const approvalMode = spec.approvalMode ?? "autonomous";
-		const forMode = (argv: string[]) =>
-			approvalMode === "autonomous" ? argv : withoutAutonomyFlags(argv);
+		// Only the manifest's own autonomy arguments come off. Anything else that
+		// reads as one refuses the launch: rewriting an argv can shift its options.
+		const manifest = builtinHarnessRegistry().byFleetCli(cli);
+		const forMode = (argv: string[]) => {
+			if (approvalMode === "autonomous") return argv;
+			const kept = withoutLaunchFlags(manifest, argv);
+			const left = autonomyFlags(kept);
+			if (left.length > 0) {
+				throw new SandboxUnavailableError(
+					`refusing an ${approvalMode} launch: its command line carries ${left.join(", ")}`,
+				);
+			}
+			return kept;
+		};
 		let agentArgv = forMode(spec.agentArgv);
 		let providerArgv = forMode(spec.providerArgv ?? spec.agentArgv);
 		const realHome = await realpath(mfwHome);

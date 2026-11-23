@@ -1,3 +1,4 @@
+import { ModelId } from "@mfw/core/model-id";
 import { GroupActionRefusedError, groupView } from "@mfw/daemon/group-view";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
@@ -40,7 +41,7 @@ export const groupsRouter = createTRPCRouter({
 			z.object({
 				groupId: z.string().min(1),
 				harness: z.string().min(1).optional(),
-				model: z.string().min(1).optional(),
+				model: ModelId.optional(),
 				effort: z
 					.enum(["none", "low", "medium", "high", "xhigh", "max"])
 					.optional(),

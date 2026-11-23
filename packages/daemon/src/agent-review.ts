@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { lstat, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { assertModelId } from "@mfw/core/model-id";
 import type {
 	InferenceClient,
 	InferenceOpts,
@@ -180,6 +181,7 @@ export class AgentReviewInference implements InferenceClient {
 	}
 
 	private argv(prompt: string, opts: InferenceOpts): string[] {
+		assertModelId(opts.model);
 		if (this.opts.harness === "codex-cli") {
 			return [
 				this.opts.bin ?? "codex",
