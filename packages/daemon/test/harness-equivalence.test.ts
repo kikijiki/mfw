@@ -36,7 +36,14 @@ interface CatalogueRow {
 	acceptsEndpoints?: boolean;
 }
 
+interface AutonomyRow {
+	argv: string[];
+	flags: string[];
+	without: string[];
+}
+
 interface Golden extends Record<string, unknown> {
+	autonomyCorpus: AutonomyRow[];
 	catalogue: CatalogueRow[];
 	remote: Record<string, { binary: string; authPaths: string[] }>;
 	configPaths: Record<string, string[]>;
@@ -59,10 +66,28 @@ const manifest = (id: string) => registry.require(id);
 
 describe("the code produces what the hand-written maps produced", () => {
 	const live = captureHarnessMaps();
-	for (const key of Object.keys(golden))
+	for (const key of Object.keys(golden).filter((k) => k !== "autonomyCorpus"))
 		test(key, () => {
 			expect(live[key]).toEqual(golden[key]);
 		});
+
+	/** The owner's decision after R4: spellings the old list missed. */
+	const NOW_DETECTED = ["-y", "--force", "--approval-mode yolo"];
+	const argvLine = (row: AutonomyRow) => row.argv.slice(1, -1).join(" ");
+
+	test("autonomy: only the decided spellings changed", () => {
+		const before = golden.autonomyCorpus;
+		const after = live.autonomyCorpus as AutonomyRow[];
+		expect(after.map(argvLine)).toEqual(before.map(argvLine));
+		const changed = after.filter(
+			(row, i) => JSON.stringify(row) !== JSON.stringify(before[i]),
+		);
+		expect(changed.map(argvLine)).toEqual(NOW_DETECTED);
+		for (const row of changed) {
+			expect(row.flags).toEqual([argvLine(row)]);
+			expect(row.without).toEqual(["cli", "tail"]);
+		}
+	});
 
 	test("the snapshot covers the same sections", () => {
 		expect(Object.keys(live).sort()).toEqual(Object.keys(golden).sort());

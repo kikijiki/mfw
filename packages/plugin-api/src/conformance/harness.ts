@@ -37,10 +37,14 @@ export const KNOWN_BYPASS_ARGV: Readonly<
 		["--dangerously-skip-permissions"],
 		["--allow-dangerously-skip-permissions"],
 		["--permission-mode", "bypassPermissions"],
+		["--permission-mode", "auto"],
+		["--permission-mode", "acceptEdits"],
 	],
 	"codex-cli": [
 		["--dangerously-bypass-approvals-and-sandbox"],
 		["--full-auto"],
+		["--yolo"],
+		["--approve-for-me"],
 		["--ask-for-approval", "never"],
 		["-a", "never"],
 		["--sandbox", "danger-full-access"],
@@ -48,7 +52,15 @@ export const KNOWN_BYPASS_ARGV: Readonly<
 		["-c", 'approval_policy="never"'],
 		["--config", 'sandbox_mode="danger-full-access"'],
 	],
-	"gemini-cli": [["--yolo"]],
+	"gemini-cli": [
+		["--yolo"],
+		["-y"],
+		["--approval-mode", "yolo"],
+		["--approval-mode", "auto_edit"],
+	],
+	"cursor-agent": [["--force"], ["-f"], ["--yolo"], ["--approve-mcps"]],
+	opencode: [["--dangerously-skip-permissions"]],
+	pi: [["--approve"]],
 };
 
 export interface HarnessDetectResult {

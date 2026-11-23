@@ -187,7 +187,11 @@ export const BUILTIN_HARNESS_MANIFESTS: readonly HarnessManifestInput[] = [
 				"--dangerously-skip-permissions",
 				"--allow-dangerously-skip-permissions",
 			],
-			values: [{ option: "--permission-mode", value: "bypassPermissions" }],
+			values: [
+				{ option: "--permission-mode", value: "bypassPermissions" },
+				{ option: "--permission-mode", value: "auto" },
+				{ option: "--permission-mode", value: "acceptEdits" },
+			],
 			config: [],
 			configOptions: [],
 			launchFlags: ["--dangerously-skip-permissions"],
@@ -344,7 +348,12 @@ export const BUILTIN_HARNESS_MANIFESTS: readonly HarnessManifestInput[] = [
 		// telemetry is refused at the proxy and shows up as a denied attempt.
 		telemetryOff: { env: {} },
 		autonomy: {
-			flags: ["--dangerously-bypass-approvals-and-sandbox", "--full-auto"],
+			flags: [
+				"--dangerously-bypass-approvals-and-sandbox",
+				"--full-auto",
+				"--yolo",
+				"--approve-for-me",
+			],
 			values: [
 				{ option: "--ask-for-approval", value: "never" },
 				{ option: "-a", value: "never" },
@@ -416,7 +425,14 @@ export const BUILTIN_HARNESS_MANIFESTS: readonly HarnessManifestInput[] = [
 		completion: ACP_COMPLETION,
 		sandbox: { needsUserns: false, executables: ["gemini"] },
 		fleet: {},
-		autonomy: { ...NO_AUTONOMY, flags: ["--yolo"] },
+		autonomy: {
+			...NO_AUTONOMY,
+			flags: ["--yolo", "-y"],
+			values: [
+				{ option: "--approval-mode", value: "yolo" },
+				{ option: "--approval-mode", value: "auto_edit" },
+			],
+		},
 		usage: { source: "none" },
 		auth: {
 			kinds: ["api-key"],
@@ -468,7 +484,12 @@ export const BUILTIN_HARNESS_MANIFESTS: readonly HarnessManifestInput[] = [
 		completion: ACP_COMPLETION,
 		sandbox: { needsUserns: false, executables: ["agent"] },
 		fleet: {},
-		autonomy: NO_AUTONOMY,
+		autonomy: {
+			...NO_AUTONOMY,
+			flags: ["--force", "-f", "--yolo", "--approve-mcps"],
+			// A brain turn approves only the MCP servers mfw wrote for it.
+			launchFlags: ["--approve-mcps"],
+		},
 		usage: { source: "none" },
 		auth: {
 			kinds: ["subscription", "api-key"],
@@ -521,7 +542,7 @@ export const BUILTIN_HARNESS_MANIFESTS: readonly HarnessManifestInput[] = [
 		completion: ACP_COMPLETION,
 		sandbox: { needsUserns: false, executables: ["opencode"] },
 		fleet: {},
-		autonomy: NO_AUTONOMY,
+		autonomy: { ...NO_AUTONOMY, flags: ["--dangerously-skip-permissions"] },
 		usage: { source: "none" },
 		auth: {
 			kinds: ["api-key"],
@@ -581,7 +602,8 @@ export const BUILTIN_HARNESS_MANIFESTS: readonly HarnessManifestInput[] = [
 		completion: ACP_COMPLETION,
 		sandbox: { needsUserns: false, executables: ["bunx", "pi"] },
 		fleet: {},
-		autonomy: NO_AUTONOMY,
+		// The bridge's wrapper passes this for a read-only turn, never on this argv.
+		autonomy: { ...NO_AUTONOMY, flags: ["--approve"] },
 		usage: { source: "none" },
 		auth: {
 			kinds: ["subscription"],

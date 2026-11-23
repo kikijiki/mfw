@@ -23,6 +23,8 @@ type AutonomyData = Pick<
 /**
  * The floor, held in the core and not in any manifest. Removing a harness or
  * shipping a manifest that omits a flag cannot make the gate forget it.
+ * `-y`, `-f` and `--force` mean other things to other programs; a false match
+ * only makes a launch need authorization, so they are listed for every CLI.
  */
 export const KNOWN_AUTONOMY: AutonomyData = {
 	flags: [
@@ -31,9 +33,22 @@ export const KNOWN_AUTONOMY: AutonomyData = {
 		"--dangerously-bypass-approvals-and-sandbox",
 		"--full-auto",
 		"--yolo",
+		"--approve-for-me",
+		// Gemini's short form of --yolo.
+		"-y",
+		// Cursor's "run everything".
+		"--force",
+		"-f",
+		"--approve-mcps",
+		// pi: trust the project's config. `--no-approve` is the opposite.
+		"--approve",
 	],
 	values: [
 		{ option: "--permission-mode", value: "bypassPermissions" },
+		{ option: "--permission-mode", value: "auto" },
+		{ option: "--permission-mode", value: "acceptEdits" },
+		{ option: "--approval-mode", value: "yolo" },
+		{ option: "--approval-mode", value: "auto_edit" },
 		{ option: "--ask-for-approval", value: "never" },
 		{ option: "-a", value: "never" },
 		{ option: "--sandbox", value: "danger-full-access" },
@@ -45,6 +60,33 @@ export const KNOWN_AUTONOMY: AutonomyData = {
 	],
 	configOptions: ["-c", "--config"],
 };
+
+/**
+ * Long flags that read as "do not ask", whether or not any CLI is known to have
+ * them, so a new vendor spelling is caught before anyone lists it. Matched on
+ * the lower-cased name with `_` as `-`. Deliberately broad: `--not-so-yolo`
+ * matches too. `--no-approve` does not, because it withholds approval.
+ */
+const AUTONOMY_NAME_PATTERNS: readonly RegExp[] = [
+	/(^|-)yolo(-|$)/,
+	/^(allow-)?dangerously(-|$)/,
+	/^no-(ask|approvals?|confirm|confirmations?|permissions?|prompts?)(-|$)/,
+	/^skip-(approvals?|confirm|confirmations?|permissions?)(-|$)/,
+	/^bypass(-|$)/,
+	/^auto-?approve(-|$)/,
+	/^always-approve(-|$)/,
+	/^approve-(all|everything)(-|$)/,
+	/^(accept|allow|trust)-all(-|$)/,
+	/^yes-(all|always)$/,
+	/^unrestricted$/,
+];
+
+/** True for a `--long-flag` whose name reads as turning approval off. */
+export function looksAutonomous(arg: string): boolean {
+	if (!arg.startsWith("--") || arg.length === 2) return false;
+	const name = arg.slice(2).split("=", 1)[0]?.toLowerCase().replace(/_/g, "-");
+	return AUTONOMY_NAME_PATTERNS.some((re) => re.test(name ?? ""));
+}
 
 export function buildAutonomyTable(
 	declared: readonly AutonomyData[],
@@ -86,6 +128,12 @@ function autonomySpan(
 	const eqAt = arg.indexOf("=");
 	if (table.flags.has(eqAt < 0 ? arg : arg.slice(0, eqAt))) return 1;
 	const next = argv[i + 1];
+	if (looksAutonomous(arg)) {
+		// `--auto-approve true`: the value goes with the flag.
+		return eqAt < 0 && next !== undefined && /^(true|yes|1)$/i.test(next)
+			? 2
+			: 1;
+	}
 	const wanted = table.values.get(arg);
 	if (wanted) {
 		return next !== undefined && wanted.has(unquoted(next)) ? 2 : 0;

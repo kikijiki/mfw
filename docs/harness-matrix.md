@@ -77,12 +77,12 @@ An interactive launch carrying any of these is refused.
 
 | Harness | Flags |
 |---|---|
-| Claude Code | `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--permission-mode bypassPermissions` |
-| OpenAI Codex CLI | `--dangerously-bypass-approvals-and-sandbox`, `--full-auto`, `--ask-for-approval never`, `-a never`, `--sandbox danger-full-access`, `-s danger-full-access`, `-c approval_policy=never`, `-c sandbox_mode=danger-full-access` |
-| Gemini CLI | `--yolo` |
-| Cursor Agent | none |
-| opencode | none |
-| pi | none |
+| Claude Code | `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--permission-mode bypassPermissions`, `--permission-mode auto`, `--permission-mode acceptEdits` |
+| OpenAI Codex CLI | `--dangerously-bypass-approvals-and-sandbox`, `--full-auto`, `--yolo`, `--approve-for-me`, `--ask-for-approval never`, `-a never`, `--sandbox danger-full-access`, `-s danger-full-access`, `-c approval_policy=never`, `-c sandbox_mode=danger-full-access` |
+| Gemini CLI | `--yolo`, `-y`, `--approval-mode yolo`, `--approval-mode auto_edit` |
+| Cursor Agent | `--force`, `-f`, `--yolo`, `--approve-mcps` |
+| opencode | `--dangerously-skip-permissions` |
+| pi | `--approve` |
 
 ## Project files
 

@@ -11,6 +11,7 @@ import {
 	buildAutonomyTable,
 	findAutonomyFlags,
 	KNOWN_AUTONOMY,
+	looksAutonomous,
 	stripAutonomyFlags,
 } from "../src/harness-autonomy.ts";
 import { BUILTIN_HARNESS_MANIFESTS } from "../src/harness-builtins.ts";
@@ -539,5 +540,136 @@ describe("the autonomy table", () => {
 		expect(
 			stripAutonomyFlags(table, ["cli", "-a", "never", "--model", "x"]),
 		).toEqual(["cli", "--model", "x"]);
+	});
+});
+
+describe("every established bypass spelling", () => {
+	const table = builtinHarnessRegistry().autonomy;
+	for (const [cli, argv] of [
+		["claude", ["--dangerously-skip-permissions"]],
+		["claude", ["--allow-dangerously-skip-permissions"]],
+		["claude", ["--permission-mode", "bypassPermissions"]],
+		["claude", ["--permission-mode", "auto"]],
+		["claude", ["--permission-mode", "acceptEdits"]],
+		["codex", ["--dangerously-bypass-approvals-and-sandbox"]],
+		["codex", ["--full-auto"]],
+		["codex", ["--yolo"]],
+		["codex", ["--approve-for-me"]],
+		["gemini", ["--yolo"]],
+		["gemini", ["-y"]],
+		["gemini", ["--approval-mode", "yolo"]],
+		["gemini", ["--approval-mode=yolo"]],
+		["gemini", ["--approval-mode", "auto_edit"]],
+		["agent", ["--force"]],
+		["agent", ["-f"]],
+		["agent", ["--yolo"]],
+		["agent", ["--approve-mcps"]],
+		["opencode", ["--dangerously-skip-permissions"]],
+		["pi", ["--approve"]],
+	] as [string, string[]][])
+		test(`${cli} ${argv.join(" ")} is found and removed whole`, () => {
+			expect(findAutonomyFlags(table, [cli, ...argv])).toEqual([
+				argv.join(" "),
+			]);
+			expect(stripAutonomyFlags(table, [cli, ...argv, "tail"])).toEqual([
+				cli,
+				"tail",
+			]);
+		});
+
+	test.each([
+		["--approval-mode", "plan"],
+		["--approval-mode", "default"],
+		["--permission-mode", "plan"],
+		["--permission-mode", "default"],
+	])("%s %s still asks", (option, value) => {
+		expect(findAutonomyFlags(table, ["cli", option, value])).toEqual([]);
+	});
+});
+
+describe("the conservative pattern rule", () => {
+	test.each([
+		"--yolo-mode",
+		"--super-yolo",
+		"--YOLO",
+		"--dangerously-allow-all",
+		"--dangerously-do-anything",
+		"--dangerously_skip_permissions",
+		"--allow-dangerously-anything",
+		"--no-confirm",
+		"--no-confirmation",
+		"--no-confirm-tools",
+		"--no-prompt",
+		"--no-prompts",
+		"--no-ask",
+		"--no-approval",
+		"--no-approvals",
+		"--no-permissions",
+		"--skip-permissions",
+		"--skip-permission-checks",
+		"--skip-approvals",
+		"--skip-confirmation",
+		"--bypass-permissions",
+		"--bypass",
+		"--auto-approve",
+		"--autoapprove",
+		"--always-approve",
+		"--approve-all",
+		"--allow-all",
+		"--allow-all-tools",
+		"--accept-all",
+		"--trust-all-tools",
+		"--yes-always",
+		"--unrestricted",
+		"--no-confirm=true",
+	])("%s counts as autonomous", (flag) => {
+		expect(looksAutonomous(flag)).toBe(true);
+		expect(
+			findAutonomyFlags(builtinHarnessRegistry().autonomy, ["cli", flag]),
+		).toEqual([flag]);
+	});
+
+	test.each([
+		"--no-approve",
+		"--no-session-persistence",
+		"--no-tools",
+		"--no-mcp",
+		"--no-extensions",
+		"--skip-git-repo-check",
+		"--strict-mcp-config",
+		"--allowedTools",
+		"--disallowedTools",
+		"--model",
+		"--print",
+		"--verbose",
+		"--",
+		"yolo",
+		"-x",
+	])("%s does not", (flag) => {
+		expect(looksAutonomous(flag)).toBe(false);
+	});
+
+	test("a boolean value is removed with its flag, and nothing else is", () => {
+		const table = builtinHarnessRegistry().autonomy;
+		expect(
+			stripAutonomyFlags(table, ["cli", "--auto-approve", "true", "tail"]),
+		).toEqual(["cli", "tail"]);
+		expect(
+			stripAutonomyFlags(table, ["cli", "--auto-approve", "tail"]),
+		).toEqual(["cli", "tail"]);
+	});
+
+	test("an unknown spelling in a manifest's argv is over the ceiling", () => {
+		expect(
+			violations({
+				...benign(),
+				modes: { task: ["fixture-agent", "--dangerously-new-thing"] },
+			}).join(),
+		).toContain("carries autonomy");
+	});
+
+	test("no built-in argv trips the rule beyond what it declares", () => {
+		for (const m of builtinHarnessRegistry().list())
+			expect(harnessCeilingViolations(m, "builtin")).toEqual([]);
 	});
 });
