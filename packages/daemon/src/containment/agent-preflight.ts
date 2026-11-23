@@ -19,7 +19,12 @@ import { openProjectDb } from "@mfw/db/client";
 import type { BwrapIsolation } from "../sandbox.ts";
 import { protectedPaths } from "./agent-launch.ts";
 import { liveCompileHost } from "./agent-launch-host.ts";
-import { buildRunProfile, TEMPORARY_FLEET_WRITABLE } from "./agent-profile.ts";
+import {
+	agentToolCandidates,
+	buildRunProfile,
+	declaredAgentBinaries,
+	TEMPORARY_FLEET_WRITABLE,
+} from "./agent-profile.ts";
 import type { CompileHost } from "./compile-bwrap.ts";
 import { attestSandbox } from "./probe-run.ts";
 import { ensureRunDirLayout } from "./run-dir.ts";
@@ -94,12 +99,12 @@ async function probeLayout(
 		for (const rel of TEMPORARY_FLEET_WRITABLE.claude) {
 			mkdirSync(join(fleet, rel), { recursive: true, mode: 0o700 });
 		}
-		const binaries = ["bun", "git"];
+		const required = ["bun", "git"];
 		let host: CompileHost;
 		try {
 			host = await deps.compileHost(
 				{ mfwHome: base, cli: "claude", stateDir },
-				binaries,
+				agentToolCandidates(required),
 				[clone, runDir, join(base, "agents")],
 			);
 		} catch (err) {
@@ -108,6 +113,10 @@ async function probeLayout(
 				detail: (err as Error).message,
 			};
 		}
+		const binaries = declaredAgentBinaries(
+			required,
+			host.toolchain?.resolved ?? [],
+		);
 		const profile = buildRunProfile({
 			role: "task",
 			tree: join(clone, "tree"),

@@ -29,6 +29,72 @@ export const TEMPORARY_FLEET_WRITABLE = {
 
 export type FleetCli = keyof typeof TEMPORARY_FLEET_WRITABLE;
 
+/**
+ * Ordinary tools an agent's shell commands expect. PATH is built only from
+ * declared binaries, and on NixOS each lives in its own store directory, so an
+ * undeclared `rm` or `cat` would simply not exist. Used when present.
+ */
+export const AGENT_BASE_TOOLS = [
+	"awk",
+	"basename",
+	"bash",
+	"cat",
+	"chmod",
+	"cp",
+	"cut",
+	"date",
+	"diff",
+	"dirname",
+	"env",
+	"find",
+	"grep",
+	"head",
+	"ln",
+	"ls",
+	"mkdir",
+	"mktemp",
+	"mv",
+	"node",
+	"readlink",
+	"realpath",
+	"rg",
+	"rm",
+	"rmdir",
+	"sed",
+	"sh",
+	"sleep",
+	"sort",
+	"tail",
+	"tee",
+	"touch",
+	"tr",
+	"uniq",
+	"wc",
+	"xargs",
+] as const;
+
+/** What to look up on the host: the required binaries, then the base tools. */
+export function agentToolCandidates(required: readonly string[]): string[] {
+	return [...new Set([...required, ...AGENT_BASE_TOOLS])];
+}
+
+/**
+ * The binaries to declare: every required one (a missing one is then refused
+ * by the compiler) and the base tools this host actually has.
+ */
+export function declaredAgentBinaries(
+	required: readonly string[],
+	found: readonly { name: string }[],
+): string[] {
+	const have = new Set(found.map((b) => b.name));
+	return [
+		...new Set([
+			...required,
+			...AGENT_BASE_TOOLS.filter((tool) => have.has(tool)),
+		]),
+	];
+}
+
 /** Limits of a task or repair run. */
 const RUN_LIMITS = { tasksMax: 4096, memoryMax: "8G" } as const;
 

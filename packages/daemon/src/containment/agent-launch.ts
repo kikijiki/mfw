@@ -19,9 +19,11 @@ import type { ProjectDb } from "@mfw/db/client";
 import { z } from "zod";
 import {
 	AgentProfileError,
+	agentToolCandidates,
 	autonomyFlags,
 	buildRunProfile,
 	cloneLayout,
+	declaredAgentBinaries,
 	findLaunchSecret,
 	findWritableBindParent,
 	UNATTESTED_CONFIG_MARKER,
@@ -160,12 +162,26 @@ export async function launchAgentSandbox(
 		secrets[name] = value;
 	}
 
-	const binaries = ["bun", "git", command];
+	const required = ["bun", "git", command];
 	let host: CompileHost;
 	let profile: SandboxProfile;
 	try {
 		cloneLayout(req.tree);
-		host = await deps.compileHost(req, binaries, launchRoots(req));
+		const looked = await deps.compileHost(
+			req,
+			agentToolCandidates(required),
+			launchRoots(req),
+		);
+		const binaries = declaredAgentBinaries(required, looked.toolchain.resolved);
+		host = {
+			...looked,
+			toolchain: {
+				...looked.toolchain,
+				resolved: looked.toolchain.resolved.filter((b) =>
+					binaries.includes(b.name),
+				),
+			},
+		};
 		profile = buildRunProfile({
 			role: req.role,
 			tree: req.tree,
