@@ -55,6 +55,7 @@ function deps(over: Partial<Deps> = {}) {
 		runMcp: async (args) => {
 			mcp.push(args);
 		},
+		runHost: async () => 0,
 		runAuth: async (args) => {
 			auth.push(args);
 			return 0;
