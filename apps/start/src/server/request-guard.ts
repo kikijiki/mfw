@@ -70,6 +70,25 @@ export function refuse(reason: string): Response {
 	});
 }
 
+/**
+ * The scheme the browser used, when this server can know it: a TLS request, or
+ * a plain request to a loopback name with no proxy in front. Otherwise null.
+ *
+ * TODO(C4): trusted-proxy mode defines the external scheme for proxied hosts.
+ * Until then a forwarded header is not evidence, because any client can send it.
+ */
+function externalScheme(req: Request, host: Authority): string | null {
+	let protocol: string;
+	try {
+		protocol = new URL(req.url).protocol;
+	} catch {
+		return null;
+	}
+	if (protocol === "https:") return protocol;
+	if (req.headers.has("x-forwarded-proto")) return null;
+	return LOOPBACK.has(host.host) ? "http:" : null;
+}
+
 /** Null when the request may proceed, else the 403 to return. */
 export function checkRequest(
 	req: Request,
@@ -110,6 +129,9 @@ export function checkRequest(
 			originAuthority.port !== host.port
 		)
 			return refuse(`Origin '${origin}' does not match Host '${hostRaw}'`);
+		const scheme = externalScheme(req, host);
+		if (scheme && new URL(origin).protocol !== scheme)
+			return refuse(`Origin '${origin}' has the wrong scheme`);
 	}
 
 	if (

@@ -54,6 +54,10 @@ export function appBase(): string {
 /**
  * TLS as the browser sees it. A forged `X-Forwarded-Proto` can only make the
  * cookie stricter (`Secure`, which a plain-HTTP browser then refuses to store).
+ *
+ * TODO(C4): honour `X-Forwarded-Proto` only from the configured trusted proxy.
+ * It stays accepted from anyone until then because the documented `tailscale
+ * serve` setup depends on it and there is no way yet to name that proxy.
  */
 export function isTls(req: Request): boolean {
 	if (new URL(req.url).protocol === "https:") return true;
