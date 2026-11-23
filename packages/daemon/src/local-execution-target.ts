@@ -62,6 +62,15 @@ export class LocalExecutionTarget implements ExecutionTarget {
 
 	async prepare(request: PrepareExecutionRequest): Promise<PreparedExecution> {
 		if (request.reuse) {
+			// A clone's HEAD is agent-written, so its base is only ever the recorded one.
+			if (
+				!request.reuse.baseSha &&
+				createRunWorkspace(this.deps.projectRoot).kind === "clone"
+			) {
+				throw new Error(
+					`cannot reuse ${request.reuse.worktreePath}: the clone has no recorded base`,
+				);
+			}
 			const baseSha =
 				request.reuse.baseSha ??
 				(await gitOk(["rev-parse", "HEAD"], request.reuse.worktreePath));

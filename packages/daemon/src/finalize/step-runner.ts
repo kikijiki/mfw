@@ -906,16 +906,21 @@ export class StepRunner {
 		} catch {
 			return false;
 		}
+		const workspace = createRunWorkspace(this.deps.projectRoot);
 		// Same ownership-aware policy as maintenance. MFW_REPORT.json is exempt
 		// only while it matches the identity recorded by ingest_report.
-		if (
-			await createRunWorkspace(this.deps.projectRoot).hasLocalChanges(
-				{ path: wt },
-				{ reportIdentity },
-			)
-		)
+		if (await workspace.hasLocalChanges({ path: wt }, { reportIdentity }))
 			return true;
 		if (!run.baseSha) return false;
+		if (workspace.kind === "clone") {
+			// A clone's own HEAD is agent-written: read the imported ref instead.
+			const imported = await workspace.fetchResult({
+				path: wt,
+				branch: run.branch ?? "",
+				baseSha: run.baseSha,
+			});
+			return imported.sha !== null && imported.sha !== run.baseSha;
+		}
 		const head = await git(["rev-parse", "HEAD"], wt);
 		if (head.exitCode !== 0)
 			throw new Error(
