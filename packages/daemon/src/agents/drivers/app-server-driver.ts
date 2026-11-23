@@ -1,6 +1,7 @@
 /** Shared mfw.app-server/v1 run driver. Provider bridges own vendor protocols. */
 import { appendFileSync, readFileSync } from "node:fs";
 import type { FileSink } from "bun";
+import { agentSpawnCwd } from "../../containment/agent-launch-argv.ts";
 import { driverRunPaths } from "../../containment/run-dir.ts";
 import {
 	type ApprovalDecision,
@@ -50,8 +51,9 @@ function emit(payload: Record<string, unknown>): void {
 	appendFileSync(eventsPath, `${JSON.stringify(parsed.data)}\n`);
 }
 
+// A bridged run's `cwd` is the sandbox path; the bridge itself stays on the host.
 const child = Bun.spawn([...cfg.bridgeArgv, ...cfg.providerArgv], {
-	cwd: cfg.cwd,
+	cwd: agentSpawnCwd(cfg.cwd),
 	env: { ...process.env, ...(cfg.env ?? {}) },
 	stdin: "pipe",
 	stdout: "pipe",

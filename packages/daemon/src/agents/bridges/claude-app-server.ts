@@ -1,5 +1,9 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import {
+	agentSpawnArgv,
+	agentSpawnCwd,
+} from "../../containment/agent-launch-argv.ts";
+import {
 	type AppServerRequest,
 	capText,
 	isRecord,
@@ -63,9 +67,12 @@ function spawnProvider() {
 		!withModel.some((a) => a === "--resume" || a === "--continue")
 			? [...withModel, "--session-id", sessionId]
 			: withModel;
-	const command = actual[0] ?? "claude";
-	proc = spawn(command, actual.slice(1), {
-		cwd,
+	const [command, ...args] = agentSpawnArgv([
+		actual[0] ?? "claude",
+		...actual.slice(1),
+	]);
+	proc = spawn(command as string, args, {
+		cwd: agentSpawnCwd(cwd),
 		stdio: ["pipe", "pipe", "pipe"],
 	});
 	void readLines(proc.stderr, (line) => {

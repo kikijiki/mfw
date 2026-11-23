@@ -177,9 +177,9 @@ export const REFUSAL_FIXES: Record<RefusalCode, FixFor> = {
 		kind: "command",
 		text: `Inspect ${waitingFor[0] ?? "the worktree path"}; if it holds nothing you need, remove it: git worktree remove --force ${waitingFor[0] ?? "<path>"} (or delete the directory if git does not list it).`,
 	}),
-	sandbox_unavailable: () => ({
+	sandbox_unavailable: (waitingFor) => ({
 		kind: "command",
-		text: "Install bubblewrap (bwrap) and set agentIsolation to bwrap, or set approvalMode to interactive for this project. Autonomous runs are refused without a sandbox.",
+		text: `${waitingFor[0] ? `${waitingFor[0]}. ` : ""}Autonomous runs need bubblewrap (bwrap) with agentIsolation bwrap, a systemd user manager and runWorkspace clone; otherwise set approvalMode to interactive for this project. They are refused without that sandbox.`,
 	}),
 	sandbox_probe_failed: (waitingFor) => ({
 		kind: "command",

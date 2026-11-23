@@ -12,6 +12,10 @@
  */
 import { appendFileSync, readFileSync } from "node:fs";
 import type { FileSink } from "bun";
+import {
+	agentSpawnArgv,
+	agentSpawnCwd,
+} from "../../containment/agent-launch-argv.ts";
 import { driverRunPaths } from "../../containment/run-dir.ts";
 import { isAllowedStatus } from "../rate-limit-claude.ts";
 
@@ -57,8 +61,8 @@ emit({
 	capabilities: { steer: cfg.steer !== false },
 });
 
-const proc = Bun.spawn(cfg.argv, {
-	cwd: cfg.cwd,
+const proc = Bun.spawn(agentSpawnArgv(cfg.argv), {
+	cwd: agentSpawnCwd(cfg.cwd),
 	env: { ...process.env, ...(cfg.env ?? {}) },
 	stdin: "pipe",
 	stdout: "pipe",

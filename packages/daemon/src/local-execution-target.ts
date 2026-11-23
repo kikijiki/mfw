@@ -130,6 +130,8 @@ export class LocalExecutionTarget implements ExecutionTarget {
 				steer: request.driver.steer,
 				approvalMode: request.driver.approvalMode,
 				isolation: request.driver.isolation,
+				runKind: request.driver.runKind,
+				providerId: request.driver.providerId,
 			});
 		} catch (error) {
 			// `tmux new-session` may have succeeded just before pipe/send failed or

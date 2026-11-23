@@ -1,5 +1,9 @@
 import { spawn } from "node:child_process";
 import {
+	agentSpawnArgv,
+	agentSpawnCwd,
+} from "../../containment/agent-launch-argv.ts";
+import {
 	type AppServerRequest,
 	type AppServerResponse,
 	capText,
@@ -15,8 +19,14 @@ import {
 } from "../app-server-protocol.ts";
 
 const argv = providerArgv(["codex", "app-server"]);
-const command = argv[0] ?? "codex";
-const proc = spawn(command, argv.slice(1), { stdio: ["pipe", "pipe", "pipe"] });
+const [command, ...args] = agentSpawnArgv([
+	argv[0] ?? "codex",
+	...argv.slice(1),
+]);
+const proc = spawn(command as string, args, {
+	cwd: agentSpawnCwd(undefined),
+	stdio: ["pipe", "pipe", "pipe"],
+});
 let nativeId = 1;
 let bridgeRequestId = 1_000_000_000;
 let state: "new" | "initialized" | "session" | "active" | "shutdown" = "new";

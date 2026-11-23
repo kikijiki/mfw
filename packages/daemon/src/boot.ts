@@ -42,6 +42,7 @@ import {
 	normalizeRoot,
 	PROJECT_DEFAULTS,
 } from "./config.ts";
+import { agentSandboxRefusal } from "./containment/agent-preflight.ts";
 import { CredentialStore, WorkloadSecretGrantStore } from "./credentials.ts";
 import { ensureBoardConfig } from "./default-board-config.ts";
 import { readMemAvailable } from "./dispatch-preflight.ts";
@@ -142,7 +143,6 @@ import type {
 	RunPodPlacementRequest,
 	RunPodProjectPolicy,
 } from "./runpod-policy.ts";
-import { autonomySandboxRefusal } from "./sandbox.ts";
 import { Scheduler } from "./scheduler.ts";
 import type { Orchestrator, ProjectServices } from "./services.ts";
 import { SessionService } from "./session.ts";
@@ -1052,14 +1052,21 @@ export async function attachProject(
 			memoryFloorBytes:
 				BigInt(cfg.minFreeMemoryMb ?? DEFAULTS.minFreeMemoryMb) * 1024n * 1024n,
 			memAvailableBytes: readMemAvailable,
-			// Autonomy is refused without a bwrap sandbox that passes the minimal probe.
+			// Autonomy is refused without the sandbox a real launch would get.
 			sandbox: () =>
-				autonomySandboxRefusal({
+				agentSandboxRefusal({
 					approvalMode: cfg.approvalMode ?? DEFAULTS.approvalMode,
 					isolation:
 						(cfg.agentIsolation ?? DEFAULTS.agentIsolation) === "bwrap"
-							? { mode: "bwrap", hidePaths: [opts.mfwHome] }
+							? {
+									mode: "bwrap",
+									hidePaths: [opts.mfwHome],
+									mfwHome: opts.mfwHome,
+								}
 							: undefined,
+					runWorkspace: cfg.runWorkspace ?? DEFAULTS.runWorkspace,
+					projectRoot: root,
+					mfwHome: opts.mfwHome,
 				}),
 		},
 		globalPaused: opts.globalPaused,
@@ -1073,7 +1080,7 @@ export async function attachProject(
 		// Hide the daemon's home (trigger arming store, credentials.json).
 		isolation:
 			(cfg.agentIsolation ?? DEFAULTS.agentIsolation) === "bwrap"
-				? { mode: "bwrap", hidePaths: [opts.mfwHome] }
+				? { mode: "bwrap", hidePaths: [opts.mfwHome], mfwHome: opts.mfwHome }
 				: undefined,
 	});
 	const admission = new ProjectDispatchAdmission(

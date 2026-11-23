@@ -1471,6 +1471,8 @@ export class RunEngine {
 					steer: invocation.declaredCapabilities.steer,
 					approvalMode: this.deps.defaults.approvalMode ?? "autonomous",
 					isolation: this.deps.isolation,
+					runKind: run.kind,
+					providerId: provider.id,
 					secretEnvironment,
 				},
 			});
