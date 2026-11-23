@@ -4,7 +4,8 @@ import {
 	randomUUID,
 	timingSafeEqual,
 } from "node:crypto";
-import { join, resolve } from "node:path";
+import { renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { type AuthDb, openAuthDb } from "./store.ts";
 
 /**
@@ -116,6 +117,8 @@ export interface AuthServiceOptions {
 	streamRecheckMs?: number;
 	/** Minimum spacing of password hash checks, across all sources. */
 	passwordCheckIntervalMs?: number;
+	/** Where a first-run setup token is written (0600). */
+	setupTokenFile?: string;
 }
 
 /**
@@ -174,6 +177,8 @@ export class AuthService {
 	private readonly now: () => number;
 	private readonly streamRecheckMs: number;
 	private readonly listeners = new Map<string, Set<() => void>>();
+	/** The 0600 file holding a pending setup token, under the masked `$MFW_HOME`. */
+	readonly setupTokenFile: string | null;
 	private readonly passwordChecks: PasswordCheckQueue;
 	/** Throttle scopes with an attempt in flight: one per source at a time. */
 	private readonly inFlight = new Set<string>();
@@ -184,6 +189,7 @@ export class AuthService {
 	) {
 		this.now = opts.now ?? Date.now;
 		this.streamRecheckMs = opts.streamRecheckMs ?? STREAM_RECHECK_MS;
+		this.setupTokenFile = opts.setupTokenFile ?? null;
 		this.passwordChecks = new PasswordCheckQueue(
 			opts.passwordCheckIntervalMs ?? PASSWORD_CHECK_INTERVAL_MS,
 		);
@@ -193,7 +199,10 @@ export class AuthService {
 		path: string,
 		opts: AuthServiceOptions = {},
 	): Promise<AuthService> {
-		return new AuthService(await openAuthDb(path), opts);
+		return new AuthService(await openAuthDb(path), {
+			setupTokenFile: join(dirname(path), "setup-token"),
+			...opts,
+		});
 	}
 
 	close(): void {
@@ -208,10 +217,8 @@ export class AuthService {
 	}
 
 	/**
-	 * Called at server start. With no owner, replaces any earlier token and
-	 * returns the new one for the caller to print; only its digest is kept, so
-	 * a restart before setup is the way to get a fresh one. With an owner,
-	 * returns null and clears any leftover.
+	 * Called at server start. With no owner, issues a token (see
+	 * `issueSetupToken`). With an owner, returns null and clears any leftover.
 	 */
 	async beginFirstRun(): Promise<string | null> {
 		const now = this.now();
@@ -221,8 +228,21 @@ export class AuthService {
 		});
 		if (await this.hasOwner()) {
 			await this.db.client.execute("DELETE FROM setup_tokens");
+			this.removeSetupTokenFile();
 			return null;
 		}
+		return this.issueSetupToken();
+	}
+
+	/**
+	 * Replace any setup token with a new one, written to a 0600 file. It must
+	 * never go to a log: agents can read the system journal on some hosts, and
+	 * this token claims the whole install. Only its digest is stored.
+	 */
+	async issueSetupToken(): Promise<string> {
+		if (await this.hasOwner())
+			throw new AuthRefused("already_set_up", "setup is already complete");
+		const now = this.now();
 		const token = randomBytes(32).toString("base64url");
 		await this.db.client.execute({
 			sql: `INSERT INTO setup_tokens (id, token_hash, created_at, expires_at) VALUES (1, ?, ?, ?)
@@ -234,7 +254,38 @@ export class AuthService {
 		await this.db.client.execute(
 			"DELETE FROM auth_throttle WHERE scope LIKE 'setup:%'",
 		);
+		if (this.setupTokenFile) {
+			// A fresh exclusive file, renamed in: never written through a planted link.
+			const temp = `${this.setupTokenFile}.${randomBytes(6).toString("hex")}`;
+			writeFileSync(temp, `${token}\n`, { mode: 0o600, flag: "wx" });
+			renameSync(temp, this.setupTokenFile);
+		}
 		return token;
+	}
+
+	private removeSetupTokenFile(): void {
+		if (this.setupTokenFile) rmSync(this.setupTokenFile, { force: true });
+	}
+
+	/**
+	 * Remove the owner and everything that authenticates them. Only for
+	 * `mfw auth reset`, which first proves no agent can race the next setup.
+	 */
+	async resetOwner(): Promise<void> {
+		const live = await this.db.client.execute(
+			"SELECT id FROM auth_sessions WHERE revoked_at IS NULL",
+		);
+		await this.db.client.batch(
+			[
+				"DELETE FROM auth_sessions",
+				"DELETE FROM principals",
+				"DELETE FROM setup_tokens",
+				"DELETE FROM auth_throttle",
+			],
+			"write",
+		);
+		this.removeSetupTokenFile();
+		for (const row of live.rows) this.notifyEnded(String(row.id));
 	}
 
 	/** Spend the setup token, create the owner, and sign them in. */
@@ -288,6 +339,7 @@ export class AuthService {
 			if (created?.rowsAffected !== 1)
 				throw new AuthRefused("already_set_up", "setup is already complete");
 			await this.clearThrottle(scope);
+			this.removeSetupTokenFile();
 			return this.issue(id);
 		});
 	}

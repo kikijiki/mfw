@@ -5,8 +5,9 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { closeSync, openSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
+import { join } from "node:path";
 
 export async function freePort(): Promise<number> {
 	return new Promise((resolve, reject) => {
@@ -95,7 +96,9 @@ export async function startDevServer(opts: {
 			});
 			if (res.ok) {
 				await res.json();
-				await signIn(base, opts.logFile);
+				const mfwHome = opts.env.MFW_HOME;
+				if (!mfwHome) throw new Error("a screenshot server needs MFW_HOME");
+				await signIn(base, mfwHome);
 				return { base, pid, stop };
 			}
 		} catch {
@@ -125,24 +128,25 @@ export const SCREENSHOT_PASSWORD = "screenshot-run-throwaway";
 const sessions = new Map<string, { cookie: string; key: string }>();
 
 /**
- * Sign in to a throwaway server: first-run setup with the token it printed to
- * its log, or a plain login when an earlier server of this run already did it.
+ * Sign in to a throwaway server: first-run setup with the token from its
+ * private file, or a plain login when an earlier server of this run already did it.
  */
-async function signIn(base: string, logFile: string): Promise<void> {
+async function signIn(base: string, mfwHome: string): Promise<void> {
 	const state = (await (await fetch(`${base}/api/auth/state`)).json()) as {
 		state: string;
 	};
 	let action = "login";
 	let body: Record<string, string> = { password: SCREENSHOT_PASSWORD };
 	if (state.state === "setup") {
+		// The server writes the token to a private file and never logs it.
+		const tokenFile = join(mfwHome, "setup-token");
 		let token: string | undefined;
 		for (let i = 0; i < 50 && !token; i++) {
-			token = [
-				...readFileSync(logFile, "utf8").matchAll(/setup token: (\S+)/g),
-			].at(-1)?.[1];
+			if (existsSync(tokenFile))
+				token = readFileSync(tokenFile, "utf8").trim() || undefined;
 			if (!token) await Bun.sleep(100);
 		}
-		if (!token) throw new Error("the dev server printed no setup token");
+		if (!token) throw new Error("the dev server wrote no setup token");
 		action = "setup";
 		body = { token, password: SCREENSHOT_PASSWORD };
 	}

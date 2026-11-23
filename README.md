@@ -174,21 +174,26 @@ Both keep the scheduler off until you enable it in the UI.
 
 ### Signing in
 
-Auth is always on, including on loopback. On first start the server prints a
-one-time **setup token** to its log (`journalctl --user -u mfw-server`). Open the
-UI, enter it and choose the owner password (12 characters or more). The token
-expires after an hour; restart the server for a new one.
+Auth is always on, including on loopback. On first start the server writes a
+one-time **setup token** to `$MFW_HOME/setup-token` (readable only by you) and
+logs only that path; the token itself never goes to a log. Open the UI, enter
+the token and choose the owner password. `mfw auth setup-token` prints a new
+one, and a token expires after an hour.
 
-To recover a lost password, stop the server, delete `auth.db` from `MFW_HOME`
-and start it again: that signs everyone out and repeats first-run setup. No
-project data is touched.
+Run these on the host, outside any agent sandbox:
+
+| Command | What it does |
+| --- | --- |
+| `mfw auth unlock` | clear failed sign-in attempts, if you are locked out |
+| `mfw auth setup-token` | issue a new first-run token (before an owner exists) |
+| `mfw auth reset --yes` | forget the password and all sessions, then repeat setup |
+
+`mfw auth reset` refuses while the server or any agent session is running, because
+a surviving agent could otherwise claim the owner account during setup. Do not
+delete `auth.db` by hand: that skips this check.
 
 `mfw mcp` over HTTP has no way to sign in yet and is refused until scoped tokens
 land. The project brain is unaffected: it uses its own unix socket.
-
-Provider keys, if you use any, are stored in a private file
-(`~/.local/share/mfw/credentials.json`, readable only by you), never in the
-database. mfw never edits your `.gitignore`.
 
 ## How it is built
 

@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AuthService } from "@mfw/daemon/auth/service";
@@ -58,7 +64,7 @@ describe("first run", () => {
 	test("the token is printed once, and never once an owner exists", async () => {
 		const lines: string[] = [];
 		await announceFirstRun(auth, (l) => lines.push(l));
-		const token = /setup token: (\S+)/.exec(lines.join("\n"))?.[1] as string;
+		const token = readFileSync(join(dir, "setup-token"), "utf8").trim();
 		expect(token).toBeTruthy();
 		expect((await action("setup", { token, password: PASSWORD })).status).toBe(
 			200,
@@ -66,6 +72,28 @@ describe("first run", () => {
 		lines.length = 0;
 		await announceFirstRun(auth, (l) => lines.push(l));
 		expect(lines).toEqual([]);
+	});
+});
+
+describe("the setup token never reaches a log (reviewer B3)", () => {
+	test("only the path is printed; the token is in a 0600 file", async () => {
+		const lines: string[] = [];
+		await announceFirstRun(auth, (l) => lines.push(l));
+		const file = join(dir, "setup-token");
+		const token = readFileSync(file, "utf8").trim();
+		expect(token.length).toBeGreaterThanOrEqual(43);
+		expect(statSync(file).mode & 0o777).toBe(0o600);
+		expect(lines.join("\n")).not.toContain(token);
+		expect(lines.join("\n")).toContain(file);
+		expect(lines.join("\n")).toContain("mfw auth setup-token");
+	});
+
+	test("the file goes away when setup completes", async () => {
+		await announceFirstRun(auth, () => {});
+		const file = join(dir, "setup-token");
+		const token = readFileSync(file, "utf8").trim();
+		await auth.setup(token, PASSWORD);
+		expect(existsSync(file)).toBe(false);
 	});
 });
 
