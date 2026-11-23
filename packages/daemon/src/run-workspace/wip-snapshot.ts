@@ -79,8 +79,11 @@ export function sandboxFinalSnapshot(
 			let tail = "";
 			const drained = (async () => {
 				const decoder = new TextDecoder();
-				for await (const chunk of proc.stderr) {
-					tail = (tail + decoder.decode(chunk, { stream: true })).slice(-600);
+				const reader = proc.stderr.getReader();
+				for (;;) {
+					const { done, value } = await reader.read();
+					if (done) return;
+					tail = (tail + decoder.decode(value, { stream: true })).slice(-600);
 				}
 			})().catch(() => {});
 			let timedOut = false;
