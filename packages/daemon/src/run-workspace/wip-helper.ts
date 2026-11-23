@@ -51,6 +51,8 @@ const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const GIT_TIMEOUT_MS = 60_000;
 /** Older snapshots are dropped, so the bundle's ref count stays under the host's cap. */
 const MAX_WIP_REFS = 64;
+/** A request this close before startup may still have a host waiting on it. */
+const REQUEST_GRACE_MS = 5_000;
 
 function assertRunId(runId: string): void {
 	if (!RUN_ID_RE.test(runId)) throw new Error("bad run id");
@@ -72,6 +74,8 @@ export function bundleArgs(runId: string, outPath: string): string[] {
 export interface WipControl {
 	type: "wip";
 	id: string;
+	/** When the host asked (ms). A restarted helper skips what predates it. */
+	at?: number;
 }
 
 /** What the helper answers in `outbox/wip-ack.json`. Sandbox-reported: a hint, not a fact. */
@@ -108,14 +112,19 @@ export function parseWipControl(line: string): WipControl | null {
 		typeof (v as { id?: unknown }).id === "string" &&
 		ID_RE.test((v as { id: string }).id)
 	) {
-		return { type: "wip", id: (v as { id: string }).id };
+		const at = (v as { at?: unknown }).at;
+		return {
+			type: "wip",
+			id: (v as { id: string }).id,
+			...(typeof at === "number" ? { at } : {}),
+		};
 	}
 	return null;
 }
 
-export function wipControlLine(id: string): string {
+export function wipControlLine(id: string, at = Date.now()): string {
 	if (!ID_RE.test(id)) throw new Error(`bad wip request id: ${id}`);
-	return `${JSON.stringify({ type: "wip", id } satisfies WipControl)}\n`;
+	return `${JSON.stringify({ type: "wip", id, at } satisfies WipControl)}\n`;
 }
 
 export interface WipHelperEnv {
@@ -191,6 +200,19 @@ async function gitOk(
 	return r.out;
 }
 
+/** The commit at `ref` when it already holds `tree` on top of `head`, else null. */
+async function sameSnapshot(
+	env: WipHelperEnv,
+	ref: string,
+	tree: string,
+	head: string,
+): Promise<string | null> {
+	const r = await runGit(env, ["log", "-1", "--format=%H %T %P", ref]);
+	if (r.code !== 0) return null;
+	const [sha, haveTree, parent, extra] = r.out.split(" ");
+	return haveTree === tree && parent === head && !extra ? (sha ?? null) : null;
+}
+
 /**
  * Commit the work tree to the next `mfw-wip/<runId>/<n>` ref and rewrite the
  * outbox bundle. Built in a temporary copy of the index, so the agent's own
@@ -225,14 +247,6 @@ export async function snapshotWip(
 			await gitOk(env, ["add", "-A"], idx);
 			const tree = await gitOk(env, ["write-tree"], idx);
 			if (tree !== (await gitOk(env, ["rev-parse", "HEAD^{tree}"]))) {
-				const commit = await gitOk(env, [
-					"commit-tree",
-					tree,
-					"-p",
-					head,
-					"-m",
-					`mfw wip: run ${env.runId}`,
-				]);
 				const prefix = `refs/heads/mfw-wip/${env.runId}/`;
 				const have = (
 					await gitOk(env, ["for-each-ref", "--format=%(refname)", prefix])
@@ -241,16 +255,34 @@ export async function snapshotWip(
 					.filter(Boolean)
 					.map((r) => Number(r.slice(prefix.length)))
 					.filter((x) => Number.isInteger(x));
-				n = Math.max(0, ...have) + 1;
-				// Create-only: a concurrent snapshot never overwrites another.
-				await gitOk(env, ["update-ref", `${prefix}${n}`, commit, ""]);
-				sha = commit;
-				const sorted = have.sort((a, b) => a - b);
-				for (const old of sorted.slice(
-					0,
-					Math.max(0, sorted.length + 1 - MAX_WIP_REFS),
-				)) {
-					await gitOk(env, ["update-ref", "-d", `${prefix}${old}`]);
+				const newest = have.length > 0 ? Math.max(...have) : null;
+				const same =
+					newest === null
+						? null
+						: await sameSnapshot(env, `${prefix}${newest}`, tree, head);
+				if (same && newest !== null) {
+					n = newest;
+					sha = same;
+				} else {
+					const commit = await gitOk(env, [
+						"commit-tree",
+						tree,
+						"-p",
+						head,
+						"-m",
+						`mfw wip: run ${env.runId}`,
+					]);
+					n = (newest ?? 0) + 1;
+					// Create-only: a concurrent snapshot never overwrites another.
+					await gitOk(env, ["update-ref", `${prefix}${n}`, commit, ""]);
+					sha = commit;
+					const sorted = have.sort((a, b) => a - b);
+					for (const old of sorted.slice(
+						0,
+						Math.max(0, sorted.length + 1 - MAX_WIP_REFS),
+					)) {
+						await gitOk(env, ["update-ref", "-d", `${prefix}${old}`]);
+					}
 				}
 			}
 		} finally {
@@ -280,9 +312,9 @@ export function writeAck(outbox: string, ack: WipAck): void {
 }
 
 /**
- * Tail `controlPath` and answer each WIP request, one at a time. Requests
- * already in the file when the helper starts are answered too: a request is
- * never lost to a restart, and the host matches acks by id.
+ * Tail `controlPath` and answer each WIP request, one at a time. A request
+ * from well before this helper started is skipped: its host call has timed out
+ * by now, and replaying the file would redo every old snapshot.
  */
 export async function watchWip(
 	env: WipHelperEnv,
@@ -292,6 +324,7 @@ export async function watchWip(
 	let offset = 0;
 	let rest = "";
 	const answered = new Set<string>();
+	const oldest = Date.now() - REQUEST_GRACE_MS;
 	while (!opts.signal?.aborted) {
 		if (opts.parentPid !== undefined && process.ppid !== opts.parentPid) return;
 		let text = "";
@@ -309,6 +342,7 @@ export async function watchWip(
 			const req = parseWipControl(line);
 			if (!req || answered.has(req.id)) continue;
 			answered.add(req.id);
+			if (req.at !== undefined && req.at < oldest) continue;
 			const ack = await snapshotWip(env, req.id);
 			try {
 				writeAck(env.outbox, ack);

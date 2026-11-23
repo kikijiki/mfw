@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+	appendFile,
+	mkdir,
+	mkdtemp,
+	readFile,
+	rm,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { git } from "../src/git.ts";
@@ -82,9 +89,10 @@ async function setup() {
 
 describe("wip control protocol", () => {
 	test("parses only well-formed wip requests", () => {
-		expect(parseWipControl(wipControlLine("ab12").trim())).toEqual({
+		expect(parseWipControl(wipControlLine("ab12", 123).trim())).toEqual({
 			type: "wip",
 			id: "ab12",
+			at: 123,
 		});
 		expect(parseWipControl('{"type":"steer","message":"x"}')).toBeNull();
 		expect(parseWipControl('{"type":"wip","id":"../x"}')).toBeNull();
@@ -120,6 +128,44 @@ describe("snapshotWip (in the sandbox)", () => {
 
 		await writeFile(join(s.env.workTree, "new.txt"), "newer\n");
 		expect(await snapshotWip(s.env, "q2")).toMatchObject({ ok: true, n: 2 });
+	});
+
+	test("an unchanged dirty tree makes no second snapshot (L1)", async () => {
+		const s = await setup();
+		await writeFile(join(s.env.workTree, "a.txt"), "edited\n");
+		const first = await snapshotWip(s.env, "q1");
+		expect(first).toMatchObject({ ok: true, n: 1 });
+		const again = await snapshotWip(s.env, "q2");
+		expect(again).toMatchObject({ ok: true, n: 1, sha: first.sha });
+		const refs = await s.sbGit([
+			"for-each-ref",
+			"--format=%(refname)",
+			"refs/heads/mfw-wip/",
+		]);
+		expect(refs.stdout.split("\n").filter(Boolean)).toHaveLength(1);
+	});
+
+	test("a restarted helper does not replay old requests, and answers new ones (L1)", async () => {
+		const s = await setup();
+		await writeFile(join(s.env.workTree, "a.txt"), "edited\n");
+		await writeFile(s.control, wipControlLine("old", Date.now() - 60_000));
+		const ac = new AbortController();
+		const loop = watchWip(s.env, s.control, { pollMs: 10, signal: ac.signal });
+		try {
+			await Bun.sleep(150);
+			expect(existsSync(join(s.env.outbox, "wip-ack.json"))).toBe(false);
+			await appendFile(s.control, wipControlLine("new"));
+			for (let i = 0; i < 300; i++) {
+				if (existsSync(join(s.env.outbox, "wip-ack.json"))) break;
+				await Bun.sleep(10);
+			}
+			expect(
+				JSON.parse(await readFile(join(s.env.outbox, "wip-ack.json"), "utf8")),
+			).toMatchObject({ id: "new", ok: true });
+		} finally {
+			ac.abort();
+			await loop;
+		}
 	});
 
 	test("a clean tree makes no ref and names HEAD", async () => {
