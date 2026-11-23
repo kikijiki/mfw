@@ -18,6 +18,11 @@ export interface Context {
 	principal: Principal | null;
 	/** Where a token's actions are recorded. A token call without one is refused. */
 	tokenAudit?: TokenAuditSink;
+	/** The server's own exposure policy, which lives in the app. For the doctor. */
+	exposurePolicy?: (env: Record<string, string | undefined>) => {
+		problem: string | null;
+		warnings: string[];
+	};
 }
 
 export interface TokenAuditSink {

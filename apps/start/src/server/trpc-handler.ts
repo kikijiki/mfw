@@ -6,6 +6,7 @@ import type {
 import type { Orchestrator } from "@mfw/daemon/services";
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { type GuardResult, jsonResponse } from "./auth-guard";
+import { checkExposure, exposureWarnings } from "./exposure";
 
 const PROCEDURE_LIST =
 	/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*(,[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*)*$/;
@@ -92,6 +93,10 @@ export async function serveTrpc(
 					orchestrator,
 					principal,
 					...(tokenAudit ? { tokenAudit } : {}),
+					exposurePolicy: (env) => ({
+						problem: checkExposure(env),
+						warnings: exposureWarnings(env),
+					}),
 				}),
 				onError({ error, path }) {
 					console.error(`[mfw] tRPC error on '${path}':`, error.message);

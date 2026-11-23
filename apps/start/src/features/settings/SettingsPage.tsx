@@ -1,6 +1,7 @@
 import { Page, PageHeader, Panel, Scroller } from "../../components/Page";
 import { useTheme } from "../../lib/theme";
 import { Segmented, Setting } from "./controls";
+import { HealthPanel } from "./HealthPanel";
 import { OpenRouterSettingsPanel } from "./OpenRouterSettingsPanel";
 import { ProvidersPanel } from "./ProvidersPanel";
 import { RunPodSettingsPanel } from "./RunPodSettingsPanel";
@@ -14,6 +15,7 @@ export const SETTINGS_SECTIONS = [
 	"runpod",
 	"openrouter",
 	"appearance",
+	"health",
 ] as const;
 export type SettingsTab = (typeof SETTINGS_SECTIONS)[number];
 
@@ -53,7 +55,13 @@ export function SettingsPage({ tab, onTabChange }: SettingsPageProps) {
 				<Segmented
 					label="Settings section"
 					value={active}
-					options={["providers", "runpod", "openrouter", "appearance"]}
+					options={[
+						"providers",
+						"runpod",
+						"openrouter",
+						"appearance",
+						"health",
+					]}
 					onChange={(value) => onTabChange(value as SettingsTab)}
 				/>
 				<section hidden={active !== "providers"}>
@@ -69,6 +77,9 @@ export function SettingsPage({ tab, onTabChange }: SettingsPageProps) {
 					<Panel title="Appearance">
 						<AppearanceSection />
 					</Panel>
+				</section>
+				<section hidden={active !== "health"}>
+					<HealthPanel active={active === "health"} />
 				</section>
 				<Panel title="Session">
 					<SessionPanel />

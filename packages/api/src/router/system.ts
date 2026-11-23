@@ -78,6 +78,25 @@ async function listProjectDirectory(
 
 /** Health, metrics, scheduler control, and the HISTORY digest. */
 export const systemRouter = createTRPCRouter({
+	/**
+	 * The read-only doctor, on the server's own environment. It runs no agent CLI:
+	 * opening a settings page should not start other programs.
+	 */
+	doctor: publicProcedure.query(async ({ ctx }) => {
+		const [{ liveDoctorProbes }, { runDoctor }] = await Promise.all([
+			import("@mfw/daemon/doctor/live-probes"),
+			import("@mfw/daemon/doctor/run"),
+		]);
+		return runDoctor(
+			liveDoctorProbes({
+				env: process.env,
+				home: ctx.orchestrator.mfwHome,
+				...(ctx.exposurePolicy ? { exposure: ctx.exposurePolicy } : {}),
+			}),
+			{ skipHarnessExec: true },
+		);
+	}),
+
 	/** Real liveness, not a config echo: loop staleness, queue depth, counts. */
 	health: publicProcedure.query(async ({ ctx }) => {
 		const projects = [];
