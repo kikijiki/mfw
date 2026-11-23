@@ -462,6 +462,7 @@ function declaredToolchain(
 	if (declared.length === 0) {
 		return { binds: [], resolved: [], unresolved: [], pathDirs: [] };
 	}
+	// Masks always travel with the binds they hide part of.
 	const resolved = declared.flatMap((name) =>
 		plan.resolved.filter((b) => b.name === name),
 	);
@@ -470,6 +471,7 @@ function declaredToolchain(
 		resolved,
 		unresolved: [],
 		pathDirs: [...new Set(resolved.map((b) => posix.dirname(b.path)))],
+		...(plan.masks ? { masks: plan.masks } : {}),
 	};
 }
 

@@ -357,6 +357,8 @@ describe.skipIf(skip !== null)("the probe in a real sandbox", () => {
 				home,
 				binaries: ["bun"],
 				path: `${bunDir}:${process.env.PATH ?? ""}`,
+				// The copy links against the real bun's runtime.
+				storeRoots: [realpathSync(BUN)],
 			}),
 		});
 		const ok = await attestSandbox({

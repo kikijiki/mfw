@@ -13,6 +13,7 @@
  * in place of the agent CLI.
  */
 
+import { chmodSync, copyFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ProjectDb } from "@mfw/db/client";
@@ -22,6 +23,7 @@ import {
 	wipSnapshotArgv,
 	wipSupervisorArgv,
 } from "../run-workspace/wip-helper-install.ts";
+import { HOST_BUN_FLAGS } from "./agent-launch-argv.ts";
 import {
 	AgentProfileError,
 	agentToolCandidates,
@@ -35,11 +37,16 @@ import {
 	UNATTESTED_CONFIG_MARKER,
 } from "./agent-profile.ts";
 import { authorizeAutonomousLaunch } from "./attestation-gate.ts";
-import { type CompileHost, compileBwrap } from "./compile-bwrap.ts";
+import {
+	type CompileHost,
+	compileBwrap,
+	SANDBOX_PATHS,
+} from "./compile-bwrap.ts";
+import { EGRESS_SOCKET_NAME } from "./egress-run.ts";
 import { launchSandbox } from "./launch-sandbox.ts";
 import { attestSandbox } from "./probe-run.ts";
 import { ProfileRejectedError, type SandboxProfile } from "./profile.ts";
-import { runDirLayout } from "./run-dir.ts";
+import { RUN_CONTROL_DIR, runDirLayout } from "./run-dir.ts";
 
 const AbsolutePath = z.string().startsWith("/").max(4096);
 
@@ -140,6 +147,34 @@ export type AgentLaunchResult =
 	| { ok: true; child: ReturnType<typeof launchSandbox>; attestationId: string }
 	| AgentLaunchRefusal;
 
+const RELAY_FILE = "egress-relay.ts";
+
+/**
+ * The agent command behind the in-sandbox relay. The relay is copied into the
+ * run's control directory, which the sandbox sees read-only, because the source
+ * tree is not bound. Bun reads no config or `.env` from the agent's workspace.
+ */
+export function withEgressRelay(
+	req: Pick<AgentLaunchRequest, "runDir">,
+	bun: string,
+	argv: readonly string[],
+): string[] {
+	const copy = join(req.runDir, RUN_CONTROL_DIR, RELAY_FILE);
+	rmSync(copy, { force: true });
+	copyFileSync(join(import.meta.dir, RELAY_FILE), copy);
+	chmodSync(copy, 0o444);
+	return [
+		bun,
+		...HOST_BUN_FLAGS,
+		"run",
+		`${SANDBOX_PATHS.runControl}/${RELAY_FILE}`,
+		"--socket",
+		`${SANDBOX_PATHS.egress}/${EGRESS_SOCKET_NAME}`,
+		"--",
+		...argv,
+	];
+}
+
 /** Run the whole path for one launch. Each launch needs its own passing probe. */
 export async function launchAgentSandbox(
 	req: AgentLaunchRequest,
@@ -215,7 +250,9 @@ export async function launchAgentSandbox(
 					: {}),
 				...secrets,
 			},
-			...(req.egressSocketDir ? { egressSocketDir: req.egressSocketDir } : {}),
+			...(req.egressSocketDir && !snapshot
+				? { egressSocketDir: req.egressSocketDir }
+				: {}),
 			...(snapshot ? { snapshotOnly: true } : {}),
 		});
 	} catch (err) {
@@ -261,7 +298,9 @@ export async function launchAgentSandbox(
 		);
 	}
 
-	// The helper starts beside the agent, in the same sandbox.
+	// The helper starts beside the agent, in the same sandbox. The egress relay
+	// is what the entry shell becomes, and it runs the agent; a snapshot launch
+	// has no agent and no network, so it never gets one.
 	const toolPath = (name: string) =>
 		host.toolchain.resolved.find((b) => b.name === name)?.path;
 	const bunPath = toolPath("bun");
@@ -269,14 +308,21 @@ export async function launchAgentSandbox(
 	if (!bunPath || !shPath) {
 		return refuse(
 			"compile_refused",
-			"bun or sh is not in the sandbox toolchain, so the WIP helper cannot run",
-			"install them on the daemon PATH",
+			"bun or sh is not in the sandbox toolchain, so the WIP helper and egress relay cannot run",
+			"install them in a known toolchain root",
 		);
 	}
 	installWipHelper(runDirLayout(req.runDir).control);
 	const sandboxArgv = snapshot
 		? wipSnapshotArgv(shPath, bunPath, req.runId)
-		: wipSupervisorArgv(shPath, bunPath, req.runId, finalArgv);
+		: wipSupervisorArgv(
+				shPath,
+				bunPath,
+				req.runId,
+				req.egressSocketDir
+					? withEgressRelay(req, bunPath, finalArgv)
+					: finalArgv,
+			);
 	const compiled = compileBwrap(profile, sandboxArgv, host);
 	if (!compiled.ok) {
 		return refuse(

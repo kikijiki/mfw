@@ -181,6 +181,7 @@ export type Pinned = { ok: true; ip: string } | EgressDenial;
 export async function resolvePinned(
 	host: string,
 	resolve: Resolver,
+	isHostAddress: (ip: string) => boolean = () => false,
 ): Promise<Pinned> {
 	let answers: readonly string[];
 	try {
@@ -194,6 +195,8 @@ export async function resolvePinned(
 		const ip = unwrapMapped(answer);
 		if (ip === null || !isGlobalAddress(ip))
 			return deny(403, "non-public-address");
+		// A public address on one of this machine's interfaces is still the host.
+		if (isHostAddress(ip)) return deny(403, "host-address");
 		unwrapped.push(ip);
 	}
 	return { ok: true, ip: unwrapped[0] as string };
@@ -212,6 +215,14 @@ export function unwrapMapped(ip: string): string | null {
 	if (bytes === null) return null;
 	if (isV4Mapped(bytes)) return bytes.slice(12).join(".");
 	return ip;
+}
+
+/** One spelling per address, so two forms of the same IPv6 compare equal. Null if not an address. */
+export function canonicalAddress(raw: string): string | null {
+	const ip = unwrapMapped(raw.split("%")[0] as string);
+	if (ip === null) return null;
+	if (isIP(ip) === 4) return ip;
+	return parseIPv6(ip)?.join(":") ?? null;
 }
 
 /** True for a globally routable unicast address (IPv4 or IPv6). */

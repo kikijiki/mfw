@@ -16,10 +16,12 @@ import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { chmod, mkdir, rm } from "node:fs/promises";
 import net from "node:net";
+import { networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import {
 	type AllowEntry,
 	buildAllowlist,
+	canonicalAddress,
 	checkTarget,
 	deny,
 	type EgressDenial,
@@ -111,6 +113,25 @@ export function createConnectionGate(max: number): ConnectionGate {
 	};
 }
 
+/** What a run may send upstream, across relaunches of its CLI. */
+export interface UploadBudget {
+	perDestinationBytes: number;
+	totalBytes: number;
+}
+
+/** Finite but generous until real runs calibrate them. Configurable per project. */
+export const DEFAULT_UPLOAD_BUDGET: UploadBudget = {
+	perDestinationBytes: 1024 ** 3,
+	totalBytes: 2 * 1024 ** 3,
+};
+
+export interface UploadBreach {
+	scope: "destination" | "total";
+	destination: string;
+	limitBytes: number;
+	at: number;
+}
+
 export interface EgressProxyOptions {
 	runId: string;
 	/** Absolute path of the unix socket. See `egressSocketPath`. */
@@ -121,14 +142,36 @@ export interface EgressProxyOptions {
 	resolve?: Resolver;
 	clock?: EgressClock;
 	log?: (entry: EgressLogEntry) => void;
+	/**
+	 * On breach every tunnel closes, the chunk that crossed the limit is not
+	 * forwarded, and every later CONNECT is refused. Absent means unlimited,
+	 * which only tests use.
+	 */
+	uploadBudget?: UploadBudget;
+	/** Bytes already sent per `host:port` by earlier launches of this run. */
+	uploadedBefore?: Readonly<Record<string, number>>;
+	/** An earlier launch already breached: refuse from the start. */
+	breachedBefore?: boolean;
+	onUploadBreach?: (breach: UploadBreach) => void;
+	/** Called per chunk relayed, so counters stay current while a tunnel is open. */
+	onBytes?: (host: string, port: number, up: number, down: number) => void;
 	limits?: Partial<EgressLimits>;
 	/**
-	 * The global connection cap, shared by every run's proxy. Required: a proxy
-	 * with no global cap is a way to exhaust the daemon's file descriptors.
+	 * The connection cap across every proxy sharing this gate. Required. The
+	 * production proxy is one process per run, so its gate covers that run only;
+	 * the machine is bounded by `MAX_PROXIED_RUNS` and each process's descriptor
+	 * limit (`egress-run.ts`).
 	 */
 	gate: ConnectionGate;
 	/** Rule 11: the ClientHello SNI must equal the CONNECT host. Off by default. */
 	sni?: boolean;
+	/**
+	 * Asked at close. False leaves the path to whoever holds it now, and the
+	 * listener open, so the caller must be about to exit.
+	 */
+	ownsSocket?: () => boolean;
+	/** This machine's addresses, read per request. Default: its network interfaces. */
+	localAddresses?: () => readonly string[];
 	/** Upstream dialer, given the pinned IP. Default `net.connect`. */
 	connect?: (ip: string, port: number) => net.Socket;
 }
@@ -175,6 +218,11 @@ const defaultResolver: Resolver = async (host) => {
 	return answers.map((a) => a.address);
 };
 
+const hostInterfaceAddresses = (): string[] =>
+	Object.values(networkInterfaces()).flatMap((list) =>
+		(list ?? []).map((i) => i.address),
+	);
+
 /** Start the proxy. Resolves once the socket is listening (mode 0600). */
 export async function startEgressProxy(
 	opts: EgressProxyOptions,
@@ -199,6 +247,54 @@ export async function startEgressProxy(
 		}
 	};
 	const sockets = new Set<net.Socket>();
+	const readLocal = opts.localAddresses ?? hostInterfaceAddresses;
+	/** Read per request: an interface can gain an address while a run is live. */
+	const isOwnAddress = (): ((ip: string) => boolean) => {
+		const own = new Set(readLocal().map(canonicalAddress));
+		return (ip) => own.has(canonicalAddress(ip));
+	};
+
+	const uploaded = new Map(Object.entries(opts.uploadedBefore ?? {}));
+	let uploadedTotal = [...uploaded.values()].reduce((n, v) => n + v, 0);
+	let budgetSpent = opts.breachedBefore === true;
+	const tunnels = new Set<() => void>();
+
+	/** Count `bytes` toward the budget, or end every tunnel and return false. */
+	function charge(destination: string, bytes: number): boolean {
+		if (budgetSpent) return false;
+		const budget = opts.uploadBudget;
+		const next = (uploaded.get(destination) ?? 0) + bytes;
+		const nextTotal = uploadedTotal + bytes;
+		if (budget) {
+			const scope =
+				next > budget.perDestinationBytes
+					? ("destination" as const)
+					: nextTotal > budget.totalBytes
+						? ("total" as const)
+						: null;
+			if (scope) {
+				budgetSpent = true;
+				try {
+					opts.onUploadBreach?.({
+						scope,
+						destination,
+						limitBytes:
+							scope === "total"
+								? budget.totalBytes
+								: budget.perDestinationBytes,
+						at: clock.now(),
+					});
+				} catch {
+					// The tunnels still close.
+				}
+				for (const end of [...tunnels]) end();
+				return false;
+			}
+		}
+		uploaded.set(destination, next);
+		uploadedTotal = nextTotal;
+		return true;
+	}
 
 	const denyLog = (
 		d: EgressDenial,
@@ -232,16 +328,21 @@ export async function startEgressProxy(
 		setTimeout(() => client.destroy(), 250).unref();
 	}
 
+	/** Answer before closing: a bare destroy here can leave the client waiting. */
+	function refuseOverCap(client: net.Socket, denial: EgressDenial): void {
+		denyLog(denial);
+		client.on("error", () => client.destroy());
+		respondDeny(client, denial);
+	}
+
 	function onConnection(client: net.Socket): void {
 		const gate = opts.gate;
 		if (sockets.size >= limits.maxConnectionsPerRun) {
-			denyLog(deny(429, "limit-run"));
-			client.destroy();
+			refuseOverCap(client, deny(429, "limit-run"));
 			return;
 		}
 		if (!gate.acquire()) {
-			denyLog(deny(429, "limit-global"));
-			client.destroy();
+			refuseOverCap(client, deny(429, "limit-global"));
 			return;
 		}
 		sockets.add(client);
@@ -274,10 +375,16 @@ export async function startEgressProxy(
 			respondDeny(client, refused);
 			return;
 		}
+		if (budgetSpent) {
+			const spent = deny(403, "upload-budget");
+			denyLog(spent, target);
+			respondDeny(client, spent);
+			return;
+		}
 		const pinned = await withDeadline(
 			// Fully qualified: the policy keeps the normalised name, but the
 			// resolver must not retry it under the host's DNS search domains.
-			resolvePinned(`${target.host}.`, resolve),
+			resolvePinned(`${target.host}.`, resolve, isOwnAddress()),
 			limits.resolveMs,
 			deny(504, "dns-timeout"),
 		);
@@ -315,6 +422,7 @@ export async function startEgressProxy(
 		const finish = (): void => {
 			if (logged) return;
 			logged = true;
+			tunnels.delete(teardown);
 			clearTimeout(lifetime);
 			log({
 				decision: "ALLOW",
@@ -337,6 +445,8 @@ export async function startEgressProxy(
 			upstream.destroy();
 			finish();
 		};
+		tunnels.add(teardown);
+		const destination = `${target.host}:${target.port}`;
 		upstream.on("error", teardown);
 		upstream.once("close", () => {
 			client.end(); // let queued downstream bytes flush; idle timeout reaps it
@@ -345,13 +455,25 @@ export async function startEgressProxy(
 		client.once("close", teardown);
 		for (const s of [client, upstream]) s.setTimeout(limits.idleMs, teardown);
 
+		const count = (up: number, down: number): void => {
+			try {
+				opts.onBytes?.(target.host, target.port, up, down);
+			} catch {
+				// Like the log sink: a broken counter must not break the tunnel.
+			}
+		};
+
 		const startPiping = (first: Buffer): void => {
 			if (first.length > 0) {
+				if (!charge(destination, first.length)) return;
 				bytesUp += first.length;
+				count(first.length, 0);
 				upstream.write(first);
 			}
 			client.on("data", (chunk: Buffer) => {
+				if (!charge(destination, chunk.length)) return;
 				bytesUp += chunk.length;
+				count(chunk.length, 0);
 				if (!upstream.write(chunk)) {
 					client.pause();
 					upstream.once("drain", () => client.resume());
@@ -359,6 +481,7 @@ export async function startEgressProxy(
 			});
 			upstream.on("data", (chunk: Buffer) => {
 				bytesDown += chunk.length;
+				count(0, chunk.length);
 				if (!client.write(chunk)) {
 					upstream.pause();
 					client.once("drain", () => upstream.resume());
@@ -445,6 +568,9 @@ export async function startEgressProxy(
 		},
 		async close() {
 			for (const s of sockets) s.destroy();
+			// Bun unlinks a unix listener's path on close, and that path now holds
+			// the new proxy's socket. The process is about to exit, which frees it.
+			if (opts.ownsSocket?.() === false) return;
 			await new Promise<void>((r) => server.close(() => r()));
 			await rm(opts.socketPath, { force: true });
 		},

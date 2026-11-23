@@ -86,6 +86,9 @@ export const RUN_FACT_SOURCES = [
 ] as const;
 export type RunFactSource = (typeof RUN_FACT_SOURCES)[number];
 
+/** Egress counters come from the host-side proxy, so they carry only this. */
+export const RUN_EGRESS_PROVENANCE = "host-observed" satisfies FactProvenance;
+
 const quoted = (values: readonly string[]) =>
 	values.map((v) => `'${v}'`).join(", ");
 
@@ -103,6 +106,9 @@ export function runFactsPairCheck(): string {
 		)
 		.join(" OR ");
 }
+
+/** The SQL CHECK of `run_egress.provenance`. */
+export const RUN_EGRESS_PROVENANCE_CHECK = `provenance = '${RUN_EGRESS_PROVENANCE}'`;
 
 /** The SQL CHECK of the closed provenance enum. */
 export const RUN_FACTS_PROVENANCE_CHECK = `provenance IN (${quoted(FACT_PROVENANCE)})`;

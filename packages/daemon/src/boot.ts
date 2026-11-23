@@ -252,6 +252,13 @@ export interface ProjectConfig {
 	pushRemote?: string;
 	/** Filesystem-isolate agent runs via `bwrap`. Defaults and fallback: see `config.ts`. */
 	agentIsolation?: "none" | "bwrap";
+	/** Let sandboxed runs reach their CLI's telemetry hosts; see `config.ts`. */
+	agentEgressTelemetry?: boolean;
+	/** Per-run upload limits through the egress proxy; see `config.ts`. */
+	agentEgressUploadBudget?: {
+		perDestinationBytes?: number;
+		totalBytes?: number;
+	};
 	/** Where run files live; see `config.ts`. Defaults to `worktree`. */
 	runWorkspace?: "worktree" | "clone";
 	/** Failed expansion runs a draft tolerates before the bounded retry releases
@@ -1099,7 +1106,17 @@ export async function attachProject(
 		// Hide the daemon's home (trigger arming store, credentials.json).
 		isolation:
 			(cfg.agentIsolation ?? DEFAULTS.agentIsolation) === "bwrap"
-				? { mode: "bwrap", hidePaths: [opts.mfwHome], mfwHome: opts.mfwHome }
+				? {
+						mode: "bwrap",
+						hidePaths: [opts.mfwHome],
+						mfwHome: opts.mfwHome,
+						...(cfg.agentEgressTelemetry === true
+							? { egressTelemetry: true }
+							: {}),
+						...(cfg.agentEgressUploadBudget
+							? { egressUploadBudget: cfg.agentEgressUploadBudget }
+							: {}),
+					}
 				: undefined,
 	});
 	const admission = new ProjectDispatchAdmission(
@@ -1406,6 +1423,8 @@ export async function attachProject(
 		eventTail: engine.eventTail,
 		// The tmux socket is machine-wide: a run another project owns is no orphan.
 		ownedElsewhere: opts.ownedElsewhere,
+		egressHome: opts.mfwHome,
+		egressEvents: bus,
 		notify: (kind, detail) =>
 			notifier.notify(kind, { project: cfg.name, ...detail }),
 		log: plog,

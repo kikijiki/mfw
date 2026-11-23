@@ -64,7 +64,7 @@ describe("the result import facts", () => {
 		await open();
 		await handle.db.run(row("report", "sandbox-reported"));
 		const text = readFileSync(
-			join(import.meta.dir, "../migrations/0023_run_result_import.sql"),
+			join(import.meta.dir, "../migrations/0024_run_result_import.sql"),
 			"utf8",
 		);
 		for (const statement of text.split("--> statement-breakpoint")) {

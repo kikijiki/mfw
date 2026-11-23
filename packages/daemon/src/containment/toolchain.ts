@@ -3,11 +3,14 @@
  * R4). Resolves the declared binaries (git, bun, node, agent CLIs, project
  * tools) into read-only binds, so a synthetic HOME does not hide them:
  *
- * - NixOS: `/nix/store` whole. The declared list therefore limits `PATH`, not
- *   what can run: anything in the store is readable and runs by absolute path.
- *   Binding the computed closure of the declared binaries is required before
- *   P6 adds egress;
- * - FHS distros: `/usr`, `/bin`, `/sbin`, `/lib*`;
+ * - NixOS: only the runtime closure of the declared binaries (store-closure.ts),
+ *   each store path bound on its own. A closure also holds tools nobody
+ *   declared (git's holds python3 and perl), so the `bin` and `sbin` of a
+ *   member that is neither declared, nor a declared tool's launcher, nor a
+ *   system link are hidden. If the closure cannot be computed the binaries are
+ *   unresolved and the launch is refused;
+ * - FHS distros: `/usr`, `/bin`, `/sbin`, `/lib*` whole, so there the declared
+ *   list limits `PATH` and not what can run;
  * - HOME-installed toolchains: `~/.local/bin`, `~/.bun`, `~/.rustup`,
  *   `~/.cargo/bin`, `~/.nvm`, uv, and the Claude native installer;
  * - the `/etc` set the sandbox experiments found necessary: `passwd`,
@@ -24,10 +27,18 @@ import {
 	accessSync,
 	constants,
 	lstatSync,
+	readdirSync,
 	readlinkSync,
 	statSync,
 } from "node:fs";
 import { isAbsolute, join, posix } from "node:path";
+import {
+	hostStoreClosure,
+	type StoreClosure,
+	scanFileText,
+	scanStoreClosure,
+	storePathOf,
+} from "./store-closure.ts";
 
 /** Where a bind came from, for the doctor and the audit trail. */
 export type ToolchainSource = "nix" | "system" | "home" | "etc";
@@ -61,6 +72,10 @@ export interface ToolchainPlan {
 	unresolved: UnresolvedBinary[];
 	/** Directories to put on the sandbox PATH, in lookup order, deduplicated. */
 	pathDirs: string[];
+	/** Executable directories of undeclared closure members, hidden by an empty read-only mount. */
+	masks?: string[];
+	/** How the store closure was computed; absent when no binary is in the store. */
+	closureMethod?: StoreClosure["method"];
 }
 
 export interface ToolchainOptions {
@@ -74,6 +89,14 @@ export interface ToolchainOptions {
 	root?: string;
 	/** The `/etc` entries to bind; defaults to {@link DEFAULT_ETC_ENTRIES}. */
 	etcEntries?: readonly string[];
+	/**
+	 * Store paths the host itself vouches for, bound as data with their
+	 * executables hidden: the runtime a binary outside the store links against.
+	 * Never derived from the contents of a file outside the store.
+	 */
+	storeRoots?: readonly string[];
+	/** Computes the store closure; throws when it cannot. Defaults to the host's. */
+	closure?: (roots: readonly string[]) => StoreClosure;
 }
 
 /** The E2 `/etc` set, plus Debian's alternatives links that `/usr/bin` symlinks point through. */
@@ -100,12 +123,29 @@ const SYSTEM_ROOTS = [
 const NIX_STORE = "/nix/store";
 const NIX_ROOTS = [NIX_STORE, "/nix/var/nix/profiles"] as const;
 
-/** Profile symlink trees that point into the store; bound only when a binary resolves into the store through them. */
-const NIX_PROFILE_ROOTS = [
-	"/run/current-system",
-	"/etc/profiles",
-	"/nix/var/nix/profiles",
+/** System links a dynamic binary or a shebang needs; their targets stay executable. */
+const NIX_SUPPORT_LINKS = [
+	"/bin/sh",
+	"/usr/bin/env",
+	"/lib64/ld-linux-x86-64.so.2",
+	"/lib/ld-linux-aarch64.so.1",
 ] as const;
+
+/** A POSIX shell package, by store name. */
+const SHELL_PACKAGE =
+	/^[0-9a-df-np-sv-z]{32}-(?:bash|bash-interactive|dash)-\d/;
+
+/** Executable directories hidden in an undeclared closure member. */
+const MASKED_DIRS = ["bin", "sbin"] as const;
+
+/** A script this size or smaller is read whole for the store paths it launches. */
+const MAX_WRAPPER_BYTES = 64 * 1024;
+/** An ELF this size or smaller may be a generated wrapper around another program. */
+const MAX_ELF_WRAPPER_BYTES = 4 * 1024 * 1024;
+const MAX_LAUNCH_CHAIN = 16;
+const MAX_CERT_ENTRIES = 512;
+const STORE_FILE =
+	/\/nix\/store\/[0-9a-df-np-sv-z]{32}-[A-Za-z0-9+._?=-]+(?:\/[A-Za-z0-9+._-]+)*/g;
 
 /**
  * HOME toolchain roots, relative to HOME. Each holds installed tools, not
@@ -290,6 +330,111 @@ function lookup(
 }
 
 /**
+ * The store path a binary is entered through: the last link in its chain that
+ * keeps the name. A multi-call binary needs that name (`cat -> coreutils`), and
+ * a profile's link farm is not in the closure. Null if no store entry has it.
+ */
+function storeEntry(fs: Fs, found: string, real: string): string | null {
+	const name = posix.basename(found);
+	let entry: string | null = null;
+	let current = found;
+	for (let hop = 0; hop < 40; hop++) {
+		const dir = realpathIn(fs, posix.dirname(current));
+		if (!dir) break;
+		const here = posix.join(dir, posix.basename(current));
+		if (under(here, NIX_STORE) && posix.basename(here) === name) entry = here;
+		let target: string;
+		try {
+			if (!lstatSync(fs.host(here)).isSymbolicLink()) break;
+			target = readlinkSync(fs.host(here));
+		} catch {
+			break;
+		}
+		current = isAbsolute(target) ? target : posix.join(dir, target);
+	}
+	return entry ?? (posix.basename(real) === name ? real : null);
+}
+
+/**
+ * Store paths a declared binary starts directly: a script's interpreter and
+ * what a wrapper script or generated ELF wrapper executes. Only these stay
+ * executable. A large ELF is a program, whose embedded paths (git's python) say
+ * nothing about what it must launch.
+ */
+function launchChain(fs: Fs, entry: string): string[] {
+	const out = new Set<string>();
+	const seen = new Set<string>();
+	const pending = [entry];
+	while (pending.length > 0 && seen.size < MAX_LAUNCH_CHAIN) {
+		const file = realpathIn(fs, pending.pop() as string);
+		if (!file || seen.has(file)) continue;
+		seen.add(file);
+		const store = storePathOf(file);
+		if (store) out.add(store);
+		let size: number;
+		let text = "";
+		try {
+			const st = statSync(fs.host(file));
+			if (!st.isFile()) continue;
+			size = st.size;
+			scanFileText(
+				fs.host(file),
+				(chunk) => {
+					if (text.length < MAX_WRAPPER_BYTES) text += chunk;
+				},
+				Math.max(size, 1),
+			);
+		} catch {
+			continue;
+		}
+		let refs: string[] = [];
+		if (text.startsWith("#!")) {
+			const body =
+				size <= MAX_WRAPPER_BYTES ? text : (text.split("\n")[0] as string);
+			refs = body.match(STORE_FILE) ?? [];
+		} else if (text.startsWith("\x7fELF") && size <= MAX_ELF_WRAPPER_BYTES) {
+			refs = (text.match(STORE_FILE) ?? []).filter((r) =>
+				r.endsWith("-wrapped"),
+			);
+		}
+		for (const ref of refs) {
+			const path = storePathOf(ref);
+			if (path) out.add(path);
+			if (ref !== path) pending.push(ref);
+		}
+	}
+	return [...out];
+}
+
+/** The store paths the `/etc/ssl` links point at: CA bundles, as data. */
+function certRoots(fs: Fs): string[] {
+	const out = new Set<string>();
+	const pending = ["/etc/ssl"];
+	let budget = MAX_CERT_ENTRIES;
+	while (pending.length > 0 && budget-- > 0) {
+		const real = realpathIn(fs, pending.pop() as string);
+		if (!real) continue;
+		const store = storePathOf(real);
+		if (store) out.add(store);
+		try {
+			if (!statSync(fs.host(real)).isDirectory()) continue;
+			for (const e of readdirSync(fs.host(real))) {
+				pending.push(posix.join(real, e));
+			}
+		} catch {}
+	}
+	return [...out];
+}
+
+function isRealDir(fs: Fs, p: string): boolean {
+	try {
+		return lstatSync(fs.host(p)).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Plan the read-only binds for the declared binaries. Never throws: a binary
  * that cannot be found, or that lives somewhere unsafe to bind, is reported in
  * `unresolved` and gets no bind.
@@ -306,6 +451,9 @@ export function discoverToolchain(opts: ToolchainOptions): ToolchainPlan {
 	const resolved: ResolvedBinary[] = [];
 	const unresolved: UnresolvedBinary[] = [];
 	const pathDirs: string[] = [];
+	const storeResolved: ResolvedBinary[] = [];
+	const launchRoots = new Set<string>();
+	const dataRoots = new Set<string>();
 
 	for (const name of opts.binaries) {
 		const found = lookup(fs, name, searchDirs);
@@ -318,37 +466,27 @@ export function discoverToolchain(opts: ToolchainOptions): ToolchainPlan {
 			unresolved.push({ name, reason: "symlink loop or dangling link" });
 			continue;
 		}
+		if (under(real, NIX_STORE)) {
+			const entry = storeEntry(fs, found, real);
+			if (!entry || !storePathOf(entry) || !storePathOf(real)) {
+				unresolved.push({
+					name,
+					reason: `${found} has no store entry named ${posix.basename(found)}`,
+				});
+				continue;
+			}
+			storeResolved.push({ name, path: entry, realPath: real });
+			for (const p of launchChain(fs, entry)) launchRoots.add(p);
+			launchRoots.add(storePathOf(real) as string);
+			continue;
+		}
 		// Every location the binary is reachable through must be bound: the
 		// PATH entry and the final target (they differ for shims and symlinks).
 		const locations = found === real ? [found] : [found, real];
 		const planned: ToolchainBind[] = [];
 		let refusal: string | null = null;
 		for (const loc of locations) {
-			if (under(loc, NIX_STORE)) {
-				planned.push({
-					path: NIX_STORE,
-					source: "nix",
-					reason: name,
-					optional: false,
-				});
-			} else if (
-				NIX_PROFILE_ROOTS.some((r) => under(loc, r)) &&
-				under(real, NIX_STORE)
-			) {
-				const profile = NIX_PROFILE_ROOTS.find((r) => under(loc, r)) as string;
-				planned.push({
-					path: profile,
-					source: "nix",
-					reason: name,
-					optional: false,
-				});
-				planned.push({
-					path: NIX_STORE,
-					source: "nix",
-					reason: name,
-					optional: false,
-				});
-			} else if (SYSTEM_ROOTS.some((r) => under(loc, r))) {
+			if (SYSTEM_ROOTS.some((r) => under(loc, r))) {
 				for (const r of SYSTEM_ROOTS) {
 					if (exists(fs, r)) {
 						planned.push({
@@ -389,6 +527,63 @@ export function discoverToolchain(opts: ToolchainOptions): ToolchainPlan {
 		resolved.push({ name, path: found, realPath: real });
 		const dir = posix.dirname(found);
 		if (!pathDirs.includes(dir)) pathDirs.push(dir);
+		// Nothing is read from a file outside the store: it may be writable by
+		// a run, and the paths it names would widen every later sandbox.
+	}
+	for (const root of opts.storeRoots ?? []) {
+		const store = storePathOf(root);
+		if (store && exists(fs, store)) dataRoots.add(store);
+	}
+
+	// Git's own scripts start with the bash in its closure, often a different
+	// build from the declared one. With a shell declared, that adds no capability.
+	const shellDeclared = storeResolved.some(
+		(b) => b.name === "sh" || b.name === "bash",
+	);
+	let masks: string[] = [];
+	let closureMethod: StoreClosure["method"] | undefined;
+	const visible = new Set(launchRoots);
+	if (resolved.length + storeResolved.length > 0 && isDir(fs, NIX_STORE)) {
+		for (const link of NIX_SUPPORT_LINKS) {
+			const target = exists(fs, link) ? realpathIn(fs, link) : null;
+			const store = target ? storePathOf(target) : null;
+			if (store) visible.add(store);
+		}
+	}
+	if (visible.size + dataRoots.size > 0) {
+		const closureOf =
+			opts.closure ??
+			((r: readonly string[]) =>
+				fs.root === "/" ? hostStoreClosure(r) : scanStoreClosure(r, fs.host));
+		try {
+			const closure = closureOf([
+				...new Set([...visible, ...dataRoots, ...certRoots(fs)]),
+			]);
+			closureMethod = closure.method;
+			for (const path of closure.paths) {
+				add({ path, source: "nix", reason: "closure", optional: false });
+				if (visible.has(path)) continue;
+				if (shellDeclared && SHELL_PACKAGE.test(posix.basename(path))) continue;
+				for (const d of MASKED_DIRS) {
+					const dir = `${path}/${d}`;
+					if (isRealDir(fs, dir)) masks.push(dir);
+				}
+			}
+			for (const b of storeResolved) {
+				resolved.push(b);
+				const dir = posix.dirname(b.path);
+				if (!pathDirs.includes(dir)) pathDirs.push(dir);
+			}
+		} catch (err) {
+			// No partial closure: every store binary is refused by the compiler.
+			masks = [];
+			for (const b of storeResolved) {
+				unresolved.push({
+					name: b.name,
+					reason: `its store closure cannot be computed: ${(err as Error).message}`,
+				});
+			}
+		}
 	}
 
 	// Fixed rules: the HOME roots that exist (so PATH-relative tools and
@@ -410,14 +605,6 @@ export function discoverToolchain(opts: ToolchainOptions): ToolchainPlan {
 			});
 		}
 	}
-	if (isDir(fs, NIX_STORE)) {
-		add({
-			path: NIX_STORE,
-			source: "nix",
-			reason: "nix store",
-			optional: true,
-		});
-	}
 	for (const r of SYSTEM_ROOTS) {
 		if (exists(fs, r)) {
 			add({ path: r, source: "system", reason: "system root", optional: true });
@@ -435,6 +622,8 @@ export function discoverToolchain(opts: ToolchainOptions): ToolchainPlan {
 		resolved,
 		unresolved,
 		pathDirs,
+		...(masks.length > 0 ? { masks: masks.sort() } : {}),
+		...(closureMethod ? { closureMethod } : {}),
 	};
 }
 
@@ -457,6 +646,10 @@ export function toolchainBwrapArgs(plan: ToolchainPlan): string[] {
 	const args: string[] = [];
 	for (const b of plan.binds) {
 		args.push(b.optional ? "--ro-bind-try" : "--ro-bind", b.path, b.path);
+	}
+	// After the binds they cover. Read-only, or the mask is a writable directory.
+	for (const dir of plan.masks ?? []) {
+		args.push("--tmpfs", dir, "--remount-ro", dir);
 	}
 	return args;
 }

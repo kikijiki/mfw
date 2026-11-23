@@ -172,6 +172,9 @@ Both keep the scheduler off until you enable it in the UI.
 | `MFW_URL` | `http://localhost:7777/mfw/api/trpc` | where the MCP server finds the app |
 | `MFW_ALLOWED_HOSTS` | none | extra host names the UI may be reached on (comma separated); loopback is always allowed |
 
+Agent network access, its per-project settings and its limits are described
+in [docs/egress.md](docs/egress.md).
+
 ### Signing in
 
 Auth is always on, including on loopback. On first start the server writes a

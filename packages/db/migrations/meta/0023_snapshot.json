@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "d0b09a7b-c4e1-4bc7-9861-334be53729aa",
+  "id": "31cb08a2-eab3-4ebb-a0a0-fa696349b08c",
   "prevId": "540949ab-92dc-4e08-9539-82a3a84f85bd",
   "tables": {
     "brain_actions": {
@@ -1578,6 +1578,97 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "run_egress": {
+      "name": "run_egress",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "destination": {
+          "name": "destination",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "bytes_up": {
+          "name": "bytes_up",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "bytes_down": {
+          "name": "bytes_down",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "connections": {
+          "name": "connections",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "denied": {
+          "name": "denied",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "last_denied_reason": {
+          "name": "last_denied_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "provenance": {
+          "name": "provenance",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'host-observed'"
+        },
+        "observed_at": {
+          "name": "observed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "run_egress_run_id_destination_pk": {
+          "columns": [
+            "run_id",
+            "destination"
+          ],
+          "name": "run_egress_run_id_destination_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "ck_run_egress_provenance": {
+          "name": "ck_run_egress_provenance",
+          "value": "provenance = 'host-observed'"
+        }
+      }
+    },
     "run_facts": {
       "name": "run_facts",
       "columns": {
@@ -1651,7 +1742,7 @@
         },
         "ck_run_facts_pair": {
           "name": "ck_run_facts_pair",
-          "value": "(fact IN ('exit', 'outcome') AND provenance IN ('host-observed', 'sandbox-reported')) OR (fact IN ('scope', 'result_import') AND provenance IN ('host-observed')) OR (fact IN ('agent_exit_claim', 'wip_claim', 'report', 'usage', 'usage_live', 'activity', 'capabilities', 'native_session', 'subagents', 'transcript_summary') AND provenance IN ('sandbox-reported'))"
+          "value": "(fact IN ('exit', 'outcome') AND provenance IN ('host-observed', 'sandbox-reported')) OR (fact IN ('scope') AND provenance IN ('host-observed')) OR (fact IN ('agent_exit_claim', 'report', 'usage', 'usage_live', 'activity', 'capabilities', 'native_session', 'subagents', 'transcript_summary') AND provenance IN ('sandbox-reported'))"
         }
       }
     },

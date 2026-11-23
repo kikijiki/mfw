@@ -10,13 +10,14 @@ import {
 	runSteps,
 	runs,
 } from "@mfw/db/schema";
-import { and, desc, eq, gte, inArray, isNull, ne } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, like, ne } from "drizzle-orm";
 import { readActBreaker } from "./brain-runtime/act-breaker.ts";
 import { readAwaiting } from "./brain-runtime/awaiting.ts";
 import { decisionCardId } from "./brain-runtime/decision-rights.ts";
 import { guardText, HostEvidence } from "./claims.ts";
 import { loadHostEvidence } from "./claims-evidence.ts";
 import { TASK_QUESTION_KIND } from "./clarify.ts";
+import { EGRESS_BREACH_KEY_PREFIX } from "./egress-ledger.ts";
 import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
 import type { TaskRow, TaskService } from "./task-service.ts";
 
@@ -55,7 +56,9 @@ export type InboxKind =
 	/** A brain action is held until the owner approves or declines it (decision rights). */
 	| "brain_decision"
 	/** The brain's act tools are paused for this project (`act-breaker.ts`). */
-	| "brain_breaker";
+	| "brain_breaker"
+	/** The egress proxy stopped a run at its upload budget: possible exfiltration. */
+	| "egress_budget";
 
 export type InboxSeverity = "critical" | "attention" | "info";
 
@@ -141,6 +144,7 @@ function refOf(item: Omit<InboxItem, "ref" | "attention">): string {
  * their entries here are fallbacks.
  */
 const SEVERITY: Record<InboxKind, InboxSeverity> = {
+	egress_budget: "critical",
 	main_red: "critical",
 	// Only pushed after `MergeQueue` exhausted its retries (`merge-queue.ts`).
 	merge_parked: "critical",
@@ -371,6 +375,35 @@ export class InboxService {
 				} until ${new Date(b.resetsAt).toISOString()} or the limit is raised`,
 				fix: "Raise the budget in Settings → Budgets, or wait for the window to reset.",
 				ts: b.ts,
+			});
+		}
+
+		const breaches = await db
+			.select()
+			.from(engineKv)
+			.where(like(engineKv.key, `${EGRESS_BREACH_KEY_PREFIX}%`));
+		for (const row of breaches) {
+			const b = row.value as {
+				runId: string;
+				scope: "destination" | "total";
+				destination: string;
+				limitBytes: number;
+				at: number;
+			};
+			const limit = `${Math.round(b.limitBytes / 1024 ** 2)} MiB`;
+			items.push({
+				id: `egress_budget:${b.runId}`,
+				project,
+				kind: "egress_budget",
+				severity: SEVERITY.egress_budget,
+				title: `run stopped at its upload budget: ${b.destination}`,
+				detail:
+					b.scope === "total"
+						? `The host's proxy saw this run reach its ${limit} total upload limit, last sending to ${b.destination}. Its connections were closed and new ones are refused.`
+						: `The host's proxy saw this run send ${limit} to ${b.destination}, its limit per destination. Its connections were closed and new ones are refused.`,
+				fix: "Check what the run was sending. If it was legitimate, raise agentEgressUploadBudget in this project's config and run it again.",
+				runId: b.runId,
+				ts: b.at,
 			});
 		}
 
@@ -1028,6 +1061,7 @@ export const ATTENTION_BY_KIND: Record<InboxKind, AttentionClass> = {
 	brain_notice: "act",
 	brain_decision: "act",
 	brain_breaker: "act",
+	egress_budget: "act",
 	// A run failed and was handled; read it, nothing to answer.
 	failed_run: "know",
 	followups: "know",

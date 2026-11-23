@@ -130,6 +130,32 @@ describe("seccomp under bwrap", () => {
 		expect(filtered.ptrace).toBe(1);
 	});
 
+	test("AF_VSOCK and friends are refused by the filter, without reaching the kernel", async () => {
+		const why = await skipReason();
+		if (why) return console.log(`skip: ${why}`);
+		// An invalid type makes an unfiltered kernel answer EINVAL before it
+		// would autoload a protocol module, so this can load nothing.
+		const script = `import { dlopen, FFIType, read } from "bun:ffi";
+const l = dlopen("libc.so.6", { syscall: { args: [FFIType.i64, FFIType.i64, FFIType.i64, FFIType.i64], returns: FFIType.i64 }, __errno_location: { args: [], returns: FFIType.ptr } });
+for (const f of [40, 17, 38, 1, 2, 10]) { l.symbols.syscall(41, f, 0x40000001, 0); console.log(f + " " + read.i32(l.symbols.__errno_location())); }`;
+		const parse = (out: string) =>
+			Object.fromEntries(
+				out
+					.trim()
+					.split("\n")
+					.map((l) => l.split(" ")),
+			);
+		const without = await inSandbox([BUN, "-e", script], false);
+		expect(without.code).toBe(0);
+		for (const f of ["40", "17", "38"])
+			expect(parse(without.out)[f]).toBe("22");
+		const withF = await inSandbox([BUN, "-e", script], true);
+		expect(withF.code).toBe(0);
+		const got = parse(withF.out);
+		for (const f of ["40", "17", "38"]) expect(got[f]).toBe("97");
+		for (const f of ["1", "2", "10"]) expect(got[f]).toBe("22");
+	});
+
 	test("X12: --disable-userns on its own also blocks the nested namespace", async () => {
 		const why = await skipReason();
 		if (why) return console.log(`skip: ${why}`);

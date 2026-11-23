@@ -236,9 +236,9 @@ describe("migration chain", () => {
 
 	test("the latest run_facts migration is journaled and its snapshot holds the table", () => {
 		const last = journal.entries.find(
-			(e) => e.tag === "0023_run_result_import",
+			(e) => e.tag === "0024_run_result_import",
 		) as { tag: string; idx: number };
-		expect(last.idx).toBe(22);
+		expect(last.idx).toBe(23);
 		const snap = snapshot(last.tag);
 		expect(
 			snap.tables.run_facts?.checkConstraints.ck_run_facts_pair?.value,
@@ -247,7 +247,7 @@ describe("migration chain", () => {
 
 	test("the migration's CHECK is the one the code derives", () => {
 		const text = readFileSync(
-			join(migrationsDir(), "0023_run_result_import.sql"),
+			join(migrationsDir(), "0024_run_result_import.sql"),
 			"utf8",
 		);
 		expect(text).toContain(runFactsPairCheck());
