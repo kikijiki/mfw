@@ -18,7 +18,25 @@ import { serializeFileMutation } from "./serialized-file-mutation.ts";
  * `credentials.ts`; an absent file means no holds. The project-level
  * `dispatch_hold` (manual quiet periods, trigger `hold_dispatch`) still holds
  * every provider of that one project.
+ *
+ * A rate-limit or login message from a run is sandbox-reported: an agent can
+ * forge it. {@link ProviderHoldStore.report} therefore holds only the reporting
+ * project, for a short time, and becomes machine-wide only when a second
+ * project reports the same account within a few minutes.
  */
+
+/** The longest a hold taken from an agent's own report can last unconfirmed. */
+export const MAX_REPORTED_HOLD_MS = 60 * 60_000;
+/** Used when a report names no usable reset time. */
+const REPORTED_HOLD_FALLBACK_MS = 15 * 60_000;
+/** How close together two projects' reports must be to confirm each other. */
+export const REPORT_CONFIRM_WINDOW_MS = 15 * 60_000;
+const MAX_REPORTS_PER_KEY = 32;
+
+/** The hold of one account in one project. Never read as a machine-wide key. */
+export function projectHoldKey(key: string, project: string): string {
+	return `${key}#project:${project}`;
+}
 
 const HoldSchema = z.object({
 	until: z.number(),
@@ -31,6 +49,13 @@ const HoldSchema = z.object({
 const FileSchema = z.object({
 	version: z.literal(1),
 	holds: z.record(z.string(), HoldSchema),
+	/** Recent agent reports per account, for the two-project confirmation. */
+	reports: z
+		.record(
+			z.string(),
+			z.array(z.object({ project: z.string(), at: z.number() })),
+		)
+		.optional(),
 });
 
 type HoldFile = z.infer<typeof FileSchema>;
@@ -64,26 +89,110 @@ export class ProviderHoldStore {
 		}
 	}
 
-	/** Hold `key` until `until`, keeping the furthest existing `until`. */
+	private place(
+		file: HoldFile,
+		key: string,
+		hold: { until: number; reason: string; runId?: string; project?: string },
+	): StoredProviderHold {
+		const now = this.now();
+		for (const [k, h] of Object.entries(file.holds))
+			if (h.until <= now) delete file.holds[k];
+		const current = file.holds[key];
+		const next =
+			current && current.until >= hold.until
+				? current
+				: { ...hold, since: current?.since ?? now };
+		file.holds[key] = next;
+		return next;
+	}
+
+	private async save(file: HoldFile): Promise<void> {
+		await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
+		await writeFileAtomic(this.path, `${JSON.stringify(file, null, "\t")}\n`);
+	}
+
+	/**
+	 * Hold `key` machine-wide until `until`, keeping the furthest existing
+	 * `until`. For host-observed facts only; an agent's claim goes to `report`.
+	 */
 	async hold(
 		key: string,
 		hold: { until: number; reason: string; runId?: string; project?: string },
 	): Promise<StoredProviderHold> {
 		return serializeFileMutation(this.path, async () => {
 			const file = await this.load();
-			const now = this.now();
-			for (const [k, h] of Object.entries(file.holds))
-				if (h.until <= now) delete file.holds[k];
-			const current = file.holds[key];
-			const next =
-				current && current.until >= hold.until
-					? current
-					: { ...hold, since: current?.since ?? now };
-			file.holds[key] = next;
-			await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
-			await writeFileAtomic(this.path, `${JSON.stringify(file, null, "\t")}\n`);
+			const next = this.place(file, key, hold);
+			await this.save(file);
 			return next;
 		});
+	}
+
+	/**
+	 * Record an agent's rate-limit or login report. The hold is clamped and
+	 * covers the reporting project, unless another project reported the same
+	 * account recently. `confirmedUntil` applies only to that confirmed case.
+	 */
+	async report(
+		key: string,
+		report: {
+			project: string;
+			until: number;
+			reason: string;
+			runId?: string;
+			confirmedUntil?: number;
+		},
+	): Promise<{ scope: "project" | "machine"; key: string; until: number }> {
+		return serializeFileMutation(this.path, async () => {
+			const file = await this.load();
+			const now = this.now();
+			const recent = (file.reports?.[key] ?? []).filter(
+				(r) => now - r.at <= REPORT_CONFIRM_WINDOW_MS && r.at <= now,
+			);
+			recent.push({ project: report.project, at: now });
+			file.reports = {
+				...file.reports,
+				[key]: recent.slice(-MAX_REPORTS_PER_KEY),
+			};
+			const confirmed = new Set(recent.map((r) => r.project)).size >= 2;
+			const usable = Number.isFinite(report.until) && report.until > now;
+			const clamped = usable
+				? Math.min(report.until, now + MAX_REPORTED_HOLD_MS)
+				: now + REPORTED_HOLD_FALLBACK_MS;
+			const until = confirmed ? (report.confirmedUntil ?? clamped) : clamped;
+			const holdKey = confirmed ? key : projectHoldKey(key, report.project);
+			const next = this.place(file, holdKey, {
+				until,
+				reason: report.reason,
+				project: report.project,
+				...(report.runId ? { runId: report.runId } : {}),
+			});
+			await this.save(file);
+			return {
+				scope: confirmed ? "machine" : "project",
+				key: holdKey,
+				until: next.until,
+			};
+		});
+	}
+
+	/** The routing view of one project: machine holds plus its own. */
+	forProject(project: string): {
+		snapshot(): Promise<(key: string) => ProviderHold | null>;
+	} {
+		return {
+			snapshot: async () => {
+				const holds = await this.active();
+				return (key) => {
+					const candidates = [
+						holds[key],
+						holds[projectHoldKey(key, project)],
+					].filter((h): h is StoredProviderHold => h !== undefined);
+					if (candidates.length === 0) return null;
+					const h = candidates.reduce((a, b) => (b.until > a.until ? b : a));
+					return { until: h.until, reason: h.reason };
+				};
+			},
+		};
 	}
 
 	async clear(key: string): Promise<void> {

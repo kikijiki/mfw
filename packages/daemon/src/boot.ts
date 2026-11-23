@@ -1030,7 +1030,7 @@ export async function attachProject(
 		projectName: cfg.name,
 		integrationBranch,
 		routing: () => liveRouting,
-		providerHolds,
+		providerHolds: providerHolds.forProject(cfg.name),
 		budgetHold: (task): ReturnType<BudgetService["holdFor"]> =>
 			budgets.holdFor(task),
 		outcomePriors: async () => {
@@ -1502,7 +1502,12 @@ export async function attachProject(
 		budgets,
 		authHolds: async () =>
 			Object.entries(await providerHolds.active())
-				.filter(([, h]) => h.reason === AUTH_HOLD_REASON)
+				.filter(
+					([key, h]) =>
+						h.reason === AUTH_HOLD_REASON &&
+						(!key.includes("#project:") ||
+							key.endsWith(`#project:${cfg.name}`)),
+				)
 				.map(([key, h]) => ({ key, since: h.since ?? 0, until: h.until })),
 		isolationIssue: () => {
 			const detail = isolationConfigProblem({

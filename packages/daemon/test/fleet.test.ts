@@ -42,6 +42,7 @@ function budget(over: Partial<BudgetStatus>): BudgetStatus {
 		warnAt: null,
 		liveRunPolicy: "stop",
 		used: 4,
+		reported: { value: 0, provenance: "sandbox-reported" },
 		fraction: 0.4,
 		windowStart: DAY,
 		windowResetsAt: DAY + 86_400_000,
