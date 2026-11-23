@@ -27,9 +27,10 @@ import {
 	type RunRow,
 } from "./run-registry.ts";
 import { CloneRunWorkspace } from "./run-workspace/clone-impl.ts";
-import { workspaceForRun } from "./run-workspace/factory.ts";
+import { runWorkspaceKind, workspaceForRun } from "./run-workspace/factory.ts";
 import { cloneScopeFiles } from "./run-workspace/scope-files.ts";
 import {
+	asScopeSample,
 	assessScope,
 	changedFiles,
 	DEFAULT_SCOPE_POLICY,
@@ -215,6 +216,8 @@ export interface PassStats {
 
 /** How long a scope sample waits for the in-sandbox helper to answer. */
 const SCOPE_WIP_TIMEOUT_MS = 5_000;
+/** Failed samples in a row before a clone run counts as unsampled. */
+const SCOPE_UNSAMPLED_AFTER = 3;
 
 export class Supervisor {
 	private readonly log: Logger;
@@ -235,6 +238,11 @@ export class Supervisor {
 	private readonly scopeSeen = new Map<
 		string,
 		{ at: number; mtime: number; sig: string | null }
+	>();
+	/** Consecutive failed scope samples of a clone run. */
+	private readonly scopeFailures = new Map<
+		string,
+		{ count: number; at: number }
 	>();
 	private limitsInput: WatchdogLimitsInput;
 	/** Health surface. */
@@ -652,16 +660,18 @@ export class Supervisor {
 			return;
 		let sample: ScopeSample;
 		try {
-			const workspace = workspaceForRun(this.deps.projectRoot, run);
-			const listed = await (
+			const sampler =
 				this.deps.scopeFiles ??
-				(workspace instanceof CloneRunWorkspace
-					? (wt: string, base: string) =>
-							cloneScopeFiles(workspace, this.deps.projectRoot, wt, base, {
-								timeoutMs: SCOPE_WIP_TIMEOUT_MS,
-							})
-					: changedFiles)
-			)(run.worktreePath, run.baseSha);
+				(() => {
+					const workspace = workspaceForRun(this.deps.projectRoot, run);
+					return workspace instanceof CloneRunWorkspace
+						? (wt: string, base: string) =>
+								cloneScopeFiles(workspace, this.deps.projectRoot, wt, base, {
+									timeoutMs: SCOPE_WIP_TIMEOUT_MS,
+								})
+						: changedFiles;
+				})();
+			const listed = await sampler(run.worktreePath, run.baseSha);
 			sample = assessScope(
 				listed.files,
 				await this.scopeOwners(run),
@@ -669,11 +679,14 @@ export class Supervisor {
 				now,
 				listed.truncated,
 			);
+			this.scopeFailures.delete(run.id);
+			if (asScopeSample(run.scopeSample)?.unsampled) sample.unsampled = true;
 		} catch (e) {
 			this.log.debug(
 				{ err: e, runId: run.id },
 				"scope sample failed; retrying next pass",
 			);
+			await this.noteScopeFailure(run, policy, now);
 			return;
 		}
 		const sig = scopeSignature(sample);
@@ -688,6 +701,42 @@ export class Supervisor {
 		}
 		const reason = scopeKill(sample, policy);
 		if (reason) await this.kill(run, reason, stats);
+	}
+
+	/**
+	 * Count a failed sample of a clone run, at most one per `sampleMs`. After
+	 * `SCOPE_UNSAMPLED_AFTER` in a row the run is marked `unsampled`, which sends
+	 * it to review at finish. It never kills: the failure may be load.
+	 */
+	private async noteScopeFailure(
+		run: RunRow,
+		policy: ScopePolicy,
+		now: number,
+	): Promise<void> {
+		if (runWorkspaceKind(this.deps.projectRoot, run) !== "clone") return;
+		const seen = this.scopeFailures.get(run.id);
+		if (seen && now - seen.at < policy.sampleMs) return;
+		const count = (seen?.count ?? 0) + 1;
+		this.scopeFailures.set(run.id, { count, at: now });
+		if (count < SCOPE_UNSAMPLED_AFTER) return;
+		const previous = asScopeSample(run.scopeSample);
+		if (previous?.unsampled) return;
+		const base =
+			previous ?? assessScope([], { owns: [], others: [] }, policy, now);
+		try {
+			await this.deps.registry.setScopeSample(run.id, {
+				...base,
+				level: base.level === "violation" ? "violation" : "warn",
+				sampledAt: now,
+				unsampled: true,
+			});
+			this.log.warn(
+				{ runId: run.id, failures: count },
+				"scope watchdog cannot sample this run; it will go to review",
+			);
+		} catch (e) {
+			this.log.warn({ err: e, runId: run.id }, "could not record scope");
+		}
 	}
 
 	/** The run's own `owns` and every other claimed task's. */
@@ -754,6 +803,7 @@ export class Supervisor {
 		this.tail.forget(runId);
 		this.activitySeen.delete(runId);
 		this.scopeSeen.delete(runId);
+		this.scopeFailures.delete(runId);
 		for (const key of this.notified) {
 			if (key.startsWith(`${runId}:`)) this.notified.delete(key);
 		}

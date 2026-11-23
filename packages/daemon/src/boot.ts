@@ -43,6 +43,8 @@ import {
 	PROJECT_DEFAULTS,
 } from "./config.ts";
 import { agentSandboxRefusal } from "./containment/agent-preflight.ts";
+import { runDirLayout } from "./containment/run-dir.ts";
+import { assertRunDead } from "./containment/run-liveness.ts";
 import { CredentialStore, WorkloadSecretGrantStore } from "./credentials.ts";
 import { ensureBoardConfig } from "./default-board-config.ts";
 import { readMemAvailable } from "./dispatch-preflight.ts";
@@ -56,7 +58,7 @@ import { type CriticResult, StepRunner } from "./finalize/step-runner.ts";
 import { git } from "./git.ts";
 import { GlobalDispatch } from "./global-dispatch.ts";
 import { Health } from "./health.ts";
-import { quarantineRef } from "./host-git/fetch.ts";
+import { quarantineRef, sweepIncomingRefs } from "./host-git/fetch.ts";
 import type { HostObservationServiceOptions } from "./host-observation-service.ts";
 import {
 	createProductionHostProbeRuntime,
@@ -132,6 +134,7 @@ import {
 	rebaseCloneOptions,
 } from "./run-workspace/factory.ts";
 import { rebaseQuarantineInScratch } from "./run-workspace/rebase-clone.ts";
+import { sandboxFinalSnapshot } from "./run-workspace/wip-snapshot.ts";
 import {
 	RunPodAccountService,
 	type RunPodProviderClient,
@@ -144,6 +147,7 @@ import type {
 	RunPodProjectPolicy,
 } from "./runpod-policy.ts";
 import { Scheduler } from "./scheduler.ts";
+import { branchChangedFiles } from "./scope-watchdog.ts";
 import type { Orchestrator, ProjectServices } from "./services.ts";
 import { SessionService } from "./session.ts";
 import {
@@ -598,13 +602,31 @@ export async function attachProject(
 		// this setting must still be handled as the clone it is.
 		clone: {
 			workspaceRoot: join(opts.mfwHome, "workspaces"),
-			// Only a session tmux positively reports gone counts as dead.
-			assertProcessesDead: async (runId) => {
-				if ((await host.sessionLiveness(runId)) !== false) {
-					throw new Error(`run ${runId} is not confirmed stopped`);
+			runDirOf: (runId) => registry.runDir(runId),
+			controlPath: (runId) =>
+				join(runDirLayout(registry.runDir(runId)).control, "control.jsonl"),
+			finalSnapshot: sandboxFinalSnapshot({
+				runDirOf: (runId) => registry.runDir(runId),
+			}),
+			onResultImport: async (runId, event) => {
+				try {
+					await registry.recordResultImport(runId, event);
+				} catch (err) {
+					plog.warn({ err, runId }, "could not record the result import");
 				}
 			},
+			// The session must be gone and the launcher and sandbox have exited.
+			assertProcessesDead: (runId) =>
+				assertRunDead({
+					runId,
+					runDir: registry.runDir(runId),
+					sessionLiveness: () => host.sessionLiveness(runId),
+				}),
 		},
+	});
+	// Nothing imports yet: whatever is under `incoming` was left by a crash.
+	await sweepIncomingRefs(root).catch((err) => {
+		plog.warn({ err }, "could not sweep leftover incoming refs");
 	});
 	const adapters = new AdapterRegistry();
 	const notifier = makeNotifier(cfg.notify, plog);
@@ -1370,19 +1392,7 @@ export async function attachProject(
 			// never from the run's agent-writable worktree.
 			changedFiles: async (run) => {
 				if (!run.branch || !run.baseSha) return null;
-				const diff = await git(
-					[
-						"diff",
-						"--name-only",
-						"--no-renames",
-						"-z",
-						`${run.baseSha}..${run.branch}`,
-					],
-					root,
-				).catch(() => null);
-				return diff?.exitCode === 0
-					? diff.stdout.split("\0").filter(Boolean)
-					: null;
+				return branchChangedFiles(root, run.baseSha, run.branch);
 			},
 			routeHeld: async (task, pick) => {
 				const held = (await engine.routeTask(task, pick ? { brain: pick } : {}))

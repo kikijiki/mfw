@@ -17,7 +17,7 @@ import { appendEvent, type EventBus } from "@mfw/db/eventlog";
 import { engineKv, events as eventRows } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
 import { runEventsPath } from "./containment/run-dir.ts";
-import { git } from "./git.ts";
+import { git, gitComplete } from "./git.ts";
 import type { Logger } from "./log.ts";
 import { runProc } from "./proc.ts";
 import { loadReopenPolicies, reopenDefinitionHash } from "./reopen-policy.ts";
@@ -1576,8 +1576,14 @@ export class Maintenance {
 			root,
 		);
 		if (refs.exitCode !== 0 || !refs.stdout) return 0;
+		// A cut list could leave a checked-out branch looking free to delete.
+		const worktrees = await gitComplete(
+			["worktree", "list", "--porcelain"],
+			root,
+		).catch(() => null);
+		if (worktrees === null) return 0;
 		const checkedOut = new Set(
-			(await git(["worktree", "list", "--porcelain"], root)).stdout
+			worktrees
 				.split("\n")
 				.filter((line) => line.startsWith("branch "))
 				.map((line) => line.slice("branch ".length)),

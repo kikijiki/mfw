@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
 import { EventBus } from "@mfw/db/eventlog";
 import { ulid } from "@mfw/db/ids";
-import { engineKv, runSpans } from "@mfw/db/schema";
+import { engineKv, runSpans, runs } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
 import type { StepRunner } from "../src/finalize/step-runner.ts";
 import { git } from "../src/git.ts";
@@ -1025,6 +1025,79 @@ describe("Supervisor: diff-scope watchdog", () => {
 				fail = false;
 				await s.f.sup.pass(); // the failure recorded no throttle entry
 				expect(s.f.host.killed[0]?.reason).toBe("watchdog-scope");
+			} finally {
+				await s.f.cleanup();
+			}
+		},
+		SCOPE_TEST_MS,
+	);
+
+	test(
+		"a clone run whose samples keep failing is recorded as unsampled and stays so (M4)",
+		async () => {
+			let fail = true;
+			const s = await scopeFixture(
+				{ scope: { sampleMs: 1000 } },
+				{
+					scopeFiles: async () => {
+						if (fail) throw new Error("the in-sandbox helper did not answer");
+						return { files: ["src/mine/a.ts"], truncated: false };
+					},
+				},
+			);
+			try {
+				await s.f.handle.db
+					.update(runs)
+					.set({ workspaceKind: "clone" })
+					.where(eq(runs.id, s.run.id));
+				const failedSample = async () => {
+					s.f.now.value += 1_000;
+					await Bun.sleep(5);
+					await s.progress();
+					await s.f.sup.pass();
+				};
+				await failedSample();
+				await failedSample();
+				expect((await s.f.registry.get(s.run.id))?.scopeSample).toBeNull();
+				await failedSample();
+				expect(s.f.host.killed).toEqual([]);
+				expect((await s.f.registry.get(s.run.id))?.scopeSample).toMatchObject({
+					unsampled: true,
+					level: "warn",
+				});
+				// A later clean bundle can be forged: it does not clear the mark.
+				fail = false;
+				await failedSample();
+				expect((await s.f.registry.get(s.run.id))?.scopeSample).toMatchObject({
+					unsampled: true,
+					files: 1,
+				});
+			} finally {
+				await s.f.cleanup();
+			}
+		},
+		SCOPE_TEST_MS,
+	);
+
+	test(
+		"a worktree run's failed samples are not recorded as unsampled",
+		async () => {
+			const s = await scopeFixture(
+				{ scope: { sampleMs: 1000 } },
+				{
+					scopeFiles: async () => {
+						throw new Error("index.lock: worktree mid-rewrite");
+					},
+				},
+			);
+			try {
+				for (let i = 0; i < 4; i++) {
+					s.f.now.value += 1_000;
+					await Bun.sleep(5);
+					await s.progress();
+					await s.f.sup.pass();
+				}
+				expect((await s.f.registry.get(s.run.id))?.scopeSample).toBeNull();
 			} finally {
 				await s.f.cleanup();
 			}

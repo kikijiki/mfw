@@ -52,6 +52,7 @@ import {
 	runProvenanceView,
 } from "./run-provenance-view.ts";
 import { writeRunSubagents } from "./run-subagents.ts";
+import type { ResultImportEvent } from "./run-workspace/clone-impl.ts";
 
 /**
  * The DB row is authoritative for run state; the run dir is a debugging
@@ -937,6 +938,31 @@ export class RunRegistry {
 			value: claim,
 			source: "outbox-exit",
 		});
+	}
+
+	/** The host's import of a clone result, and apart from it the helper's claim. */
+	async recordResultImport(
+		runId: string,
+		event: ResultImportEvent,
+	): Promise<void> {
+		const { claim, ...observed } =
+			event.outcome === "imported" ? event : { ...event, claim: undefined };
+		await recordRunFact(this.handle.db, {
+			runId,
+			fact: "result_import",
+			provenance: "host-observed",
+			value: observed,
+			source: "host-git-import",
+		});
+		if (claim) {
+			await recordRunFact(this.handle.db, {
+				runId,
+				fact: "wip_claim",
+				provenance: "sandbox-reported",
+				value: claim,
+				source: "outbox-wip-ack",
+			});
+		}
 	}
 
 	/** Who vouches for this run's facts, for the run views. */

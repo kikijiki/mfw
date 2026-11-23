@@ -21,6 +21,7 @@ import {
 	launchAgentSandbox,
 } from "./agent-launch.ts";
 import { RUN_CONTROL_DIR } from "./run-dir.ts";
+import { recordRunProcess } from "./run-liveness.ts";
 
 const REFUSED = 78;
 const MAX_REQUEST_BYTES = 256 * 1024;
@@ -216,7 +217,10 @@ export async function runLauncher(
 	};
 	let result: Awaited<ReturnType<typeof launchAgentSandbox>>;
 	try {
+		// Before anything starts: the host's proof of death reads this record.
+		recordRunProcess(req.runDir, process.pid);
 		result = await launchAgentSandbox(req, argv, deps);
+		if (result.ok) recordRunProcess(req.runDir, result.child.pid);
 	} catch (err) {
 		handle.close();
 		die(`launch failed: ${(err as Error).message}`);

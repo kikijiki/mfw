@@ -27,6 +27,10 @@ export const RUN_FACT_PROVENANCE = {
 	outcome: FACT_PROVENANCE,
 	scope: ["host-observed"],
 	agent_exit_claim: ["sandbox-reported"],
+	/** The host's own verified import (or refusal) of a clone run's result. */
+	result_import: ["host-observed"],
+	/** What the in-sandbox WIP helper said about its final snapshot. */
+	wip_claim: ["sandbox-reported"],
 	report: ["sandbox-reported"],
 	usage: ["sandbox-reported"],
 	usage_live: ["sandbox-reported"],
@@ -77,6 +81,8 @@ export const RUN_FACT_SOURCES = [
 	"transcript",
 	"driver-hello",
 	"brain-call",
+	"host-git-import",
+	"outbox-wip-ack",
 ] as const;
 export type RunFactSource = (typeof RUN_FACT_SOURCES)[number];
 
@@ -86,7 +92,7 @@ export const RUN_EGRESS_PROVENANCE = "host-observed" satisfies FactProvenance;
 const quoted = (values: readonly string[]) =>
 	values.map((v) => `'${v}'`).join(", ");
 
-/** The SQL CHECK of the (fact, provenance) pairs; migration 0021 holds this text. */
+/** The SQL CHECK of the (fact, provenance) pairs; the latest migration touching `run_facts` holds this text. */
 export function runFactsPairCheck(): string {
 	const groups = new Map<string, string[]>();
 	for (const kind of RUN_FACT_KINDS) {

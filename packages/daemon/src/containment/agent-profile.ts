@@ -202,6 +202,8 @@ export interface RunProfileInput {
 	/** The run's own proxy socket directory. Absent means no network at all. */
 	egressSocketDir?: string;
 	deny?: readonly string[];
+	/** The end-of-run snapshot: the clone and run dir only, no fleet config. */
+	snapshotOnly?: boolean;
 }
 
 export function buildRunProfile(input: RunProfileInput): SandboxProfile {
@@ -215,12 +217,16 @@ export function buildRunProfile(input: RunProfileInput): SandboxProfile {
 			runDir: { source: input.runDir, outbox: "rw" },
 			scratch: "tmpfs",
 			toolchain: { binaries: [...new Set(input.binaries)] },
-			fleetConfig: {
-				cli: input.cli,
-				source: input.fleetDir,
-				writable: [...TEMPORARY_FLEET_WRITABLE[input.cli]],
-				privateState: fleetPrivateState(clone.tree, input.cli),
-			},
+			...(input.snapshotOnly
+				? {}
+				: {
+						fleetConfig: {
+							cli: input.cli,
+							source: input.fleetDir,
+							writable: [...TEMPORARY_FLEET_WRITABLE[input.cli]],
+							privateState: fleetPrivateState(clone.tree, input.cli),
+						},
+					}),
 			...(input.deny?.length ? { deny: [...input.deny] } : {}),
 		},
 		process: {

@@ -11,6 +11,22 @@ import { WorktreeRunWorkspace } from "./worktree-impl.ts";
 
 export type RunWorkspaceKind = "worktree" | "clone";
 
+/**
+ * A1.6 gate: the default stays `worktree` until all of these hold.
+ *
+ *  1. DoD checks run in the attested no-network sandbox (P7). Today
+ *     `verifier.ts` runs `sh -c <check>` on the host, so a verified clone still
+ *     executes the candidate's code as the daemon user (review WIPW H4). Until
+ *     then autonomous clone runs must be refused unless a sandboxing
+ *     `checkPrefix` is set.
+ *  2. The death proof (`run-liveness.ts`) and the memory limits are exercised
+ *     under a real systemd scope and real tmux.
+ *  3. Host git that touches merged content runs without the operator's global
+ *     filters, or the integration step disables them.
+ *  4. The launch, probe and import path passes on real Claude and Codex CLIs,
+ *     on NixOS and Ubuntu.
+ */
+
 interface ProjectSetting {
 	kind: RunWorkspaceKind;
 	clone?: CloneWorkspaceOptions;
