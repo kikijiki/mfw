@@ -39,8 +39,8 @@ import {
  */
 
 export interface DoctorOptions {
-	/** Do not run even `--version` of the agent CLIs. */
-	skipHarnessExec?: boolean;
+	/** Opt-in: run `--version` of agent CLIs found on a trusted path. */
+	harnessVersions?: boolean;
 }
 
 type Outcome = Pick<DoctorCheck, "severity" | "status" | "detail"> & {
@@ -372,15 +372,6 @@ async function harnessChecks(
 	opts: DoctorOptions,
 ): Promise<DoctorCheck[]> {
 	const names = ["claude", "codex"] as const;
-	if (opts.skipHarnessExec) {
-		return Promise.all(
-			names.map((n) =>
-				guarded(`harness.${n}`, "harness", () =>
-					skipped("not run (--no-exec-harness)"),
-				),
-			),
-		);
-	}
 	const found = await Promise.all(names.map((n) => p.tool(n)));
 	const none = found.every((f) => !f.path && !f.untrustedPath);
 	return Promise.all(
@@ -388,7 +379,12 @@ async function harnessChecks(
 			guarded(`harness.${n}`, "harness", async () => {
 				const f = found[i];
 				if (f?.path) {
-					// Only `--version`: no model call, and the probe hides credentials.
+					if (!opts.harnessVersions) {
+						return ok(
+							`${n} is installed (not run; --harness-versions reads its version)`,
+						);
+					}
+					// Only `--version`: no model call, no home directory.
 					const v = await p.toolVersion(f.path, "--version");
 					return ok(`${n} ${v ?? "(version not readable)"}`);
 				}

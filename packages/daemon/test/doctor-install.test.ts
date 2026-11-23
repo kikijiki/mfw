@@ -32,6 +32,7 @@ import { fileList, liveDoctorProbes } from "../src/doctor/live-probes.ts";
 import { withReadOnlyDb } from "../src/doctor/readonly-db.ts";
 import { DoctorReportSchema } from "../src/doctor/report.ts";
 import { runDoctor } from "../src/doctor/run.ts";
+import { liveTrustIo, type PathTrustIo } from "../src/sandbox.ts";
 import { ArmingStore } from "../src/triggers/arming.ts";
 import { loadTriggerDefs } from "../src/triggers/def.ts";
 
@@ -166,6 +167,19 @@ describe("the live doctor on a real install", () => {
 	});
 });
 
+/** The real tree, presented as root-owned, to reach the "trusted" path in a temp dir. */
+function rootOwnedView(): PathTrustIo {
+	const real = liveTrustIo();
+	return {
+		...real,
+		lstat: (p) => {
+			const st = real.lstat(p);
+			return st && { ...st, uid: 0, mode: st.mode & ~0o1022 };
+		},
+		rootUids: new Set([0]),
+	};
+}
+
 describe("running a trusted CLI", () => {
 	test("gets only its version flag, no home and no inherited secrets", async () => {
 		const i = await install();
@@ -178,7 +192,8 @@ describe("running a trusted CLI", () => {
 			env: { PATH: i.bin, ANTHROPIC_API_KEY: "inherited-secret-value" },
 			home: i.home,
 			installRoot: i.base,
-			writableRoots: [join(i.base, "nothing-is-writable-here")],
+			writableRoots: [],
+			trust: rootOwnedView(),
 		});
 		const found = await probes.tool("claude");
 		expect(found.path).toBe(join(i.bin, "claude"));

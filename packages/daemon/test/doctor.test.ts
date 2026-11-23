@@ -340,7 +340,7 @@ describe("tools", () => {
 		expect(ran).not.toContain("/srv/owner/.local/bin/claude");
 	});
 
-	test("skipHarnessExec runs no harness binary at all", async () => {
+	test("by default no harness binary runs, even from a trusted path", async () => {
 		const ran: string[] = [];
 		const report = await runDoctor(
 			fixture({
@@ -349,11 +349,27 @@ describe("tools", () => {
 					return "1.0.0";
 				},
 			}),
-			{ skipHarnessExec: true },
 		);
 		expect(ran.some((p) => /claude|codex/.test(p))).toBe(false);
-		expect(report.checks.find((c) => c.id === "harness.claude")?.status).toBe(
-			"skipped",
+		const c = report.checks.find((x) => x.id === "harness.claude");
+		expect(c?.status).toBe("ok");
+		expect(c?.detail).toContain("not run");
+	});
+
+	test("--harness-versions opts in", async () => {
+		const ran: string[] = [];
+		const report = await runDoctor(
+			fixture({
+				toolVersion: async (path) => {
+					ran.push(path);
+					return "1.2.3";
+				},
+			}),
+			{ harnessVersions: true },
+		);
+		expect(ran).toContain("/usr/bin/claude");
+		expect(report.checks.find((x) => x.id === "harness.claude")?.detail).toBe(
+			"claude 1.2.3",
 		);
 	});
 });

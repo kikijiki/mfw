@@ -28,18 +28,18 @@ import { isPublicForgeUrl, runDoctor } from "./run.ts";
  */
 
 export const DOCTOR_USAGE = [
-	"usage: mfw doctor [--json] [--no-exec-harness] [--first-run]",
+	"usage: mfw doctor [--json] [--harness-versions] [--first-run]",
 	"",
 	"  Read-only host and install check. It prints fixes and never applies them.",
 	"  --json             the report as JSON (schemaVersion 1)",
-	"  --no-exec-harness  do not run `claude --version` or `codex --version`",
+	"  --harness-versions  also run `claude --version` and `codex --version`",
 	"  --first-run        the guided first-run flow (same as mfw init)",
 	"",
 	"  exit: 0 no blockers, 1 a blocker exists, 2 usage, 3 refused in a sandbox",
 ].join("\n");
 
 export const INIT_USAGE = [
-	"usage: mfw init [--project <dir>] [--name <name>] [--branch <branch>] [--write] [--json] [--no-exec-harness]",
+	"usage: mfw init [--project <dir>] [--name <name>] [--branch <branch>] [--write] [--json] [--harness-versions]",
 	"",
 	"  Runs the doctor, shows where the setup token is and what to do next.",
 	"  With --project it prints a minimal project entry. Only --write adds it",
@@ -101,7 +101,7 @@ export async function runDoctorCommand(
 			d,
 		);
 	}
-	const known = new Set(["--json", "--no-exec-harness"]);
+	const known = new Set(["--json", "--harness-versions"]);
 	const bad = args.find((a) => !known.has(a));
 	if (bad) {
 		d.err(`mfw doctor: unknown option '${bad}'\n${DOCTOR_USAGE}`);
@@ -110,7 +110,7 @@ export async function runDoctorCommand(
 	const refused = refuseInSandbox("doctor", d);
 	if (refused !== null) return refused;
 	const report = await runDoctor(probesFor(d), {
-		skipHarnessExec: args.includes("--no-exec-harness"),
+		harnessVersions: args.includes("--harness-versions"),
 	});
 	d.out(
 		args.includes("--json")
@@ -126,16 +126,16 @@ interface InitArgs {
 	branch?: string;
 	write: boolean;
 	json: boolean;
-	skipHarnessExec: boolean;
+	harnessVersions: boolean;
 }
 
 function parseInit(args: readonly string[]): InitArgs | string {
-	const out: InitArgs = { write: false, json: false, skipHarnessExec: false };
+	const out: InitArgs = { write: false, json: false, harnessVersions: false };
 	for (let i = 0; i < args.length; i++) {
 		const a = args[i];
 		if (a === "--write") out.write = true;
 		else if (a === "--json") out.json = true;
-		else if (a === "--no-exec-harness") out.skipHarnessExec = true;
+		else if (a === "--harness-versions") out.harnessVersions = true;
 		else if (a === "--project" || a === "--name" || a === "--branch") {
 			const value = args[++i];
 			if (value === undefined || value.startsWith("--")) {
@@ -247,7 +247,7 @@ export async function runInitCommand(
 
 	const probes = probesFor(d);
 	const report = await runDoctor(probes, {
-		skipHarnessExec: parsed.skipHarnessExec,
+		harnessVersions: parsed.harnessVersions,
 	});
 	// The path only. The token itself is never opened here.
 	const tokenPath = join(d.home, "setup-token");

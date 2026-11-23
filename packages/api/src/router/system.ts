@@ -93,7 +93,6 @@ export const systemRouter = createTRPCRouter({
 				home: ctx.orchestrator.mfwHome,
 				...(ctx.exposurePolicy ? { exposure: ctx.exposurePolicy } : {}),
 			}),
-			{ skipHarnessExec: true },
 		);
 	}),
 

@@ -30,7 +30,11 @@ import {
 	LEGACY_HOST_TABLES,
 	legacyRowsMatch,
 } from "../resources/legacy-host-state.ts";
-import { pinnedToolIn } from "../sandbox.ts";
+import {
+	addAgentWritableRoots,
+	type PathTrustIo,
+	pinnedToolIn,
+} from "../sandbox.ts";
 import { ArmingStore } from "../triggers/arming.ts";
 import { loadTriggerDefs } from "../triggers/def.ts";
 import type {
@@ -51,8 +55,9 @@ import { withReadOnlyDb } from "./readonly-db.ts";
  *  - databases are read as bytes into a private in-memory copy;
  *  - secret files are only stat'ed;
  *  - git runs through the hardened helper with optional locks off;
- *  - a binary is run only from a PATH entry an agent cannot write, with no
- *    home directory, so a CLI's `--version` cannot reach its credentials.
+ *  - a binary is run only when it and every directory leading to it are
+ *    root-owned and not group- or world-writable. Agent CLIs are not run at
+ *    all unless asked (`--harness-versions`), and then with no home directory.
  */
 
 const TOOL_TIMEOUT_MS = 3_000;
@@ -68,6 +73,8 @@ export interface LiveProbeOptions {
 	exposure?: DoctorProbes["exposure"];
 	/** Test seam: directories treated as agent-writable. */
 	writableRoots?: readonly string[];
+	/** Test seam: how ownership of a binary and its parents is read. */
+	trust?: PathTrustIo;
 }
 
 /** This install's root, from source or from inside the production bundle. */
@@ -283,7 +290,7 @@ export function liveDoctorProbes(o: LiveProbeOptions): DoctorProbes {
 	const installRoot = o.installRoot ?? installRootFrom(import.meta.url);
 	const pathVar = env.PATH;
 	const trusted = (name: string) =>
-		pinnedToolIn(name, pathVar, o.writableRoots);
+		pinnedToolIn(name, pathVar, o.writableRoots, o.trust);
 
 	const run = async (argv: string[]): Promise<RunResult | undefined> => {
 		const bin = argv[0] ?? "";
@@ -444,7 +451,10 @@ export function liveDoctorProbes(o: LiveProbeOptions): DoctorProbes {
 		stat: statPath,
 		config: async () => {
 			try {
-				return { ok: true, config: await loadConfig(home) };
+				const config = await loadConfig(home);
+				// Agents write in these, so no tool is ever taken from one.
+				addAgentWritableRoots(config.projects.map((p) => p.root));
+				return { ok: true, config };
 			} catch (e) {
 				return { ok: false, error: configError(e) };
 			}
