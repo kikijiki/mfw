@@ -10,7 +10,8 @@
  * Imported by the drivers and bridges: node builtins only.
  */
 
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
+import { AGENT_LAUNCHER, hostScript } from "./host-script.ts";
 
 export const AGENT_LAUNCH_ENV = "MFW_AGENT_LAUNCH_REQUEST";
 /** Set beside the request: this process belongs to a host-bridged run. */
@@ -19,7 +20,7 @@ export const AGENT_BRIDGED_ENV = "MFW_AGENT_BRIDGED";
 /** The flags for any bun process the host starts on behalf of a sandboxed run. */
 export const HOST_BUN_FLAGS = ["--config=/dev/null", "--no-env-file"] as const;
 
-const LAUNCHER = join(import.meta.dir, "agent-launch-main.ts");
+const launcherScript = () => hostScript(import.meta.url, AGENT_LAUNCHER);
 
 type Env = Record<string, string | undefined>;
 
@@ -54,7 +55,7 @@ export function agentSpawnArgv(
 		process.execPath,
 		...HOST_BUN_FLAGS,
 		"run",
-		LAUNCHER,
+		launcherScript(),
 		request,
 		"--",
 		...argv,

@@ -24,6 +24,7 @@ import {
 	wipSupervisorArgv,
 } from "../run-workspace/wip-helper-install.ts";
 import { HOST_BUN_FLAGS } from "./agent-launch-argv.ts";
+import { EGRESS_RELAY, hostScript } from "./host-script.ts";
 import {
 	AgentProfileError,
 	agentToolCandidates,
@@ -161,7 +162,7 @@ export function withEgressRelay(
 ): string[] {
 	const copy = join(req.runDir, RUN_CONTROL_DIR, RELAY_FILE);
 	rmSync(copy, { force: true });
-	copyFileSync(join(import.meta.dir, RELAY_FILE), copy);
+	copyFileSync(hostScript(import.meta.url, EGRESS_RELAY), copy);
 	chmodSync(copy, 0o444);
 	return [
 		bun,
