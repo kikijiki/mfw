@@ -8,8 +8,8 @@
  *    sibling, not `tree/.git`, so nothing that walks up from the tree (an IDE,
  *    a shell prompt, the owner's agents) discovers a repository. The sandbox
  *    binds both in and sets `GIT_DIR` and `GIT_WORK_TREE`.
- *  - Objects arrive by a reflink copy of the primary's object store when the
- *    filesystem can share extents, otherwise by `git clone --no-hardlinks`.
+ *  - Objects arrive as a new pack of only what the commit reaches, so no other
+ *    branch, quarantined run or unreachable object is readable from the clone.
  *    There are no alternates: a clone with `objects/info/alternates` is refused.
  *  - Nothing else of the primary's gitdir is taken: not its config, hooks,
  *    refs, remotes or worktree list. The gitdir is rebuilt with a minimal
@@ -38,11 +38,10 @@ import { runProc } from "../proc.ts";
 import {
 	type CacheDeclaration,
 	type CacheOutcome,
-	reflinkCopy,
 	seedCaches,
 } from "./caches.ts";
 
-export type SeedStrategy = "reflink" | "clone";
+export type SeedStrategy = "pack";
 
 export type SeedErrorCode =
 	| "bad_argument"
@@ -72,8 +71,12 @@ export interface SeedOptions {
 	baseSha: string;
 	/** Caches to carry over; none by default (tracked content only). */
 	caches?: CacheDeclaration[];
-	/** `auto` tries a reflink copy and falls back to a clone. */
-	strategy?: "auto" | SeedStrategy;
+	/**
+	 * `full` (the default) keeps the commit's history, for a run that works on
+	 * it. `tip` holds the commit and its tree alone, for a role that only reads
+	 * or checks it, so deleted history cannot be read or sent anywhere.
+	 */
+	history?: "full" | "tip";
 	/** An absolute path to git; resolved from PATH when omitted. */
 	gitBin?: string;
 	/** Injected for tests; default one rooted at `workspaceRoot`. */
@@ -88,7 +91,7 @@ export interface SeedResult {
 	gitDir: string;
 	treeDir: string;
 	strategy: SeedStrategy;
-	/** Why this strategy: `forced`, `reflink_ok`, or what made `auto` fall back. */
+	/** What the store holds: `reachable` from the commit, or the `tip` alone. */
 	strategyReason: string;
 	baseRef: string;
 	branchRef: string;
@@ -193,52 +196,86 @@ class Seeder {
 		return common;
 	}
 
+	/**
+	 * A new object store holding only what the commit reaches: never a copy of
+	 * the primary's, which also holds other branches, quarantined work and
+	 * whatever history dropped. With `history: "tip"`, only the commit's own tree.
+	 */
 	async seedObjects(
 		primaryGit: string,
 		gitDir: string,
 	): Promise<{ strategy: SeedStrategy; reason: string }> {
-		const want = this.opts.strategy ?? "auto";
-		let fallback = "";
-		if (want !== "clone") {
-			await mkdir(gitDir, { mode: 0o700 });
-			const r = await reflinkCopy(
-				join(primaryGit, "objects"),
-				join(gitDir, "objects"),
-			);
-			if (r.ok) {
-				return {
-					strategy: "reflink",
-					reason: want === "reflink" ? "forced" : "reflink_ok",
-				};
-			}
-			if (want === "reflink") {
-				throw new SeedError(
-					"seed_failed",
-					`reflink copy of the object store failed: ${r.detail}`,
-				);
-			}
-			await rm(gitDir, { recursive: true, force: true });
-			fallback = `reflink_unavailable: ${r.detail}`;
-		}
-		// Not `--local`'s hardlinks: a clone must never share inodes with the primary.
+		const { baseSha } = this.opts;
+		const tipOnly = this.opts.history === "tip";
 		await this.git(
 			[
-				"clone",
+				"init",
 				"--bare",
-				"--no-hardlinks",
 				"--quiet",
 				"--template=",
-				"--",
-				primaryGit,
+				`--object-format=${baseSha.length === 64 ? "sha256" : "sha1"}`,
 				gitDir,
 			],
 			this.opts.workspaceRoot,
-			CHECKOUT_TIMEOUT_MS,
 		);
-		return {
-			strategy: "clone",
-			reason: want === "clone" ? "forced" : fallback,
-		};
+		const prefix = [this.gitBin, ...this.host.configArgs({ allowFile: true })];
+		const env = this.host.env();
+		const list = Bun.spawn(
+			[
+				...prefix,
+				`--git-dir=${primaryGit}`,
+				"rev-list",
+				"--objects",
+				...(tipOnly ? ["--no-walk"] : []),
+				baseSha,
+			],
+			{ cwd: this.opts.workspaceRoot, env, stdout: "pipe", stderr: "pipe" },
+		);
+		const pack = Bun.spawn(
+			[
+				...prefix,
+				`--git-dir=${primaryGit}`,
+				"pack-objects",
+				"--stdout",
+				"--quiet",
+			],
+			{
+				cwd: this.opts.workspaceRoot,
+				env,
+				stdin: list.stdout,
+				stdout: "pipe",
+				stderr: "pipe",
+			},
+		);
+		const index = Bun.spawn(
+			[...prefix, `--git-dir=${gitDir}`, "index-pack", "--stdin"],
+			{
+				cwd: this.opts.workspaceRoot,
+				env,
+				stdin: pack.stdout,
+				stdout: "ignore",
+				stderr: "pipe",
+			},
+		);
+		const procs = [list, pack, index];
+		const timer = setTimeout(() => {
+			for (const p of procs) p.kill("SIGKILL");
+		}, CHECKOUT_TIMEOUT_MS);
+		try {
+			const [codes, errors] = await Promise.all([
+				Promise.all(procs.map((p) => p.exited)),
+				Promise.all(procs.map((p) => new Response(p.stderr).text())),
+			]);
+			if (codes.some((c) => c !== 0)) {
+				throw new SeedError(
+					"seed_failed",
+					`packing the commit's objects failed (${codes.join(",")}): ${errors.join(" ").trim().slice(0, 500)}`,
+				);
+			}
+		} finally {
+			clearTimeout(timer);
+		}
+		return { strategy: "pack", reason: tipOnly ? "tip" : "reachable" };
 	}
 
 	/** Drop everything the copy brought but the object store (and a shallow file), and write a minimal skeleton. */
@@ -344,6 +381,10 @@ class Seeder {
 		const picked = await this.seedObjects(primaryGit, gitDir);
 		this.log(`seed ${runId}: strategy ${picked.strategy} (${picked.reason})`);
 		await this.rebuildGitDir(gitDir, runId);
+		// The commit's parents are absent on purpose: tell git it is a boundary.
+		if (this.opts.history === "tip") {
+			await writeFile(join(gitDir, "shallow"), `${baseSha}\n`);
+		}
 		await chmod(gitDir, 0o700);
 		if (await this.hasAlternates(gitDir)) {
 			throw new SeedError("alternates", "the seeded gitdir has alternates");

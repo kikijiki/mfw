@@ -278,6 +278,24 @@ describe.skipIf(skip !== null)("a DoD check in the verifier role", () => {
 		expect(r.checks[0]?.detail).toContain("no_start_handshake");
 	}, 60_000);
 
+	// Review P7, H2 (X6), from inside the real sandbox.
+	test("a blob on another branch is unreadable from a check", async () => {
+		await git(["checkout", "-q", "-b", "elsewhere"], primary);
+		writeFileSync(join(primary, "other.txt"), "only-elsewhere\n");
+		await git(["add", "other.txt"], primary);
+		await git(["commit", "-q", "-m", "other"], primary);
+		const blob = (
+			await git(["rev-parse", "elsewhere:other.txt"], primary)
+		).stdout.trim();
+		await git(["checkout", "-q", "main"], primary);
+		const r = await check(
+			`git cat-file -e HEAD:a.txt || exit 3; if git cat-file -p ${blob} 2>/dev/null; then exit 9; fi`,
+		);
+		expect(r.checks[0]?.detail).toBeUndefined();
+		expect(r.passed).toBe(true);
+		await git(["branch", "-q", "-D", "elsewhere"], primary);
+	}, 60_000);
+
 	test("the check itself cannot reach the handshake pipe", async () => {
 		const r = await check(
 			'for fd in 3 4 5 6 7 8 9; do if ( : >&"$fd" ) 2>/dev/null; then exit 9; fi; done',

@@ -52,6 +52,7 @@ export async function createRoleClone(
 		workspaceRoot,
 		primaryRoot,
 		baseSha: sha,
+		history: "tip",
 	});
 	await writeFile(
 		join(seeded.dir, "mfw-workspace.json"),

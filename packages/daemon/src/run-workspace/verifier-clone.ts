@@ -97,6 +97,8 @@ export class VerifierClones {
 				workspaceRoot: this.root,
 				primaryRoot: this.opts.primaryRoot,
 				baseSha: sha,
+				// A check needs the commit, not the project's history.
+				history: "tip",
 				...(this.opts.caches ? { caches: this.opts.caches } : {}),
 				...(this.opts.gitBin ? { gitBin: this.opts.gitBin } : {}),
 				...(this.opts.host ? { host: this.opts.host } : {}),
