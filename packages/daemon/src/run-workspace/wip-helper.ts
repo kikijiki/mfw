@@ -140,6 +140,8 @@ async function runGit(
 			"-c",
 			"core.fsmonitor=false",
 			"-c",
+			"core.attributesFile=/dev/null",
+			"-c",
 			"user.name=mfw",
 			"-c",
 			"user.email=mfw@localhost",
@@ -151,6 +153,9 @@ async function runGit(
 				...process.env,
 				GIT_DIR: env.gitDir,
 				GIT_WORK_TREE: env.workTree,
+				// A planted `commondir` file must not move git to another config.
+				GIT_COMMON_DIR: env.gitDir,
+				GIT_ATTR_NOSYSTEM: "1",
 				GIT_CONFIG_GLOBAL: "/dev/null",
 				GIT_CONFIG_SYSTEM: "/dev/null",
 				GIT_TERMINAL_PROMPT: "0",

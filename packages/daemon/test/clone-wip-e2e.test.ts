@@ -5,6 +5,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	realpathSync,
 	rmSync,
@@ -571,7 +572,8 @@ ${WAIT_GO}
 		const code = await runAgent(
 			f,
 			`
-rm -rf /git/objects /git/refs /git/HEAD
+mkdir /work/.gone
+mv /git/objects /git/refs /git/HEAD /work/.gone/
 `,
 		);
 		expect(code).toBe(0);
@@ -579,6 +581,38 @@ rm -rf /git/objects /git/refs /git/HEAD
 		expect(result).toMatchObject({ sha: null, failure: "snapshot_failed" });
 		expect(await refsOf(f, "refs/mfw/quarantine/")).toEqual([]);
 		expect(await f.ws.hasLocalChanges(f.seeded)).toBe(true);
+	}, 120_000);
+
+	test("a planted commondir cannot bring the agent's config into the final snapshot (H3)", async () => {
+		const code = await runAgent(
+			f,
+			`
+command -v cp >/dev/null || exit 94
+echo work > a.txt
+gc add -A
+gc commit -q -m "work"
+cp -r /git /work/evil
+printf '[core]\\n\\trepositoryformatversion = 0\\n[filter "x"]\\n\\tclean = "touch /mfw-run/outbox/FILTER_RAN; cat"\\n\\trequired = true\\n' > /work/evil/config
+mkdir -p /work/evil/info /git/info
+printf '* filter=x\\n' > /work/evil/info/attributes
+printf '* filter=x\\n' > /git/info/attributes
+echo /work/evil > /git/commondir
+echo pending > pending.txt
+`,
+		);
+		expect(code).toBe(0);
+		const result = await f.ws.fetchResult(f.seeded);
+		expect(existsSync(join(f.outbox, "FILTER_RAN"))).toBe(false);
+		expect(result.failure).toBeUndefined();
+		expect((await git(["show", `${result.sha}:a.txt`], f.project)).stdout).toBe(
+			"work",
+		);
+		const left = readdirSync(join(dirname(f.seeded.path), "git")).sort();
+		for (const name of left) {
+			expect(["HEAD", "config", "objects", "packed-refs", "refs"]).toContain(
+				name,
+			);
+		}
 	}, 120_000);
 
 	test("a committed symlink out of the tree is refused at import", async () => {
@@ -607,7 +641,7 @@ echo linked > a.txt
 ln a.txt hardlink.txt
 gc add -A
 gc commit -q -m "hardlinked content"
-rm -rf /git/hooks
+[ ! -e /git/hooks ] || mv /git/hooks /work/.old-hooks
 ln -s '${victim}' /git/hooks
 mv /git/config /git/config.real
 ln -s '${join(victim, "keep")}' /git/config

@@ -61,6 +61,8 @@ const MARKER = "mfw-workspace.json";
 const BUNDLE_REL = "outbox/result.bundle";
 /** Beside the clone, never bound: the hooks and config taken out before the final snapshot. */
 const HELD_GIT_DIR = "held-git";
+/** All a gitdir keeps for the final snapshot; the config is rewritten by the host. */
+const CLEAN_GITDIR = new Set(["objects", "refs", "packed-refs", "HEAD"]);
 
 interface Marker {
 	version: 1;
@@ -496,32 +498,51 @@ export class CloneRunWorkspace implements RunWorkspace {
 	}
 
 	/**
-	 * Take what the agent left that git would execute out of the clone, so the
-	 * snapshot sandbox passes the unchanged probe because the files are really
-	 * gone. Only with every run process dead. `rename` follows no links, and the
-	 * files land beside the clone, where no sandbox binds them and nothing runs
-	 * them. False when the clone has no real gitdir or tree.
+	 * Rebuild the gitdir from what a snapshot needs: `objects`, `refs`,
+	 * `packed-refs` and `HEAD`, plus a host-written config. Everything else the
+	 * agent could have used to redirect or configure git (`commondir`,
+	 * `worktrees/`, `info/`, `shallow`, hooks, `objects/info/alternates`) moves
+	 * out, so the snapshot sandbox passes the unchanged probe because those
+	 * files are really gone. Only with every run process dead. `rename` follows
+	 * no links, and the files land beside the clone, where no sandbox binds them
+	 * and nothing runs them. False when the clone has no usable gitdir or tree.
 	 */
 	private async neutralizeGit(marker: Marker): Promise<boolean> {
 		const dir = this.dirOf(marker.runId);
 		const gitDir = join(dir, "git");
 		const tree = join(dir, "tree");
-		for (const path of [gitDir, tree]) {
+		const kind = async (path: string) => {
 			const st = await lstat(path).catch(() => null);
-			if (!st?.isDirectory()) return false;
+			return st?.isDirectory()
+				? "dir"
+				: st?.isFile()
+					? "file"
+					: st
+						? "other"
+						: null;
+		};
+		if (
+			(await kind(gitDir)) !== "dir" ||
+			(await kind(tree)) !== "dir" ||
+			(await kind(join(gitDir, "objects"))) !== "dir" ||
+			(await kind(join(gitDir, "refs"))) !== "dir" ||
+			(await kind(join(gitDir, "HEAD"))) !== "file" ||
+			!["file", null].includes(await kind(join(gitDir, "packed-refs")))
+		) {
+			return false;
 		}
 		const hold = join(dir, HELD_GIT_DIR, randomBytes(6).toString("hex"));
 		await mkdir(hold, { recursive: true, mode: 0o700 });
-		for (const [from, name] of [
-			[join(gitDir, "hooks"), "hooks"],
-			[join(gitDir, "config"), "config"],
-			[join(gitDir, "config.worktree"), "config.worktree"],
-			[join(tree, ".git"), "tree-dot-git"],
-		] as const) {
-			await rename(from, join(hold, name)).catch((e: NodeJS.ErrnoException) => {
+		const moveOut = (from: string, name: string) =>
+			rename(from, join(hold, name)).catch((e: NodeJS.ErrnoException) => {
 				if (e.code !== "ENOENT") throw e;
 			});
+		for (const name of await readdir(gitDir)) {
+			if (!CLEAN_GITDIR.has(name)) await moveOut(join(gitDir, name), name);
 		}
+		await moveOut(join(gitDir, "objects", "info"), "objects-info");
+		await mkdir(join(gitDir, "objects", "info"));
+		await moveOut(join(tree, ".git"), "tree-dot-git");
 		await writeFile(
 			join(gitDir, "config"),
 			cloneConfig(marker.baseSha.length === 64),
