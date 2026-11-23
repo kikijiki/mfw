@@ -12,6 +12,18 @@ const PROCEDURE_LIST =
 	/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*(,[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*)*$/;
 
 /**
+ * The doctor's report names host paths and install layout, so neither a browser
+ * nor a proxy may keep a copy. A batch containing it is covered as a whole.
+ */
+export function doctorResponseMeta(paths: readonly string[] | undefined): {
+	headers?: Headers;
+} {
+	return paths?.includes("system.doctor")
+		? { headers: new Headers({ "Cache-Control": "no-store" }) }
+		: {};
+}
+
+/**
  * Exactly `<endpoint>/<procedure>[,<procedure>...]`. tRPC finds the procedure
  * by slicing the pathname, so it also serves other spellings (a case variant
  * of the mount, a trailing slash, percent-encoding); none of them is ours.
@@ -98,6 +110,7 @@ export async function serveTrpc(
 						warnings: exposureWarnings(env),
 					}),
 				}),
+				responseMeta: ({ paths }) => doctorResponseMeta(paths),
 				onError({ error, path }) {
 					console.error(`[mfw] tRPC error on '${path}':`, error.message);
 				},

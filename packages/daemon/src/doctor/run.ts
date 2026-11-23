@@ -482,16 +482,29 @@ function allowlistCheck(): Outcome {
 
 const PUBLIC_FORGES = new Set([
 	"github.com",
+	"ssh.github.com",
 	"gitlab.com",
+	"altssh.gitlab.com",
 	"codeberg.org",
 	"bitbucket.org",
+	"altssh.bitbucket.org",
 	"git.sr.ht",
 ]);
 
 /** The host of an https, ssh or scp-style git URL. */
 export function remoteHost(url: string): string | null {
-	const full = /^[a-z][a-z0-9+.-]*:\/\/(?:[^/@]+@)?([^/:]+)/i.exec(url);
-	if (full) return (full[1] as string).toLowerCase();
+	const full = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)(.*)$/i.exec(url);
+	if (full) {
+		let authority = full[1] as string;
+		// `user:pa/ss@host`: the slash ended the authority inside a password.
+		if (!authority.includes("@") && /:[^0-9]/.test(authority)) {
+			const rest = full[2] as string;
+			const end = rest.lastIndexOf("@");
+			if (end >= 0) authority = rest.slice(end).split("/")[0] as string;
+		}
+		const host = authority.slice(authority.lastIndexOf("@") + 1);
+		return (host.split(":")[0] as string).toLowerCase() || null;
+	}
 	const scp = /^(?:[^/@]+@)?([^/:]+):/.exec(url);
 	return scp ? (scp[1] as string).toLowerCase() : null;
 }

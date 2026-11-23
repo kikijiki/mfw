@@ -46,8 +46,10 @@ export interface DefinitionLoad<T> {
 }
 
 export interface DefinitionLoaderDeps<T> {
-	/** Absolute path to the definitions directory; created if absent. */
+	/** Absolute path to the definitions directory; created if absent unless `create` is false. */
 	dir: string;
+	/** False for a reader that must make no write attempt. */
+	create?: boolean;
 	/** The id grammar. */
 	idRe: RegExp;
 	/** Names this kind in log lines and quarantine reasons ("lifetime"). */
@@ -66,7 +68,7 @@ export class DefinitionLoader<T> {
 
 	async load(): Promise<DefinitionLoad<T>> {
 		const { dir, log, kind } = this.deps;
-		await mkdir(dir, { recursive: true });
+		if (this.deps.create !== false) await mkdir(dir, { recursive: true });
 		const out: DefinitionLoad<T> = { defs: [], quarantined: [] };
 		let files: string[];
 		try {

@@ -92,8 +92,8 @@ export async function withDeadline<T>(
 export interface LiveProbeOptions {
 	env: Record<string, string | undefined>;
 	home: string;
-	/** Root of this install; defaults to the one this module runs from. */
-	installRoot?: string;
+	/** Root of this install; defaults to the one this module runs from. Null is an unrecognised layout. */
+	installRoot?: string | null;
 	exposure?: DoctorProbes["exposure"];
 	/** Test seam: directories treated as agent-writable. */
 	writableRoots?: readonly string[];
@@ -103,12 +103,20 @@ export interface LiveProbeOptions {
 	trust?: PathTrustIo;
 }
 
-/** This install's root, from source or from inside the production bundle. */
-export function installRootFrom(moduleUrl: string): string {
+const SOURCE_MODULE = "/packages/daemon/src/doctor/live-probes.ts";
+
+/**
+ * This install's root, from source or from inside the production bundle. Null
+ * for any other layout: calling an unknown bundle "source" would skip the
+ * verification of its manifests.
+ */
+export function installRootFrom(moduleUrl: string): string | null {
 	const file = fileURLToPath(moduleUrl);
-	const marker = "/apps/start/.output/";
-	const at = file.lastIndexOf(marker);
-	return at >= 0 ? file.slice(0, at) : resolve(dirname(file), "../../../..");
+	const at = file.lastIndexOf("/apps/start/.output/");
+	if (at >= 0) return file.slice(0, at);
+	return file.endsWith(SOURCE_MODULE)
+		? file.slice(0, -SOURCE_MODULE.length)
+		: null;
 }
 
 const count = (db: Database, sql: string, ...args: number[]): number =>
@@ -183,9 +191,17 @@ function readLegacyHost(home: string): LegacyHostFacts {
 }
 
 function readBuild(
-	installRoot: string,
+	installRoot: string | null,
 	env: LiveProbeOptions["env"],
 ): BuildFacts {
+	if (installRoot === null) {
+		return {
+			kind: "build",
+			hostScripts:
+				"this install's layout is not recognised, so its manifests cannot be verified",
+			migrations: null,
+		};
+	}
 	const output = join(installRoot, "apps", "start", ".output");
 	if (!existsSync(join(output, "server"))) return { kind: "source" };
 	const moduleUrl = pathToFileURL(join(output, "server", "index.mjs")).href;
@@ -260,7 +276,7 @@ async function readTriggers(
 		unarmed: 0,
 	};
 	const dir = join(entry.root, ".mfw", "triggers");
-	// The shared loader creates a missing directory, and the doctor writes nothing.
+	// Nothing to read, and the doctor creates nothing.
 	if (!existsSync(dir)) return facts;
 	let records: Awaited<ReturnType<ArmingStore["load"]>>;
 	try {
@@ -272,6 +288,7 @@ async function readTriggers(
 	const { defs, quarantined } = await loadTriggerDefs(
 		dir,
 		pino({ level: "silent" }),
+		{ create: false },
 	);
 	facts.quarantined = quarantined.map((q) => q.id ?? q.file);
 	for (const def of defs) {
@@ -313,7 +330,10 @@ function configError(e: unknown): string {
 
 export function liveDoctorProbes(o: LiveProbeOptions): DoctorProbes {
 	const { env, home } = o;
-	const installRoot = o.installRoot ?? installRootFrom(import.meta.url);
+	const installRoot =
+		o.installRoot === undefined
+			? installRootFrom(import.meta.url)
+			: o.installRoot;
 	const pathVar = env.PATH;
 	const trusted = (name: string) =>
 		pinnedToolIn(name, pathVar, o.writableRoots, o.trust);
