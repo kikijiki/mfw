@@ -92,17 +92,62 @@ export async function openProjectDb(mfwDir: string): Promise<ProjectDbHandle> {
 	return openDbAt(join(mfwDir, "mfw.db"));
 }
 
+/**
+ * Connection-level pragmas. `journal_mode=WAL` persists in the file; the rest
+ * belong to the connection and must be on every connection the client opens.
+ */
+const CONNECTION_PRAGMAS = [
+	"PRAGMA synchronous=NORMAL;",
+	"PRAGMA foreign_keys=ON;",
+	"PRAGMA busy_timeout=5000;",
+].join("\n");
+
+/**
+ * libsql's file client hands its connection to each `transaction()` and opens a
+ * bare replacement lazily on next use (`reconnect()` does the same), dropping
+ * every connection-level pragma: synchronous reverted to FULL, busy_timeout to
+ * 0 (SQLITE_BUSY under contention) and foreign_keys to off. There is no
+ * connection option for them, so wrap the client and re-apply the pragmas on
+ * the replacement. `transaction()` nulls the old connection synchronously and
+ * the `executeMultiple` call below creates the replacement in the same tick,
+ * so no other statement can reach a bare connection first.
+ */
+function withConnectionPragmas(raw: Client): Client {
+	return new Proxy(raw, {
+		get(target, prop) {
+			if (prop === "transaction") {
+				return async (...args: Parameters<Client["transaction"]>) => {
+					const begun = target.transaction(...args);
+					const applied = target.executeMultiple(CONNECTION_PRAGMAS);
+					const tx = await begun;
+					try {
+						await applied;
+					} catch (e) {
+						await tx.rollback().catch(() => {});
+						tx.close();
+						throw e;
+					}
+					return tx;
+				};
+			}
+			if (prop === "reconnect") {
+				return async () => {
+					await target.reconnect();
+					await target.executeMultiple(CONNECTION_PRAGMAS);
+				};
+			}
+			const value = Reflect.get(target, prop, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+}
+
 /** Test/backup entry: open a specific db file with the same setup. */
 export async function openDbAt(dbPath: string): Promise<ProjectDbHandle> {
 	await mkdir(dirname(dbPath), { recursive: true });
-	const client = createClient({ url: `file:${dbPath}` });
+	const client = withConnectionPragmas(createClient({ url: `file:${dbPath}` }));
 	await client.executeMultiple(
-		[
-			"PRAGMA journal_mode=WAL;",
-			"PRAGMA synchronous=NORMAL;",
-			"PRAGMA foreign_keys=ON;",
-			"PRAGMA busy_timeout=5000;",
-		].join("\n"),
+		`PRAGMA journal_mode=WAL;\n${CONNECTION_PRAGMAS}`,
 	);
 	const db = drizzle(client, { schema });
 	await migrate(db, { migrationsFolder: migrationsDir() });
