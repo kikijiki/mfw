@@ -34,9 +34,9 @@ export interface Deps {
 export const USAGE = [
 	"usage: mfw <command> [args]",
 	"",
-	"  auth ...      owner recovery: unlock, setup-token, sign-out-everywhere, reset",
+	"  auth ...      owner tools: token, unlock, setup-token, sign-out-everywhere, reset",
 	"  board ...     the markdown board (runs mfw-board; no server needed)",
-	"  mcp [--brain <sessionId>]   MCP server over stdio (no server process needed)",
+	"  mcp [--token-file <path>]   MCP server over stdio, using a scoped API token",
 	"  server        run the orchestrator + web UI in the foreground",
 	"  version       print the mfw and mfw-board versions",
 ].join("\n");
@@ -104,7 +104,7 @@ export async function dispatch(argv: string[], d: Deps): Promise<number> {
 		case "mcp": {
 			if (rest.includes("--help") || rest.includes("-h")) {
 				d.out(
-					"usage: mfw mcp [--brain <sessionId>]   (MCP server over stdio; the daemon must be reachable via MFW_URL)",
+					"usage: mfw mcp [--token-file <path>]   (MCP server over stdio; the server must be reachable via MFW_URL)\n\nThe API token comes from --token-file, then MFW_TOKEN, then $MFW_HOME/mcp-token (0600).\nCreate one on the host: mfw auth token create --name mcp --scope board:read --write-file",
 				);
 				return 0;
 			}

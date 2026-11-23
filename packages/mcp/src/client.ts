@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import type { AppRouter } from "@mfw/api";
 import { createTRPCClient, httpBatchStreamLink, httpLink } from "@trpc/client";
 import SuperJSON from "superjson";
+import { assertTokenTransport } from "./credential.ts";
 
 /**
  * tRPC client to the *running* mfw app (default :7777). The MCP server is a thin
@@ -12,12 +13,27 @@ import SuperJSON from "superjson";
  * `apps/start/vite.config.ts`). This package runs outside that build and cannot
  * read `import.meta.env.BASE_URL`, so it repeats the default; a build with a
  * different `MFW_BASE_PATH` needs MFW_URL set to match.
+ *
+ * With an API token the client sends `Authorization: Bearer` and makes one call
+ * per request, because the server refuses batches from tokens.
  */
 export function makeClient(
 	url = process.env.MFW_URL ?? "http://localhost:7777/mfw/api/trpc",
+	token?: string | null,
 ) {
+	if (!token)
+		return createTRPCClient<AppRouter>({
+			links: [httpBatchStreamLink({ transformer: SuperJSON, url })],
+		});
+	assertTokenTransport(url);
 	return createTRPCClient<AppRouter>({
-		links: [httpBatchStreamLink({ transformer: SuperJSON, url })],
+		links: [
+			httpLink({
+				transformer: SuperJSON,
+				url,
+				headers: () => ({ authorization: `Bearer ${token}` }),
+			}),
+		],
 	});
 }
 
