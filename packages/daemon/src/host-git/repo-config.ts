@@ -1,6 +1,5 @@
 /**
- * The allowlist for repository-scope git config (backstage architecture.md,
- * "Host-executed paths").
+ * The allowlist for repository-scope git config.
  *
  * A denylist of keys that run programs cannot be complete: git 2.54 added
  * `hook.<name>.command`, which `core.hooksPath` does not disable. So every host

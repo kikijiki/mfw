@@ -54,7 +54,7 @@ import { RemoteTransportError, type SshTransport } from "./ssh-transport.ts";
  * detached driver; `collect` brings changes back by 3-way apply; `dispose`
  * deletes the run directory and proves it gone.
  *
- * Trust enforcement at launch (see backstage architecture.md, "Security model", "SSH hosts"):
+ * Trust enforcement at launch:
  *   - the host must be schedulable now (fresh passing probe: no root, no
  *     passwordless sudo, bwrap where required);
  *   - `sandbox: bwrap` hosts run the driver in bwrap: filesystem read-only

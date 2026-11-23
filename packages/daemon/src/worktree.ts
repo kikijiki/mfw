@@ -35,7 +35,7 @@ const OWNER_BRANCH = "mfw.owner-branch";
 const OWNER_BASE_SHA = "mfw.owner-base-sha";
 
 /**
- * Git worktree lifecycle (backstage architecture.md, "Runs"). Each task runs in its own
+ * Git worktree lifecycle. Each task runs in its own
  * worktree on its own branch so concurrent agents never collide. Clean
  * worktrees are auto-removed; dirty ones are preserved for review (Factory
  * `droid exec -w` semantics).

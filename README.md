@@ -281,8 +281,7 @@ The project brain does not use tokens: it talks over its own unix socket.
 
 ## How it is built
 
-The architecture notes live in the backstage knowledge repository under
-`projects/mfw/architecture.md`. The short version: one app (a [TanStack Start](https://tanstack.com/start) server) runs the
+The design notes that are public live in [docs/](docs/). The short version: one app (a [TanStack Start](https://tanstack.com/start) server) runs the
 daemon in-process, serves the web UI and a typed API, and keeps run bookkeeping in
 a local SQLite database. The board itself is always just files.
 

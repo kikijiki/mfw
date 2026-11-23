@@ -9,7 +9,7 @@ import type { WipArchive } from "./run-workspace/run-workspace.ts";
 import { runHoldsClaim, type TaskService } from "./task-service.ts";
 
 /**
- * Lifecycle safety (backstage architecture.md, "Task lifecycle"): nothing a human does from the UI
+ * Lifecycle safety: nothing a human does from the UI
  * destroys run work without first saving it to a `wip/` branch, and a task is
  * not closed while its branch holds work that never landed.
  */

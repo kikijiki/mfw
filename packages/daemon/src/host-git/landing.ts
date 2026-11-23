@@ -1,6 +1,5 @@
 /**
- * The host-owned repository merges and pushes run from (backstage
- * architecture.md, "Host-executed paths").
+ * The host-owned repository merges and pushes run from.
  *
  * It lives in the daemon home, which no sandbox can see, and its config is the
  * one `git init` wrote. It has no refs of its own: git reads and writes objects

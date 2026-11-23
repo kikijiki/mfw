@@ -1,5 +1,5 @@
 /**
- * The in-sandbox WIP helper (backstage architecture.md, "Run workspace").
+ * The in-sandbox WIP helper.
  *
  * A clone's work tree and gitdir are agent-writable, so the host never runs
  * git on them. To save uncommitted work it asks this helper, which runs

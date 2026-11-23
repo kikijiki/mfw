@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { collect, render } from "./third-party-notices.ts";
+import { collect, render } from "../../../tools/third-party-notices.ts";
 
-const app = join(import.meta.dir, "..", "apps", "start");
+const app = join(import.meta.dir, "..", "..", "..", "apps", "start");
 
 describe("third-party notices", () => {
 	const deps = collect(app);

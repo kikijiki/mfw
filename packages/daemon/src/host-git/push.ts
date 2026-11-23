@@ -1,5 +1,5 @@
 /**
- * The push after a merge (backstage architecture.md, "Host-executed paths").
+ * The push after a merge.
  *
  * A push needs the operator's credentials, so it keeps their global and system
  * config. Everything the repository controls is out of the path:

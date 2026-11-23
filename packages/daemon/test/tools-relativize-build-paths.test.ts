@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { relativize } from "./relativize-build-paths.ts";
+import { relativize } from "../../../tools/relativize-build-paths.ts";
 
 test("the build root is removed from route file paths", () => {
 	const src = `{ filePath: "/build/apps/start/src/routes/x.tsx" }`;
