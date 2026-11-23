@@ -18,7 +18,6 @@ import {
 	openSync,
 	readdirSync,
 	readFileSync,
-	realpathSync,
 	rmdirSync,
 	rmSync,
 	statSync,
@@ -1174,48 +1173,33 @@ async function trustedProxy(): Promise<void> {
 	}
 }
 
-/** What a process inside a real `bwrapCore` sandbox gets connecting to `path`. */
+/**
+ * What a process inside a real verifier-role sandbox gets connecting to `path`,
+ * through the current launch path (profile, `compileBwrap`, `launchSandbox`).
+ * `control` is a socket the host serves inside the sandbox's own tree.
+ */
 function connectFromSandbox(
 	path: string,
 	scratch: string,
 	fakeHome: string,
-	mfwHome: string,
-): string {
-	const bwrapPath = Bun.which("bwrap");
-	if (!bwrapPath) return "no-bwrap";
-	const cwd = join(scratch, "sandbox-cwd");
-	const runDir = join(scratch, "sandbox-run");
-	mkdirSync(cwd, { recursive: true });
-	mkdirSync(runDir, { recursive: true });
-	// In a child: the runtime fixes `homedir()` at start, and the writable HOME
-	// bind this builds must be the fixture's, never the real one.
-	const options = JSON.stringify({
-		bwrapPath,
-		cwd,
-		runDir,
-		isolation: { mode: "bwrap", hidePaths: [mfwHome], mfwHome },
-	});
-	const module = join(ROOT, "packages/daemon/src/sandbox.ts");
-	const built = Bun.spawnSync(
+): { control: string; target: string } {
+	mkdirSync(join(scratch, "sandbox-clone"), { recursive: true });
+	const r = Bun.spawnSync(
 		[
 			process.execPath,
-			"-e",
-			`const { bwrapCore } = await import(${JSON.stringify(module)}); console.log(JSON.stringify(bwrapCore(${options})));`,
+			join(ROOT, "tools/sandbox-connect-probe.ts"),
+			scratch,
+			fakeHome,
+			path,
 		],
 		{ cwd: ROOT, env: { PATH: process.env.PATH ?? "", HOME: fakeHome } },
 	);
-	if (built.exitCode !== 0) return `failed: ${built.stderr.toString()}`;
-	const core = JSON.parse(built.stdout.toString()) as string[];
-	if (!core.includes(fakeHome)) return "sandbox-used-the-real-home";
-	const script = `const s=require("node:net").connect(${JSON.stringify(path)});s.on("connect",()=>{console.log("connected");process.exit(0)});s.on("error",e=>{console.log(e.code);process.exit(0)})`;
-	const r = Bun.spawnSync([
-		...core,
-		"--",
-		realpathSync(process.execPath),
-		"-e",
-		script,
-	]);
-	return r.stdout.toString().trim() || `failed: ${r.stderr.toString()}`;
+	try {
+		return JSON.parse(r.stdout.toString().trim().split("\n").pop() ?? "");
+	} catch {
+		const failed = `failed: ${r.stdout.toString()}${r.stderr.toString()}`;
+		return { control: failed, target: failed };
+	}
 }
 
 /** Review F2: Serve targets a private socket that local processes cannot forge on. */
@@ -1389,11 +1373,16 @@ async function unixSocketProxy(): Promise<void> {
 			outside === "connected",
 			outside,
 		);
-		const inside = connectFromSandbox(socketPath, scratch, fakeHome, mfwHome);
+		const inside = connectFromSandbox(socketPath, scratch, fakeHome);
 		check(
-			"unix: a bwrapCore sandbox cannot reach the socket",
-			inside === "ENOENT",
-			inside,
+			"unix: control, a verifier-role sandbox sees a socket mounted into it",
+			inside.control.startsWith("socket:"),
+			inside.control,
+		);
+		check(
+			"unix: a verifier-role sandbox cannot reach the socket",
+			inside.target === "ENOENT:ENOENT",
+			inside.target,
 		);
 
 		const second = Bun.spawn([process.execPath, "run", ENTRY], {
