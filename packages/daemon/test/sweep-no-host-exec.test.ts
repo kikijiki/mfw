@@ -81,6 +81,7 @@ describe("host execution of a check", () => {
 		const r = await verifyInClone(
 			{
 				checkRunner: null,
+				fileInCommit: async () => false,
 				with: (_rev, _label, fn) =>
 					fn({
 						id: "x",

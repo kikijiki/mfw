@@ -1,5 +1,5 @@
 import { access, lstat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import {
 	type CheckRunner,
 	CheckSandboxRefusal,
@@ -132,6 +132,8 @@ export interface VerifyOptions {
 	 * will supply. A failing check then says nothing about the code.
 	 */
 	dependenciesUnavailable?: boolean;
+	/** Answers `files_exist` from the candidate commit, with host git. */
+	fileInCommit?: (path: string) => Promise<boolean>;
 }
 
 /** The host-execution option for a run, from the project's approval mode. */
@@ -307,6 +309,14 @@ export function buildRunner(
 	return (c) => [sh, "-c", c];
 }
 
+/** A declared path as a clean path inside the tree, or null if it leaves it. */
+function treePath(path: string): string | null {
+	if (path === "" || path.startsWith("/") || path.includes("\0")) return null;
+	if (path.split("/").includes("..")) return null;
+	const clean = posix.normalize(path).replace(/\/+$/, "");
+	return clean === "" || clean === "." ? null : clean;
+}
+
 function runSandboxed(
 	sandbox: NonNullable<VerifyOptions["sandbox"]>,
 	tree: string,
@@ -459,23 +469,42 @@ export async function verify(
 			);
 		} else if ("files_exist" in check) {
 			const missing: string[] = [];
+			const uninstalled: string[] = [];
 			for (const f of check.files_exist) {
-				try {
-					await access(join(cwd, f));
-				} catch {
+				const rel = treePath(f);
+				if (rel === null) {
 					missing.push(f);
+				} else if (opts.fileInCommit) {
+					// From the commit: no candidate link is followed, and nothing an
+					// earlier check wrote can satisfy it.
+					if (await opts.fileInCommit(rel)) continue;
+					if (rel.split("/").includes("node_modules")) uninstalled.push(f);
+					else missing.push(f);
+				} else {
+					try {
+						await access(join(cwd, rel));
+					} catch {
+						missing.push(f);
+					}
 				}
 			}
-			const ok = missing.length === 0;
+			const ok = missing.length === 0 && uninstalled.length === 0;
 			checks.push(
 				ok
 					? { check: label, ok }
-					: {
-							check: label,
-							ok,
-							classification: "missing-file",
-							detail: `missing: ${missing.join(", ")}`,
-						},
+					: missing.length === 0
+						? {
+								check: label,
+								ok,
+								classification: "crashed",
+								detail: `cannot be answered until the sandbox has installed dependencies (P8): ${uninstalled.join(", ")}`,
+							}
+						: {
+								check: label,
+								ok,
+								classification: "missing-file",
+								detail: `missing: ${[...missing, ...uninstalled].join(", ")}`,
+							},
 			);
 		} else {
 			if (!check.diff_against_base) {
@@ -528,7 +557,7 @@ export async function verify(
  * checks never run in the run's workspace or the integration worktree.
  */
 export async function verifyInClone(
-	clones: Pick<VerifierClones, "with" | "checkRunner">,
+	clones: Pick<VerifierClones, "with" | "checkRunner" | "fileInCommit">,
 	rev: string,
 	label: string,
 	dod: DefinitionOfDone,
@@ -543,6 +572,7 @@ export async function verifyInClone(
 			candidateSha: clone.sha,
 			sandbox: { run: clones.checkRunner, role },
 			dependenciesUnavailable: await lacksDependencies(clone.path),
+			fileInCommit: (path) => clones.fileInCommit(clone.sha, path),
 		}),
 	);
 }

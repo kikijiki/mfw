@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CheckRunner } from "../src/containment/check-runner.ts";
@@ -113,6 +113,118 @@ describe("VerifierClones", () => {
 		expect(await gitOk(["for-each-ref", "refs/mfw/verify/"], t.primary)).toBe(
 			"",
 		);
+	});
+});
+
+// Security review P7, M5 (X4): `files_exist` followed candidate links on the
+// host, and could be satisfied by a file an earlier check had just created.
+describe("files_exist answers from the commit", () => {
+	const exists = (paths: string[]) => dod([{ files_exist: paths }]);
+
+	const withCommitted = async (
+		t: Awaited<ReturnType<typeof setup>>,
+		make: () => Promise<void>,
+	) => {
+		await make();
+		await git(["add", "-A"], t.primary);
+		await git(["commit", "-q", "-m", "more"], t.primary);
+		return (await git(["rev-parse", "HEAD"], t.primary)).stdout.trim();
+	};
+
+	test("a committed file and directory exist, an absent one does not", async () => {
+		const t = await setup();
+		const sha = await withCommitted(t, async () => {
+			await mkdir(join(t.primary, "src"));
+			await writeFile(join(t.primary, "src/b.txt"), "b\n");
+		});
+		const ok = await verifyInClone(
+			t.clones,
+			sha,
+			"r",
+			exists(["a.txt", "src/b.txt", "src", "./a.txt", "src/"]),
+			t.base,
+		);
+		expect(ok.checks[0]?.detail).toBeUndefined();
+		expect(ok.passed).toBe(true);
+		const missing = await verifyInClone(
+			t.clones,
+			sha,
+			"r",
+			exists(["nope.txt"]),
+			t.base,
+		);
+		expect(missing.passed).toBe(false);
+		expect(missing.checks[0]?.classification).toBe("missing-file");
+	});
+
+	test("a committed link says nothing about what it points at on the host", async () => {
+		const t = await setup();
+		const present = join(t.root, "host-file");
+		await writeFile(present, "x");
+		const sha = await withCommitted(t, async () => {
+			await symlink(present, join(t.primary, "to-present"));
+			await symlink(join(t.root, "absent"), join(t.primary, "to-absent"));
+		});
+		const a = await verifyInClone(
+			t.clones,
+			sha,
+			"r",
+			exists(["to-present"]),
+			sha,
+		);
+		const b = await verifyInClone(
+			t.clones,
+			sha,
+			"r",
+			exists(["to-absent"]),
+			sha,
+		);
+		expect(a.passed).toBe(b.passed);
+	});
+
+	test.each([
+		"../secret",
+		"a/../../secret",
+		"/etc/passwd",
+		"",
+	])("the path %j is refused", async (path) => {
+		const t = await setup();
+		await writeFile(join(t.root, "secret"), "x");
+		const r = await verifyInClone(
+			t.clones,
+			t.base,
+			"r",
+			exists([path]),
+			t.base,
+		);
+		expect(r.passed).toBe(false);
+		expect(r.checks[0]?.classification).toBe("missing-file");
+	});
+
+	test("a file an earlier check created does not count", async () => {
+		const t = await setup();
+		const r = await verifyInClone(
+			t.clones,
+			t.base,
+			"r",
+			dod([{ run: "touch made.txt" }, { files_exist: ["made.txt"] }]),
+			t.base,
+		);
+		expect(r.checks[0]?.ok).toBe(true);
+		expect(r.checks[1]?.ok).toBe(false);
+	});
+
+	test("an installed dependency cannot be answered, so it is infrastructure", async () => {
+		const t = await setup();
+		const r = await verifyInClone(
+			t.clones,
+			t.base,
+			"r",
+			exists(["node_modules/left-pad/index.js"]),
+			t.base,
+		);
+		expect(r.passed).toBe(false);
+		expect(r.crashed).toBe(true);
 	});
 });
 

@@ -134,6 +134,15 @@ export class VerifierClones {
 		};
 	}
 
+	/** Whether the commit itself has this path. Asks the trusted primary. */
+	async fileInCommit(sha: string, path: string): Promise<boolean> {
+		const r = await git(
+			["cat-file", "-e", `${sha}:${path}`],
+			this.opts.primaryRoot,
+		);
+		return r.exitCode === 0;
+	}
+
 	/** Run `fn` against a fresh clone of `rev`, and dispose it however `fn` ends. */
 	async with<T>(
 		rev: string,
