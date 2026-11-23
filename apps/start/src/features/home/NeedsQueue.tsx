@@ -38,6 +38,7 @@ import {
 	groupByAttention,
 	needTarget,
 	oldestFirst,
+	splitHeldBack,
 } from "./needs";
 import { useNeedActions } from "./useNeedActions";
 
@@ -190,7 +191,28 @@ export function NeedsQueue({
 				const list = (
 					<ul className="flex flex-col gap-2">{g.items.map(row)}</ul>
 				);
-				if (g.attention === "act") return <div key="act">{list}</div>;
+				if (g.attention === "act") {
+					const { shown, held } = splitHeldBack(g.items);
+					return (
+						<div key="act" className="flex flex-col gap-2">
+							<ul className="flex flex-col gap-2">{shown.map(row)}</ul>
+							{held.length > 0 ? (
+								<details data-held-back className="flex flex-col gap-2">
+									<summary
+										className="mfw-focus cursor-pointer"
+										style={{
+											color: "var(--mfw-fg-faint)",
+											fontSize: "var(--mfw-text-xs)",
+										}}
+									>
+										{held.length} held back
+									</summary>
+									<ul className="flex flex-col gap-2">{held.map(row)}</ul>
+								</details>
+							) : null}
+						</div>
+					);
+				}
 				return (
 					<details
 						key={g.attention}
