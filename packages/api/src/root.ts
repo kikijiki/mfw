@@ -30,7 +30,7 @@ import { systemRouter } from "./router/system.ts";
 import { tasksRouter } from "./router/tasks.ts";
 import { triggersRouter } from "./router/triggers.ts";
 import { usageRouter } from "./router/usage.ts";
-import { createCallerFactory, createTRPCRouter } from "./trpc.ts";
+import { type Context, createCallerFactory, createTRPCRouter } from "./trpc.ts";
 
 /**
  * The v2 API surface - a small resource model, not a mirror of daemon methods.
@@ -72,4 +72,17 @@ export const appRouter = createTRPCRouter({
 });
 
 export type AppRouter = typeof appRouter;
-export const createCaller = createCallerFactory(appRouter);
+const callerFactory = createCallerFactory(appRouter);
+
+/**
+ * An in-process caller. It never sees a request, so it acts as the `internal`
+ * principal unless given another; HTTP contexts are built by the app's guard.
+ */
+export const createCaller = (
+	ctx: Omit<Context, "principal"> & { principal?: Context["principal"] },
+	opts?: Parameters<typeof callerFactory>[1],
+) =>
+	callerFactory(
+		{ principal: { kind: "internal", id: "internal" }, ...ctx },
+		opts,
+	);

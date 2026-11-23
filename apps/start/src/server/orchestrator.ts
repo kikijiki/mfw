@@ -1,8 +1,10 @@
 import { resolve } from "node:path";
 import { appRouter } from "@mfw/api";
+import type { Principal } from "@mfw/daemon/auth/service";
 import { boot } from "@mfw/daemon/boot";
 import {
 	BRAIN_SOCKET_ENDPOINT,
+	type BrainTurnBinding,
 	brainSocketFor,
 } from "@mfw/daemon/brain-runtime/brain-socket";
 import {
@@ -27,6 +29,10 @@ const KEY = Symbol.for("mfw.orchestrator");
 
 type Holder = { [KEY]?: Promise<Orchestrator> };
 
+function brainPrincipal(binding: BrainTurnBinding): Principal {
+	return { kind: "brain", id: `brain:${binding.runId}`, ...binding };
+}
+
 export function getOrchestrator(): Promise<Orchestrator> {
 	const holder = globalThis as unknown as Holder;
 	holder[KEY] ??= (async () => {
@@ -34,13 +40,15 @@ export function getOrchestrator(): Promise<Orchestrator> {
 		const cfg = await loadConfig(mfwHome);
 		// The brain's unix socket serves the same router; the socket checks the
 		// per-turn token and only lets the brain's own procedures through.
-		brainSocketFor(mfwHome).setHandler((req) =>
+		brainSocketFor(mfwHome).setHandler((req, binding) =>
 			fetchRequestHandler({
 				endpoint: BRAIN_SOCKET_ENDPOINT,
 				router: appRouter,
 				req,
 				createContext: async () => ({
 					orchestrator: await getOrchestrator(),
+					// From the verified token, never from anything in the request.
+					principal: brainPrincipal(binding),
 				}),
 				onError({ error, path }) {
 					console.error(

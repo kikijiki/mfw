@@ -1,5 +1,6 @@
 import { ImageOff } from "lucide-react";
 import { useMemo, useState } from "react";
+import { AuthImage } from "../../components/AuthImage";
 
 import { Empty } from "../../components/Empty";
 import { href } from "../../routes";
@@ -97,7 +98,7 @@ export function ImageView({
 			className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4"
 			style={{ background: "var(--mfw-bg-subtle)" }}
 		>
-			<img
+			<AuthImage
 				src={fileAssetUrl(FILE_ASSET_BASE(), source, path)}
 				alt={path}
 				className="max-h-full max-w-full object-contain"

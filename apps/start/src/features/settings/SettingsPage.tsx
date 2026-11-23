@@ -4,6 +4,7 @@ import { Segmented, Setting } from "./controls";
 import { OpenRouterSettingsPanel } from "./OpenRouterSettingsPanel";
 import { ProvidersPanel } from "./ProvidersPanel";
 import { RunPodSettingsPanel } from "./RunPodSettingsPanel";
+import { SessionPanel } from "./SessionPanel";
 
 /** Global machine/browser settings. Project policy stays on each project. */
 
@@ -68,6 +69,9 @@ export function SettingsPage({ tab, onTabChange }: SettingsPageProps) {
 						<AppearanceSection />
 					</Panel>
 				</section>
+				<Panel title="Session">
+					<SessionPanel />
+				</Panel>
 			</Scroller>
 		</Page>
 	);

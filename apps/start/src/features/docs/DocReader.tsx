@@ -1,8 +1,8 @@
 import { Check, Copy, FolderOpen, Link2 } from "lucide-react";
 import { useState } from "react";
-
 import { Button } from "~/components/ui/button";
 import { AppLink } from "../../components/AppLink";
+import { AuthImage } from "../../components/AuthImage";
 import { Chip } from "../../components/Page";
 import { RelativeTime } from "../../components/RelativeTime";
 import type { RouterOutputs } from "../../lib/trpc";
@@ -199,7 +199,7 @@ function DocBody({
 		case "image":
 		case "svg":
 			return (
-				<img
+				<AuthImage
 					src={docAssetUrl(
 						DOC_ASSET_BASE(),
 						project,

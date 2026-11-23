@@ -1,8 +1,8 @@
 /**
  * Host and Origin checks for every HTTP route the app serves (tRPC, which also
  * carries SSE, and the raw file routes). They stop DNS rebinding and
- * cross-site requests from a browser on the owner's machine; they are not
- * authentication (that is a later work package).
+ * cross-site requests from a browser on the owner's machine. They are not
+ * authentication: `auth-guard.ts` runs this first, then requires a session.
  *
  * Rules:
  * - The `Host` must be a loopback name or IP (`localhost`, `127.0.0.1`,
@@ -12,8 +12,8 @@
  *   and an allowed one. This also refuses another local app on a different
  *   port. `Origin: null` is refused.
  * - A state-changing request marked `Sec-Fetch-Site: cross-site` is refused.
- * - A request with no `Origin` (the brain MCP, `mfw mcp`, curl) passes on the
- *   Host check alone.
+ * - A request with no `Origin` (curl, a non-browser client) passes this check
+ *   on the Host alone, and still needs a session from `auth-guard.ts`.
  *
  * `MFW_ALLOWED_HOSTS` is a comma or space separated list of `host` or
  * `host:port` entries. A bare host matches any port, including none (a TLS
@@ -70,6 +70,25 @@ export function refuse(reason: string): Response {
 	});
 }
 
+/**
+ * The scheme the browser used, when this server can know it: a TLS request, or
+ * a plain request to a loopback name with no proxy in front. Otherwise null.
+ *
+ * TODO(C4): trusted-proxy mode defines the external scheme for proxied hosts.
+ * Until then a forwarded header is not evidence, because any client can send it.
+ */
+function externalScheme(req: Request, host: Authority): string | null {
+	let protocol: string;
+	try {
+		protocol = new URL(req.url).protocol;
+	} catch {
+		return null;
+	}
+	if (protocol === "https:") return protocol;
+	if (req.headers.has("x-forwarded-proto")) return null;
+	return LOOPBACK.has(host.host) ? "http:" : null;
+}
+
 /** Null when the request may proceed, else the 403 to return. */
 export function checkRequest(
 	req: Request,
@@ -110,6 +129,9 @@ export function checkRequest(
 			originAuthority.port !== host.port
 		)
 			return refuse(`Origin '${origin}' does not match Host '${hostRaw}'`);
+		const scheme = externalScheme(req, host);
+		if (scheme && new URL(origin).protocol !== scheme)
+			return refuse(`Origin '${origin}' has the wrong scheme`);
 	}
 
 	if (

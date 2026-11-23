@@ -60,6 +60,7 @@ import { seedHistory } from "./screenshots/seedHistory.ts";
 import { SEED_PLAN } from "./screenshots/seedPlan.ts";
 import { type BuiltRepo, buildRepo, git } from "./screenshots/seedRepos.ts";
 import {
+	browserSignInScript,
 	type DevServer,
 	freePort,
 	killTmuxServer,
@@ -780,6 +781,10 @@ async function capture(input: CaptureInput): Promise<{
 		binary: opts.firefox,
 		env: { TZ: "UTC", LANG: "en_US.UTF-8" },
 	});
+	await browser.goto(`${input.base}/login`);
+	const signedIn = await browser.eval<number>(browserSignInScript(input.base));
+	if (signedIn !== 200)
+		throw new Error(`the browser could not sign in: HTTP ${signedIn}`);
 
 	for (const section of input.sections) {
 		for (const theme of opts.themes) {
