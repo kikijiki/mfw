@@ -40,8 +40,11 @@ export type FleetCli = keyof typeof TEMPORARY_FLEET_WRITABLE;
  * declared binaries, and on NixOS each lives in its own store directory, so an
  * undeclared `rm` or `cat` is not found by name. Used when present.
  *
- * This is a convenience and not a boundary: on NixOS all of `/nix/store` is
- * bound, so an undeclared binary still runs by its absolute path (toolchain.ts).
+ * On NixOS the sandbox holds only the closure of the declared binaries, with
+ * the executables of undeclared members hidden (toolchain.ts). This is not a
+ * boundary against a determined agent: `bun` and `node` are declared and run
+ * any code, and on FHS hosts `/usr` is bound whole. The network namespace and
+ * the egress proxy are what limit where that code can connect.
  */
 export const AGENT_BASE_TOOLS = [
 	"awk",

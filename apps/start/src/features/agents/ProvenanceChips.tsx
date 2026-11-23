@@ -53,6 +53,27 @@ export function ClaimChips({
 	);
 }
 
+type EgressTotals = NonNullable<RunProvenanceView["egress"]>;
+
+export function formatEgressBytes(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+	if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+	return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+}
+
+/** The hover text: one tooltip, so the destinations run on one line. */
+export function egressTitle(egress: EgressTotals): string {
+	const lines = egress.destinations.map((d) =>
+		d.denied > 0
+			? `${d.destination}: ${d.denied} denied (${d.lastDeniedReason ?? "refused"})`
+			: `${d.destination}: ${formatEgressBytes(d.bytesUp)} up, ${formatEgressBytes(d.bytesDown)} down`,
+	);
+	return ["host-observed: counted by the run's egress proxy", ...lines].join(
+		"; ",
+	);
+}
+
 /**
  * Who vouches for a run's exit. The words are on the chip itself: "host saw" only
  * for a host-observed value, "agent says" for anything from the sandbox.
@@ -95,6 +116,14 @@ export function ProvenanceChips({
 					{`${CLAIM_CHIP[c.class].label} ${c.text}`}
 				</Chip>
 			))}
+			{provenance.egress ? (
+				<Chip
+					tone={provenance.egress.denied > 0 ? "warn" : "neutral"}
+					title={egressTitle(provenance.egress)}
+				>
+					{`host saw ${formatEgressBytes(provenance.egress.bytesUp)} up, ${formatEgressBytes(provenance.egress.bytesDown)} down${provenance.egress.denied > 0 ? `, ${provenance.egress.denied} denied` : ""}`}
+				</Chip>
+			) : null}
 			{provenance.reportStatus ? (
 				<Chip tone="neutral" title="sandbox-reported: from the agent's report">
 					{`agent says ${provenance.reportStatus}`}

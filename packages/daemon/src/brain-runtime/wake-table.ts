@@ -68,6 +68,8 @@ export function classifyEvent(
 				: null;
 		case "run.scope_changed":
 			return e.payload.level === "violation" ? "attention" : null;
+		case "run.egress_budget_exceeded":
+			return "attention";
 		case "task.created":
 			// Tasks the brain wrote itself are in its own record already.
 			return String(e.payload.createdBy ?? "").startsWith("brain:")
@@ -123,6 +125,7 @@ export const WAKE_EVENT_TYPES = [
 	"run.settled",
 	"run.activity_changed",
 	"run.scope_changed",
+	"run.egress_budget_exceeded",
 	"task.created",
 	"task.deleted",
 	"task.edited",

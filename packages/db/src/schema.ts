@@ -9,7 +9,12 @@ import {
 	text,
 	uniqueIndex,
 } from "drizzle-orm/sqlite-core";
-import { RUN_FACTS_PROVENANCE_CHECK, runFactsPairCheck } from "./provenance.ts";
+import {
+	RUN_EGRESS_PROVENANCE,
+	RUN_EGRESS_PROVENANCE_CHECK,
+	RUN_FACTS_PROVENANCE_CHECK,
+	runFactsPairCheck,
+} from "./provenance.ts";
 
 /**
  * One SQLite DB per project at `<project>/.mfw/mfw.db`, holding everything
@@ -602,6 +607,31 @@ export const runFacts = sqliteTable(
 		primaryKey({ columns: [t.runId, t.fact, t.provenance] }),
 		check("ck_run_facts_provenance", sql.raw(RUN_FACTS_PROVENANCE_CHECK)),
 		check("ck_run_facts_pair", sql.raw(runFactsPairCheck())),
+	],
+);
+
+/**
+ * What the host-side egress proxy saw for a run, one row per destination. The
+ * row count is bounded by the allowlist plus the proxy's cap on denied names.
+ * Absolute totals: an ingest replaces them and never lowers them.
+ */
+export const runEgress = sqliteTable(
+	"run_egress",
+	{
+		runId: text("run_id").notNull(),
+		/** `host:port`, or a bucket for refused requests with no usable name. */
+		destination: text("destination").notNull(),
+		bytesUp: integer("bytes_up").notNull().default(0),
+		bytesDown: integer("bytes_down").notNull().default(0),
+		connections: integer("connections").notNull().default(0),
+		denied: integer("denied").notNull().default(0),
+		lastDeniedReason: text("last_denied_reason"),
+		provenance: text("provenance").notNull().default(RUN_EGRESS_PROVENANCE),
+		observedAt: integer("observed_at", { mode: "timestamp_ms" }).notNull(),
+	},
+	(t) => [
+		primaryKey({ columns: [t.runId, t.destination] }),
+		check("ck_run_egress_provenance", sql.raw(RUN_EGRESS_PROVENANCE_CHECK)),
 	],
 );
 

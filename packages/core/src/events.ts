@@ -451,6 +451,18 @@ export const EventSchema = z.discriminatedUnion("type", [
 		}),
 	}),
 	z.object({
+		// The host-side egress proxy stopped a run at its upload budget.
+		type: z.literal("run.egress_budget_exceeded"),
+		runId: z.string(),
+		taskId: z.string().optional(),
+		payload: z.object({
+			provenance: z.literal("host-observed"),
+			scope: z.enum(["destination", "total"]),
+			destination: z.string(),
+			limitBytes: z.number().int().nonnegative(),
+		}),
+	}),
+	z.object({
 		// A run's worktree or branch was saved to a `wip/` branch before being
 		// discarded (by a human discard, or a close with `discard`).
 		type: z.literal("run.wip_archived"),

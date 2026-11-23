@@ -2,6 +2,7 @@ import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { RunActivity } from "@mfw/core/activity";
 import type { ProjectDbHandle } from "@mfw/db/client";
+import type { EventBus } from "@mfw/db/eventlog";
 import { engineKv } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
 import type { AgentHost } from "./agent-host.ts";
@@ -13,7 +14,9 @@ import {
 import { parseAgentEvents } from "./agents/events.ts";
 import { isBrainTurnRun } from "./brain-runtime/turn-run.ts";
 import { PROJECT_DEFAULTS } from "./config.ts";
+import { sweepRunEgress } from "./containment/egress-run.ts";
 import { runEventsPath } from "./containment/run-dir.ts";
+import { ingestFinalRunEgress, ingestRunEgress } from "./egress-ledger.ts";
 import type { StepRunner } from "./finalize/step-runner.ts";
 import type { Logger } from "./log.ts";
 import type { NotificationType } from "./notify.ts";
@@ -97,6 +100,10 @@ export interface SupervisorDeps {
 	 * when no sibling project has a row for it either.
 	 */
 	ownedElsewhere?: (runId: string) => Promise<boolean>;
+	/** `$MFW_HOME`, to clear what dead runs left of their egress proxies. */
+	egressHome?: string;
+	/** Where a run's upload-budget breach is published. */
+	egressEvents?: EventBus;
 	log: Logger;
 	projectRoot: string;
 	bootId: string;
@@ -182,6 +189,8 @@ const ACTIVITY_NOTIFICATION: Partial<Record<RunActivity, NotificationType>> = {
 };
 
 /** States the loop still has work to do for. */
+const EGRESS_INGEST_EVERY_MS = 10_000;
+
 const LIVE_STATES = ["starting", "running", "ended", "finalizing"] as const;
 
 /** A `starting` row younger than this may still be racing its own launch. */
@@ -236,6 +245,8 @@ export class Supervisor {
 		kills: {} as Record<string, number>,
 	};
 
+	private readonly egressIngestedAt = new Map<string, number>();
+
 	constructor(private readonly deps: SupervisorDeps) {
 		this.log = deps.log.child({ svc: "supervisor" });
 		this.now = deps.now ?? (() => Date.now());
@@ -245,6 +256,30 @@ export class Supervisor {
 			new RunEventTail((runId, offset) =>
 				deps.registry.readOutput(runId, "events.jsonl", offset),
 			);
+	}
+
+	/**
+	 * Copy the run's proxy counters into L1, at most every few seconds while it
+	 * runs and always at its end. A failure here never affects the run.
+	 */
+	private async recordEgress(runId: string, final = false): Promise<void> {
+		const now = this.now();
+		const last = this.egressIngestedAt.get(runId) ?? 0;
+		if (!final && now - last < EGRESS_INGEST_EVERY_MS) return;
+		if (final) this.egressIngestedAt.delete(runId);
+		else this.egressIngestedAt.set(runId, now);
+		const at = new Date(now);
+		const runDir = this.deps.registry.runDir(runId);
+		const bus = this.deps.egressEvents;
+		await (final
+			? ingestFinalRunEgress(this.deps.handle.db, runId, runDir, at, {
+					...(this.deps.egressHome ? { mfwHome: this.deps.egressHome } : {}),
+					...(bus ? { bus } : {}),
+				})
+			: ingestRunEgress(this.deps.handle.db, runId, runDir, at, bus)
+		).catch((err) =>
+			this.log.warn({ err, runId }, "recording the run's egress failed"),
+		);
 	}
 
 	/** The watchdog limits in force; read every pass, so `setLimits` is live. */
@@ -358,6 +393,7 @@ export class Supervisor {
 							});
 						}
 						await this.observe(run, stats);
+						await this.recordEgress(run.id);
 						continue;
 					}
 					if (
@@ -380,6 +416,7 @@ export class Supervisor {
 				}
 				// ended | finalizing: drive the machine behind the DB claim
 				if (await this.deps.registry.claimFinalize(run.id, this.deps.bootId)) {
+					await this.recordEgress(run.id, true);
 					const targetResult =
 						await this.deps.execution?.finalizeExecutionTarget(run.id);
 					if (targetResult?.collectionError) {
@@ -893,6 +930,16 @@ export class Supervisor {
 				"orphan",
 			);
 			report.orphanSessionsKilled++;
+		}
+
+		// F: a proxy or socket directory whose run is gone, across every project,
+		// because the tmux socket and the index are machine-wide.
+		if (this.deps.egressHome) {
+			await sweepRunEgress(this.deps.egressHome, (runId) =>
+				this.deps.host.sessionLiveness(runId),
+			).catch((err) =>
+				this.log.warn({ err }, "egress proxy recovery sweep failed"),
+			);
 		}
 
 		// G: tasks claimed by a run that can never finalize go back to ready.

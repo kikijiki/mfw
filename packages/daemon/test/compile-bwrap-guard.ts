@@ -126,6 +126,9 @@ export function encodeOptions(options: readonly string[]): Buffer {
 	return Buffer.from(options.map((o) => `${o}\0`).join(""));
 }
 
+const STORE_MASK =
+	/^\/nix\/store\/[0-9a-df-np-sv-z]{32}-[A-Za-z0-9+._?=-]+\/s?bin$/;
+
 /**
  * Validate a compiled argv and return it without the `systemd-run` scope.
  * Throws on anything not explicitly allowed.
@@ -188,7 +191,17 @@ export function assertContained(
 				break;
 			case "--tmpfs": {
 				const dest = value();
-				if (!TMPFS.has(dest)) refuse(`unexpected tmpfs ${dest}`);
+				if (TMPFS.has(dest)) break;
+				// The one other shape: an undeclared store member's executables,
+				// hidden by an empty mount that is read-only at once.
+				if (
+					!STORE_MASK.test(dest) ||
+					argv[i + 1] !== "--remount-ro" ||
+					argv[i + 2] !== dest
+				) {
+					refuse(`unexpected tmpfs ${dest}`);
+				}
+				i += 2;
 				break;
 			}
 			case "--dir":
