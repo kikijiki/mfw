@@ -1130,6 +1130,16 @@ describe.skipIf(skip !== null)("the real drivers and bridges", () => {
 		expect(r.raw).not.toContain("]52;");
 	}, 90_000);
 
+	test("m2: a provider that exits with no result fails the run promptly", async () => {
+		const script = join(f.bin, "claude");
+		writeFileSync(script, "#!/bin/sh\nread -r _line\nexit 0\n");
+		chmodSync(script, 0o755);
+		const r = await runBridged("claude", { maxWaitMs: 15_000 });
+		expect(r.timedOut).toBe(false);
+		expect(r.exit).toEqual({ kind: "exit", code: 1 });
+		expect(r.events.at(-1)).toMatchObject({ type: "done", reason: "error" });
+	}, 40_000);
+
 	test("codex runs under the bridge, in the sandbox", async () => {
 		copyFileSync(
 			resolve(import.meta.dir, "fixtures/fake-codex-app-server.ts"),

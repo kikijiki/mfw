@@ -79,35 +79,32 @@ function spawnProvider() {
 		process.stderr.write(`${capText(line, 2048)}\n`);
 	});
 	void readLines(proc.stdout, translate);
-	// A brain turn resumes a native session that may be gone: the CLI then
-	// exits at once, without a result. Fail the turn now rather than leave the
-	// driver waiting for the idle watchdog. (Worker runs keep their behaviour.)
-	if (process.env.MFW_RUN_KIND === "brain") {
-		proc.on("exit", (code, signal) => {
-			providerExit = { code, signal };
-			if (state !== "active") return;
-			const message = `claude exited (${code ?? signal}) before the turn completed`;
-			event({ type: "error", message, fatal: true });
-			event({
-				type: "session",
-				provider: "claude-cli",
+	// A provider that ends without a result (a resumed session that is gone, a
+	// crash) fails the turn now, rather than leaving the run to the idle watchdog.
+	proc.on("exit", (code, signal) => {
+		providerExit = { code, signal };
+		if (state !== "active") return;
+		const message = `claude exited (${code ?? signal}) before the turn completed`;
+		event({ type: "error", message, fatal: true });
+		event({
+			type: "session",
+			provider: "claude-cli",
+			sessionId,
+			turnId,
+			status: "failed",
+			ordinal,
+		});
+		writeEnvelope(
+			notify("turn/completed", {
 				sessionId,
 				turnId,
 				status: "failed",
-				ordinal,
-			});
-			writeEnvelope(
-				notify("turn/completed", {
-					sessionId,
-					turnId,
-					status: "failed",
-					error: { message },
-					resultText: lastResultText,
-				}),
-			);
-			state = "session";
-		});
-	}
+				error: { message },
+				resultText: lastResultText,
+			}),
+		);
+		state = "session";
+	});
 }
 function translate(line: string) {
 	let o: unknown;
