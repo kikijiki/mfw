@@ -183,6 +183,8 @@ export interface ProjectSettingsView {
 	needsRestart: readonly (keyof ProjectSettingsValues)[];
 	/** Where the values were persisted (shown in the Daemon section). */
 	configPath: string;
+	/** Why no run of this project can start, with the fix; null when it can. */
+	dispatchProblem: { detail: string; fix: string } | null;
 }
 
 export const LIVE_KEYS = [
@@ -277,6 +279,8 @@ export interface SettingsLifecycle {
 export class SettingsService {
 	constructor(
 		private readonly deps: {
+			/** Why the preflight refuses every launch of this project; shown in Settings. */
+			dispatchProblem?: () => { detail: string; fix: string } | null;
 			mfwHome: string;
 			project: string;
 			root: string;
@@ -508,6 +512,7 @@ export class SettingsService {
 				...(this.deps.brainConfig ? [] : (["brain"] as const)),
 			],
 			configPath: configPath(this.deps.mfwHome),
+			dispatchProblem: this.deps.dispatchProblem?.() ?? null,
 		};
 	}
 }

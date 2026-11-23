@@ -33,12 +33,16 @@ import {
 	effectiveReview,
 	FALLBACK_MERGE_CHECKS,
 	isolationConfigProblem,
+	isolationDispatchProblem,
 	loadConfig,
 	mutateConfig,
 	normalizeRoot,
 	PROJECT_DEFAULTS,
 } from "./config.ts";
-import { agentSandboxRefusal } from "./containment/agent-preflight.ts";
+import {
+	agentSandboxRefusal,
+	needsDevShell,
+} from "./containment/agent-preflight.ts";
 import { createCheckSandbox } from "./containment/check-sandbox.ts";
 import { runDirLayout } from "./containment/run-dir.ts";
 import { assertRunDead } from "./containment/run-liveness.ts";
@@ -1568,6 +1572,13 @@ export async function attachProject(
 		admission,
 	});
 
+	const dispatchIssue = () =>
+		isolationDispatchProblem({
+			agentIsolation: cfg.agentIsolation,
+			approvalMode: cfg.approvalMode,
+			runWorkspace: cfg.runWorkspace,
+			hasDevShell: needsDevShell(root),
+		});
 	const inbox = new InboxService({
 		handle,
 		project: cfg.name,
@@ -1599,7 +1610,15 @@ export async function attachProject(
 					}
 				: null;
 		},
+		dispatchIssue,
 	});
+	const startupDispatchIssue = dispatchIssue();
+	if (startupDispatchIssue) {
+		plog.warn(
+			{ project: cfg.name },
+			`doctor: project '${cfg.name}' cannot dispatch. ${startupDispatchIssue.detail} Fix: ${startupDispatchIssue.fix}`,
+		);
+	}
 	if (
 		isolationConfigProblem({
 			agentIsolation: cfg.agentIsolation,
@@ -1644,6 +1663,7 @@ export async function attachProject(
 		ledger: opts.hostResources,
 	});
 	const settings = new SettingsService({
+		dispatchProblem: dispatchIssue,
 		mfwHome: opts.mfwHome,
 		project: cfg.name,
 		root: root,
