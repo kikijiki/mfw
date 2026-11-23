@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 import { whichBin } from "../agents/detect.ts";
 import { claudeWeeklyProbe, type RateLimitObserver } from "./claude-weekly.ts";
 import { codexUsageProbe } from "./codex-usage.ts";
@@ -85,18 +86,24 @@ export function defaultUsageProbes(
 	if (cfg?.probes) return [...cfg.probes];
 	if (env.MFW_USAGE_FIXTURE) return fixtureUsageProbes(env.MFW_USAGE_FIXTURE);
 	const probes: UsageProbe[] = [];
-	// No token read and no vendor endpoint: the weekly meter is whatever the
-	// CLI's own `rate_limit_event`s said, or unknown.
-	const claude = claudeWeeklyProbe({ observer: cfg?.claudeObserver });
-	probes.push({
-		...claude,
-		available: async () => (await whichBin("claude", env)) !== null,
-	});
-	const codex = codexUsageProbe();
-	probes.push({
-		...codex,
-		available: async () =>
-			(await whichBin("codex", env)) !== null && (await codex.available()),
-	});
+	for (const m of builtinHarnessRegistry().list()) {
+		const bin = m.detect.bin;
+		if (m.usage?.source === "rate-limit-event") {
+			// No token read and no vendor endpoint: the weekly meter is whatever
+			// the CLI's own `rate_limit_event`s said, or unknown.
+			const claude = claudeWeeklyProbe({ observer: cfg?.claudeObserver });
+			probes.push({
+				...claude,
+				available: async () => (await whichBin(bin, env)) !== null,
+			});
+		} else if (m.usage?.source === "app-server-rpc") {
+			const codex = codexUsageProbe();
+			probes.push({
+				...codex,
+				available: async () =>
+					(await whichBin(bin, env)) !== null && (await codex.available()),
+			});
+		}
+	}
 	return probes;
 }

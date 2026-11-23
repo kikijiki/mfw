@@ -1,5 +1,7 @@
 import { realpathSync } from "node:fs";
 import { basename } from "node:path";
+import type { HarnessIdentity } from "@mfw/plugin-api/harness";
+import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 
 /**
  * Confirms that a generically named binary on PATH (`agent`, `pi`) is the CLI
@@ -22,18 +24,36 @@ export type BinaryIdentity =
 			describe: string;
 	  };
 
-export const CURSOR_AGENT_IDENTITY: BinaryIdentity = {
-	kind: "symlink-target",
-	basename: "cursor-agent",
-	describe: "Cursor's CLI (installed as a link to .../cursor-agent)",
-};
+/** The runtime form of a manifest's identity; the regex is compiled here. */
+function toBinaryIdentity(identity: HarnessIdentity): BinaryIdentity {
+	return identity.kind === "symlink-target"
+		? identity
+		: {
+				kind: "help-text",
+				args: identity.args,
+				pattern: new RegExp(identity.pattern, identity.flags),
+				describe: identity.describe,
+			};
+}
 
-export const PI_IDENTITY: BinaryIdentity = {
-	kind: "help-text",
-	args: ["--help"],
-	pattern: /^pi\b.*\bcoding (assistant|agent)\b/im,
-	describe: "the pi coding agent (`pi --help` names it)",
-};
+const identities = new Map<string, BinaryIdentity>();
+
+/** The identity a harness declares, one shared object per harness. */
+export function harnessBinaryIdentity(id: string): BinaryIdentity | undefined {
+	const known = identities.get(id);
+	if (known) return known;
+	const declared = builtinHarnessRegistry().get(id)?.detect.identity;
+	if (!declared) return undefined;
+	const identity = toBinaryIdentity(declared);
+	identities.set(id, identity);
+	return identity;
+}
+
+export const CURSOR_AGENT_IDENTITY = harnessBinaryIdentity(
+	"cursor-agent",
+) as BinaryIdentity;
+
+export const PI_IDENTITY = harnessBinaryIdentity("pi") as BinaryIdentity;
 
 export type IdentityVerdict = { ok: true } | { ok: false; reason: string };
 

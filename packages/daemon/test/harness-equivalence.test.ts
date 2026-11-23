@@ -1,8 +1,24 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+	ALL_TOOLS,
+	installPath,
+	TOOLS,
+} from "@mfw/board/commands/skill-targets";
 import { BUILTIN_HARNESS_MANIFESTS } from "@mfw/plugin-api/harness-builtins";
-import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
+import {
+	builtinHarnessRegistry,
+	FLEET_ENV_CEILING,
+} from "@mfw/plugin-api/harness-registry";
+import { CAPABILITIES } from "../src/agents/acp-translate.ts";
+import { isHostExecutedPath } from "../src/brain-runtime/decision-rights.ts";
+import { autonomyFlags } from "../src/containment/agent-profile.ts";
+import { buildAllowlist } from "../src/containment/egress-policy.ts";
+import {
+	isAllowedEnvName,
+	parseSandboxProfile,
+} from "../src/containment/profile.ts";
 import { captureHarnessMaps } from "./fixtures/harness-maps-snapshot.ts";
 
 interface CatalogueRow {
@@ -99,4 +115,117 @@ describe("each manifest holds the old map's value", () => {
 				golden.egress[cli]?.telemetryOffEnv,
 			);
 		});
+});
+
+describe("the manifests agree with the code they describe", () => {
+	const bridgeCapabilities = (file: string) => {
+		const source = readFileSync(
+			join(import.meta.dir, "../src/agents/bridges", file),
+			"utf8",
+		);
+		const block = source.match(/capabilities: \{\n([^}]*steer[^}]*)\}/)?.[1];
+		if (!block) throw new Error(`no capability block in ${file}`);
+		return Object.fromEntries(
+			[...block.matchAll(/(\w+): (true|false)/g)].map((x) => [
+				x[1],
+				x[2] === "true",
+			]),
+		);
+	};
+
+	test.each([
+		["claude-cli", "claude-app-server.ts"],
+		["codex-cli", "codex-app-server-bridge.ts"],
+	])("%s declares what its task bridge declares", (id, file) => {
+		expect(manifest(id).capabilities).toMatchObject(bridgeCapabilities(file));
+	});
+
+	test("every ACP manifest declares what the ACP bridge declares", () => {
+		for (const m of registry.list().filter((x) => x.dialect === "acp"))
+			expect(m.capabilities).toMatchObject(CAPABILITIES);
+	});
+
+	test("the sandbox profile's fleet list is the manifests' list", () => {
+		const fleet = registry.list().flatMap((m) => m.fleet.cli ?? []);
+		expect(fleet.sort()).toEqual(Object.keys(FLEET_ENV_CEILING).sort());
+		for (const m of registry.list())
+			if (m.fleet.cli)
+				expect(m.fleet.env).toBe(FLEET_ENV_CEILING[m.fleet.cli] as string);
+	});
+
+	test("every project path and directory is host-executed", () => {
+		for (const m of registry.list()) {
+			for (const path of m.install.projectConfig)
+				expect(isHostExecutedPath(path), `${m.id}: ${path}`).toBe(true);
+			for (const dir of m.install.projectDirs)
+				expect(isHostExecutedPath(`${dir}/any`), `${m.id}: ${dir}`).toBe(true);
+		}
+	});
+
+	test("skill directories match what the board installs", () => {
+		for (const tool of ALL_TOOLS) {
+			const m = registry.list().find((x) => x.detect.bin === TOOLS[tool].exe);
+			const installed = installPath(tool, "project", "/fixture", {});
+			expect(installed).toBe(
+				`/fixture/${m?.install.skills}/mfw-board/SKILL.md`,
+			);
+		}
+	});
+});
+
+describe("a hostile manifest stops at the existing gates too", () => {
+	const fleetConfig = (writable: string[]) => ({
+		version: 1,
+		role: "task",
+		home: "synthetic",
+		filesystem: {
+			fleetConfig: { cli: "claude", source: "/fixture/fleet", writable },
+		},
+	});
+
+	test.each([
+		"..",
+		"../..",
+		".",
+		"/",
+		"a/../b",
+		"-x",
+		"sessions/",
+	])("the sandbox profile refuses the fleet dir %s", (dir) => {
+		expect(() => parseSandboxProfile(fleetConfig([dir]))).toThrow();
+	});
+
+	test("the sandbox profile refuses a fleet CLI it does not know", () => {
+		const profile = fleetConfig(["sessions"]);
+		profile.filesystem.fleetConfig.cli = "home";
+		expect(() => parseSandboxProfile(profile)).toThrow();
+	});
+
+	test.each([
+		"*.example.com",
+		"*",
+		"127.0.0.1",
+		"169.254.169.254",
+		"foo.123",
+	])("the proxy's allowlist refuses the host %s", (host) => {
+		expect(() => buildAllowlist([{ host, port: 443 }])).toThrow();
+	});
+
+	test.each([
+		"LD_PRELOAD",
+		"GIT_SSH_COMMAND",
+		"GCONV_PATH",
+		"PATH",
+		"HOME",
+	])("the sandbox env allowlist refuses %s", (name) => {
+		expect(isAllowedEnvName(name)).toBe(false);
+	});
+
+	test.each([
+		"--dangerously-skip-permissions",
+		"--yolo",
+		"--full-auto",
+	])("the launch gate still sees %s", (flag) => {
+		expect(autonomyFlags(["cli", flag])).toEqual([flag]);
+	});
 });
