@@ -74,6 +74,7 @@ export function healthyProject(over: Partial<ProjectFacts> = {}): ProjectFacts {
 }
 
 export function fixture(over: Partial<DoctorProbes> = {}): DoctorProbes {
+	const home = over.home ?? HOME;
 	return {
 		env: { HOST: "127.0.0.1", XDG_RUNTIME_DIR: "/run/user/1000" },
 		home: HOME,
@@ -84,8 +85,8 @@ export function fixture(over: Partial<DoctorProbes> = {}): DoctorProbes {
 		toolVersion: async (path) =>
 			path.endsWith("tmux") ? "3.5" : path.endsWith("git") ? "2.50.1" : "1.0.0",
 		stat: async (path) => ({
-			kind: path === HOME ? "dir" : "file",
-			mode: path === HOME ? 0o700 : 0o600,
+			kind: path === home ? "dir" : "file",
+			mode: path === home ? 0o700 : 0o600,
 			uid: 1000,
 		}),
 		config: async () => ({ ok: true, config: { projects: [] } }),

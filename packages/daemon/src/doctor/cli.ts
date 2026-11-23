@@ -1,7 +1,9 @@
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { lstat, mkdir, readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import {
+	configKeysLostOnSave,
+	configPath,
 	mutateConfig,
 	normalizeRoot,
 	type StoredProjectConfig,
@@ -174,6 +176,26 @@ async function currentBranch(root: string): Promise<string | null> {
 	return r?.ok ? r.stdout.trim() || null : null;
 }
 
+/** Why saving over the current config would lose or redirect something. */
+async function configSaveProblem(home: string): Promise<string | null> {
+	const path = configPath(home);
+	const st = await lstat(path).catch(() => null);
+	if (!st) return null;
+	if (st.isSymbolicLink()) {
+		return "config.json is a symbolic link, and a save would replace the link. Add the entry to the file it points to yourself";
+	}
+	if (!st.isFile()) return "config.json is not a regular file";
+	let lost: string[];
+	try {
+		lost = configKeysLostOnSave(await readFile(path, "utf8"));
+	} catch {
+		return "config.json is not valid. Run mfw doctor, and correct it first";
+	}
+	return lost.length > 0
+		? `config.json has keys this version does not know, and a save would delete them: ${lost.join(", ")}. Add the entry by hand`
+		: null;
+}
+
 async function writeEntry(
 	home: string,
 	entry: StoredProjectConfig,
@@ -190,6 +212,8 @@ async function writeEntry(
 		return "the server is running. Stop it, or add the project in the web UI";
 	}
 	try {
+		const unsafe = await configSaveProblem(home);
+		if (unsafe) return unsafe;
 		return await mutateConfig(home, (config) => {
 			const clash = config.projects.find(
 				(p) => p.name === entry.name || p.root === entry.root,
