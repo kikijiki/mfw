@@ -34,11 +34,34 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertRunId, sandboxBundleArgv } from "../host-git/fetch.ts";
 
+// This file is installed into the sandbox as one script (`wip-helper-install.ts`),
+// so it imports node builtins only. A test holds these names equal to the
+// refspecs in `host-git/fetch.ts`.
 const ACK_FILE = "wip-ack.json";
 const BUNDLE_FILE = "result.bundle";
 const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+/** A git call past this is killed: an agent-configured filter can hang forever. */
+const GIT_TIMEOUT_MS = 60_000;
+/** Older snapshots are dropped, so the bundle's ref count stays under the host's cap. */
+const MAX_WIP_REFS = 64;
+
+function assertRunId(runId: string): void {
+	if (!RUN_ID_RE.test(runId)) throw new Error("bad run id");
+}
+
+/** `git` arguments that write the outbox bundle: the run branch and its WIP refs. */
+export function bundleArgs(runId: string, outPath: string): string[] {
+	assertRunId(runId);
+	return [
+		"bundle",
+		"create",
+		outPath,
+		`refs/heads/mfw/${runId}`,
+		`--glob=refs/heads/mfw-wip/${runId}/*`,
+	];
+}
 
 /** What the host appends to `control.jsonl` to ask for a snapshot. */
 export interface WipControl {
@@ -133,12 +156,17 @@ async function runGit(
 			stderr: "pipe",
 		},
 	);
-	const [out, err, code] = await Promise.all([
-		new Response(proc.stdout).text(),
-		new Response(proc.stderr).text(),
-		proc.exited,
-	]);
-	return { code, out: out.trim(), err: err.trim() };
+	const timer = setTimeout(() => proc.kill("SIGKILL"), GIT_TIMEOUT_MS);
+	try {
+		const [out, err, code] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		return { code, out: out.trim(), err: err.trim() };
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 async function gitOk(
@@ -207,6 +235,13 @@ export async function snapshotWip(
 				// Create-only: a concurrent snapshot never overwrites another.
 				await gitOk(env, ["update-ref", `${prefix}${n}`, commit, ""]);
 				sha = commit;
+				const sorted = have.sort((a, b) => a - b);
+				for (const old of sorted.slice(
+					0,
+					Math.max(0, sorted.length + 1 - MAX_WIP_REFS),
+				)) {
+					await gitOk(env, ["update-ref", "-d", `${prefix}${old}`]);
+				}
 			}
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
@@ -214,8 +249,7 @@ export async function snapshotWip(
 		const final = join(env.outbox, BUNDLE_FILE);
 		const staging = `${final}.tmp`;
 		rmSync(staging, { force: true });
-		const [, ...bundleArgs] = sandboxBundleArgv(env.runId, staging);
-		await gitOk(env, bundleArgs);
+		await gitOk(env, bundleArgs(env.runId, staging));
 		renameSync(staging, final);
 		return { id, ok: true, ...(n === undefined ? {} : { n }), sha };
 	} catch (e) {
@@ -264,10 +298,56 @@ export async function watchWip(
 			const req = parseWipControl(line);
 			if (!req || answered.has(req.id)) continue;
 			answered.add(req.id);
-			writeAck(env.outbox, await snapshotWip(env, req.id));
+			const ack = await snapshotWip(env, req.id);
+			try {
+				writeAck(env.outbox, ack);
+			} catch {
+				// The agent can plant anything in the outbox. The host times out
+				// on the missing ack; the agent keeps running.
+			}
 		}
 		await Bun.sleep(opts.pollMs ?? 200);
 	}
+}
+
+/**
+ * The sandbox's entry process: run the agent with this process's stdio, answer
+ * snapshot requests beside it, and exit with the agent's code. It holds no
+ * privilege the agent lacks. If the agent kills it the sandbox ends, and the
+ * host recovers the work from a fresh sandbox.
+ */
+export async function superviseAgent(
+	env: WipHelperEnv,
+	controlPath: string,
+	argv: string[],
+): Promise<number> {
+	const child = Bun.spawn(argv, {
+		cwd: env.workTree,
+		env: process.env,
+		stdin: "inherit",
+		stdout: "inherit",
+		stderr: "inherit",
+	});
+	for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
+		process.on(signal, () => child.kill(signal));
+	}
+	const stop = new AbortController();
+	const watcher = watchWip(env, controlPath, {
+		pollMs: 100,
+		signal: stop.signal,
+	}).catch(() => {});
+	const code = await child.exited;
+	stop.abort();
+	// A snapshot in flight may finish; a hung one must not hold the exit.
+	await Promise.race([watcher, Bun.sleep(2_000)]);
+	return code;
+}
+
+function flag(args: string[], name: string): string {
+	const i = args.indexOf(name);
+	const value = i >= 0 ? args[i + 1] : undefined;
+	if (!value) throw new Error(`${name} is required`);
+	return value;
 }
 
 function envFromProcess(): WipHelperEnv {
@@ -287,8 +367,40 @@ function envFromProcess(): WipHelperEnv {
 // Run as a command only when this file is the script bun was started with. A bundled server also reports
 // `import.meta.main` as true for its own entry, which must never run the helper (it exits when its env is unset).
 if (import.meta.main && /wip-helper\.[cm]?[jt]s$/.test(process.argv[1] ?? "")) {
-	const env = envFromProcess();
 	const cmd = process.argv[2];
+	if (cmd === "exec") {
+		const args = process.argv.slice(3);
+		const split = args.indexOf("--");
+		const argv = split >= 0 ? args.slice(split + 1) : [];
+		const own = split >= 0 ? args.slice(0, split) : args;
+		if (argv.length === 0) {
+			process.stderr.write(
+				"usage: wip-helper exec --run <id> --control <path> --outbox <dir> -- <argv...>\n",
+			);
+			process.exit(2);
+		}
+		const gitDir = process.env.GIT_DIR;
+		const workTree = process.env.GIT_WORK_TREE;
+		if (!gitDir || !workTree) {
+			process.stderr.write(
+				"wip-helper: GIT_DIR and GIT_WORK_TREE are required\n",
+			);
+			process.exit(2);
+		}
+		process.exit(
+			await superviseAgent(
+				{
+					runId: flag(own, "--run"),
+					gitDir,
+					workTree,
+					outbox: flag(own, "--outbox"),
+				},
+				flag(own, "--control"),
+				argv,
+			),
+		);
+	}
+	const env = envFromProcess();
 	if (cmd === "snapshot") {
 		const ack = await snapshotWip(env, process.argv[3] ?? "manual");
 		appendFileSync(process.stdout.fd, `${JSON.stringify(ack)}\n`);
