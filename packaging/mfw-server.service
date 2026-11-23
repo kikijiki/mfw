@@ -24,8 +24,8 @@ Environment=HOST=127.0.0.1
 # Stay on loopback: the server refuses a non-loopback HOST without TLS or a
 # trusted proxy. To reach it from another device, publish it through a TLS proxy
 # on its own origin and name both sides here (see docs/exposure.md):
-#   tailscale serve --bg --https=8443 --set-path /mfw http://127.0.0.1:7777/mfw
-#Environment=MFW_TRUSTED_PROXIES=127.0.0.1
+#   sudo tailscale serve --bg --https=8443 unix:$HOME/.local/share/mfw/serve/mfw.sock
+#Environment=MFW_LISTEN_SOCKET=%h/.local/share/mfw/serve/mfw.sock
 #Environment=MFW_ALLOWED_HOSTS=mybox.tail1234.ts.net:8443
 
 # Agent runs are detached tmux sessions that are meant to survive a daemon

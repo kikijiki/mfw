@@ -33,6 +33,7 @@ import {
 } from "./exposure";
 import {
 	isLoopbackAddress,
+	isUnixPeer,
 	parseTrustedProxies,
 	resolveForwarded,
 } from "./trusted-proxy";
@@ -95,10 +96,12 @@ function computeContext(
 ): RequestContext {
 	const ip = (req as Request & { ip?: unknown }).ip;
 	const peer = typeof ip === "string" ? ip : undefined;
+	const viaUnix = isUnixPeer(req);
 	const forwarded = resolveForwarded(
 		req.headers,
 		peer,
 		parseTrustedProxies(env.MFW_TRUSTED_PROXIES).proxies,
+		viaUnix,
 	);
 	let url: URL | null = null;
 	try {
@@ -130,7 +133,9 @@ function computeContext(
 		refusal:
 			forwarded.kind === "invalid"
 				? `bad forwarded headers from the proxy: ${forwarded.reason}`
-				: null,
+				: viaUnix
+					? "the private socket only serves its proxy, which must send forwarded headers"
+					: null,
 	};
 }
 

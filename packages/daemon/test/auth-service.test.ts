@@ -11,6 +11,7 @@ import {
 	FREE_ATTEMPTS,
 	isAuthRefused,
 	LOOPBACK_SOURCE,
+	PROXIED_FREE_FAILURES,
 	SESSION_ABSOLUTE_MS,
 	SESSION_IDLE_MS,
 	SETUP_TOKEN_TTL_MS,
@@ -460,6 +461,34 @@ describe("the password queue is bounded (recheck N1)", () => {
 			);
 		} finally {
 			small.close();
+		}
+	});
+});
+
+describe("the proxied budget under concurrency (review F2)", () => {
+	test("concurrent forged clients cannot overshoot the free failures", async () => {
+		const proxied = await AuthService.open(join(dir, "proxied.db"), {
+			passwordCheckIntervalMs: 1,
+			proxiedCheckIntervalMs: 40,
+		});
+		try {
+			await proxied.setup((await proxied.beginFirstRun()) as string, PASSWORD);
+			const results = await Promise.all(
+				Array.from({ length: 60 }, (_, i) =>
+					code(
+						proxied.login("wrong password!", undefined, {
+							address: `203.0.113.${i + 1}`,
+							viaProxy: true,
+						}),
+					),
+				),
+			);
+			const evaluated = results.filter((r) => r === "invalid_password").length;
+			// The free budget, plus at most the bounded queue of paced attempts.
+			expect(evaluated).toBeLessThanOrEqual(PROXIED_FREE_FAILURES + 16);
+			expect(results.filter((r) => r === "busy").length).toBeGreaterThan(0);
+		} finally {
+			proxied.close();
 		}
 	});
 });

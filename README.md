@@ -139,22 +139,21 @@ bun packages/board/src/cli.ts --help
 ### Reach it from your phone
 
 Keep the server on loopback and let Tailscale publish it with a real certificate,
-on an HTTPS port of its own. Start the server with:
+through a private socket and on an HTTPS port of its own. Start the server with:
 
 ```sh
-HOST=127.0.0.1 MFW_TRUSTED_PROXIES=127.0.0.1 \
+HOST=127.0.0.1 MFW_LISTEN_SOCKET="$HOME/.local/share/mfw/serve/mfw.sock" \
   MFW_ALLOWED_HOSTS=<machine>.<tailnet>.ts.net:8443 mfw server
 ```
 
-Then publish it:
+Then publish it (a socket target needs root):
 
 ```sh
-tailscale serve --bg --https=8443 --set-path /mfw http://127.0.0.1:7777/mfw
+sudo tailscale serve --bg --https=8443 unix:$HOME/.local/share/mfw/serve/mfw.sock
 ```
 
 Open `https://<machine>.<tailnet>.ts.net:8443/mfw/` from any device on your tailnet.
-The `/mfw` in the target is deliberate: the app is built to live under that prefix,
-and without it every asset 404s.
+This has not yet been tested against a real `tailscale serve`.
 
 The server refuses to start on a non-loopback address without TLS or a trusted
 proxy, and never listens on `0.0.0.0`. [docs/exposure.md](docs/exposure.md) covers
@@ -178,6 +177,7 @@ Both keep the scheduler off until you enable it in the UI.
 | `MFW_BASE_PATH` | `/mfw/` | the URL prefix, fixed when you run `bun run build` (`/` for the root) |
 | `MFW_URL` | `http://localhost:7777/mfw/api/trpc` | where the MCP server finds the app |
 | `MFW_ALLOWED_HOSTS` | none | exact `host` or `host:port` names the UI may be reached on (comma separated, no wildcards); loopback is always allowed |
+| `MFW_LISTEN_SOCKET` | none | a private unix socket under `$MFW_HOME` for a TLS proxy; the recommended way to run behind Tailscale Serve |
 | `MFW_TRUSTED_PROXIES` | none | proxy peer addresses or CIDRs whose forwarded headers are honoured; loopback is not trusted by default |
 
 Agent network access, its per-project settings and its limits are described

@@ -12,9 +12,9 @@
 #
 # To reach it from another device, keep this loopback bind and publish it through
 # a TLS proxy on its own origin. Set the two variables below, then run:
-#   tailscale serve --bg --https=8443 --set-path /mfw http://127.0.0.1:7777/mfw
-# The target repeats the prefix on purpose, Serve strips the mount path. See
-# docs/exposure.md for why mfw needs its own origin.
+#   sudo tailscale serve --bg --https=8443 unix:$HOME/.local/share/mfw/serve/mfw.sock
+# The private socket stops local processes from forging client addresses. See
+# docs/exposure.md, including why mfw needs its own origin.
 #
 # First run: the setup token is in $MFW_HOME/setup-token (never in the log), or
 # run `mfw auth setup-token`.
@@ -63,9 +63,9 @@ in {
         "MFW_HOME=%h/.local/share/mfw"
         "PORT=7777"
         "HOST=127.0.0.1"
-        # Behind a TLS proxy on this machine, name the proxy and the exact external
-        # host:port (no wildcards). Forwarded headers are ignored without the first.
-        # "MFW_TRUSTED_PROXIES=127.0.0.1"
+        # Behind a TLS proxy on this machine, give it a private socket and name the
+        # exact external host:port (no wildcards).
+        # "MFW_LISTEN_SOCKET=%h/.local/share/mfw/serve/mfw.sock"
         # "MFW_ALLOWED_HOSTS=mybox.tail1234.ts.net:8443"
       ];
       ExecStartPre = "${buildIfMissing}";

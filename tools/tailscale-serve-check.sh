@@ -21,13 +21,14 @@ entry="$root/apps/start/.output/server/index.mjs"
 
 port="${MFW_CHECK_PORT:-47790}"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/mfw-serve-check-XXXXXX")"
+socket="$scratch/mfw/serve/mfw.sock"
 server=""
 cleanup() {
 	if [[ -n "$server" ]]; then
 		kill "$server" 2>/dev/null || true
 		wait "$server" 2>/dev/null || true
 	fi
-	case "$scratch" in */mfw-serve-check-*) rm -rf -- "$scratch" ;; esac
+	echo "Temporary files (a throwaway home) are in $scratch"
 }
 trap cleanup EXIT
 
@@ -35,19 +36,19 @@ mkdir -p "$scratch/home"
 HOME="$scratch/home" MFW_HOME="$scratch/mfw" HOST=127.0.0.1 PORT="$port" \
 	MFW_DISABLE_ORCHESTRATOR=1 MFW_USAGE_MONITOR=0 \
 	TMUX_TMPDIR="$scratch" MFW_TMUX_SOCKET="mfw-serve-check-$$" \
-	MFW_TRUSTED_PROXIES=127.0.0.1 MFW_ALLOWED_HOSTS="$external" \
+	MFW_LISTEN_SOCKET="$socket" MFW_ALLOWED_HOSTS="$external" \
 	bun run "$entry" >"$scratch/server.log" 2>&1 &
 server=$!
 
 for _ in $(seq 1 100); do
-	[[ -s "$scratch/mfw/setup-token" ]] && break
+	[[ -s "$scratch/mfw/setup-token" && -S "$socket" ]] && break
 	sleep 0.1
 done
-[[ -s "$scratch/mfw/setup-token" ]] || { cat "$scratch/server.log" >&2; exit 1; }
+[[ -s "$scratch/mfw/setup-token" && -S "$socket" ]] || { cat "$scratch/server.log" >&2; exit 1; }
 
 echo "Throwaway server on 127.0.0.1:$port. In another terminal run:"
 echo
-echo "  tailscale serve --bg --https=$https_port --set-path /mfw http://127.0.0.1:$port/mfw"
+echo "  sudo tailscale serve --bg --https=$https_port unix:$socket"
 echo
 read -r -p "Press Enter once it is published. " _
 

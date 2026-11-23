@@ -11,12 +11,19 @@
  * monitor off and agent CLIs removed from PATH, and stops it before exiting.
  */
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	openSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
+	rmdirSync,
 	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
 } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -101,9 +108,12 @@ function raw(
 	payload: string,
 	opts: { ms?: number; from?: string } = {},
 ): Promise<RawResponse> {
-	if (opts.from) return rawFrom(port, payload, opts.from);
+	const unixPath = opts.from?.startsWith("unix:") ? opts.from.slice(5) : null;
+	if (opts.from && !unixPath) return rawFrom(port, payload, opts.from);
 	return new Promise((done, fail) => {
-		const socket = net.connect({ port, host: "127.0.0.1" });
+		const socket = unixPath
+			? net.connect({ path: unixPath })
+			: net.connect({ port, host: "127.0.0.1" });
 		let buffer = "";
 		const finish = () => {
 			clearTimeout(timer);
@@ -859,6 +869,7 @@ async function trustedProxy(): Promise<void> {
 		MFW_TMUX_SOCKET: `mfw-smoke-proxy-${process.pid}`,
 	};
 	const logFile = join(scratch, "server.log");
+	const logFd = openSync(logFile, "a");
 	const server = Bun.spawn([process.execPath, "run", ENTRY], {
 		cwd: ROOT,
 		env: {
@@ -868,8 +879,9 @@ async function trustedProxy(): Promise<void> {
 			MFW_TRUSTED_PROXIES: PROXY_PEER,
 			MFW_ALLOWED_HOSTS: EXTERNAL,
 		},
-		stdout: Bun.file(logFile),
-		stderr: Bun.file(logFile),
+		// One descriptor: two writers on the same file overwrite each other.
+		stdout: logFd,
+		stderr: logFd,
 	});
 	const get = (headers: Record<string, string>, from = PROXY_PEER) =>
 		raw(port, request("GET", "/mfw/api/auth/state", headers), { from });
@@ -886,6 +898,10 @@ async function trustedProxy(): Promise<void> {
 			throw new Error(
 				`proxied server did not start:\n${readFileSync(logFile, "utf8").slice(-1500)}`,
 			);
+		check(
+			"proxy: a loopback trusted proxy prints the forgery warning",
+			/WARNING: .*ANY LOCAL PROCESS/.test(readFileSync(logFile, "utf8")),
+		);
 		const tokenFile = join(mfwHome, "setup-token");
 		for (let i = 0; i < 50 && !existsSync(tokenFile); i++) await Bun.sleep(100);
 		const token = readFileSync(tokenFile, "utf8").trim();
@@ -1158,6 +1174,341 @@ async function trustedProxy(): Promise<void> {
 	}
 }
 
+/** What a process inside a real `bwrapCore` sandbox gets connecting to `path`. */
+function connectFromSandbox(
+	path: string,
+	scratch: string,
+	fakeHome: string,
+	mfwHome: string,
+): string {
+	const bwrapPath = Bun.which("bwrap");
+	if (!bwrapPath) return "no-bwrap";
+	const cwd = join(scratch, "sandbox-cwd");
+	const runDir = join(scratch, "sandbox-run");
+	mkdirSync(cwd, { recursive: true });
+	mkdirSync(runDir, { recursive: true });
+	// In a child: the runtime fixes `homedir()` at start, and the writable HOME
+	// bind this builds must be the fixture's, never the real one.
+	const options = JSON.stringify({
+		bwrapPath,
+		cwd,
+		runDir,
+		isolation: { mode: "bwrap", hidePaths: [mfwHome], mfwHome },
+	});
+	const module = join(ROOT, "packages/daemon/src/sandbox.ts");
+	const built = Bun.spawnSync(
+		[
+			process.execPath,
+			"-e",
+			`const { bwrapCore } = await import(${JSON.stringify(module)}); console.log(JSON.stringify(bwrapCore(${options})));`,
+		],
+		{ cwd: ROOT, env: { PATH: process.env.PATH ?? "", HOME: fakeHome } },
+	);
+	if (built.exitCode !== 0) return `failed: ${built.stderr.toString()}`;
+	const core = JSON.parse(built.stdout.toString()) as string[];
+	if (!core.includes(fakeHome)) return "sandbox-used-the-real-home";
+	const script = `const s=require("node:net").connect(${JSON.stringify(path)});s.on("connect",()=>{console.log("connected");process.exit(0)});s.on("error",e=>{console.log(e.code);process.exit(0)})`;
+	const r = Bun.spawnSync([
+		...core,
+		"--",
+		realpathSync(process.execPath),
+		"-e",
+		script,
+	]);
+	return r.stdout.toString().trim() || `failed: ${r.stderr.toString()}`;
+}
+
+/** Review F2: Serve targets a private socket that local processes cannot forge on. */
+async function unixSocketProxy(): Promise<void> {
+	const scratch = validateTestHome(mkdtempSync(join(tmpdir(), "mfw-test-")));
+	const fakeHome = join(scratch, "home");
+	const mfwHome = join(scratch, "mfw");
+	const socketPath = join(mfwHome, "serve", "mfw.sock");
+	mkdirSync(fakeHome);
+	const base = {
+		PATH: safePath(),
+		HOME: fakeHome,
+		MFW_USAGE_MONITOR: "0",
+		MFW_DISABLE_ORCHESTRATOR: "1",
+		TMUX_TMPDIR: scratch,
+		MFW_TMUX_SOCKET: `mfw-smoke-unix-${process.pid}`,
+		HOST: "127.0.0.1",
+		MFW_ALLOWED_HOSTS: EXTERNAL,
+	};
+	const unix = `unix:${socketPath}`;
+	const serve = (client: string, extra: Record<string, string> = {}) =>
+		viaProxy(client, { Host: "localhost", ...extra });
+	const start = (port: number, name: string) => {
+		const logFile = join(scratch, `${name}.log`);
+		return Bun.spawn([process.execPath, "run", ENTRY], {
+			cwd: ROOT,
+			env: {
+				...base,
+				MFW_HOME: mfwHome,
+				MFW_LISTEN_SOCKET: socketPath,
+				PORT: String(port),
+			},
+			stdout: Bun.file(logFile),
+			stderr: Bun.file(logFile),
+		});
+	};
+	const waitForSocket = async () => {
+		for (let i = 0; i < 100; i++) {
+			const r = await raw(
+				0,
+				request("GET", "/mfw/api/auth/state", serve("203.0.113.1")),
+				{
+					from: unix,
+					ms: 500,
+				},
+			).catch(() => null);
+			if (r?.status === 200) return true;
+			await Bun.sleep(100);
+		}
+		return false;
+	};
+	const stop = async (
+		p: ReturnType<typeof Bun.spawn>,
+		signal: "SIGTERM" | "SIGKILL",
+	) => {
+		p.kill(signal);
+		await Promise.race([p.exited, Bun.sleep(5000)]);
+		p.kill("SIGKILL");
+		await p.exited;
+	};
+	const port = await freePort();
+	let server = start(port, "first");
+	try {
+		const listening = await waitForSocket();
+		check("unix: the server listens on the socket", listening);
+		if (!listening) return;
+		check(
+			"unix: socket is 0600",
+			(statSync(socketPath).mode & 0o777) === 0o600,
+		);
+		check(
+			"unix: its directory is 0700",
+			(statSync(join(mfwHome, "serve")).mode & 0o777) === 0o700,
+		);
+
+		const token = readFileSync(join(mfwHome, "setup-token"), "utf8").trim();
+		const setup = await authPost(
+			0,
+			"setup",
+			{ token, password: PASSWORD },
+			serve("203.0.113.1", { Origin: `https://${EXTERNAL}` }),
+			unix,
+		);
+		check(
+			"unix: setup through the proxy socket",
+			setup.status === 200,
+			setup.status,
+		);
+		check(
+			"unix: the cookie is __Secure-",
+			setup.cookie.startsWith("__Secure-mfw_session="),
+			setup.cookie.slice(0, 24),
+		);
+		const bare = await raw(0, request("GET", "/mfw/api/auth/state"), {
+			from: unix,
+		});
+		check(
+			"unix: a request without forwarded headers is refused",
+			bare.status === 403,
+			bare.status,
+		);
+
+		for (let i = 0; i < 5; i++)
+			await authPost(
+				0,
+				"login",
+				{ password: "wrong password!" },
+				serve("fd7a:115c:a1e0::aaaa"),
+				unix,
+			);
+		const locked = await authPost(
+			0,
+			"login",
+			{ password: PASSWORD },
+			serve("fd7a:115c:a1e0::aaaa"),
+			unix,
+		);
+		check(
+			"unix: a client locks its own bucket",
+			locked.status === 429,
+			locked.status,
+		);
+		const other = await authPost(
+			0,
+			"login",
+			{ password: PASSWORD },
+			serve("fd7a:115c:a1e0::bbbb"),
+			unix,
+		);
+		check(
+			"unix: another client is not locked",
+			other.status === 200,
+			other.status,
+		);
+
+		const forged = await raw(
+			port,
+			request("GET", "/mfw/api/auth/state", viaProxy("203.0.113.1")),
+		);
+		check(
+			"unix: forwarded headers over loopback TCP are not trusted",
+			forged.status === 403,
+			forged.status,
+		);
+		let evaluated = 0;
+		for (let i = 0; i < 9; i++) {
+			const r = await authPost(
+				port,
+				"login",
+				{ password: "wrong password!" },
+				{ "X-Forwarded-For": `198.51.100.${i}` },
+			);
+			if (r.status === 401) evaluated++;
+		}
+		check(
+			"unix: forged clients over loopback TCP share one bucket",
+			evaluated <= 5,
+			evaluated,
+		);
+
+		const outside = await new Promise<string>((done) => {
+			const s = net.connect({ path: socketPath });
+			s.on("connect", () => {
+				s.destroy();
+				done("connected");
+			});
+			s.on("error", (e: NodeJS.ErrnoException) => done(String(e.code)));
+		});
+		check(
+			"unix: control, the host can connect",
+			outside === "connected",
+			outside,
+		);
+		const inside = connectFromSandbox(socketPath, scratch, fakeHome, mfwHome);
+		check(
+			"unix: a bwrapCore sandbox cannot reach the socket",
+			inside === "ENOENT",
+			inside,
+		);
+
+		const second = Bun.spawn([process.execPath, "run", ENTRY], {
+			cwd: ROOT,
+			env: {
+				...base,
+				MFW_HOME: mfwHome,
+				MFW_LISTEN_SOCKET: socketPath,
+				PORT: String(await freePort()),
+			},
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const secondExit = await Promise.race([
+			second.exited,
+			Bun.sleep(15000).then(() => -1),
+		]);
+		if (secondExit === -1) second.kill("SIGKILL");
+		await second.exited;
+		check(
+			"unix: a live socket is never taken over",
+			secondExit === 1,
+			secondExit,
+		);
+		const still = await raw(
+			0,
+			request("GET", "/mfw/api/auth/state", serve("203.0.113.1")),
+			{ from: unix },
+		);
+		check(
+			"unix: the first server still answers",
+			still.status === 200,
+			still.status,
+		);
+
+		await stop(server, "SIGTERM");
+		check("unix: the socket is removed on exit", !existsSync(socketPath));
+		server = start(port, "second");
+		check("unix: restarts after a clean exit", await waitForSocket());
+		await stop(server, "SIGKILL");
+		check(
+			"unix: control, SIGKILL leaves a stale socket",
+			existsSync(socketPath),
+		);
+		server = start(port, "third");
+		check("unix: a stale socket is replaced", await waitForSocket());
+	} finally {
+		await stop(server, "SIGTERM");
+	}
+	try {
+		const bad = async (
+			name: string,
+			prepare: (home: string, sock: string) => void,
+		) => {
+			const home = join(scratch, `bad-${passed}-${failures.length}`);
+			const sock = join(home, "serve", "mfw.sock");
+			mkdirSync(join(home, "serve"), { recursive: true, mode: 0o700 });
+			prepare(home, sock);
+			await refusesToStart(
+				`unix: ${name}`,
+				base,
+				{ MFW_HOME: home, MFW_LISTEN_SOCKET: sock },
+				scratch,
+			);
+			return sock;
+		};
+		const victim = join(scratch, "victim");
+		writeFileSync(victim, "keep me\n");
+		await bad("a symlink at the path", (_h, s) => symlinkSync(victim, s));
+		check(
+			"unix: the symlink target is untouched",
+			readFileSync(victim, "utf8") === "keep me\n",
+		);
+		const file = await bad("a regular file at the path", (_h, s) =>
+			writeFileSync(s, "keep me\n"),
+		);
+		check(
+			"unix: the regular file is untouched",
+			readFileSync(file, "utf8") === "keep me\n",
+		);
+		await bad("a group-readable directory", (h) =>
+			chmodSync(join(h, "serve"), 0o750),
+		);
+		await bad("a symlinked directory", (h) => {
+			const real = join(h, "real");
+			mkdirSync(real, { mode: 0o700 });
+			rmdirSync(join(h, "serve"));
+			symlinkSync(real, join(h, "serve"));
+		});
+		await refusesToStart(
+			"unix: a path outside MFW_HOME",
+			base,
+			{
+				MFW_HOME: mfwHome,
+				MFW_LISTEN_SOCKET: join(scratch, "elsewhere", "mfw.sock"),
+			},
+			scratch,
+		);
+		await refusesToStart(
+			"unix: a relative path",
+			base,
+			{ MFW_HOME: mfwHome, MFW_LISTEN_SOCKET: "serve/mfw.sock" },
+			scratch,
+		);
+		await refusesToStart(
+			"unix: no exact external host",
+			{ ...base, MFW_ALLOWED_HOSTS: "" },
+			{ MFW_HOME: mfwHome, MFW_LISTEN_SOCKET: socketPath },
+			scratch,
+		);
+	} finally {
+		rmSync(validateTestHome(scratch), { recursive: true, force: true });
+	}
+}
+
 async function main(): Promise<number> {
 	if (!existsSync(ENTRY)) {
 		console.error("auth-smoke: no production build. Fix: bun run build");
@@ -1278,6 +1629,7 @@ async function main(): Promise<number> {
 	}
 	await trustedProxy();
 	await refusalsInDevelopmentMode();
+	await unixSocketProxy();
 	console.log(`auth-smoke: ${passed} passed, ${failures.length} failed`);
 	for (const f of failures.slice(0, 40)) console.log(`  FAIL ${f}`);
 	return failures.length ? 1 : 0;

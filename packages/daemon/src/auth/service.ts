@@ -283,6 +283,8 @@ export class AuthService {
 	private readonly afterPasswordCheck: (() => Promise<void>) | undefined;
 	private readonly passwordChecks: PasswordCheckQueue;
 	private readonly proxiedChecks: PasswordCheckQueue;
+	/** Proxied attempts started and not yet recorded. */
+	private readonly proxiedInFlight = { setup: 0, login: 0 };
 	/** Throttle scopes with an attempt in flight: one per source at a time. */
 	private readonly inFlight = new Set<string>();
 
@@ -406,9 +408,7 @@ export class AuthService {
 		if (await this.hasOwner())
 			throw new AuthRefused("already_set_up", "setup is already complete");
 		const scope = `setup:${throttleSource(sourceAddress(source))}`;
-		return this.oneAtATime(scope, async () => {
-			await this.assertNotLocked(scope);
-			await this.paceProxied("setup", source);
+		return this.oneAtATime("setup", scope, source, async () => {
 			const now = this.now();
 			const row = await this.db.client.execute(
 				"SELECT token_hash, expires_at FROM setup_tokens WHERE id = 1",
@@ -469,9 +469,7 @@ export class AuthService {
 		if (!(await this.hasOwner()))
 			throw new AuthRefused("setup_required", "finish first-run setup");
 		const scope = `login:${throttleSource(sourceAddress(source))}`;
-		return this.oneAtATime(scope, async () => {
-			await this.assertNotLocked(scope);
-			await this.paceProxied("login", source);
+		return this.oneAtATime("login", scope, source, async () => {
 			const owner = await this.checkOwnerPassword(password);
 			if (!owner) {
 				await this.recordFailure(scope);
@@ -523,9 +521,7 @@ export class AuthService {
 		if (!(await this.hasOwner()))
 			throw new AuthRefused("setup_required", "finish first-run setup");
 		const scope = `login:${throttleSource(sourceAddress(source))}`;
-		await this.oneAtATime(scope, async () => {
-			await this.assertNotLocked(scope);
-			await this.paceProxied("login", source);
+		await this.oneAtATime("login", scope, source, async () => {
 			const owner = await this.checkOwnerPassword(current);
 			if (!owner) {
 				await this.recordFailure(scope);
@@ -741,7 +737,9 @@ export class AuthService {
 
 	/** A source has one attempt in flight, so parallel guesses cannot race its count. */
 	private async oneAtATime<T>(
+		kind: "setup" | "login",
 		scope: string,
+		source: AuthSource | undefined,
 		run: () => Promise<T>,
 	): Promise<T> {
 		if (this.inFlight.has(scope))
@@ -751,9 +749,16 @@ export class AuthService {
 				1000,
 			);
 		this.inFlight.add(scope);
+		const proxied = isProxied(source);
+		// Taken before the first await: every earlier attempt is either counted
+		// here or already recorded, so concurrent requests cannot overshoot.
+		const earlier = proxied ? this.proxiedInFlight[kind]++ : 0;
 		try {
+			await this.assertNotLocked(scope);
+			if (proxied) await this.paceProxied(kind, earlier);
 			return await run();
 		} finally {
+			if (proxied) this.proxiedInFlight[kind]--;
 			this.inFlight.delete(scope);
 		}
 	}
@@ -765,19 +770,18 @@ export class AuthService {
 	 */
 	private async paceProxied(
 		kind: "setup" | "login",
-		source: AuthSource | undefined,
+		inFlightBefore: number,
 	): Promise<void> {
-		if (!isProxied(source)) return;
 		const r = await this.db.client.execute({
 			sql: "SELECT failures, last_failure_at FROM auth_throttle WHERE scope = ?",
 			args: [kind === "setup" ? PROXIED_SETUP_SCOPE : PROXIED_LOGIN_SCOPE],
 		});
 		const row = r.rows[0];
-		if (
-			row &&
-			this.now() - Number(row.last_failure_at) < THROTTLE_RESET_MS &&
-			Number(row.failures) >= PROXIED_FREE_FAILURES
-		)
+		const recorded =
+			row && this.now() - Number(row.last_failure_at) < THROTTLE_RESET_MS
+				? Number(row.failures)
+				: 0;
+		if (recorded + inFlightBefore >= PROXIED_FREE_FAILURES)
 			await this.proxiedChecks.run(async () => undefined);
 	}
 

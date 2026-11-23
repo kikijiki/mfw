@@ -10,8 +10,9 @@ import {
 import { enforceExposure } from "./auth-boot";
 import { guardRequest, isTls, sessionCookie } from "./auth-guard";
 import { AUTH_INTENT_HEADER, handleAuthAction } from "./auth-routes";
-import { checkExposure, parseAllowedHosts } from "./exposure";
+import { checkExposure, exposureWarnings, parseAllowedHosts } from "./exposure";
 import { checkRequest, requestContext } from "./request-guard";
+import { UNIX_PEER } from "./trusted-proxy";
 
 const PASSWORD = "correct horse battery";
 /** Well above two argon2 checks, so timing shows the pacing and not the hash. */
@@ -282,6 +283,70 @@ describe("throttle behind a trusted proxy", () => {
 			"SELECT 1 FROM auth_throttle WHERE scope = 'login:via-proxy'",
 		);
 		expect(row.rows.length).toBe(0);
+	});
+});
+
+describe("the private proxy socket (review F2)", () => {
+	const unixRequest = (headers: Record<string, string>) => {
+		const r = request(undefined, headers);
+		Object.defineProperty(r, UNIX_PEER, { value: true });
+		return r;
+	};
+	const env = { MFW_ALLOWED_HOSTS: EXTERNAL };
+
+	test("its peer is the proxy, with no address list", () => {
+		const r = unixRequest(viaProxy("203.0.113.9", { host: "localhost" }));
+		expect(checkRequest(r, env)).toBeNull();
+		expect(requestContext(r, env).client).toBe("203.0.113.9");
+		expect(requestContext(r, env).scheme).toBe("https:");
+	});
+	test("without forwarded headers it refuses", () => {
+		expect(checkRequest(unixRequest({ host: "localhost" }), env)?.status).toBe(
+			403,
+		);
+	});
+	test("a header cannot claim to be the unix peer", () => {
+		const r = request(
+			"127.0.0.1",
+			viaProxy("203.0.113.9", { "mfw.unixPeer": "true" }),
+		);
+		expect(requestContext(r, env).proxied).toBe(false);
+	});
+	for (const [name, MFW_LISTEN_SOCKET] of [
+		["relative", "serve/mfw.sock"],
+		["outside the home", "/run/user/1000/mfw.sock"],
+		["directly in the home", "/h/mfw/mfw.sock"],
+		["with dot segments", "/h/mfw/serve/../../x/mfw.sock"],
+		["too long", `/h/mfw/serve/${"x".repeat(120)}.sock`],
+	] as const)
+		test(`a socket path ${name} is refused`, () => {
+			expect(
+				checkExposure({
+					HOST: "127.0.0.1",
+					MFW_HOME: "/h/mfw",
+					MFW_ALLOWED_HOSTS: EXTERNAL,
+					MFW_LISTEN_SOCKET,
+				}),
+			).toContain("MFW_LISTEN_SOCKET");
+		});
+	test("a good path needs an exact host", () => {
+		const socket = {
+			HOST: "127.0.0.1",
+			MFW_HOME: "/h/mfw",
+			MFW_LISTEN_SOCKET: "/h/mfw/serve/mfw.sock",
+		};
+		expect(checkExposure(socket)).toContain("MFW_ALLOWED_HOSTS");
+		expect(checkExposure({ ...socket, ...env })).toBeNull();
+	});
+	for (const list of ["127.0.0.1", "127.0.0.0/8", "::1", "10.0.0.1 ::1"])
+		test(`trusting ${list} warns`, () => {
+			expect(exposureWarnings({ MFW_TRUSTED_PROXIES: list }).join()).toContain(
+				"ANY LOCAL PROCESS",
+			);
+		});
+	test("a remote proxy or the socket does not warn", () => {
+		expect(exposureWarnings({ MFW_TRUSTED_PROXIES: "10.0.0.1" })).toEqual([]);
+		expect(exposureWarnings({})).toEqual([]);
 	});
 });
 

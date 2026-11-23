@@ -10,6 +10,11 @@
  * trusted proxy, because everything to its left was supplied by the client.
  */
 
+/** Set by the unix listener on its requests. No client input can set a symbol. */
+export const UNIX_PEER = Symbol.for("mfw.unixPeer");
+export const isUnixPeer = (req: Request): boolean =>
+	(req as unknown as Record<symbol, unknown>)[UNIX_PEER] === true;
+
 export const MAX_FORWARDED_HOPS = 16;
 export const MAX_FORWARDED_LENGTH = 1024;
 
@@ -134,6 +139,18 @@ function inRange(ip: Uint8Array, range: TrustedProxy): boolean {
 
 const isTrusted = (ip: Uint8Array, list: readonly TrustedProxy[]) =>
 	list.some((p) => inRange(ip, p));
+
+/** True when any loopback address counts as a proxy: local processes can forge. */
+export function trustsLoopback(list: readonly TrustedProxy[]): boolean {
+	const v4 = parseIp("127.0.0.1") as Uint8Array;
+	const v6 = parseIp("::1") as Uint8Array;
+	return list.some(
+		(p) =>
+			(p.bytes.length === 4 && p.bytes[0] === 127) ||
+			inRange(v4, p) ||
+			inRange(v6, p),
+	);
+}
 
 /** A list with any bad entry is unusable: the server refuses to start on it. */
 export function parseTrustedProxies(value: string | undefined): {
@@ -287,9 +304,13 @@ export function resolveForwarded(
 	h: Headers,
 	peer: string | undefined,
 	list: readonly TrustedProxy[],
+	/** The peer came through the private unix socket, so it is the proxy. */
+	peerIsProxy = false,
 ): Forwarded {
-	const peerIp = peer ? parseIp(peer) : null;
-	if (!peerIp || !isTrusted(peerIp, list)) return { kind: "direct" };
+	if (!peerIsProxy) {
+		const peerIp = peer ? parseIp(peer) : null;
+		if (!peerIp || !isTrusted(peerIp, list)) return { kind: "direct" };
+	}
 
 	const forwarded = h.get("forwarded");
 	const hasX = [

@@ -27,9 +27,11 @@ describe("packaged listener safety", () => {
 			readFile(resolve(root, "packaging/mfw.home-manager.nix"), "utf8"),
 			readFile(resolve(root, "docs/exposure.md"), "utf8"),
 		]);
-		expect(service).toContain("#Environment=MFW_TRUSTED_PROXIES=127.0.0.1");
-		expect(homeManager).toContain('# "MFW_TRUSTED_PROXIES=127.0.0.1"');
+		expect(service).toContain("#Environment=MFW_LISTEN_SOCKET=");
+		expect(service).not.toContain("MFW_TRUSTED_PROXIES=127.0.0.1");
+		expect(homeManager).toContain('# "MFW_LISTEN_SOCKET=');
+		expect(homeManager).not.toContain("MFW_TRUSTED_PROXIES=127.0.0.1");
 		for (const text of [service, homeManager, exposure])
-			expect(text).toContain("--https=8443 --set-path /mfw");
+			expect(text).toContain("tailscale serve --bg --https=8443 unix:");
 	});
 });

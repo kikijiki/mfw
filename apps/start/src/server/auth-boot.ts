@@ -1,6 +1,7 @@
 import { definePlugin } from "nitro";
 import { serverAuth } from "./auth-guard";
-import { checkExposure } from "./exposure";
+import { checkExposure, exposureWarnings, homeFor } from "./exposure";
+import { startUnixListener } from "./unix-listener";
 
 /**
  * Open the auth store with the server and, on a first run, issue the one-time
@@ -52,8 +53,26 @@ export function enforceExposure(
 	exit(1);
 }
 
-export default definePlugin(() => {
-	if (!isViteDevServer()) enforceExposure(process.env);
+/** The private proxy socket. A failure stops the server: it was asked for. */
+function listenOnSocket(nitro: unknown): void {
+	const socket = process.env.MFW_LISTEN_SOCKET;
+	if (!socket) return;
+	const app = nitro as { fetch(req: Request): Response | Promise<Response> };
+	void startUnixListener(socket, homeFor(process.env), (req) =>
+		app.fetch(req),
+	).catch((error) => {
+		console.error(`[mfw] refusing to start: ${(error as Error).message}`);
+		process.exit(1);
+	});
+}
+
+export default definePlugin((nitro) => {
+	if (!isViteDevServer()) {
+		enforceExposure(process.env);
+		for (const warning of exposureWarnings(process.env))
+			console.warn(`\n[mfw] WARNING: ${warning}\n`);
+		listenOnSocket(nitro);
+	}
 	void serverAuth()
 		.then((auth) => announceFirstRun(auth))
 		.catch((error) => {

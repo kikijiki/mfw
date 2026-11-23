@@ -8,28 +8,47 @@ or a named trusted proxy. It also refuses an unset `HOST`, because the runtime
 would then listen on every interface, and it never listens on a wildcard
 address such as `0.0.0.0`. There is no override flag.
 
-## Tailscale Serve
+## Tailscale Serve (recommended: a private socket)
 
-Give mfw its own HTTPS port. Set this in the service environment:
+Give mfw its own HTTPS port and a private unix socket. Set this in the service
+environment:
 
 ```sh
 HOST=127.0.0.1
 PORT=7777
-MFW_TRUSTED_PROXIES=127.0.0.1
+MFW_LISTEN_SOCKET=$HOME/.local/share/mfw/serve/mfw.sock
 MFW_ALLOWED_HOSTS=<machine>.<tailnet>.ts.net:8443
 ```
 
-Then publish it:
+Then publish it. A socket target needs root:
 
 ```sh
-tailscale serve --bg --https=8443 --set-path /mfw http://127.0.0.1:7777/mfw
+sudo tailscale serve --bg --https=8443 unix:$HOME/.local/share/mfw/serve/mfw.sock
 ```
 
-Open `https://<machine>.<tailnet>.ts.net:8443/mfw/`. The `/mfw` in the target is
-deliberate: Serve strips the mount path, and the app is built under that prefix.
+Open `https://<machine>.<tailnet>.ts.net:8443/mfw/`. Mount it at the root of its
+port, without `--set-path`: the app is built under `/mfw`, and a unix target has
+no path to put that prefix back.
 
-This setup has not yet been run against a real `tailscale serve`. Use
+**Unverified.** The `unix:` form comes from the help text of `tailscale serve`
+1.104 and Tailscale's public source. Tailscale's published docs do not describe
+it. Per that source, the backend receives `Host: localhost` and the real name in
+`X-Forwarded-Host`. No real `tailscale serve` has been run against this. Use
 `tools/tailscale-serve-check.sh` and the checklist below before relying on it.
+
+The socket must be in a subdirectory of `$MFW_HOME`, because that is the tree
+sandboxes cannot see. Agents run as your user, so file modes alone would not keep
+them out. mfw creates the directory `0700` and the socket `0600`, refuses a
+symlink, a regular file, a wider directory or a socket another server is using,
+replaces a dead socket, and removes its own on exit. A request on the socket
+without forwarded headers is refused. The loopback TCP port stays available for
+the local browser and CLI, and forwarded headers on it are ignored.
+
+### TCP loopback proxy (not recommended)
+
+`MFW_TRUSTED_PROXIES=127.0.0.1` with
+`tailscale serve --bg --https=8443 --set-path /mfw http://127.0.0.1:7777/mfw` also
+works, and the server prints a warning at every start. See the threat notes.
 
 ## Other reverse proxies
 
@@ -59,6 +78,7 @@ other peer are refused.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `HOST` | required by the server; `mfw server` and `bun run start` use `127.0.0.1` | the listen address |
+| `MFW_LISTEN_SOCKET` | none | a private socket for a local TLS proxy, in a subdirectory of `$MFW_HOME` |
 | `MFW_TRUSTED_PROXIES` | none | proxy peer addresses or CIDRs, no wider than /8 (IPv4) or /32 (IPv6) |
 | `MFW_ALLOWED_HOSTS` | none | exact `host` or `host:port` names; wildcards and leading dots stop the server |
 | `NITRO_SSL_CERT`, `NITRO_SSL_KEY` | none | the server's own TLS; set both or neither |
@@ -85,16 +105,19 @@ it receives. A separate port is therefore enough, and a separate name is better.
 
 ## Threat notes
 
-- **A loopback proxy can be impersonated locally.** With
-  `MFW_TRUSTED_PROXIES=127.0.0.1`, any local process that can reach loopback can
-  send forged forwarded headers. Task and repair runs have no host network, but
-  other run kinds may still share loopback.
-- **What limits that forgery.** A forged address gets a fresh per-address bucket,
-  so all proxied attempts also share one failure count. After 20 failures they
-  are paced to one attempt per 2 seconds. This delays rather than locks, so a
-  forger cannot keep the owner out with a lock, though a sustained flood can fill
-  the queue and make sign-in slow or briefly refused. `mfw auth unlock` clears the
-  count. Use a long password.
+- **Do not trust a loopback proxy while agents share host loopback.** With
+  `MFW_TRUSTED_PROXIES=127.0.0.1`, every process that can connect from loopback is
+  "the proxy" and can claim any client address. Task and repair runs have no host
+  network, but the review and driver sandboxes (`bwrapCore`) still share it.
+- **What such a process can do.** In a security review, 40 workers rotating forged
+  addresses got 11 of the owner's 12 correct sign-ins refused at once, and the 12th
+  took 32 seconds, until the flood stopped. Forged attempts share one failure
+  count and are paced to one per 2 seconds after 20 failures, which still allows
+  about 43,000 guesses a day, roughly 450 times the rate of one locked address. A
+  12-character password from a small guess space can fall to that. Use a randomly
+  generated passphrase. `mfw auth unlock` clears the count, but not a live flood.
+- **The private socket removes this path.** Sandboxes cannot see it, and forwarded
+  headers on loopback TCP are then ignored.
 - **The Host check is not authentication.** Every route still needs a session,
   and every API call still needs the request key.
 
