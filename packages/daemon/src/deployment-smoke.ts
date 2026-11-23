@@ -2,7 +2,14 @@ import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
+import { openProjectDb } from "@mfw/db/client";
 import { saveConfig } from "./config.ts";
+import {
+	auditProbeRecorder,
+	type ProbeRecorder,
+	parseProbeRecording,
+	probeAndRecord,
+} from "./deployment-probe.ts";
 import { runProc } from "./proc.ts";
 
 const BASE_PATH = "/mfw";
@@ -258,7 +265,7 @@ async function assertCleanProject(project: string): Promise<void> {
 	throw new Error(`deployment smoke left an attached checkout dirty: ${last}`);
 }
 
-async function main(): Promise<void> {
+async function smoke(): Promise<void> {
 	requireGate();
 	const repoRoot = resolve(import.meta.dir, "../../..");
 	await access(join(repoRoot, "apps/start/.output/server/index.mjs"));
@@ -321,4 +328,34 @@ async function main(): Promise<void> {
 	}
 }
 
-await main();
+/**
+ * Run the smoke. With a recorder, the host records how it ended as a
+ * `deployment.probed` "deploy" probe for `target`; the pass or fail comes from
+ * the smoke itself.
+ */
+export async function runDeploymentSmoke(
+	recording?: { target: string; record: ProbeRecorder } | null,
+	run: () => Promise<void> = smoke,
+): Promise<void> {
+	if (!recording) return run();
+	await probeAndRecord(
+		{ target: recording.target, probe: "deploy", record: recording.record },
+		run,
+	);
+}
+
+async function main(): Promise<void> {
+	const recording = parseProbeRecording(process.argv);
+	if (!recording) return runDeploymentSmoke();
+	const handle = await openProjectDb(recording.mfwDir);
+	try {
+		await runDeploymentSmoke({
+			target: recording.target,
+			record: auditProbeRecorder(handle),
+		});
+	} finally {
+		handle.close();
+	}
+}
+
+if (import.meta.main) await main();
