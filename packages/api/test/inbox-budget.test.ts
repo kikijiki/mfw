@@ -8,6 +8,7 @@ import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
 import { createCaller } from "../src/root.ts";
 
 const opened: { root: string; handle: ProjectDbHandle }[] = [];
+let inboxReads = 0;
 
 afterEach(async () => {
 	for (const { root, handle } of opened.splice(0)) {
@@ -35,7 +36,12 @@ async function setup(count: number) {
 	const svc = {
 		name: "alpha",
 		handle,
-		inbox: { list: async () => items },
+		inbox: {
+			list: async () => {
+				inboxReads++;
+				return items;
+			},
+		},
 		budgets: { list: async () => [] },
 	} as unknown as ProjectServices;
 	const orchestrator = {
@@ -61,5 +67,12 @@ describe("inbox router: act budget", () => {
 		expect(headline?.needsYou).toBe(7);
 		expect(headline?.heldBack).toBe(2);
 		expect(headline?.text).toContain("2 held back");
+	});
+
+	test("the headlines route collects the inbox once", async () => {
+		const api = await setup(3);
+		inboxReads = 0;
+		await api.inbox.headlines();
+		expect(inboxReads).toBe(1);
 	});
 });

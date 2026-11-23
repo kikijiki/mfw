@@ -27,13 +27,19 @@ export const inboxRouter = createTRPCRouter({
 	/** One mechanical headline per attached project (`daemon/headlines.ts`). */
 	headlines: publicProcedure.query(async ({ ctx }) => {
 		const services = ctx.orchestrator.list();
-		// A headline degrades rather than throws: without the budget it shows no held count.
+		// A headline degrades rather than throws: without the budget it reads
+		// the project's own inbox and shows no held count.
 		const budget = await budgetedInbox(services).catch(() => null);
 		return Promise.all(
 			services.map((svc) => {
 				const source: HeadlineSource = {
 					name: svc.name,
-					inbox: svc.inbox,
+					inbox: budget
+						? {
+								list: async () =>
+									budget.items.filter((i) => i.project === svc.name),
+							}
+						: svc.inbox,
 					budgets: svc.budgets,
 					landedSince: (since) => countLanded(svc.handle, since),
 				};
