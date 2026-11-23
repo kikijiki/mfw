@@ -454,6 +454,149 @@ describe("the password queue is bounded (recheck N1)", () => {
 	});
 });
 
+describe("a login cannot outlive a credential change (recheck N3)", () => {
+	const NEXT = "a different long passphrase";
+
+	/** A service whose next password check pauses after verifying, until released. */
+	async function paused() {
+		let reached = () => {};
+		let release = () => {};
+		const atHook = new Promise<void>((r) => {
+			reached = r;
+		});
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		let armed = false;
+		const svc = await AuthService.open(join(dir, "race.db"), {
+			now: () => clock,
+			passwordCheckIntervalMs: 0,
+			afterPasswordCheck: async () => {
+				if (!armed) return;
+				armed = false;
+				reached();
+				await gate;
+			},
+		});
+		const first = await svc.setup(
+			(await svc.beginFirstRun()) as string,
+			PASSWORD,
+		);
+		return {
+			svc,
+			first,
+			atHook,
+			release,
+			arm: () => {
+				armed = true;
+			},
+		};
+	}
+
+	test("a verified login is refused if the password changed before it issued", async () => {
+		const { svc, first, atHook, release, arm } = await paused();
+		try {
+			arm();
+			const late = svc.login(PASSWORD, undefined, "10.0.2.1");
+			await atHook;
+			await svc.changePassword(PASSWORD, NEXT, first.sessionId, "10.0.2.2");
+			release();
+			expect(await code(late)).toBe("invalid_password");
+			expect(await code(svc.login(PASSWORD, undefined, "10.0.2.3"))).toBe(
+				"invalid_password",
+			);
+			expect(await code(svc.login(NEXT, undefined, "10.0.2.4"))).toBe("ok");
+		} finally {
+			svc.close();
+		}
+	});
+
+	test("a verified login is refused if everyone was signed out before it issued", async () => {
+		const { svc, atHook, release, arm } = await paused();
+		try {
+			arm();
+			const late = svc.login(PASSWORD, undefined, "10.0.2.1");
+			await atHook;
+			await svc.revokeAll();
+			release();
+			expect(await code(late)).toBe("invalid_password");
+			expect(await code(svc.login(PASSWORD, undefined, "10.0.2.3"))).toBe("ok");
+		} finally {
+			svc.close();
+		}
+	});
+
+	test("a refused late login leaves no session behind", async () => {
+		const { svc, first, atHook, release, arm } = await paused();
+		try {
+			arm();
+			const late = svc.login(PASSWORD, undefined, "10.0.2.1");
+			await atHook;
+			await svc.changePassword(PASSWORD, NEXT, first.sessionId, "10.0.2.2");
+			release();
+			await code(late);
+			const rows = await (
+				svc as unknown as {
+					db: { client: { execute(q: string): Promise<{ rows: unknown[] }> } };
+				}
+			).db.client.execute(
+				"SELECT id FROM auth_sessions WHERE revoked_at IS NULL",
+			);
+			expect(rows.rows).toHaveLength(1);
+		} finally {
+			svc.close();
+		}
+	});
+
+	test("two racing password changes: only one wins", async () => {
+		const { svc, first, atHook, release, arm } = await paused();
+		try {
+			arm();
+			const slow = svc.changePassword(
+				PASSWORD,
+				"the slower passphrase",
+				first.sessionId,
+				"10.0.2.1",
+			);
+			await atHook;
+			await svc.changePassword(PASSWORD, NEXT, first.sessionId, "10.0.2.2");
+			release();
+			expect(await code(slow)).toBe("invalid_password");
+			expect(await code(svc.login(NEXT, undefined, "10.0.2.3"))).toBe("ok");
+		} finally {
+			svc.close();
+		}
+	});
+
+	test("a login overlapping a change never leaves a live session", async () => {
+		const svc = await AuthService.open(join(dir, "queued.db"), {
+			now: () => clock,
+			passwordCheckIntervalMs: 30,
+		});
+		try {
+			const first = await svc.setup(
+				(await svc.beginFirstRun()) as string,
+				PASSWORD,
+			);
+			const change = svc.changePassword(
+				PASSWORD,
+				NEXT,
+				first.sessionId,
+				"10.0.2.1",
+			);
+			// Either refused, or issued just before the change and revoked by it.
+			const late = svc.login(PASSWORD, undefined, "10.0.2.2").catch(() => null);
+			const [, session] = await Promise.all([change, late]);
+			if (session) expect(await svc.authenticate(session.token)).toBeNull();
+			expect(await code(svc.login(PASSWORD, undefined, "10.0.2.3"))).toBe(
+				"invalid_password",
+			);
+		} finally {
+			svc.close();
+		}
+	});
+});
+
 describe("isAuthRefused", () => {
 	test("recognises a copy of the class from another bundle chunk", () => {
 		class CopiedChunkError extends Error {

@@ -714,6 +714,51 @@ async function plantedCookieInChrome(
 	}
 }
 
+/** N3: a login racing a password change must not outlive it. */
+async function loginRacingPasswordChange(
+	port: number,
+	home: string,
+	env: Record<string, string>,
+): Promise<void> {
+	let current = PASSWORD;
+	let survived = 0;
+	for (let trial = 0; trial < 12; trial++) {
+		unlock(home, env);
+		const owner = await authPost(port, "login", { password: current });
+		const next = `race trial passphrase number ${trial}`;
+		const change = authPost(
+			port,
+			"password",
+			{ current, next },
+			{ Cookie: owner.cookie, "x-mfw-key": owner.key },
+		);
+		const stale = authPost(
+			port,
+			"login",
+			{ password: current },
+			{},
+			"127.0.9.9",
+		);
+		const [changed, late] = await Promise.all([change, stale]);
+		if (changed.status === 200) current = next;
+		if (late.status === 200) {
+			const use = await raw(
+				port,
+				request("GET", `/mfw/api/trpc/${Q}`, {
+					Cookie: late.cookie,
+					"x-mfw-key": late.key,
+				}),
+			);
+			if (changed.status === 200 && use.status === 200) survived++;
+		}
+	}
+	check(
+		"no login with the old password survives a change",
+		survived === 0,
+		`${survived} of 12 survived`,
+	);
+}
+
 async function main(): Promise<number> {
 	if (!existsSync(ENTRY)) {
 		console.error("auth-smoke: no production build. Fix: bun run build");
@@ -812,6 +857,8 @@ async function main(): Promise<number> {
 		await loopbackIsOneSource(port, mfwHome, env);
 		await plantedCookie(port);
 		await plantedCookieInChrome(port, scratch);
+		unlock(mfwHome, env);
+		await loginRacingPasswordChange(port, mfwHome, env);
 		check(
 			"no agent CLI ran",
 			!existsSync(join(fakeHome, ".codex")) &&

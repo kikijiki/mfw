@@ -123,6 +123,8 @@ export interface AuthServiceOptions {
 	passwordCheckIntervalMs?: number;
 	/** Password checks allowed to wait at once; further ones are refused. */
 	maxQueuedPasswordChecks?: number;
+	/** Runs after a password verifies, before anything is written (tests). */
+	afterPasswordCheck?: () => Promise<void>;
 	/** Where a first-run setup token is written (0600). */
 	setupTokenFile?: string;
 }
@@ -252,6 +254,7 @@ export class AuthService {
 	private readonly listeners = new Map<string, Set<() => void>>();
 	/** The 0600 file holding a pending setup token, under the masked `$MFW_HOME`. */
 	readonly setupTokenFile: string | null;
+	private readonly afterPasswordCheck: (() => Promise<void>) | undefined;
 	private readonly passwordChecks: PasswordCheckQueue;
 	/** Throttle scopes with an attempt in flight: one per source at a time. */
 	private readonly inFlight = new Set<string>();
@@ -263,6 +266,7 @@ export class AuthService {
 		this.now = opts.now ?? Date.now;
 		this.streamRecheckMs = opts.streamRecheckMs ?? STREAM_RECHECK_MS;
 		this.setupTokenFile = opts.setupTokenFile ?? null;
+		this.afterPasswordCheck = opts.afterPasswordCheck;
 		this.passwordChecks = new PasswordCheckQueue(
 			opts.passwordCheckIntervalMs ?? PASSWORD_CHECK_INTERVAL_MS,
 			opts.maxQueuedPasswordChecks ?? MAX_QUEUED_PASSWORD_CHECKS,
@@ -414,7 +418,7 @@ export class AuthService {
 				throw new AuthRefused("already_set_up", "setup is already complete");
 			await this.clearThrottle(scope);
 			this.removeSetupTokenFile();
-			return this.issue(id);
+			return this.issue(id, 0);
 		});
 	}
 
@@ -429,28 +433,45 @@ export class AuthService {
 		presented?: string,
 		source?: string,
 	): Promise<IssuedSession> {
-		const row = await this.db.client.execute(
-			"SELECT id, password_hash FROM principals WHERE kind = 'owner' LIMIT 1",
-		);
-		const owner = row.rows[0];
-		if (!owner)
+		if (!(await this.hasOwner()))
 			throw new AuthRefused("setup_required", "finish first-run setup");
 		const scope = `login:${throttleSource(source)}`;
 		return this.oneAtATime(scope, async () => {
 			await this.assertNotLocked(scope);
-			const ok =
-				password.length > 0 &&
-				password.length <= PASSWORD_MAX &&
-				(await this.passwordChecks.run(() =>
-					Bun.password.verify(password, String(owner.password_hash)),
-				));
-			if (!ok) {
+			const owner = await this.checkOwnerPassword(password);
+			if (!owner) {
 				await this.recordFailure(scope);
 				throw new AuthRefused("invalid_password", "wrong password");
 			}
+			await this.afterPasswordCheck?.();
+			const issued = await this.issue(owner.id, owner.epoch);
 			await this.clearThrottle(scope);
 			if (presented) await this.logout(presented);
-			return this.issue(String(owner.id));
+			return issued;
+		});
+	}
+
+	/**
+	 * Verify against the CURRENT hash, read inside the queue turn together with
+	 * its epoch. A request that waited behind a change sees the new password.
+	 */
+	private async checkOwnerPassword(
+		password: string,
+	): Promise<{ id: string; epoch: number } | null> {
+		if (password.length === 0 || password.length > PASSWORD_MAX) return null;
+		return this.passwordChecks.run(async () => {
+			const row = await this.db.client.execute(
+				"SELECT id, password_hash, credential_epoch FROM principals WHERE kind = 'owner' LIMIT 1",
+			);
+			const owner = row.rows[0];
+			if (!owner) return null;
+			const ok = await Bun.password.verify(
+				password,
+				String(owner.password_hash),
+			);
+			return ok
+				? { id: String(owner.id), epoch: Number(owner.credential_epoch) }
+				: null;
 		});
 	}
 
@@ -464,42 +485,46 @@ export class AuthService {
 		keepSessionId: string,
 		source?: string,
 	): Promise<void> {
-		const row = await this.db.client.execute(
-			"SELECT id, password_hash FROM principals WHERE kind = 'owner' LIMIT 1",
-		);
-		const owner = row.rows[0];
-		if (!owner)
+		if (!(await this.hasOwner()))
 			throw new AuthRefused("setup_required", "finish first-run setup");
 		const scope = `login:${throttleSource(source)}`;
 		await this.oneAtATime(scope, async () => {
 			await this.assertNotLocked(scope);
-			const ok =
-				current.length > 0 &&
-				current.length <= PASSWORD_MAX &&
-				(await this.passwordChecks.run(() =>
-					Bun.password.verify(current, String(owner.password_hash)),
-				));
-			if (!ok) {
+			const owner = await this.checkOwnerPassword(current);
+			if (!owner) {
 				await this.recordFailure(scope);
 				throw new AuthRefused("invalid_password", "wrong password");
 			}
+			await this.afterPasswordCheck?.();
 			await this.clearThrottle(scope);
 			assertPasswordPolicy(next);
 			const hash = await Bun.password.hash(next, { algorithm: "argon2id" });
 			const now = this.now();
-			const [, revoked] = await this.db.client.batch(
+			// One atomic step, and only from the epoch that was verified: the
+			// revocation applies only if this call's update did.
+			const [updated, revoked] = await this.db.client.batch(
 				[
 					{
-						sql: "UPDATE principals SET password_hash = ?, updated_at = ? WHERE id = ?",
-						args: [hash, now, String(owner.id)],
+						sql: `UPDATE principals SET password_hash = ?, updated_at = ?,
+							credential_epoch = credential_epoch + 1
+							WHERE id = ? AND credential_epoch = ?`,
+						args: [hash, now, owner.id, owner.epoch],
 					},
 					{
-						sql: "UPDATE auth_sessions SET revoked_at = ? WHERE revoked_at IS NULL AND id != ? RETURNING id",
-						args: [now, keepSessionId],
+						sql: `UPDATE auth_sessions SET revoked_at = ?
+							WHERE revoked_at IS NULL AND id != ?
+							AND EXISTS (SELECT 1 FROM principals WHERE id = ? AND credential_epoch = ? AND password_hash = ?)
+							RETURNING id`,
+						args: [now, keepSessionId, owner.id, owner.epoch + 1, hash],
 					},
 				],
 				"write",
 			);
+			if (updated?.rowsAffected !== 1)
+				throw new AuthRefused(
+					"invalid_password",
+					"the password was just changed; use the new one",
+				);
 			for (const r of revoked?.rows ?? []) this.notifyEnded(String(r.id));
 		});
 	}
@@ -518,13 +543,22 @@ export class AuthService {
 		for (const row of r.rows) this.notifyEnded(String(row.id));
 	}
 
-	/** Revoke every session (for example after a credential change). */
+	/**
+	 * Revoke every session, and bump the epoch so a login already past its
+	 * password check cannot create a new one afterwards.
+	 */
 	async revokeAll(): Promise<void> {
-		const r = await this.db.client.execute({
-			sql: "UPDATE auth_sessions SET revoked_at = ? WHERE revoked_at IS NULL RETURNING id",
-			args: [this.now()],
-		});
-		for (const row of r.rows) this.notifyEnded(String(row.id));
+		const [, revoked] = await this.db.client.batch(
+			[
+				"UPDATE principals SET credential_epoch = credential_epoch + 1",
+				{
+					sql: "UPDATE auth_sessions SET revoked_at = ? WHERE revoked_at IS NULL RETURNING id",
+					args: [this.now()],
+				},
+			],
+			"write",
+		);
+		for (const row of revoked?.rows ?? []) this.notifyEnded(String(row.id));
 	}
 
 	/** The live session for a cookie value, or null. Fails closed. */
@@ -614,16 +648,25 @@ export class AuthService {
 		for (const end of [...(this.listeners.get(sessionId) ?? [])]) end();
 	}
 
-	private async issue(principalId: string): Promise<IssuedSession> {
+	/**
+	 * Create a session, only if the credentials are still those that were
+	 * verified. The check and the insert are one statement, so a change is
+	 * either seen here or revokes this row.
+	 */
+	private async issue(
+		principalId: string,
+		epoch: number,
+	): Promise<IssuedSession> {
 		const token = randomBytes(32).toString("base64url");
 		const requestKey = randomBytes(32).toString("base64url");
 		const requestKeyHash = sha(requestKey);
 		const sessionId = randomUUID();
 		const now = this.now();
 		const expiresAt = now + SESSION_ABSOLUTE_MS;
-		await this.db.client.execute({
+		const inserted = await this.db.client.execute({
 			sql: `INSERT INTO auth_sessions (id, token_hash, principal_id, created_at, last_seen_at, expires_at, request_key_hash)
-				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				SELECT ?, ?, ?, ?, ?, ?, ?
+				WHERE EXISTS (SELECT 1 FROM principals WHERE id = ? AND credential_epoch = ?)`,
 			args: [
 				sessionId,
 				sha(token),
@@ -632,8 +675,15 @@ export class AuthService {
 				now,
 				expiresAt,
 				requestKeyHash,
+				principalId,
+				epoch,
 			],
 		});
+		if (inserted.rowsAffected !== 1)
+			throw new AuthRefused(
+				"invalid_password",
+				"the credentials just changed; sign in again",
+			);
 		// Keep the newest live sessions; anything older is revoked, not just hidden.
 		const stale = await this.db.client.execute({
 			sql: `UPDATE auth_sessions SET revoked_at = ? WHERE revoked_at IS NULL AND principal_id = ?
