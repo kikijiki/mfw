@@ -1,7 +1,11 @@
 # Exposing mfw beyond loopback
 
-mfw runs agents with your permissions, so its listener stays on loopback by
-default. To reach it from another device, put a TLS proxy in front of it.
+> **Experimental.** This path has not been run against a real `tailscale serve`.
+> See [experimental.md](experimental.md).
+
+An mfw session can control agents and commands on your machine, so its listener
+stays on loopback by default. To reach it from another device, put a TLS proxy in
+front of it.
 
 The server refuses to start on a non-loopback address unless it has its own TLS
 or a named trusted proxy. It also refuses an unset `HOST`, because the runtime
