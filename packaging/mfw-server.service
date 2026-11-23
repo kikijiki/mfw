@@ -21,11 +21,12 @@ RestartSec=2
 Environment=MFW_HOME=%h/.local/share/mfw
 Environment=PORT=7777
 Environment=HOST=127.0.0.1
-# The app refuses requests whose Host is not loopback (localhost, 127.0.0.1,
-# [::1]) and whose Origin does not match the Host. To reach it by another name
-# (a tailnet host, a reverse proxy), list it, comma separated, host or host:port;
-# a bare host matches any port. Without this the UI is locked out on that name.
-#Environment=MFW_ALLOWED_HOSTS=mybox.tail1234.ts.net
+# Stay on loopback: the server refuses a non-loopback HOST without TLS or a
+# trusted proxy. To reach it from another device, publish it through a TLS proxy
+# on its own origin and name both sides here (see docs/exposure.md):
+#   tailscale serve --bg --https=8443 --set-path /mfw http://127.0.0.1:7777/mfw
+#Environment=MFW_TRUSTED_PROXIES=127.0.0.1
+#Environment=MFW_ALLOWED_HOSTS=mybox.tail1234.ts.net:8443
 
 # Agent runs are detached tmux sessions that are meant to survive a daemon
 # restart, the supervisor re-adopts them on boot. The default KillMode of
