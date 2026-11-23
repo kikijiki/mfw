@@ -15,6 +15,7 @@ import {
 	assertRunId,
 	type FetchValidationContext,
 	fetchRunResult,
+	quarantineLivePrefix,
 	quarantineRef,
 	quarantineWipPrefix,
 } from "../host-git/fetch.ts";
@@ -67,7 +68,25 @@ interface Marker {
 	createdAt: string;
 	/** Set once the host imported the result; the quarantine refs are then the record of the work. */
 	importedTip?: string;
+	/** Why the end-of-run import was refused. Final: the clone is kept for the owner. */
+	importFailure?: string;
 }
+
+/**
+ * Takes the end-of-run snapshot in a fresh sandbox, after every run process is
+ * dead, so no agent process can race it. `run` resolves `failed` when the clone
+ * cannot produce a result (a deleted or corrupt gitdir, a hung filter) and
+ * throws when the sandbox could not start, which is worth retrying.
+ */
+export interface FinalSnapshot {
+	available(runId: string): boolean | Promise<boolean>;
+	run(runId: string): Promise<"ok" | "failed">;
+}
+
+/** What the host observed about an import, for the run's provenance record. */
+export type ResultImportEvent =
+	| { outcome: "imported"; tip: string; wipRefs: number }
+	| { outcome: "refused"; failure: string };
 
 export interface CloneWorkspaceOptions {
 	/** `$MFW_HOME/workspaces`. */
@@ -98,6 +117,21 @@ export interface CloneWorkspaceOptions {
 	 * then imported by `fetchResult` once `assertProcessesDead` passes.
 	 */
 	assertQuiescent?: (runId: string) => void | Promise<void>;
+	/**
+	 * The run's directory (`control/`, `outbox/`). The sandbox binds this outbox,
+	 * so the helper's bundle and ack are read from it. Without it they are read
+	 * from the workspace's own `outbox/`.
+	 */
+	runDirOf?: (runId: string) => string;
+	/** The end-of-run snapshot. Without it, a bundle already in the outbox is imported as is. */
+	finalSnapshot?: FinalSnapshot;
+	/** Refuse a result bundle larger than this. Default: `fetchRunResult`'s cap. */
+	maxBundleBytes?: number;
+	/** Told what the host observed at the end-of-run import. Must not throw. */
+	onResultImport?: (
+		runId: string,
+		event: ResultImportEvent,
+	) => void | Promise<void>;
 	/** Caches carried into the clone; none by default. */
 	caches?: CacheDeclaration[];
 	gitBin?: string;
@@ -196,6 +230,41 @@ async function readAck(path: string, id: string): Promise<WipAck | null> {
 	} catch {
 		return null;
 	}
+}
+
+/** The outbox must be a real directory: the root above it is host-only. */
+async function assertRealDirectory(path: string): Promise<void> {
+	const st = await lstat(path);
+	if (!st.isDirectory()) throw new Error("the run outbox is not a directory");
+}
+
+/** A live sample's bounds: it runs repeatedly, beside the agent. */
+const LIVE_MAX_BUNDLE_BYTES = 256 * 1024 * 1024;
+const LIVE_MAX_REFS = 128;
+
+/** Failures that describe the run's result. Anything else may pass on a retry. */
+const FINAL_IMPORT_FAILURES = new Set([
+	"bad_bundle",
+	"no_branch",
+	"validation",
+]);
+
+// One snapshot or import per run at a time: they share the outbox's ack and
+// bundle. Module-level because callers build a workspace object per call.
+const runQueues = new Map<string, Promise<unknown>>();
+
+function serialized<T>(key: string, fn: () => Promise<T>): Promise<T> {
+	const previous = runQueues.get(key) ?? Promise.resolve();
+	const next = previous.then(fn, fn);
+	const tail = next.then(
+		() => {},
+		() => {},
+	);
+	runQueues.set(key, tail);
+	void tail.then(() => {
+		if (runQueues.get(key) === tail) runQueues.delete(key);
+	});
+	return next;
 }
 
 export class CloneRunWorkspace implements RunWorkspace {
@@ -315,57 +384,143 @@ export class CloneRunWorkspace implements RunWorkspace {
 		return r.exitCode === 0 ? r.stdout.trim() : null;
 	}
 
+	/** Where the helper's files are: the root is host-only, `outbox/` is the sandbox's. */
+	private outboxRoot(runId: string): string {
+		return this.opts.runDirOf?.(runId) ?? this.dirOf(runId);
+	}
+
 	async fetchResult(handle: RunWorkspaceHandle): Promise<RunWorkspaceResult> {
 		const runId = this.runIdOf(handle.path);
 		const ref = quarantineRef(runId);
+		await serialized(this.dirOf(runId), () => this.importFinal(runId));
 		const marker = await this.readMarker(runId);
-		const bundle = join(this.dirOf(runId), BUNDLE_REL);
-		const hasBundle = await lstat(bundle).then(
-			() => true,
-			() => false,
-		);
-		if (
-			marker &&
-			!marker.importedTip &&
-			hasBundle &&
-			this.opts.assertProcessesDead
+		return {
+			ref,
+			sha: await this.quarantineTip(runId),
+			...(marker?.importFailure ? { failure: marker.importFailure } : {}),
+		};
+	}
+
+	/** The end-of-run import, at most once per run. */
+	private async importFinal(runId: string): Promise<void> {
+		const marker = await this.readMarker(runId);
+		const assertDead = this.opts.assertProcessesDead;
+		if (!marker || marker.importedTip || marker.importFailure || !assertDead) {
+			return;
+		}
+		const root = this.outboxRoot(runId);
+		const bundle = join(root, BUNDLE_REL);
+		const snapshot = this.opts.finalSnapshot;
+		const fresh = snapshot ? await snapshot.available(runId) : false;
+		if (fresh && snapshot) {
+			try {
+				await assertDead(runId);
+			} catch (e) {
+				throw new HostGitError(
+					"precondition",
+					`run processes are not confirmed dead: ${e instanceof Error ? e.message : String(e)}`,
+				);
+			}
+			// Whatever the agent left here is not the result. `rm` does not follow links.
+			await rm(bundle, { recursive: true, force: true });
+			await rm(join(root, "outbox", wipAckFile()), {
+				recursive: true,
+				force: true,
+			});
+			if ((await snapshot.run(runId)) === "failed") {
+				await this.refuseImport(marker, "snapshot_failed");
+				return;
+			}
+		} else if (
+			!(await lstat(bundle).then(
+				() => true,
+				() => false,
+			))
 		) {
-			const validate = this.opts.validate ?? validateRunResult;
+			return;
+		}
+		const validate = this.opts.validate ?? validateRunResult;
+		try {
 			const out = await fetchRunResult({
 				host: this.host,
 				primaryRepo: this.primaryRoot,
-				outboxRoot: this.dirOf(runId),
+				outboxRoot: root,
 				bundleRel: BUNDLE_REL,
 				runId,
 				scratchRoot: await this.ensureScratch(),
-				assertProcessesDead: () => this.opts.assertProcessesDead?.(runId),
+				assertProcessesDead: () => assertDead(runId),
 				validate: (ctx) => validate(ctx, marker.baseSha),
+				...(this.opts.maxBundleBytes
+					? { maxBundleBytes: this.opts.maxBundleBytes }
+					: {}),
 			});
 			await this.writeMarker({ ...marker, importedTip: out.tip });
+			await this.opts.onResultImport?.(runId, {
+				outcome: "imported",
+				tip: out.tip,
+				wipRefs: out.wipRefs.length,
+			});
+		} catch (e) {
+			if (
+				fresh &&
+				e instanceof HostGitError &&
+				FINAL_IMPORT_FAILURES.has(e.code)
+			) {
+				await this.refuseImport(marker, e.code);
+				return;
+			}
+			throw e;
 		}
-		return { ref, sha: await this.quarantineTip(runId) };
+	}
+
+	private async refuseImport(marker: Marker, failure: string): Promise<void> {
+		await this.writeMarker({ ...marker, importFailure: failure });
+		this.opts.log?.(`run ${marker.runId}: result refused (${failure})`);
+		await this.opts.onResultImport?.(marker.runId, {
+			outcome: "refused",
+			failure,
+		});
 	}
 
 	/**
 	 * Save the run's uncommitted work without the host touching the clone: ask
-	 * the in-sandbox helper through `control.jsonl`, wait for its ack, and (when
-	 * `assertQuiescent` proves the run is stopped) import the bundle it wrote.
-	 * The ack is sandbox-reported and only says the bundle is ready; the
-	 * returned `sha` comes from the verified import, never from the ack.
-	 * Replaces `snapshotWorktree` (`git add -A` in the work tree) for clones.
+	 * the in-sandbox helper through `control.jsonl`, wait for its ack, and import
+	 * the bundle it wrote. The ack is sandbox-reported and only says the bundle
+	 * is ready; every returned ref and sha comes from the verified import.
+	 *
+	 * A run proven quiescent imports into the quarantine refs. A running one
+	 * with a host-anchored outbox (`runDirOf`) imports into the live namespace,
+	 * which is never its result. Replaces `snapshotWorktree` for clones.
 	 */
 	async requestWip(
 		handle: Pick<RunWorkspaceHandle, "path">,
 		opts: { timeoutMs?: number; pollMs?: number } = {},
-	): Promise<{ ack: WipAck; imported: { tip: string; wip: string[] } | null }> {
+	): Promise<{
+		ack: WipAck;
+		imported: { tip: string; wip: string[]; live: boolean } | null;
+	}> {
 		const runId = this.runIdOf(handle.path);
+		return serialized(this.dirOf(runId), () =>
+			this.requestWipNow(runId, handle, opts),
+		);
+	}
+
+	private async requestWipNow(
+		runId: string,
+		handle: Pick<RunWorkspaceHandle, "path">,
+		opts: { timeoutMs?: number; pollMs?: number },
+	): Promise<{
+		ack: WipAck;
+		imported: { tip: string; wip: string[]; live: boolean } | null;
+	}> {
 		const marker = await this.readMarker(runId);
 		if (!marker) throw new Error(`not an owned run workspace: ${handle.path}`);
 		const control = this.opts.controlPath?.(runId);
 		if (!control) throw new Error("requestWip needs controlPath");
 		const id = randomBytes(8).toString("hex");
 		await appendFile(control, wipControlLine(id));
-		const ackPath = join(this.dirOf(runId), "outbox", wipAckFile());
+		const root = this.outboxRoot(runId);
+		const ackPath = join(root, "outbox", wipAckFile());
 		const deadline = Date.now() + (opts.timeoutMs ?? 30_000);
 		let ack: WipAck | null = null;
 		while (!ack && Date.now() < deadline) {
@@ -375,21 +530,36 @@ export class CloneRunWorkspace implements RunWorkspace {
 		if (!ack) throw new Error(`the in-sandbox helper did not answer ${id}`);
 		if (!ack.ok) return { ack, imported: null };
 		const gate = this.opts.assertQuiescent;
-		if (!gate) return { ack, imported: null };
+		const live = !gate && this.opts.runDirOf !== undefined;
+		if (!gate && !live) return { ack, imported: null };
 		const validate = this.opts.validate ?? validateRunResult;
 		const out = await fetchRunResult({
 			host: this.host,
 			primaryRepo: this.primaryRoot,
-			outboxRoot: this.dirOf(runId),
+			outboxRoot: root,
 			bundleRel: BUNDLE_REL,
 			runId,
 			scratchRoot: await this.ensureScratch(),
-			assertProcessesDead: () => gate(runId),
+			assertProcessesDead: gate
+				? () => gate(runId)
+				: () => assertRealDirectory(join(root, "outbox")),
 			validate: (ctx) => validate(ctx, marker.baseSha),
+			...(live
+				? {
+						destination: "live" as const,
+						maxBundleBytes: Math.min(
+							this.opts.maxBundleBytes ?? LIVE_MAX_BUNDLE_BYTES,
+							LIVE_MAX_BUNDLE_BYTES,
+						),
+						maxRefs: LIVE_MAX_REFS,
+					}
+				: this.opts.maxBundleBytes
+					? { maxBundleBytes: this.opts.maxBundleBytes }
+					: {}),
 		});
 		return {
 			ack,
-			imported: { tip: out.tip, wip: out.wipRefs.map((w) => w.ref) },
+			imported: { tip: out.tip, wip: out.wipRefs.map((w) => w.ref), live },
 		};
 	}
 
@@ -443,6 +613,7 @@ export class CloneRunWorkspace implements RunWorkspace {
 				"--format=%(refname)",
 				quarantineRef(runId),
 				quarantineWipPrefix(runId),
+				quarantineLivePrefix(runId),
 				preRebasePrefix(runId),
 			],
 			this.primaryRoot,
@@ -465,8 +636,19 @@ export class CloneRunWorkspace implements RunWorkspace {
 
 	private async newestWork(runId: string): Promise<string | null> {
 		const tip = await this.quarantineTip(runId);
-		if (!tip) return null;
-		const prefix = quarantineWipPrefix(runId);
+		if (tip) return this.newestOn(tip, quarantineWipPrefix(runId));
+		// No result was imported: the last live sample is what is left to save.
+		const live = quarantineLivePrefix(runId);
+		const head = await git(
+			["rev-parse", "--verify", "-q", `${live}head^{commit}`],
+			this.primaryRoot,
+		);
+		if (head.exitCode !== 0) return null;
+		return this.newestOn(head.stdout.trim(), `${live}wip/`);
+	}
+
+	/** The highest-numbered snapshot under `prefix` that builds on `tip`, else `tip`. */
+	private async newestOn(tip: string, prefix: string): Promise<string> {
 		const refs = await git(
 			["for-each-ref", "--format=%(refname) %(objectname)", prefix],
 			this.primaryRoot,

@@ -66,6 +66,14 @@ export interface FetchRunResultOpts {
 	maxBundleBytes?: number;
 	/** Refuse a bundle advertising more refs than this. Default 1000. */
 	maxRefs?: number;
+	/**
+	 * `live` imports a sample of a run that is still going into its own
+	 * namespace, which nothing treats as the run's result. The caller's
+	 * precondition then proves the outbox is host-anchored rather than that the
+	 * run is dead: the bundle is copied from one opened descriptor and verified
+	 * as untrusted bytes either way.
+	 */
+	destination?: "result" | "live";
 }
 
 /** Test-only opt-out of the mandatory validator. Never pass this in daemon code. */
@@ -92,6 +100,12 @@ export function quarantineRef(runId: string): string {
 export function quarantineWipPrefix(runId: string): string {
 	assertRunId(runId);
 	return `refs/mfw/quarantine-wip/${runId}/`;
+}
+
+/** Live samples of a running run. Never a result: the merge queue does not read them. */
+export function quarantineLivePrefix(runId: string): string {
+	assertRunId(runId);
+	return `refs/mfw/quarantine-live/${runId}/`;
 }
 
 /** The ref the run's branch has inside the sandbox, and the prefix of its WIP snapshots. */
@@ -434,8 +448,13 @@ export async function fetchRunResult(
 		//    single `update-ref --stdin` transaction moves the head and WIP refs,
 		//    deletes the WIP refs an earlier attempt left, and drops `incoming`.
 		//    Either the whole result replaces the previous one, or nothing moves.
-		const qHead = quarantineRef(runId);
-		const qWip = quarantineWipPrefix(runId);
+		const live = o.destination === "live";
+		const qHead = live
+			? `${quarantineLivePrefix(runId)}head`
+			: quarantineRef(runId);
+		const qWip = live
+			? `${quarantineLivePrefix(runId)}wip/`
+			: quarantineWipPrefix(runId);
 		const attempt = randomBytes(8).toString("hex");
 		const inc = `refs/mfw/incoming/${attempt}/`;
 		const priOpts = { cwd: o.primaryRepo, repo: o.primaryRepo };

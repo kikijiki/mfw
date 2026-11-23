@@ -174,7 +174,7 @@ export function urlAllowed(url: string, allowlist: readonly string[]): boolean {
 }
 
 /** Refs the host may create or delete: the quarantine namespaces, and nothing else. */
-const REF_BODY = `refs/mfw/(?:quarantine|quarantine-wip|incoming)/${ID}(?:/[A-Za-z0-9_-]{1,128}){0,8}`;
+const REF_BODY = `refs/mfw/(?:quarantine|quarantine-wip|quarantine-live|incoming)/${ID}(?:/[A-Za-z0-9_-]{1,128}){0,8}`;
 const QUARANTINE_REF = new RegExp(`^${REF_BODY}$`);
 /** One line of the `update-ref --stdin` transaction HostGit writes. */
 const TX_LINE = new RegExp(
