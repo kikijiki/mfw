@@ -241,8 +241,28 @@ export function recordProxyProcess(config: RunEgressConfig): void {
 	);
 }
 
+/**
+ * Whether the index still names this very process. A relaunch of the run
+ * replaces the socket and the index, and those are then the new proxy's.
+ */
+export function ownsRunEgressEndpoints(config: RunEgressConfig): boolean {
+	try {
+		const entry = IndexSchema.parse(
+			JSON.parse(readFileSync(config.indexPath, "utf8")),
+		);
+		return (
+			entry.pid === process.pid &&
+			entry.startTicks !== undefined &&
+			entry.startTicks === processStartTicks(process.pid)
+		);
+	} catch {
+		return false;
+	}
+}
+
 /** The proxy's own cleanup on a normal exit. */
 export function removeRunEgressEndpoints(config: RunEgressConfig): void {
+	if (!ownsRunEgressEndpoints(config)) return;
 	rmSync(dirname(config.socketPath), { recursive: true, force: true });
 	rmSync(config.indexPath, { force: true });
 }

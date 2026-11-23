@@ -14,6 +14,7 @@ import {
 } from "./egress-proxy.ts";
 import {
 	armProxyHardExit,
+	ownsRunEgressEndpoints,
 	RunEgressConfigSchema,
 	recordProxyProcess,
 	removeRunEgressEndpoints,
@@ -73,6 +74,7 @@ export async function runEgressProxyProcess(
 		// never reaches the upstream, so a shared CDN address stays one site.
 		sni: true,
 		gate: createConnectionGate(MAX_CONNECTIONS),
+		ownsSocket: () => ownsRunEgressEndpoints(config),
 		uploadBudget: config.uploadBudget,
 		uploadedBefore: counters.uploadedBytes(),
 		breachedBefore: counters.breached,

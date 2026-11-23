@@ -165,6 +165,11 @@ export interface EgressProxyOptions {
 	gate: ConnectionGate;
 	/** Rule 11: the ClientHello SNI must equal the CONNECT host. Off by default. */
 	sni?: boolean;
+	/**
+	 * Asked at close. False leaves the path to whoever holds it now, and the
+	 * listener open, so the caller must be about to exit.
+	 */
+	ownsSocket?: () => boolean;
 	/** This machine's addresses, read per request. Default: its network interfaces. */
 	localAddresses?: () => readonly string[];
 	/** Upstream dialer, given the pinned IP. Default `net.connect`. */
@@ -558,6 +563,9 @@ export async function startEgressProxy(
 		},
 		async close() {
 			for (const s of sockets) s.destroy();
+			// Bun unlinks a unix listener's path on close, and that path now holds
+			// the new proxy's socket. The process is about to exit, which frees it.
+			if (opts.ownsSocket?.() === false) return;
 			await new Promise<void>((r) => server.close(() => r()));
 			await rm(opts.socketPath, { force: true });
 		},

@@ -165,6 +165,32 @@ describe("per-run egress lifecycle", () => {
 	});
 });
 
+describe("a relaunch of the same run", () => {
+	test("the old proxy's exit leaves the new proxy's socket and index alone", async () => {
+		const old = startProxy();
+		await listening(old.paths);
+		const oldPid = indexed(old.paths.indexPath).pid;
+		const next = startProxy();
+		await until(() => {
+			const pid = indexed(next.paths.indexPath).pid;
+			return (
+				pid !== undefined && pid !== oldPid && existsSync(next.paths.socketPath)
+			);
+		});
+		const nextPid = indexed(next.paths.indexPath).pid;
+		(old.child.stdin as import("bun").FileSink).end();
+		await old.child.exited;
+		expect(existsSync(next.paths.socketPath)).toBe(true);
+		expect(indexed(next.paths.indexPath).pid).toBe(nextPid);
+		expect(
+			await ask(
+				next.paths.socketPath,
+				"CONNECT x.invalid:443 HTTP/1.1\r\n\r\n",
+			),
+		).toContain("X-Mfw-Egress: denied");
+	}, 30_000);
+});
+
 describe("recovery sweep", () => {
 	const sweep = (
 		live: (id: string) => boolean | null,
