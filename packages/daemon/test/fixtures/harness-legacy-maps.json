@@ -3,17 +3,9 @@
 	"piAcpVersion": "0.0.34",
 	"defaultProviderId": "claude-cli",
 	"modelSnapshotChecked": "2026-08-10",
-	"credentialIds": [
-		"anthropic",
-		"google",
-		"opencode"
-	],
+	"credentialIds": ["anthropic", "google", "opencode"],
 	"fleetWritable": {
-		"claude": [
-			"backups",
-			"projects",
-			"sessions"
-		],
+		"claude": ["backups", "projects", "sessions"],
 		"codex": [
 			"cache",
 			"sessions",
@@ -253,25 +245,19 @@
 			"name": "Claude Code",
 			"description": "Anthropic's Claude Code CLI, driven in stream-json mode through mfw's compatibility server.",
 			"bin": "claude",
-			"versionArgs": [
-				"--version"
-			],
+			"versionArgs": ["--version"],
 			"drivable": true,
 			"configType": "claude-cli",
 			"auth": [
 				{
 					"kind": "subscription",
-					"loginFiles": [
-						".claude/.credentials.json"
-					],
+					"loginFiles": [".claude/.credentials.json"],
 					"hint": "Run `claude` once and sign in, or `claude setup-token`. A Claude subscription needs no API key: this is how most operators run mfw."
 				},
 				{
 					"kind": "api-key",
 					"credentialId": "anthropic",
-					"envVars": [
-						"ANTHROPIC_API_KEY"
-					],
+					"envVars": ["ANTHROPIC_API_KEY"],
 					"hint": "Pay-per-token instead of a subscription. NOTE: mfw does not yet inject a stored key into the agent's environment: export ANTHROPIC_API_KEY for the daemon until it does."
 				}
 			],
@@ -336,18 +322,14 @@
 			"name": "OpenAI Codex CLI",
 			"description": "OpenAI's Codex CLI, driven through its app-server protocol with structured lifecycle events, steering, interruption and approvals.",
 			"bin": "codex",
-			"versionArgs": [
-				"--version"
-			],
+			"versionArgs": ["--version"],
 			"drivable": true,
 			"configType": "codex-cli",
 			"acceptsEndpoints": true,
 			"auth": [
 				{
 					"kind": "subscription",
-					"loginFiles": [
-						".codex/auth.json"
-					],
+					"loginFiles": [".codex/auth.json"],
 					"hint": "Sign in through the Codex CLI itself."
 				}
 			],
@@ -387,19 +369,14 @@
 			"name": "Gemini CLI",
 			"description": "Google's Gemini CLI, driven over the Agent Client Protocol (`gemini --acp`). Runs tasks, project-brain turns (read-only plan mode) and critic calls; no custom endpoints.",
 			"bin": "gemini",
-			"versionArgs": [
-				"--version"
-			],
+			"versionArgs": ["--version"],
 			"drivable": true,
 			"configType": "acp",
 			"auth": [
 				{
 					"kind": "api-key",
 					"credentialId": "google",
-					"envVars": [
-						"GEMINI_API_KEY",
-						"GOOGLE_API_KEY"
-					],
+					"envVars": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
 					"hint": "Set GEMINI_API_KEY, or sign in through the Gemini CLI."
 				}
 			],
@@ -419,9 +396,7 @@
 			"name": "Cursor Agent",
 			"description": "Cursor's agent CLI, driven over the Agent Client Protocol (`agent acp`). Runs tasks, project-brain turns (read-only plan mode) and critic calls; no custom endpoints.",
 			"bin": "agent",
-			"versionArgs": [
-				"--version"
-			],
+			"versionArgs": ["--version"],
 			"identity": {
 				"kind": "symlink-target",
 				"basename": "cursor-agent",
@@ -432,16 +407,12 @@
 			"auth": [
 				{
 					"kind": "subscription",
-					"loginFiles": [
-						".cursor/cli-config.json"
-					],
+					"loginFiles": [".cursor/cli-config.json"],
 					"hint": "Sign in through the Cursor agent CLI itself."
 				},
 				{
 					"kind": "api-key",
-					"envVars": [
-						"CURSOR_API_KEY"
-					],
+					"envVars": ["CURSOR_API_KEY"],
 					"hint": "Export CURSOR_API_KEY for the daemon instead of signing in."
 				}
 			],
@@ -461,9 +432,7 @@
 			"name": "opencode",
 			"description": "opencode, driven over the Agent Client Protocol (`opencode acp`). Runs tasks, project-brain turns and critic calls with permissions denied for edits and shell; can use an OpenAI-compatible endpoint.",
 			"bin": "opencode",
-			"versionArgs": [
-				"--version"
-			],
+			"versionArgs": ["--version"],
 			"drivable": true,
 			"configType": "acp",
 			"acceptsEndpoints": true,
@@ -471,9 +440,7 @@
 				{
 					"kind": "api-key",
 					"credentialId": "opencode",
-					"envVars": [
-						"OPENCODE_API_KEY"
-					],
+					"envVars": ["OPENCODE_API_KEY"],
 					"hint": "Configure a provider inside opencode itself."
 				}
 			],
@@ -493,14 +460,10 @@
 			"name": "pi",
 			"description": "The pi coding agent, driven over the Agent Client Protocol through pi-acp (an MVP adapter; needs pi >= 0.81 and Node >= 22). Runs tasks, project-brain turns and critic calls; can use an OpenAI-compatible endpoint. Models are `provider/id` from your own pi configuration.",
 			"bin": "pi",
-			"versionArgs": [
-				"--version"
-			],
+			"versionArgs": ["--version"],
 			"identity": {
 				"kind": "help-text",
-				"args": [
-					"--help"
-				],
+				"args": ["--help"],
 				"pattern": {
 					"regexSource": "^pi\\b.*\\bcoding (assistant|agent)\\b",
 					"regexFlags": "im"
@@ -513,10 +476,7 @@
 			"auth": [
 				{
 					"kind": "subscription",
-					"loginFiles": [
-						".pi/agent/auth.json",
-						".pi/agent/models.json"
-					],
+					"loginFiles": [".pi/agent/auth.json", ".pi/agent/models.json"],
 					"hint": "Configure a provider in pi itself: `pi auth login <provider>`, or add one to ~/.pi/agent/models.json."
 				}
 			],
@@ -535,21 +495,15 @@
 	"remote": {
 		"claude-cli": {
 			"binary": "claude",
-			"authPaths": [
-				".claude/.credentials.json"
-			]
+			"authPaths": [".claude/.credentials.json"]
 		},
 		"codex-cli": {
 			"binary": "codex",
-			"authPaths": [
-				".codex/auth.json"
-			]
+			"authPaths": [".codex/auth.json"]
 		},
 		"cursor-agent": {
 			"binary": "agent",
-			"authPaths": [
-				".cursor/cli-config.json"
-			],
+			"authPaths": [".cursor/cli-config.json"],
 			"identity": {
 				"kind": "symlink-target",
 				"basename": "cursor-agent",
@@ -558,27 +512,18 @@
 		},
 		"gemini-cli": {
 			"binary": "gemini",
-			"authPaths": [
-				".gemini/oauth_creds.json"
-			]
+			"authPaths": [".gemini/oauth_creds.json"]
 		},
 		"opencode": {
 			"binary": "opencode",
-			"authPaths": [
-				".local/share/opencode/auth.json"
-			]
+			"authPaths": [".local/share/opencode/auth.json"]
 		},
 		"pi": {
 			"binary": "pi",
-			"authPaths": [
-				".pi/agent/auth.json",
-				".pi/agent/models.json"
-			],
+			"authPaths": [".pi/agent/auth.json", ".pi/agent/models.json"],
 			"identity": {
 				"kind": "help-text",
-				"args": [
-					"--help"
-				],
+				"args": ["--help"],
 				"pattern": {
 					"regexSource": "^pi\\b.*\\bcoding (assistant|agent)\\b",
 					"regexFlags": "im"
@@ -595,29 +540,11 @@
 			"CLAUDE.md",
 			"CLAUDE.local.md"
 		],
-		"codex-cli": [
-			".codex/config.toml",
-			"AGENTS.md",
-			"AGENTS.override.md"
-		],
-		"gemini-cli": [
-			".gemini/settings.json",
-			"GEMINI.md"
-		],
-		"cursor-agent": [
-			".cursor/mcp.json",
-			".cursor/cli.json",
-			".cursorrules"
-		],
-		"opencode": [
-			"opencode.json",
-			"opencode.jsonc",
-			".opencode/opencode.json"
-		],
-		"pi": [
-			".pi/mcp.json",
-			".pi/settings.json"
-		]
+		"codex-cli": [".codex/config.toml", "AGENTS.md", "AGENTS.override.md"],
+		"gemini-cli": [".gemini/settings.json", "GEMINI.md"],
+		"cursor-agent": [".cursor/mcp.json", ".cursor/cli.json", ".cursorrules"],
+		"opencode": ["opencode.json", "opencode.jsonc", ".opencode/opencode.json"],
+		"pi": [".pi/mcp.json", ".pi/settings.json"]
 	},
 	"hostExecuted": {
 		".claude/settings.json": true,
@@ -685,18 +612,12 @@
 			"id": "pi",
 			"label": "pi",
 			"brainEligible": true,
-			"readOnlyOtherTitles": [
-				"grep",
-				"find",
-				"ls"
-			],
+			"readOnlyOtherTitles": ["grep", "find", "ls"],
 			"identity": {
 				"bin": "pi",
 				"identity": {
 					"kind": "help-text",
-					"args": [
-						"--help"
-					],
+					"args": ["--help"],
 					"pattern": {
 						"regexSource": "^pi\\b.*\\bcoding (assistant|agent)\\b",
 						"regexFlags": "im"
@@ -1105,14 +1026,8 @@
 			"throws": "claude-cli cannot use OpenAI-compatible endpoint 'fixture': route it through codex-cli"
 		},
 		"codex-cli|default|task": {
-			"providerArgv": [
-				"codex",
-				"app-server"
-			],
-			"agentArgv": [
-				"codex",
-				"app-server"
-			],
+			"providerArgv": ["codex", "app-server"],
+			"agentArgv": ["codex", "app-server"],
 			"bridge": "codex-app-server-bridge.ts",
 			"env": {
 				"FIXTURE": "1"
@@ -1122,14 +1037,8 @@
 			}
 		},
 		"codex-cli|default|task-bg": {
-			"providerArgv": [
-				"codex",
-				"app-server"
-			],
-			"agentArgv": [
-				"codex",
-				"app-server"
-			],
+			"providerArgv": ["codex", "app-server"],
+			"agentArgv": ["codex", "app-server"],
 			"bridge": "codex-app-server-bridge.ts",
 			"env": {
 				"FIXTURE": "1"
@@ -1299,14 +1208,8 @@
 			}
 		},
 		"codex-cli|fixture-model|task": {
-			"providerArgv": [
-				"codex",
-				"app-server"
-			],
-			"agentArgv": [
-				"codex",
-				"app-server"
-			],
+			"providerArgv": ["codex", "app-server"],
+			"agentArgv": ["codex", "app-server"],
 			"bridge": "codex-app-server-bridge.ts",
 			"env": {
 				"FIXTURE": "1"
@@ -1316,14 +1219,8 @@
 			}
 		},
 		"codex-cli|fixture-model|task-bg": {
-			"providerArgv": [
-				"codex",
-				"app-server"
-			],
-			"agentArgv": [
-				"codex",
-				"app-server"
-			],
+			"providerArgv": ["codex", "app-server"],
+			"agentArgv": ["codex", "app-server"],
 			"bridge": "codex-app-server-bridge.ts",
 			"env": {
 				"FIXTURE": "1"
@@ -1493,14 +1390,8 @@
 			}
 		},
 		"gemini-cli|default|task": {
-			"providerArgv": [
-				"gemini",
-				"--acp"
-			],
-			"agentArgv": [
-				"gemini",
-				"--acp"
-			],
+			"providerArgv": ["gemini", "--acp"],
+			"agentArgv": ["gemini", "--acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -1511,14 +1402,8 @@
 			}
 		},
 		"gemini-cli|default|task-bg": {
-			"providerArgv": [
-				"gemini",
-				"--acp"
-			],
-			"agentArgv": [
-				"gemini",
-				"--acp"
-			],
+			"providerArgv": ["gemini", "--acp"],
+			"agentArgv": ["gemini", "--acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -1529,18 +1414,8 @@
 			}
 		},
 		"gemini-cli|default|brain": {
-			"providerArgv": [
-				"gemini",
-				"--acp",
-				"--approval-mode",
-				"plan"
-			],
-			"agentArgv": [
-				"gemini",
-				"--acp",
-				"--approval-mode",
-				"plan"
-			],
+			"providerArgv": ["gemini", "--acp", "--approval-mode", "plan"],
+			"agentArgv": ["gemini", "--acp", "--approval-mode", "plan"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -1553,18 +1428,8 @@
 			}
 		},
 		"gemini-cli|default|brain-resume": {
-			"providerArgv": [
-				"gemini",
-				"--acp",
-				"--approval-mode",
-				"plan"
-			],
-			"agentArgv": [
-				"gemini",
-				"--acp",
-				"--approval-mode",
-				"plan"
-			],
+			"providerArgv": ["gemini", "--acp", "--approval-mode", "plan"],
+			"agentArgv": ["gemini", "--acp", "--approval-mode", "plan"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -1578,14 +1443,8 @@
 			}
 		},
 		"gemini-cli|default|task-endpoint": {
-			"providerArgv": [
-				"gemini",
-				"--acp"
-			],
-			"agentArgv": [
-				"gemini",
-				"--acp"
-			],
+			"providerArgv": ["gemini", "--acp"],
+			"agentArgv": ["gemini", "--acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -1598,18 +1457,8 @@
 			}
 		},
 		"gemini-cli|default|brain-endpoint": {
-			"providerArgv": [
-				"gemini",
-				"--acp",
-				"--approval-mode",
-				"plan"
-			],
-			"agentArgv": [
-				"gemini",
-				"--acp",
-				"--approval-mode",
-				"plan"
-			],
+			"providerArgv": ["gemini", "--acp", "--approval-mode", "plan"],
+			"agentArgv": ["gemini", "--acp", "--approval-mode", "plan"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -1624,18 +1473,8 @@
 			}
 		},
 		"gemini-cli|fixture-model|task": {
-			"providerArgv": [
-				"gemini",
-				"--acp",
-				"--model",
-				"fixture-model"
-			],
-			"agentArgv": [
-				"gemini",
-				"--acp",
-				"--model",
-				"fixture-model"
-			],
+			"providerArgv": ["gemini", "--acp", "--model", "fixture-model"],
+			"agentArgv": ["gemini", "--acp", "--model", "fixture-model"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -1646,18 +1485,8 @@
 			}
 		},
 		"gemini-cli|fixture-model|task-bg": {
-			"providerArgv": [
-				"gemini",
-				"--acp",
-				"--model",
-				"fixture-model"
-			],
-			"agentArgv": [
-				"gemini",
-				"--acp",
-				"--model",
-				"fixture-model"
-			],
+			"providerArgv": ["gemini", "--acp", "--model", "fixture-model"],
+			"agentArgv": ["gemini", "--acp", "--model", "fixture-model"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -1725,18 +1554,8 @@
 			}
 		},
 		"gemini-cli|fixture-model|task-endpoint": {
-			"providerArgv": [
-				"gemini",
-				"--acp",
-				"--model",
-				"fixture-model"
-			],
-			"agentArgv": [
-				"gemini",
-				"--acp",
-				"--model",
-				"fixture-model"
-			],
+			"providerArgv": ["gemini", "--acp", "--model", "fixture-model"],
+			"agentArgv": ["gemini", "--acp", "--model", "fixture-model"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -1779,14 +1598,8 @@
 			}
 		},
 		"cursor-agent|default|task": {
-			"providerArgv": [
-				"agent",
-				"acp"
-			],
-			"agentArgv": [
-				"agent",
-				"acp"
-			],
+			"providerArgv": ["agent", "acp"],
+			"agentArgv": ["agent", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -1797,14 +1610,8 @@
 			}
 		},
 		"cursor-agent|default|task-bg": {
-			"providerArgv": [
-				"agent",
-				"acp"
-			],
-			"agentArgv": [
-				"agent",
-				"acp"
-			],
+			"providerArgv": ["agent", "acp"],
+			"agentArgv": ["agent", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -1815,20 +1622,8 @@
 			}
 		},
 		"cursor-agent|default|brain": {
-			"providerArgv": [
-				"agent",
-				"--mode",
-				"plan",
-				"--approve-mcps",
-				"acp"
-			],
-			"agentArgv": [
-				"agent",
-				"--mode",
-				"plan",
-				"--approve-mcps",
-				"acp"
-			],
+			"providerArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
+			"agentArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -1841,20 +1636,8 @@
 			}
 		},
 		"cursor-agent|default|brain-resume": {
-			"providerArgv": [
-				"agent",
-				"--mode",
-				"plan",
-				"--approve-mcps",
-				"acp"
-			],
-			"agentArgv": [
-				"agent",
-				"--mode",
-				"plan",
-				"--approve-mcps",
-				"acp"
-			],
+			"providerArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
+			"agentArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -1868,14 +1651,8 @@
 			}
 		},
 		"cursor-agent|default|task-endpoint": {
-			"providerArgv": [
-				"agent",
-				"acp"
-			],
-			"agentArgv": [
-				"agent",
-				"acp"
-			],
+			"providerArgv": ["agent", "acp"],
+			"agentArgv": ["agent", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -1888,20 +1665,8 @@
 			}
 		},
 		"cursor-agent|default|brain-endpoint": {
-			"providerArgv": [
-				"agent",
-				"--mode",
-				"plan",
-				"--approve-mcps",
-				"acp"
-			],
-			"agentArgv": [
-				"agent",
-				"--mode",
-				"plan",
-				"--approve-mcps",
-				"acp"
-			],
+			"providerArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
+			"agentArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -1916,14 +1681,8 @@
 			}
 		},
 		"cursor-agent|fixture-model|task": {
-			"providerArgv": [
-				"agent",
-				"acp"
-			],
-			"agentArgv": [
-				"agent",
-				"acp"
-			],
+			"providerArgv": ["agent", "acp"],
+			"agentArgv": ["agent", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -1934,14 +1693,8 @@
 			}
 		},
 		"cursor-agent|fixture-model|task-bg": {
-			"providerArgv": [
-				"agent",
-				"acp"
-			],
-			"agentArgv": [
-				"agent",
-				"acp"
-			],
+			"providerArgv": ["agent", "acp"],
+			"agentArgv": ["agent", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -1952,20 +1705,8 @@
 			}
 		},
 		"cursor-agent|fixture-model|brain": {
-			"providerArgv": [
-				"agent",
-				"--mode",
-				"plan",
-				"--approve-mcps",
-				"acp"
-			],
-			"agentArgv": [
-				"agent",
-				"--mode",
-				"plan",
-				"--approve-mcps",
-				"acp"
-			],
+			"providerArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
+			"agentArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -1978,20 +1719,8 @@
 			}
 		},
 		"cursor-agent|fixture-model|brain-resume": {
-			"providerArgv": [
-				"agent",
-				"--mode",
-				"plan",
-				"--approve-mcps",
-				"acp"
-			],
-			"agentArgv": [
-				"agent",
-				"--mode",
-				"plan",
-				"--approve-mcps",
-				"acp"
-			],
+			"providerArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
+			"agentArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2005,14 +1734,8 @@
 			}
 		},
 		"cursor-agent|fixture-model|task-endpoint": {
-			"providerArgv": [
-				"agent",
-				"acp"
-			],
-			"agentArgv": [
-				"agent",
-				"acp"
-			],
+			"providerArgv": ["agent", "acp"],
+			"agentArgv": ["agent", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2025,20 +1748,8 @@
 			}
 		},
 		"cursor-agent|fixture-model|brain-endpoint": {
-			"providerArgv": [
-				"agent",
-				"--mode",
-				"plan",
-				"--approve-mcps",
-				"acp"
-			],
-			"agentArgv": [
-				"agent",
-				"--mode",
-				"plan",
-				"--approve-mcps",
-				"acp"
-			],
+			"providerArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
+			"agentArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2053,14 +1764,8 @@
 			}
 		},
 		"opencode|default|task": {
-			"providerArgv": [
-				"opencode",
-				"acp"
-			],
-			"agentArgv": [
-				"opencode",
-				"acp"
-			],
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2071,14 +1776,8 @@
 			}
 		},
 		"opencode|default|task-bg": {
-			"providerArgv": [
-				"opencode",
-				"acp"
-			],
-			"agentArgv": [
-				"opencode",
-				"acp"
-			],
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2089,14 +1788,8 @@
 			}
 		},
 		"opencode|default|brain": {
-			"providerArgv": [
-				"opencode",
-				"acp"
-			],
-			"agentArgv": [
-				"opencode",
-				"acp"
-			],
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2109,14 +1802,8 @@
 			}
 		},
 		"opencode|default|brain-resume": {
-			"providerArgv": [
-				"opencode",
-				"acp"
-			],
-			"agentArgv": [
-				"opencode",
-				"acp"
-			],
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2130,14 +1817,8 @@
 			}
 		},
 		"opencode|default|task-endpoint": {
-			"providerArgv": [
-				"opencode",
-				"acp"
-			],
-			"agentArgv": [
-				"opencode",
-				"acp"
-			],
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2150,14 +1831,8 @@
 			}
 		},
 		"opencode|default|brain-endpoint": {
-			"providerArgv": [
-				"opencode",
-				"acp"
-			],
-			"agentArgv": [
-				"opencode",
-				"acp"
-			],
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2172,14 +1847,8 @@
 			}
 		},
 		"opencode|fixture-model|task": {
-			"providerArgv": [
-				"opencode",
-				"acp"
-			],
-			"agentArgv": [
-				"opencode",
-				"acp"
-			],
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2190,14 +1859,8 @@
 			}
 		},
 		"opencode|fixture-model|task-bg": {
-			"providerArgv": [
-				"opencode",
-				"acp"
-			],
-			"agentArgv": [
-				"opencode",
-				"acp"
-			],
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2208,14 +1871,8 @@
 			}
 		},
 		"opencode|fixture-model|brain": {
-			"providerArgv": [
-				"opencode",
-				"acp"
-			],
-			"agentArgv": [
-				"opencode",
-				"acp"
-			],
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2228,14 +1885,8 @@
 			}
 		},
 		"opencode|fixture-model|brain-resume": {
-			"providerArgv": [
-				"opencode",
-				"acp"
-			],
-			"agentArgv": [
-				"opencode",
-				"acp"
-			],
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2249,14 +1900,8 @@
 			}
 		},
 		"opencode|fixture-model|task-endpoint": {
-			"providerArgv": [
-				"opencode",
-				"acp"
-			],
-			"agentArgv": [
-				"opencode",
-				"acp"
-			],
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2269,14 +1914,8 @@
 			}
 		},
 		"opencode|fixture-model|brain-endpoint": {
-			"providerArgv": [
-				"opencode",
-				"acp"
-			],
-			"agentArgv": [
-				"opencode",
-				"acp"
-			],
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2291,14 +1930,8 @@
 			}
 		},
 		"pi|default|task": {
-			"providerArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
-			"agentArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2309,14 +1942,8 @@
 			}
 		},
 		"pi|default|task-bg": {
-			"providerArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
-			"agentArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2327,14 +1954,8 @@
 			}
 		},
 		"pi|default|brain": {
-			"providerArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
-			"agentArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2347,14 +1968,8 @@
 			}
 		},
 		"pi|default|brain-resume": {
-			"providerArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
-			"agentArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2368,14 +1983,8 @@
 			}
 		},
 		"pi|default|task-endpoint": {
-			"providerArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
-			"agentArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2388,14 +1997,8 @@
 			}
 		},
 		"pi|default|brain-endpoint": {
-			"providerArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
-			"agentArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2410,14 +2013,8 @@
 			}
 		},
 		"pi|fixture-model|task": {
-			"providerArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
-			"agentArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2428,14 +2025,8 @@
 			}
 		},
 		"pi|fixture-model|task-bg": {
-			"providerArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
-			"agentArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2446,14 +2037,8 @@
 			}
 		},
 		"pi|fixture-model|brain": {
-			"providerArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
-			"agentArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2466,14 +2051,8 @@
 			}
 		},
 		"pi|fixture-model|brain-resume": {
-			"providerArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
-			"agentArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2487,14 +2066,8 @@
 			}
 		},
 		"pi|fixture-model|task-endpoint": {
-			"providerArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
-			"agentArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2507,14 +2080,8 @@
 			}
 		},
 		"pi|fixture-model|brain-endpoint": {
-			"providerArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
-			"agentArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
 			"bridge": "acp-bridge.ts",
 			"env": {
 				"FIXTURE": "1",
@@ -2531,12 +2098,7 @@
 	},
 	"inference": {
 		"gemini-cli|default": {
-			"providerArgv": [
-				"gemini",
-				"--acp",
-				"--approval-mode",
-				"plan"
-			],
+			"providerArgv": ["gemini", "--acp", "--approval-mode", "plan"],
 			"env": {
 				"MFW_ACP_AGENT": "gemini-cli",
 				"MFW_ACP_POLICY": "none"
@@ -2557,64 +2119,42 @@
 			}
 		},
 		"cursor-agent|default": {
-			"providerArgv": [
-				"agent",
-				"--mode",
-				"plan",
-				"acp"
-			],
+			"providerArgv": ["agent", "--mode", "plan", "acp"],
 			"env": {
 				"MFW_ACP_AGENT": "cursor-agent",
 				"MFW_ACP_POLICY": "none"
 			}
 		},
 		"cursor-agent|fixture-model": {
-			"providerArgv": [
-				"agent",
-				"--mode",
-				"plan",
-				"acp"
-			],
+			"providerArgv": ["agent", "--mode", "plan", "acp"],
 			"env": {
 				"MFW_ACP_AGENT": "cursor-agent",
 				"MFW_ACP_POLICY": "none"
 			}
 		},
 		"opencode|default": {
-			"providerArgv": [
-				"opencode",
-				"acp"
-			],
+			"providerArgv": ["opencode", "acp"],
 			"env": {
 				"MFW_ACP_AGENT": "opencode",
 				"MFW_ACP_POLICY": "none"
 			}
 		},
 		"opencode|fixture-model": {
-			"providerArgv": [
-				"opencode",
-				"acp"
-			],
+			"providerArgv": ["opencode", "acp"],
 			"env": {
 				"MFW_ACP_AGENT": "opencode",
 				"MFW_ACP_POLICY": "none"
 			}
 		},
 		"pi|default": {
-			"providerArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
 			"env": {
 				"MFW_ACP_AGENT": "pi",
 				"MFW_ACP_POLICY": "none"
 			}
 		},
 		"pi|fixture-model": {
-			"providerArgv": [
-				"bunx",
-				"pi-acp@0.0.34"
-			],
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
 			"env": {
 				"MFW_ACP_AGENT": "pi",
 				"MFW_ACP_POLICY": "none"
@@ -2672,581 +2212,204 @@
 	},
 	"autonomyCorpus": [
 		{
-			"argv": [
-				"cli",
-				"--dangerously-skip-permissions",
-				"tail"
-			],
-			"flags": [
-				"--dangerously-skip-permissions"
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "--dangerously-skip-permissions", "tail"],
+			"flags": ["--dangerously-skip-permissions"],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--dangerously-skip-permissions=true",
-				"tail"
-			],
-			"flags": [
-				"--dangerously-skip-permissions=true"
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "--dangerously-skip-permissions=true", "tail"],
+			"flags": ["--dangerously-skip-permissions=true"],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--allow-dangerously-skip-permissions",
-				"tail"
-			],
-			"flags": [
-				"--allow-dangerously-skip-permissions"
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "--allow-dangerously-skip-permissions", "tail"],
+			"flags": ["--allow-dangerously-skip-permissions"],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--dangerously-bypass-approvals-and-sandbox",
-				"tail"
-			],
-			"flags": [
-				"--dangerously-bypass-approvals-and-sandbox"
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "--dangerously-bypass-approvals-and-sandbox", "tail"],
+			"flags": ["--dangerously-bypass-approvals-and-sandbox"],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--full-auto",
-				"tail"
-			],
-			"flags": [
-				"--full-auto"
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "--full-auto", "tail"],
+			"flags": ["--full-auto"],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--yolo",
-				"tail"
-			],
-			"flags": [
-				"--yolo"
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "--yolo", "tail"],
+			"flags": ["--yolo"],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--yolo=1",
-				"tail"
-			],
-			"flags": [
-				"--yolo=1"
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "--yolo=1", "tail"],
+			"flags": ["--yolo=1"],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"-y",
-				"tail"
-			],
+			"argv": ["cli", "-y", "tail"],
 			"flags": [],
-			"without": [
-				"cli",
-				"-y",
-				"tail"
-			]
+			"without": ["cli", "-y", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--force",
-				"tail"
-			],
+			"argv": ["cli", "--force", "tail"],
 			"flags": [],
-			"without": [
-				"cli",
-				"--force",
-				"tail"
-			]
+			"without": ["cli", "--force", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--permission-mode",
-				"bypassPermissions",
-				"tail"
-			],
-			"flags": [
-				"--permission-mode bypassPermissions"
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "--permission-mode", "bypassPermissions", "tail"],
+			"flags": ["--permission-mode bypassPermissions"],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--permission-mode=bypassPermissions",
-				"tail"
-			],
-			"flags": [
-				"--permission-mode=bypassPermissions"
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "--permission-mode=bypassPermissions", "tail"],
+			"flags": ["--permission-mode=bypassPermissions"],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--permission-mode",
-				"plan",
-				"tail"
-			],
+			"argv": ["cli", "--permission-mode", "plan", "tail"],
 			"flags": [],
-			"without": [
-				"cli",
-				"--permission-mode",
-				"plan",
-				"tail"
-			]
+			"without": ["cli", "--permission-mode", "plan", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--ask-for-approval",
-				"never",
-				"tail"
-			],
-			"flags": [
-				"--ask-for-approval never"
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "--ask-for-approval", "never", "tail"],
+			"flags": ["--ask-for-approval never"],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--ask-for-approval=never",
-				"tail"
-			],
-			"flags": [
-				"--ask-for-approval=never"
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "--ask-for-approval=never", "tail"],
+			"flags": ["--ask-for-approval=never"],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--ask-for-approval",
-				"on-request",
-				"tail"
-			],
+			"argv": ["cli", "--ask-for-approval", "on-request", "tail"],
 			"flags": [],
-			"without": [
-				"cli",
-				"--ask-for-approval",
-				"on-request",
-				"tail"
-			]
+			"without": ["cli", "--ask-for-approval", "on-request", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"-a",
-				"never",
-				"tail"
-			],
-			"flags": [
-				"-a never"
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "-a", "never", "tail"],
+			"flags": ["-a never"],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"-a=never",
-				"tail"
-			],
-			"flags": [
-				"-a=never"
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "-a=never", "tail"],
+			"flags": ["-a=never"],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"-a",
-				"on-request",
-				"tail"
-			],
+			"argv": ["cli", "-a", "on-request", "tail"],
 			"flags": [],
-			"without": [
-				"cli",
-				"-a",
-				"on-request",
-				"tail"
-			]
+			"without": ["cli", "-a", "on-request", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--sandbox",
-				"danger-full-access",
-				"tail"
-			],
-			"flags": [
-				"--sandbox danger-full-access"
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "--sandbox", "danger-full-access", "tail"],
+			"flags": ["--sandbox danger-full-access"],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--sandbox=danger-full-access",
-				"tail"
-			],
-			"flags": [
-				"--sandbox=danger-full-access"
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "--sandbox=danger-full-access", "tail"],
+			"flags": ["--sandbox=danger-full-access"],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--sandbox",
-				"read-only",
-				"tail"
-			],
+			"argv": ["cli", "--sandbox", "read-only", "tail"],
 			"flags": [],
-			"without": [
-				"cli",
-				"--sandbox",
-				"read-only",
-				"tail"
-			]
+			"without": ["cli", "--sandbox", "read-only", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"-s",
-				"danger-full-access",
-				"tail"
-			],
-			"flags": [
-				"-s danger-full-access"
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "-s", "danger-full-access", "tail"],
+			"flags": ["-s danger-full-access"],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"-s=danger-full-access",
-				"tail"
-			],
-			"flags": [
-				"-s=danger-full-access"
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "-s=danger-full-access", "tail"],
+			"flags": ["-s=danger-full-access"],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"-s",
-				"read-only",
-				"tail"
-			],
+			"argv": ["cli", "-s", "read-only", "tail"],
 			"flags": [],
-			"without": [
-				"cli",
-				"-s",
-				"read-only",
-				"tail"
-			]
+			"without": ["cli", "-s", "read-only", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"-c",
-				"approval_policy=\"never\"",
-				"tail"
-			],
-			"flags": [
-				"-c approval_policy=\"never\""
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "-c", "approval_policy=\"never\"", "tail"],
+			"flags": ["-c approval_policy=\"never\""],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"-c",
-				"approval_policy=never",
-				"tail"
-			],
-			"flags": [
-				"-c approval_policy=never"
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "-c", "approval_policy=never", "tail"],
+			"flags": ["-c approval_policy=never"],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"-c",
-				"approval_policy='never'",
-				"tail"
-			],
-			"flags": [
-				"-c approval_policy='never'"
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "-c", "approval_policy='never'", "tail"],
+			"flags": ["-c approval_policy='never'"],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"-c",
-				"approval_policy=\"on-request\"",
-				"tail"
-			],
+			"argv": ["cli", "-c", "approval_policy=\"on-request\"", "tail"],
 			"flags": [],
-			"without": [
-				"cli",
-				"-c",
-				"approval_policy=\"on-request\"",
-				"tail"
-			]
+			"without": ["cli", "-c", "approval_policy=\"on-request\"", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"-c",
-				"sandbox_mode=\"danger-full-access\"",
-				"tail"
-			],
-			"flags": [
-				"-c sandbox_mode=\"danger-full-access\""
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "-c", "sandbox_mode=\"danger-full-access\"", "tail"],
+			"flags": ["-c sandbox_mode=\"danger-full-access\""],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"-c",
-				"sandbox_mode=\"read-only\"",
-				"tail"
-			],
+			"argv": ["cli", "-c", "sandbox_mode=\"read-only\"", "tail"],
 			"flags": [],
-			"without": [
-				"cli",
-				"-c",
-				"sandbox_mode=\"read-only\"",
-				"tail"
-			]
+			"without": ["cli", "-c", "sandbox_mode=\"read-only\"", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--config",
-				"approval_policy=\"never\"",
-				"tail"
-			],
-			"flags": [
-				"--config approval_policy=\"never\""
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "--config", "approval_policy=\"never\"", "tail"],
+			"flags": ["--config approval_policy=\"never\""],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--config=approval_policy=\"never\"",
-				"tail"
-			],
-			"flags": [
-				"--config=approval_policy=\"never\""
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "--config=approval_policy=\"never\"", "tail"],
+			"flags": ["--config=approval_policy=\"never\""],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--config=sandbox_mode=\"danger-full-access\"",
-				"tail"
-			],
-			"flags": [
-				"--config=sandbox_mode=\"danger-full-access\""
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "--config=sandbox_mode=\"danger-full-access\"", "tail"],
+			"flags": ["--config=sandbox_mode=\"danger-full-access\""],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"-c=approval_policy=\"never\"",
-				"tail"
-			],
-			"flags": [
-				"-c=approval_policy=\"never\""
-			],
-			"without": [
-				"cli",
-				"tail"
-			]
+			"argv": ["cli", "-c=approval_policy=\"never\"", "tail"],
+			"flags": ["-c=approval_policy=\"never\""],
+			"without": ["cli", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"-c",
-				"other=1",
-				"tail"
-			],
+			"argv": ["cli", "-c", "other=1", "tail"],
 			"flags": [],
-			"without": [
-				"cli",
-				"-c",
-				"other=1",
-				"tail"
-			]
+			"without": ["cli", "-c", "other=1", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--approval-mode",
-				"yolo",
-				"tail"
-			],
+			"argv": ["cli", "--approval-mode", "yolo", "tail"],
 			"flags": [],
-			"without": [
-				"cli",
-				"--approval-mode",
-				"yolo",
-				"tail"
-			]
+			"without": ["cli", "--approval-mode", "yolo", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--approval-mode",
-				"plan",
-				"tail"
-			],
+			"argv": ["cli", "--approval-mode", "plan", "tail"],
 			"flags": [],
-			"without": [
-				"cli",
-				"--approval-mode",
-				"plan",
-				"tail"
-			]
+			"without": ["cli", "--approval-mode", "plan", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--model",
-				"opus",
-				"tail"
-			],
+			"argv": ["cli", "--model", "opus", "tail"],
 			"flags": [],
-			"without": [
-				"cli",
-				"--model",
-				"opus",
-				"tail"
-			]
+			"without": ["cli", "--model", "opus", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"--sandbox",
-				"tail"
-			],
+			"argv": ["cli", "--sandbox", "tail"],
 			"flags": [],
-			"without": [
-				"cli",
-				"--sandbox",
-				"tail"
-			]
+			"without": ["cli", "--sandbox", "tail"]
 		},
 		{
-			"argv": [
-				"cli",
-				"-c",
-				"tail"
-			],
+			"argv": ["cli", "-c", "tail"],
 			"flags": [],
-			"without": [
-				"cli",
-				"-c",
-				"tail"
-			]
+			"without": ["cli", "-c", "tail"]
 		}
 	],
 	"hostProbeScript": "set -u\nlp=$(sh -lc 'printf \"\\nMFW_LOGIN_PATH=%s\\n\" \"$PATH\"' </dev/null 2>/dev/null | sed -n 's/^MFW_LOGIN_PATH=//p' | tail -n1)\nif [ -n \"$lp\" ]; then PATH=\"$lp:$PATH\"; fi\nPATH=\"$HOME/.local/bin:$HOME/.bun/bin:$PATH\"\nexport PATH\nprintf '%s\\n' MFW_HOST_PROBE_V1\nprintf 'uid=%s\\n' \"$(id -u)\"\nprintf 'user=%s\\n' \"$(id -un)\"\nprintf 'home=%s\\n' \"$HOME\"\nprintf 'path=%s\\n' \"$PATH\"\nif sudo -n true >/dev/null 2>&1; then echo sudo=allowed; else echo sudo=refused; fi\nprintf 'bwrap.path=%s\\n' \"$(command -v bwrap || true)\"\nif command -v bwrap >/dev/null 2>&1 && bwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc true >/dev/null 2>&1; then echo bwrap=yes; else echo bwrap=no; fi\nprintf 'setsid=%s\\n' \"$(command -v setsid || true)\"\nprintf 'bun=%s\\n' \"$(command -v bun || true)\"\nprintf 'git=%s\\n' \"$(command -v git || true)\"\nif command -v claude >/dev/null 2>&1; then printf 'harness.claude-cli=%s\\n' \"$(claude --version 2>/dev/null | head -n1 | tr -d '\\r')\"; else printf 'harness.claude-cli=\\n'; fi\na=no; for f in \"$HOME\"/'.claude/.credentials.json'; do [ -s \"$f\" ] && a=yes; done; printf 'auth.claude-cli=%s\\n' \"$a\"\nif command -v codex >/dev/null 2>&1; then printf 'harness.codex-cli=%s\\n' \"$(codex --version 2>/dev/null | head -n1 | tr -d '\\r')\"; else printf 'harness.codex-cli=\\n'; fi\na=no; for f in \"$HOME\"/'.codex/auth.json'; do [ -s \"$f\" ] && a=yes; done; printf 'auth.codex-cli=%s\\n' \"$a\"\nif command -v agent >/dev/null 2>&1 && [ \"$(basename \"$(readlink -f \"$(command -v agent)\")\")\" = 'cursor-agent' ]; then printf 'harness.cursor-agent=%s\\n' \"$(agent --version 2>/dev/null | head -n1 | tr -d '\\r')\"; else printf 'harness.cursor-agent=\\n'; fi\na=no; for f in \"$HOME\"/'.cursor/cli-config.json'; do [ -s \"$f\" ] && a=yes; done; printf 'auth.cursor-agent=%s\\n' \"$a\"\nif command -v gemini >/dev/null 2>&1; then printf 'harness.gemini-cli=%s\\n' \"$(gemini --version 2>/dev/null | head -n1 | tr -d '\\r')\"; else printf 'harness.gemini-cli=\\n'; fi\na=no; for f in \"$HOME\"/'.gemini/oauth_creds.json'; do [ -s \"$f\" ] && a=yes; done; printf 'auth.gemini-cli=%s\\n' \"$a\"\nif command -v opencode >/dev/null 2>&1; then printf 'harness.opencode=%s\\n' \"$(opencode --version 2>/dev/null | head -n1 | tr -d '\\r')\"; else printf 'harness.opencode=\\n'; fi\na=no; for f in \"$HOME\"/'.local/share/opencode/auth.json'; do [ -s \"$f\" ] && a=yes; done; printf 'auth.opencode=%s\\n' \"$a\"\nif command -v pi >/dev/null 2>&1 && pi '--help' 2>/dev/null | grep -Eiq '^pi.*coding (assistant|agent)'; then printf 'harness.pi=%s\\n' \"$(pi --version 2>/dev/null | head -n1 | tr -d '\\r')\"; else printf 'harness.pi=\\n'; fi\na=no; for f in \"$HOME\"/'.pi/agent/auth.json' \"$HOME\"/'.pi/agent/models.json'; do [ -s \"$f\" ] && a=yes; done; printf 'auth.pi=%s\\n' \"$a\"\nprintf 'gpus=%s\\n' \"$( (nvidia-smi -L 2>/dev/null || true) | grep -c '^GPU' )\"\nprintf 'disk.kib=%s\\n' \"$(df -Pk \"$HOME\" 2>/dev/null | awk 'NR==2{print $4}')\"\nprintf 'mem.kib=%s\\n' \"$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null)\""
