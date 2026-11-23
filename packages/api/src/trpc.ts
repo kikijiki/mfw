@@ -232,6 +232,23 @@ const requirePrincipal = t.middleware(
 
 export const publicProcedure = t.procedure.use(requirePrincipal).use(mapErrors);
 
+/**
+ * `runs:act` means task runs. The one check for every procedure taking a
+ * `runId`: a token gets the same answer for a brain run, any other internal
+ * run and a run that does not exist. Owner calls are unaffected.
+ */
+export const tokenTaskRunOnly = t.middleware(async ({ ctx, input, next }) => {
+	if (ctx.principal?.kind === "token") {
+		const { svc } = ctx as unknown as { svc: ProjectServices };
+		const runId = (input as { runId?: unknown }).runId;
+		const run =
+			typeof runId === "string" ? await svc.registry.get(runId) : null;
+		if (run?.kind !== "task")
+			throw new TRPCError({ code: "NOT_FOUND", message: "no such task run" });
+	}
+	return next();
+});
+
 /** Input shared by every project-scoped procedure. */
 export const projectInput = z.object({ project: z.string().min(1) });
 
