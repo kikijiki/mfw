@@ -1,8 +1,16 @@
-import { existsSync, readFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import {
+	existsSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { basename, join } from "node:path";
 import { acquireDaemonLock } from "../host-resources/daemon-lock.ts";
 import { pinnedTool } from "../sandbox.ts";
 import { AuthService, authDbPath, isAuthRefused } from "./service.ts";
+import { MCP_TOKEN_FILE, parseTtl, TOKEN_SCOPES } from "./tokens.ts";
 
 /**
  * `mfw auth ...`: the owner's recovery path. It works on `$MFW_HOME/auth.db`
@@ -19,6 +27,13 @@ export const AUTH_USAGE = [
 	"  setup-token   print a new first-run setup token (before an owner exists)",
 	"  reset --yes   remove the owner and all sessions, then repeat first-run setup;",
 	"                refused while the server or any agent session is alive",
+	"  token create --name <name> --scope <scope> [--scope <scope>]",
+	"               [--project <project>] [--ttl 30m|24h|7d] [--write-file]",
+	"                create an API token, shown once (default expiry 24h, at most 90d).",
+	`                scopes: ${TOKEN_SCOPES.join(", ")}`,
+	`                --write-file saves it to $MFW_HOME/${MCP_TOKEN_FILE} (0600) for \`mfw mcp\``,
+	"  token list    show tokens (never their secrets)",
+	"  token revoke <id>   revoke a token at once",
 ].join("\n");
 
 export interface AuthCliDeps {
@@ -184,11 +199,134 @@ async function withStore(
 	}
 }
 
+/** Flags of `token create`, or the problem. A flag's value is the next word. */
+function parseCreate(args: readonly string[]):
+	| {
+			name?: string;
+			scopes: string[];
+			project?: string;
+			ttlMs?: number;
+			writeFile: boolean;
+	  }
+	| string {
+	const out: {
+		name?: string;
+		scopes: string[];
+		project?: string;
+		ttlMs?: number;
+		writeFile: boolean;
+	} = { scopes: [], writeFile: false };
+	for (let i = 0; i < args.length; i++) {
+		const flag = args[i];
+		if (flag === "--write-file") {
+			out.writeFile = true;
+			continue;
+		}
+		if (!["--name", "--scope", "--project", "--ttl"].includes(flag ?? ""))
+			return `unknown option '${flag}'`;
+		const value = args[++i];
+		if (value === undefined || value.startsWith("--"))
+			return `${flag} needs a value`;
+		if (flag === "--name") out.name = value;
+		else if (flag === "--scope") out.scopes.push(value);
+		else if (flag === "--project") out.project = value;
+		else {
+			const ttlMs = parseTtl(value);
+			if (ttlMs === null) return "--ttl must look like 30m, 24h or 7d";
+			out.ttlMs = ttlMs;
+		}
+	}
+	return out;
+}
+
+/** A fresh exclusive 0600 file, renamed in: never written through a planted link. */
+function writeTokenFile(home: string, token: string): string {
+	const path = join(home, MCP_TOKEN_FILE);
+	const temp = `${path}.${randomBytes(6).toString("hex")}`;
+	try {
+		writeFileSync(temp, `${token}\n`, { mode: 0o600, flag: "wx" });
+		renameSync(temp, path);
+	} catch (e) {
+		rmSync(temp, { force: true });
+		throw e;
+	}
+	return path;
+}
+
+async function runTokenCommand(
+	args: readonly string[],
+	d: AuthCliDeps,
+): Promise<number> {
+	switch (args[0]) {
+		case "create": {
+			const parsed = parseCreate(args.slice(1));
+			if (typeof parsed === "string") {
+				d.err(`mfw auth token: ${parsed}\n${AUTH_USAGE}`);
+				return 2;
+			}
+			return withStore(d, async (auth) => {
+				try {
+					const { token, info } = await auth.createToken({
+						name: parsed.name,
+						scopes: parsed.scopes,
+						project: parsed.project,
+						ttlMs: parsed.ttlMs,
+					});
+					const summary = `${info.id} '${info.name}' [${info.scopes.join(", ")}] ${info.project ? `project ${info.project}` : "all projects"}, expires ${new Date(info.expiresAt).toISOString()}`;
+					if (parsed.writeFile) {
+						const path = writeTokenFile(d.home, token);
+						d.out(`mfw auth: created ${summary}`);
+						d.out(`mfw auth: saved to ${path} (0600)`);
+					} else {
+						d.err(`mfw auth: created ${summary}. It is shown only once:`);
+						d.out(token);
+					}
+					return 0;
+				} catch (e) {
+					if (!isAuthRefused(e)) throw e;
+					d.err(`mfw auth token: ${e.message}`);
+					return 1;
+				}
+			});
+		}
+		case "list":
+			return withStore(d, async (auth) => {
+				const tokens = await auth.listTokens();
+				if (tokens.length === 0) d.out("mfw auth: no tokens.");
+				for (const t of tokens)
+					d.out(
+						`${t.id}  ${t.status}  '${t.name}'  [${t.scopes.join(", ")}]  ${t.project ?? "all projects"}  expires ${new Date(t.expiresAt).toISOString()}  last used ${t.lastUsedAt ? new Date(t.lastUsedAt).toISOString() : "never"}`,
+					);
+				return 0;
+			});
+		case "revoke": {
+			const id = args[1];
+			if (!id || args.length !== 2) {
+				d.err("usage: mfw auth token revoke <id>");
+				return 2;
+			}
+			return withStore(d, async (auth) => {
+				if (await auth.revokeToken(id)) {
+					d.out(`mfw auth: revoked ${id}.`);
+					return 0;
+				}
+				d.err(`mfw auth: no live token '${id}'. See: mfw auth token list`);
+				return 1;
+			});
+		}
+		default:
+			d.err(AUTH_USAGE);
+			return 2;
+	}
+}
+
 export async function runAuthCommand(
 	args: readonly string[],
 	d: AuthCliDeps,
 ): Promise<number> {
 	switch (args[0]) {
+		case "token":
+			return runTokenCommand(args.slice(1), d);
 		case "--help":
 		case "-h":
 			d.out(AUTH_USAGE);

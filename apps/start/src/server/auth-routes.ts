@@ -150,6 +150,43 @@ export async function handleAuthAction(
 		}
 	}
 
+	// Token management: a private path, so the guard has required the session
+	// and its request key. A bearer token never gets here (`guardBearer`).
+	if (action === "tokens" || action === "token-revoke") {
+		const session = guarded.session;
+		if (!session)
+			return jsonResponse(401, {
+				error: "unauthenticated",
+				message: "sign in to manage API tokens",
+			});
+		if (action === "tokens" && method === "GET")
+			return jsonResponse(200, { tokens: await auth.listTokens() });
+		if (method !== "POST")
+			return jsonResponse(404, { error: "not_found", message: "not found" });
+		if (!hasAuthIntent(req)) return badRequest();
+		const body = await readJson(req);
+		if (!body) return badRequest();
+		if (action === "token-revoke") {
+			if (typeof body.id !== "string") return badRequest();
+			return jsonResponse(200, { revoked: await auth.revokeToken(body.id) });
+		}
+		try {
+			const { token, info } = await auth.createToken(
+				{
+					name: body.name,
+					scopes: body.scopes,
+					project: body.project,
+					ttlMs: body.ttlMs,
+				},
+				{ sessionId: session.sessionId },
+			);
+			return jsonResponse(200, { token, info });
+		} catch (e) {
+			if (isAuthRefused(e)) return refusal(e);
+			throw e;
+		}
+	}
+
 	if ((action === "setup" || action === "login") && method === "POST") {
 		if (!hasAuthIntent(req)) return badRequest();
 		const body = await readJson(req);

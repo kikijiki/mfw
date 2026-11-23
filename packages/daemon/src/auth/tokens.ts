@@ -31,6 +31,17 @@ export const MAX_TOKEN_STREAMS = 4;
 export const TOKEN_RATE_PER_SECOND = 5;
 export const TOKEN_RATE_BURST = 120;
 
+/** `$MFW_HOME/<this>`: where `mfw mcp` looks for a token (0600). */
+export const MCP_TOKEN_FILE = "mcp-token";
+
+/** `30m`, `24h` or `7d` in milliseconds, or null. */
+export function parseTtl(text: string): number | null {
+	const m = /^([1-9][0-9]{0,5})([mhd])$/.exec(text.trim());
+	if (!m) return null;
+	const unit = { m: 60_000, h: 3_600_000, d: 86_400_000 }[m[2] as "m"];
+	return Number(m[1]) * unit;
+}
+
 const TOKEN_SHAPE = /^mfwt_[A-Za-z0-9_-]{43}$/;
 const NAME_SHAPE = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$/;
 const PROJECT_SHAPE = /^[^\s/\\]{1,128}$/;
