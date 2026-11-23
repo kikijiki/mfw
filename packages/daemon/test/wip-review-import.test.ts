@@ -243,6 +243,16 @@ describe("H1: long paths cannot hide an out-of-scope edit", () => {
 		expect(r.truncated).toBe(true);
 	});
 
+	test("an unsampled run goes to review at finish (M4)", () => {
+		const r = finishScope(
+			["src/"],
+			{ files: ["src/a.ts"], truncated: false },
+			{ unsampled: true },
+		);
+		expect(r.outside).toBeGreaterThan(0);
+		expect(r.unsampled).toBe(true);
+	});
+
 	test("a truncated listing warns live and kills in kill mode", () => {
 		const policy = { ...DEFAULT_SCOPE_POLICY, mode: "kill" as const };
 		const sample = assessScope(

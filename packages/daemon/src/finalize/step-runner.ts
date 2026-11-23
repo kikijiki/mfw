@@ -59,6 +59,7 @@ import {
 } from "../run-workspace/factory.ts";
 import type { WorktreeReportIdentity } from "../run-workspace/run-workspace.ts";
 import {
+	asScopeSample,
 	changedFiles,
 	changedFilesInRef,
 	finishScope,
@@ -314,6 +315,8 @@ interface ScopeCheckResult {
 	outsideFiles: string[];
 	/** The listing did not fit: `outside` is at least 1 and the run goes to review. */
 	truncated?: boolean;
+	/** The live watchdog could not sample the run: likewise sent to review. */
+	unsampled?: boolean;
 }
 
 /** `archive_wip`: where a scope-killed run's work was saved (null = nothing beyond base). */
@@ -2069,7 +2072,9 @@ export class StepRunner {
 				run.branch,
 			);
 		}
-		return finishScope(owns, listed);
+		return finishScope(owns, listed, {
+			unsampled: asScopeSample(run.scopeSample)?.unsampled === true,
+		});
 	}
 
 	private async clearStall(built: Built): Promise<unknown> {

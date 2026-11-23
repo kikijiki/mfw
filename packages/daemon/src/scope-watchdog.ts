@@ -70,6 +70,12 @@ export interface ScopeSample {
 	foreignFiles: { path: string; taskId: string }[];
 	/** The changed-file listing hit its output cap: `files` is a lower bound. */
 	truncated?: boolean;
+	/**
+	 * Repeated samples of a clone run failed, so the live watchdog could not see
+	 * it (the agent can kill its helper). Sticky: a later clean sample may be
+	 * forged. The run goes to review at finish.
+	 */
+	unsampled?: boolean;
 }
 
 export interface ScopeOwners {
@@ -193,24 +199,31 @@ export async function changedFilesInRef(
 export const MAX_SCOPE_PATHS = 20_000;
 
 /**
- * The finish-time scope fact. A truncated listing cannot prove the run stayed
- * in scope, so it counts as outside whatever the visible paths show.
+ * The finish-time scope fact. A truncated listing, or a run the live watchdog
+ * could not sample, cannot prove the run stayed in scope, so it counts as
+ * outside whatever the visible paths show.
  */
 export function finishScope(
 	owns: readonly string[],
 	listed: { files: readonly string[]; truncated: boolean },
+	opts: { unsampled?: boolean } = {},
 ): {
 	files: number;
 	outside: number;
 	outsideFiles: string[];
 	truncated?: true;
+	unsampled?: true;
 } {
 	const outside = filesOutsideOwns(owns, [...listed.files]);
 	return {
 		files: listed.files.length,
-		outside: listed.truncated ? Math.max(outside.length, 1) : outside.length,
+		outside:
+			listed.truncated || opts.unsampled
+				? Math.max(outside.length, 1)
+				: outside.length,
 		outsideFiles: outside.slice(0, LISTED),
 		...(listed.truncated ? { truncated: true as const } : {}),
+		...(opts.unsampled ? { unsampled: true as const } : {}),
 	};
 }
 
@@ -270,7 +283,7 @@ export function scopeKill(
 
 /** Counts identity: a sample is persisted only when this changes. */
 export function scopeSignature(sample: ScopeSample): string {
-	return `${sample.level}:${sample.files}:${sample.outside}:${sample.foreign}:${sample.truncated ? 1 : 0}`;
+	return `${sample.level}:${sample.files}:${sample.outside}:${sample.foreign}:${sample.truncated ? 1 : 0}:${sample.unsampled ? 1 : 0}`;
 }
 
 /** Read `runs.scope_sample` back defensively (it is JSON from an older daemon too). */
@@ -298,5 +311,6 @@ export function asScopeSample(raw: unknown): ScopeSample | null {
 				)
 			: [],
 		...(o.truncated ? { truncated: true } : {}),
+		...(o.unsampled ? { unsampled: true } : {}),
 	};
 }
