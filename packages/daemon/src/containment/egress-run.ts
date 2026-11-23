@@ -267,6 +267,37 @@ export function removeRunEgressEndpoints(config: RunEgressConfig): void {
 	rmSync(config.indexPath, { force: true });
 }
 
+/**
+ * Wait for a run's proxy to be gone. True if it is, false if it was still
+ * there at the deadline. A pid is compared with its start time, so a reused
+ * pid never counts as the proxy.
+ */
+export async function waitForRunProxyExit(
+	mfwHome: string,
+	runId: string,
+	timeoutMs: number,
+): Promise<boolean> {
+	const indexPath = join(indexRoot(mfwHome), `${shortId(runId)}.json`);
+	const end = Date.now() + timeoutMs;
+	for (;;) {
+		let entry: z.infer<typeof IndexSchema>;
+		try {
+			entry = IndexSchema.parse(JSON.parse(readFileSync(indexPath, "utf8")));
+		} catch {
+			return true;
+		}
+		if (
+			!entry.pid ||
+			!entry.startTicks ||
+			processStartTicks(entry.pid) !== entry.startTicks
+		) {
+			return true;
+		}
+		if (Date.now() >= end) return false;
+		await Bun.sleep(25);
+	}
+}
+
 export interface EgressSweepReport {
 	killed: number;
 	removed: number;

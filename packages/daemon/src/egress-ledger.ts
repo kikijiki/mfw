@@ -3,6 +3,7 @@ import type { ProjectDb } from "@mfw/db/client";
 import { appendEvent, type EventBus, type StoredEvent } from "@mfw/db/eventlog";
 import { type RunEgressRow, recordRunEgress } from "@mfw/db/run-egress";
 import { engineKv } from "@mfw/db/schema";
+import { waitForRunProxyExit } from "./containment/egress-run.ts";
 import {
 	type EgressStats,
 	MAX_EGRESS_STATS_BYTES,
@@ -68,6 +69,26 @@ export async function ingestRunEgress(
 		await recordEgressBreach(db, runId, stats.uploadBreach, observedAt, bus);
 	}
 	return rows.length;
+}
+
+/** Past the proxy's own hard exit deadline. */
+const FINAL_WAIT_MS = 4_000;
+
+/**
+ * The read at a run's end. The proxy writes its last counters as it exits,
+ * which on the kill path is after the session is gone, so wait for it first.
+ */
+export async function ingestFinalRunEgress(
+	db: ProjectDb,
+	runId: string,
+	runDir: string,
+	observedAt: Date,
+	opts: { mfwHome?: string; bus?: EventBus } = {},
+): Promise<number> {
+	if (opts.mfwHome) {
+		await waitForRunProxyExit(opts.mfwHome, runId, FINAL_WAIT_MS);
+	}
+	return ingestRunEgress(db, runId, runDir, observedAt, opts.bus);
 }
 
 /** The durable record of a run's breach, which the inbox reads. */

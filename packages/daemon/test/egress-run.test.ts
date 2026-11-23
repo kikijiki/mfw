@@ -13,6 +13,8 @@ import {
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { openProjectDb } from "@mfw/db/client";
+import { listRunEgress } from "@mfw/db/run-egress";
 import {
 	EgressCapacityError,
 	type EgressSweepReport,
@@ -20,7 +22,9 @@ import {
 	processStartTicks,
 	runEgressPaths,
 	sweepRunEgress,
+	waitForRunProxyExit,
 } from "../src/containment/egress-run.ts";
+import { ingestFinalRunEgress } from "../src/egress-ledger.ts";
 
 const MAIN = resolve(
 	import.meta.dir,
@@ -355,5 +359,46 @@ describe("the machine-wide cap on proxied runs", () => {
 				maxRuns: 1,
 			}),
 		).not.toThrow();
+	});
+});
+
+describe("the final ledger read", () => {
+	test("waits for the proxy, so its last counters are in L1", async () => {
+		const stateDir = join(root, ".mfw");
+		const handle = await openProjectDb(stateDir);
+		try {
+			const { paths, child } = startProxy();
+			await listening(paths);
+			await ask(paths.socketPath, "CONNECT last.invalid:443 HTTP/1.1\r\n\r\n");
+			// Inside the proxy's flush interval: nothing is on disk yet.
+			expect(existsSync(paths.statsPath)).toBe(false);
+			(child.stdin as import("bun").FileSink).end();
+			await ingestFinalRunEgress(handle.db, "r1", runDir, new Date(1_000), {
+				mfwHome,
+			});
+			const rows = await listRunEgress(handle.db, "r1");
+			expect(rows.map((r) => [r.destination, r.denied])).toEqual([
+				["last.invalid:443", 1],
+			]);
+		} finally {
+			handle.close();
+		}
+	}, 20_000);
+
+	test("a proxy that never exits delays the read by a bounded time", async () => {
+		const { paths, child } = startProxy();
+		await listening(paths);
+		process.kill(child.pid, "SIGSTOP");
+		const started = Date.now();
+		expect(await waitForRunProxyExit(mfwHome, "r1", 300)).toBe(false);
+		expect(Date.now() - started).toBeLessThan(2_000);
+		process.kill(child.pid, "SIGKILL");
+		expect(existsSync(paths.indexPath)).toBe(true);
+	}, 10_000);
+
+	test("no proxy, no wait", async () => {
+		const started = Date.now();
+		expect(await waitForRunProxyExit(mfwHome, "never-ran", 5_000)).toBe(true);
+		expect(Date.now() - started).toBeLessThan(500);
 	});
 });

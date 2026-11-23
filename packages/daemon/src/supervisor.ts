@@ -16,7 +16,7 @@ import { isBrainTurnRun } from "./brain-runtime/turn-run.ts";
 import { PROJECT_DEFAULTS } from "./config.ts";
 import { sweepRunEgress } from "./containment/egress-run.ts";
 import { runEventsPath } from "./containment/run-dir.ts";
-import { ingestRunEgress } from "./egress-ledger.ts";
+import { ingestFinalRunEgress, ingestRunEgress } from "./egress-ledger.ts";
 import type { StepRunner } from "./finalize/step-runner.ts";
 import type { Logger } from "./log.ts";
 import type { NotificationType } from "./notify.ts";
@@ -268,12 +268,15 @@ export class Supervisor {
 		if (!final && now - last < EGRESS_INGEST_EVERY_MS) return;
 		if (final) this.egressIngestedAt.delete(runId);
 		else this.egressIngestedAt.set(runId, now);
-		await ingestRunEgress(
-			this.deps.handle.db,
-			runId,
-			this.deps.registry.runDir(runId),
-			new Date(now),
-			this.deps.egressEvents,
+		const at = new Date(now);
+		const runDir = this.deps.registry.runDir(runId);
+		const bus = this.deps.egressEvents;
+		await (final
+			? ingestFinalRunEgress(this.deps.handle.db, runId, runDir, at, {
+					...(this.deps.egressHome ? { mfwHome: this.deps.egressHome } : {}),
+					...(bus ? { bus } : {}),
+				})
+			: ingestRunEgress(this.deps.handle.db, runId, runDir, at, bus)
 		).catch((err) =>
 			this.log.warn({ err, runId }, "recording the run's egress failed"),
 		);
