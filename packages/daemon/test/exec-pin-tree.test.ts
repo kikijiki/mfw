@@ -260,3 +260,55 @@ describe("the sealed checkout", () => {
 		await sealed.dispose();
 	});
 });
+
+describe("a trigger is never armed without a commit", () => {
+	let bare: string;
+
+	beforeEach(async () => {
+		bare = join(base, "unborn");
+		await mkdir(bare);
+		await gitOk(["init", "-q", "-b", "main"], bare);
+		await gitOk(["config", "user.email", "t@t"], bare);
+		await gitOk(["config", "user.name", "t"], bare);
+	});
+
+	test("arming a command with no repo file refuses before the first commit", async () => {
+		const built = await buildExecPin({ root: bare, run: "true" });
+		expect(built.ok).toBe(false);
+		if (!built.ok) expect(built.fix).toMatch(/[Cc]ommit/);
+	});
+
+	test("a pin with no commit refuses once the repository has a HEAD", async () => {
+		const legacy: ExecPin = {
+			...(await pinOf("true")),
+			commit: null,
+			tree: null,
+		};
+		const verified = await verifyAtHead(legacy);
+		expect(verified.ok).toBe(false);
+		if (!verified.ok) {
+			expect(verified.code).toBe("tree_changed");
+			expect(verified.fix).toMatch(/arm/i);
+		}
+	});
+
+	test("a pin with no commit also refuses when HEAD cannot be read", async () => {
+		const legacy: ExecPin = {
+			...(await pinOf("true")),
+			commit: null,
+			tree: null,
+		};
+		const notARepo = join(base, "plain");
+		await mkdir(notARepo);
+		const verified = await verifyExecPin(legacy, {
+			root: notARepo,
+			gitCwd: notARepo,
+			rev: "HEAD",
+		});
+		expect(verified.ok).toBe(false);
+	});
+
+	test("a pin with a commit still verifies", async () => {
+		expect((await verifyAtHead(await pinOf("true"))).ok).toBe(true);
+	});
+});

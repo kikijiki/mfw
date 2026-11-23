@@ -1115,11 +1115,13 @@ export async function buildExecPin(
 			}
 		}
 		const head = await git(["rev-parse", "--verify", "HEAD^{commit}"], root);
-		if (head.exitCode !== 0 && files.length > 0) {
+		// Even with no repo file in the pin: `make deploy` reads a Makefile that a
+		// later merge can add, and only a commit gives it a sealed checkout.
+		if (head.exitCode !== 0) {
 			return refusal(
 				"untracked",
 				"the repository has no commit to pin against",
-				"Commit the files the command executes, then arm it.",
+				"Make a first commit (with the files the command executes), then arm it.",
 			);
 		}
 		const commit = head.exitCode === 0 ? head.stdout.trim() : null;
@@ -1224,6 +1226,21 @@ export async function verifyExecPin(
 			}
 			if (file.role === "entry")
 				entry = { path: file.path, bytes: read.bytes, mode: read.mode };
+		}
+		if (!pin.commit && opts.gitCwd) {
+			// Armed before the first commit, so nothing seals or compares it. Only
+			// "no commit yet" (exit 1) may continue; an unreadable HEAD refuses.
+			const now = await git(
+				["rev-parse", "--verify", "-q", "HEAD^{commit}"],
+				opts.gitCwd,
+			);
+			if (now.exitCode !== 1) {
+				fail(
+					"tree_changed",
+					"this trigger was armed with no commit, and the repository now has one (or its HEAD cannot be read)",
+					REARM,
+				);
+			}
 		}
 		if (pin.commit && opts.rev && opts.gitCwd) {
 			if (!pin.tree) {
