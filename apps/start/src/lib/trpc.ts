@@ -15,7 +15,8 @@ import {
 } from "@trpc/tanstack-react-query";
 import SuperJSON from "superjson";
 
-import { authedFetch, sessionAwareEventSource } from "./auth-client";
+import { authedFetch } from "./auth-client";
+import { makeFetchEventSource } from "./fetch-event-source";
 import { humanizeError, toastBus } from "./toast";
 
 /**
@@ -44,7 +45,8 @@ export function makeTRPCClient() {
 				true: httpSubscriptionLink({
 					transformer: SuperJSON,
 					url,
-					EventSource: sessionAwareEventSource(),
+					// Native EventSource cannot send the request key header.
+					EventSource: makeFetchEventSource(authedFetch),
 				}),
 				false: httpBatchLink({
 					transformer: SuperJSON,

@@ -122,7 +122,7 @@ export class TrpcError extends Error {}
 /** The owner password of the throwaway `MFW_HOME` a screenshot run creates. */
 export const SCREENSHOT_PASSWORD = "screenshot-run-throwaway";
 
-const sessions = new Map<string, { cookie: string; csrf: string }>();
+const sessions = new Map<string, { cookie: string; key: string }>();
 
 /**
  * Sign in to a throwaway server: first-run setup with the token it printed to
@@ -152,9 +152,9 @@ async function signIn(base: string, logFile: string): Promise<void> {
 		body: JSON.stringify(body),
 	});
 	if (!res.ok) throw new Error(`sign-in failed: HTTP ${res.status}`);
-	const { csrfToken } = (await res.json()) as { csrfToken: string };
+	const { requestKey } = (await res.json()) as { requestKey: string };
 	const cookie = (res.headers.get("set-cookie") ?? "").split(";")[0] as string;
-	sessions.set(base, { cookie, csrf: csrfToken });
+	sessions.set(base, { cookie, key: requestKey });
 }
 
 /** An expression that signs the browser in; evaluate it on a same-origin page. */
@@ -163,7 +163,10 @@ export function browserSignInScript(base: string): string {
 		method: "POST",
 		headers: { "content-type": "application/json", "x-mfw-auth": "1" },
 		body: ${JSON.stringify(JSON.stringify({ password: SCREENSHOT_PASSWORD }))},
-	}).then((r) => r.status)`;
+	}).then(async (r) => {
+		if (r.ok) localStorage.setItem("mfw:auth:request-key", (await r.json()).requestKey);
+		return r.status;
+	})`;
 }
 
 /** One tRPC call over HTTP with the SuperJSON envelope (`{json}`), as the web client sends it. */
@@ -176,7 +179,7 @@ export async function trpc<T = unknown>(
 	const url = `${base}/api/trpc/${path}`;
 	const session = sessions.get(base);
 	const auth: Record<string, string> = session
-		? { cookie: session.cookie, "x-mfw-csrf": session.csrf }
+		? { cookie: session.cookie, "x-mfw-key": session.key }
 		: {};
 	const res =
 		kind === "mutation"

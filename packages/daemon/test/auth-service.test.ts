@@ -114,7 +114,7 @@ describe("login and sessions", () => {
 		const first = await owner();
 		const second = await auth.login(PASSWORD, first.token);
 		expect(second.token).not.toBe(first.token);
-		expect(second.csrfToken).not.toBe(first.csrfToken);
+		expect(second.requestKey).not.toBe(first.requestKey);
 		expect(await auth.authenticate(first.token)).toBeNull();
 		expect((await auth.authenticate(second.token))?.principal.kind).toBe(
 			"owner",
@@ -149,13 +149,18 @@ describe("login and sessions", () => {
 		expect(await auth.authenticate(t.token)).toBeNull();
 	});
 
-	test("the CSRF token is bound to its session", async () => {
+	test("the request key is bound to its session and stored only hashed", async () => {
 		const a = await owner();
 		const b = await auth.login(PASSWORD);
-		expect(auth.checkCsrf(a.token, a.csrfToken)).toBe(true);
-		expect(auth.checkCsrf(a.token, b.csrfToken)).toBe(false);
-		expect(auth.checkCsrf(a.token, "")).toBe(false);
-		expect(auth.checkCsrf(a.token, null)).toBe(false);
+		const sa = await auth.authenticate(a.token);
+		if (!sa) throw new Error("no session");
+		expect(auth.checkRequestKey(sa, a.requestKey)).toBe(true);
+		expect(auth.checkRequestKey(sa, b.requestKey)).toBe(false);
+		expect(auth.checkRequestKey(sa, a.token)).toBe(false);
+		expect(auth.checkRequestKey(sa, "")).toBe(false);
+		expect(auth.checkRequestKey(sa, null)).toBe(false);
+		expect(sa.requestKeyHash).not.toBe(a.requestKey);
+		expect(readFileSync(path).includes(Buffer.from(a.requestKey))).toBe(false);
 	});
 });
 

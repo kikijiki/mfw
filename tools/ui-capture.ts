@@ -280,7 +280,10 @@ const signInStatus =
 	method: "POST",
 	headers: { "content-type": "application/json", "x-mfw-auth": "1" },
 	body: ${JSON.stringify(JSON.stringify({ password: capturePassword }))},
-}).then((r) => r.status)`);
+}).then(async (r) => {
+	if (r.ok) localStorage.setItem("mfw:auth:request-key", (await r.json()).requestKey);
+	return r.status;
+})`);
 if (signInStatus !== 200) {
 	console.error(`sign-in failed: HTTP ${signInStatus}`);
 	process.exit(2);

@@ -77,11 +77,8 @@ export async function handleAuthAction(
 ): Promise<Response> {
 	const method = req.method.toUpperCase();
 	if (action === "state" && (method === "GET" || method === "HEAD")) {
-		if (guarded.session)
-			return jsonResponse(200, {
-				state: "authenticated",
-				csrfToken: guarded.session.csrfToken,
-			});
+		// A cookie without its key is not signed in, and the key is never echoed.
+		if (guarded.keyValid) return jsonResponse(200, { state: "authenticated" });
 		return jsonResponse(200, {
 			state: (await auth.hasOwner()) ? "login" : "setup",
 		});
@@ -115,7 +112,7 @@ export async function handleAuthAction(
 			}
 			return jsonResponse(
 				200,
-				{ state: "authenticated", csrfToken: issued.csrfToken },
+				{ state: "authenticated", requestKey: issued.requestKey },
 				{ "Set-Cookie": sessionCookie(req, issued.token, base) },
 			);
 		} catch (e) {

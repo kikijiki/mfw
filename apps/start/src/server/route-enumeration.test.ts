@@ -6,9 +6,9 @@ import { appRouter } from "@mfw/api";
 import { AuthService, type IssuedSession } from "@mfw/daemon/auth/service";
 import type { Orchestrator } from "@mfw/daemon/services";
 import {
-	CSRF_HEADER,
 	guardRequest,
 	isPublicPath,
+	REQUEST_KEY_HEADER,
 	setServerAuth,
 } from "./auth-guard";
 import { serveTrpc } from "./trpc-handler";
@@ -65,11 +65,15 @@ const guardOnly = (req: Request) =>
 	guardRequest(req, { auth, base: "/", env: {} });
 
 const callTrpc = async (req: Request) =>
-	serveTrpc(req, await guardOnly(req), {
-		auth,
-		endpoint: ENDPOINT,
-		orchestrator,
-	});
+	serveTrpc(
+		req,
+		await guardRequest(req, { auth, base: "/", env: {}, api: true }),
+		{
+			auth,
+			endpoint: ENDPOINT,
+			orchestrator,
+		},
+	);
 
 function procRequest(
 	path: string,
@@ -190,19 +194,29 @@ describe("every tRPC procedure and SSE stream", () => {
 				procRequest(path, type, {
 					origin: EVIL,
 					cookie: `mfw_session=${session.token}`,
-					[CSRF_HEADER]: session.csrfToken,
+					[REQUEST_KEY_HEADER]: session.requestKey,
 				}),
 			);
 			expect(res.status).toBe(403);
 		});
 
-		if (type === "mutation")
-			test(`mutation ${path}: a session without the CSRF token gets 403`, async () => {
-				const res = await callTrpc(
-					procRequest(path, type, { cookie: `mfw_session=${session.token}` }),
-				);
-				expect(res.status).toBe(403);
-			});
+		test(`${type} ${path}: the cookie without the request key gets 403`, async () => {
+			const res = await callTrpc(
+				procRequest(path, type, { cookie: `mfw_session=${session.token}` }),
+			);
+			expect(res.status).toBe(403);
+		});
+
+		test(`${type} ${path}: a same-site call with the key gets 403`, async () => {
+			const res = await callTrpc(
+				procRequest(path, type, {
+					cookie: `mfw_session=${session.token}`,
+					[REQUEST_KEY_HEADER]: session.requestKey,
+					"sec-fetch-site": "same-site",
+				}),
+			);
+			expect(res.status).toBe(403);
+		});
 
 		test(`${type} ${path}: a null principal is refused by the router itself`, async () => {
 			const { fetchRequestHandler } = await import(

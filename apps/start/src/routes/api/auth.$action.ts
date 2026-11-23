@@ -3,7 +3,7 @@ import { guard, serverAuth } from "~/server/auth-guard";
 import { handleAuthAction } from "~/server/auth-routes";
 
 const handler = async (request: Request, action: string) => {
-	const guarded = await guard(request);
+	const guarded = await guard(request, { api: true });
 	if (!guarded.ok) return guarded.response;
 	return handleAuthAction(action, request, guarded, await serverAuth());
 };

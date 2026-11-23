@@ -1,6 +1,5 @@
 import {
 	createHash,
-	createHmac,
 	randomBytes,
 	randomUUID,
 	timingSafeEqual,
@@ -31,12 +30,20 @@ export interface AuthenticatedSession {
 	principal: Extract<Principal, { kind: "owner" }>;
 	sessionId: string;
 	expiresAt: number;
-	csrfToken: string;
+	/** Digest of the per-session request key. Never sent to a client. */
+	requestKeyHash: string;
 }
 
 export interface IssuedSession extends AuthenticatedSession {
 	/** The cookie value. Returned once, stored only as a digest. */
 	token: string;
+	/**
+	 * Required as a header on every API call. Random and independent of the
+	 * cookie: cookies are shared across localhost ports, so a page on another
+	 * port can capture the cookie, but not this. Returned only by setup and
+	 * login, stored only as a digest.
+	 */
+	requestKey: string;
 }
 
 export type AuthRefusalCode =
@@ -94,9 +101,6 @@ function safeEqual(a: string, b: string): boolean {
 	const y = createHash("sha256").update(b).digest();
 	return timingSafeEqual(x, y);
 }
-
-const csrfFor = (token: string) =>
-	createHmac("sha256", token).update("mfw-csrf-v1").digest("base64url");
 
 export function backoffMs(failures: number): number {
 	if (failures < FREE_ATTEMPTS) return 0;
@@ -264,7 +268,7 @@ export class AuthService {
 		if (!token) return null;
 		const now = this.now();
 		const r = await this.db.client.execute({
-			sql: `SELECT id, principal_id, last_seen_at, expires_at, revoked_at
+			sql: `SELECT id, principal_id, last_seen_at, expires_at, revoked_at, request_key_hash
 				FROM auth_sessions WHERE token_hash = ?`,
 			args: [sha(token)],
 		});
@@ -283,14 +287,17 @@ export class AuthService {
 				Number(row.expires_at),
 				Math.max(now, Number(row.last_seen_at)) + SESSION_IDLE_MS,
 			),
-			csrfToken: csrfFor(token),
+			requestKeyHash: String(row.request_key_hash),
 		};
 	}
 
-	/** Constant-time check of a request's CSRF token against its session token. */
-	checkCsrf(token: string, presented: string | null | undefined): boolean {
-		if (!presented) return false;
-		return safeEqual(csrfFor(token), presented);
+	/** Constant-time check of a request's key against its session. */
+	checkRequestKey(
+		session: Pick<AuthenticatedSession, "requestKeyHash">,
+		presented: string | null | undefined,
+	): boolean {
+		if (!presented || !session.requestKeyHash) return false;
+		return safeEqual(sha(presented), session.requestKeyHash);
 	}
 
 	/** True while the session exists, is unrevoked and unexpired. No touch. */
@@ -343,13 +350,23 @@ export class AuthService {
 
 	private async issue(principalId: string): Promise<IssuedSession> {
 		const token = randomBytes(32).toString("base64url");
+		const requestKey = randomBytes(32).toString("base64url");
+		const requestKeyHash = sha(requestKey);
 		const sessionId = randomUUID();
 		const now = this.now();
 		const expiresAt = now + SESSION_ABSOLUTE_MS;
 		await this.db.client.execute({
-			sql: `INSERT INTO auth_sessions (id, token_hash, principal_id, created_at, last_seen_at, expires_at)
-				VALUES (?, ?, ?, ?, ?, ?)`,
-			args: [sessionId, sha(token), principalId, now, now, expiresAt],
+			sql: `INSERT INTO auth_sessions (id, token_hash, principal_id, created_at, last_seen_at, expires_at, request_key_hash)
+				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			args: [
+				sessionId,
+				sha(token),
+				principalId,
+				now,
+				now,
+				expiresAt,
+				requestKeyHash,
+			],
 		});
 		// Keep the newest live sessions; anything older is revoked, not just hidden.
 		const stale = await this.db.client.execute({
@@ -364,7 +381,8 @@ export class AuthService {
 			principal: { kind: "owner", id: principalId, sessionId },
 			sessionId,
 			expiresAt: Math.min(expiresAt, now + SESSION_IDLE_MS),
-			csrfToken: csrfFor(token),
+			requestKey,
+			requestKeyHash,
 		};
 	}
 

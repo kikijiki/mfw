@@ -10,15 +10,16 @@ import { checkRequest } from "./request-guard";
 
 /**
  * The session-aware front of every request: Host and Origin first
- * (`request-guard.ts`), then the session, then CSRF for anything that is not
- * a safe method.
+ * (`request-guard.ts`), then the session, then the per-session request key for
+ * every API call and every non-safe method. The cookie alone only opens the
+ * page shell, which carries no data: cookies are shared across localhost ports.
  *
  * It fails closed. A path is public only if `isPublicPath` names it, so a new
  * route is private without anyone remembering to protect it. There is no
  * development bypass: auth is always on, including on loopback.
  */
 
-export const CSRF_HEADER = "x-mfw-csrf";
+export const REQUEST_KEY_HEADER = "x-mfw-key";
 const COOKIE_PLAIN = "mfw_session";
 /** Browsers accept this name only with `Secure`, so plain HTTP cannot plant it. */
 const COOKIE_TLS = "__Secure-mfw_session";
@@ -141,6 +142,8 @@ export type GuardResult =
 			ok: true;
 			session: AuthenticatedSession | null;
 			token: string | null;
+			/** The request carried this session's request key. */
+			keyValid: boolean;
 	  }
 	| { ok: false; response: Response };
 
@@ -148,6 +151,19 @@ export interface GuardDeps {
 	auth: AuthService;
 	base?: string;
 	env?: Record<string, string | undefined>;
+	/**
+	 * The caller is an API handler, so the key is required whatever the path
+	 * looks like (the router also matches spellings such as `/API/...`).
+	 */
+	api?: boolean;
+}
+
+function isApiPath(rel: string | null): boolean {
+	if (rel === null) return false;
+	const lower = rel.toLowerCase();
+	return (
+		lower === "api" || lower.startsWith("api/") || lower.startsWith("_serverfn")
+	);
 }
 
 export async function guardRequest(
@@ -160,27 +176,38 @@ export async function guardRequest(
 	const base = deps.base ?? appBase();
 	const url = new URL(req.url);
 	const rel = relativePath(url.pathname, base);
-	const token = readSessionToken(req);
-	if (isPublicPath(rel, req.method)) {
-		const session = await deps.auth.authenticate(token);
-		return { ok: true, session, token: session ? token : null };
-	}
+	const isApi = deps.api === true || isApiPath(rel);
 
-	const session = await deps.auth.authenticate(token);
-	if (!session || !token)
-		return { ok: false, response: unauthenticated(req, url, rel, base) };
-	if (
-		!SAFE_METHODS.has(req.method.toUpperCase()) &&
-		!deps.auth.checkCsrf(token, req.headers.get(CSRF_HEADER))
-	)
+	// Sibling localhost ports are "same-site", so SameSite does not stop them.
+	const site = req.headers.get("sec-fetch-site")?.toLowerCase();
+	if (isApi && (site === "same-site" || site === "cross-site"))
 		return {
 			ok: false,
 			response: jsonResponse(403, {
-				error: "csrf",
-				message: "missing or invalid CSRF token; reload the page",
+				error: "cross_site",
+				message: "the API only answers the app's own origin",
 			}),
 		};
-	return { ok: true, session, token };
+
+	const token = readSessionToken(req);
+	const session = await deps.auth.authenticate(token);
+	const keyValid =
+		!!session &&
+		deps.auth.checkRequestKey(session, req.headers.get(REQUEST_KEY_HEADER));
+	if (isPublicPath(rel, req.method))
+		return { ok: true, session, token: session ? token : null, keyValid };
+
+	if (!session || !token)
+		return { ok: false, response: unauthenticated(req, url, rel, base) };
+	if ((isApi || !SAFE_METHODS.has(req.method.toUpperCase())) && !keyValid)
+		return {
+			ok: false,
+			response: jsonResponse(403, {
+				error: "request_key",
+				message: "missing or invalid request key; sign in again",
+			}),
+		};
+	return { ok: true, session, token, keyValid };
 }
 
 let override: Promise<AuthService> | null = null;
@@ -195,9 +222,12 @@ export function serverAuth(): Promise<AuthService> {
 }
 
 /** The guard with the server's own service. An auth failure is a refusal. */
-export async function guard(req: Request): Promise<GuardResult> {
+export async function guard(
+	req: Request,
+	opts: { api?: boolean } = {},
+): Promise<GuardResult> {
 	try {
-		return await guardRequest(req, { auth: await serverAuth() });
+		return await guardRequest(req, { auth: await serverAuth(), ...opts });
 	} catch (e) {
 		console.error("[mfw] auth check failed:", (e as Error).message);
 		return {
@@ -212,7 +242,7 @@ export async function guard(req: Request): Promise<GuardResult> {
 
 /** For raw routes: null when a signed-in caller may proceed, else the refusal. */
 export async function requireSession(req: Request): Promise<Response | null> {
-	const result = await guard(req);
+	const result = await guard(req, { api: true });
 	if (!result.ok) return result.response;
 	if (!result.session)
 		return jsonResponse(401, {

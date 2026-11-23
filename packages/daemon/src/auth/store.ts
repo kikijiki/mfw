@@ -51,6 +51,11 @@ const MIGRATIONS: readonly (readonly string[])[] = [
 			last_failure_at INTEGER NOT NULL
 		)`,
 	],
+	[
+		// Sessions from before the request key cannot satisfy it: sign in again.
+		"DELETE FROM auth_sessions",
+		"ALTER TABLE auth_sessions ADD COLUMN request_key_hash TEXT NOT NULL DEFAULT ''",
+	],
 ];
 
 export const AUTH_SCHEMA_VERSION = MIGRATIONS.length;

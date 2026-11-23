@@ -6,7 +6,7 @@ import { AuthService } from "@mfw/daemon/auth/service";
 import type { Orchestrator } from "@mfw/daemon/services";
 import { safeNext } from "../lib/auth-paths";
 import { announceFirstRun } from "./auth-boot";
-import { CSRF_HEADER, guardRequest, sessionCookie } from "./auth-guard";
+import { guardRequest, REQUEST_KEY_HEADER, sessionCookie } from "./auth-guard";
 import { AUTH_INTENT_HEADER, handleAuthAction } from "./auth-routes";
 import { serveTrpc } from "./trpc-handler";
 
@@ -149,15 +149,15 @@ describe("login", () => {
 		expect(Number(locked.headers.get("retry-after"))).toBeGreaterThan(0);
 	});
 
-	test("logout needs CSRF, then clears the cookie and revokes", async () => {
+	test("logout needs the key, then clears the cookie and revokes", async () => {
 		const res = await action("login", { password: PASSWORD });
 		const cookie = cookieOf(res);
-		const { csrfToken } = (await res.json()) as { csrfToken: string };
+		const { requestKey } = (await res.json()) as { requestKey: string };
 		expect((await action("logout", {}, { cookie })).status).toBe(403);
 		const out = await action(
 			"logout",
 			{},
-			{ cookie, [CSRF_HEADER]: csrfToken },
+			{ cookie, [REQUEST_KEY_HEADER]: requestKey },
 		);
 		expect(out.status).toBe(200);
 		expect(out.headers.get("set-cookie")).toContain("Max-Age=0");
@@ -182,6 +182,7 @@ describe("authenticated SSE", () => {
 			headers: {
 				host: "localhost:7777",
 				cookie: `mfw_session=${session.token}`,
+				[REQUEST_KEY_HEADER]: session.requestKey,
 			},
 		});
 		const res = await serveTrpc(
@@ -219,6 +220,7 @@ describe("authenticated SSE", () => {
 			headers: {
 				host: "localhost:7777",
 				cookie: `mfw_session=${session.token}`,
+				[REQUEST_KEY_HEADER]: session.requestKey,
 			},
 		});
 		const res = await serveTrpc(
@@ -238,13 +240,83 @@ describe("authenticated SSE", () => {
 	});
 });
 
+describe("a stolen cookie is not enough (reviewer B1)", () => {
+	const signedIn = async () => {
+		const token = (await auth.beginFirstRun()) as string;
+		const res = await action("setup", { token, password: PASSWORD });
+		return {
+			cookie: cookieOf(res),
+			body: (await res.json()) as Record<string, string>,
+		};
+	};
+	const api = (
+		cookie: string,
+		headers: Record<string, string> = {},
+		method = "GET",
+	) =>
+		guardRequest(
+			new Request(`${ORIGIN}/api/files/x/y.png`, {
+				method,
+				headers: { host: "localhost:7777", cookie, ...headers },
+			}),
+			{ auth, base: "/", env: {}, api: true },
+		);
+
+	test("the cookie alone cannot read the API", async () => {
+		const { cookie } = await signedIn();
+		expect((await api(cookie)).ok).toBe(false);
+	});
+
+	test("the cookie alone cannot obtain the key from /api/auth/state", async () => {
+		const { cookie, body } = await signedIn();
+		const req = new Request(`${ORIGIN}/api/auth/state`, {
+			headers: { host: "localhost:7777", cookie },
+		});
+		const guarded = await guardRequest(req, { auth, base: "/", env: {} });
+		if (!guarded.ok) throw new Error("state is public");
+		const state = (await (
+			await handleAuthAction("state", req, guarded, auth, "/")
+		).json()) as Record<string, unknown>;
+		expect(JSON.stringify(state)).not.toContain(String(body.requestKey));
+		expect(state.state).toBe("login");
+	});
+
+	test("the key is not derived from the cookie", async () => {
+		const { cookie, body } = await signedIn();
+		const value = cookie.slice("mfw_session=".length);
+		const { createHmac } = await import("node:crypto");
+		const derived = createHmac("sha256", value)
+			.update("mfw-csrf-v1")
+			.digest("base64url");
+		expect(body.requestKey).toBeString();
+		expect(body.requestKey).not.toBe(derived);
+	});
+
+	test("an API call marked same-site is refused even with the key", async () => {
+		const { cookie, body } = await signedIn();
+		const r = await api(cookie, {
+			"x-mfw-key": String(body.requestKey),
+			"sec-fetch-site": "same-site",
+		});
+		expect(r.ok).toBe(false);
+		if (!r.ok) expect(r.response.status).toBe(403);
+	});
+
+	test("cookie plus key is accepted", async () => {
+		const { cookie, body } = await signedIn();
+		expect(
+			(await api(cookie, { "x-mfw-key": String(body.requestKey) })).ok,
+		).toBe(true);
+	});
+});
+
 describe("stream lifetime (reviewer M1)", () => {
 	const orchestrator = {
 		usage: { subscribe: () => () => {}, snapshot: () => [] },
 	} as unknown as Orchestrator;
-	const open = async (path: string, cookie: string) => {
+	const open = async (path: string, cookie: string, key: string) => {
 		const req = new Request(`${ORIGIN}${path}`, {
-			headers: { host: "localhost:7777", cookie },
+			headers: { host: "localhost:7777", cookie, [REQUEST_KEY_HEADER]: key },
 		});
 		return serveTrpc(
 			req,
@@ -267,7 +339,7 @@ describe("stream lifetime (reviewer M1)", () => {
 		test(`refuses the non-canonical spelling ${path}`, async () => {
 			const token = (await auth.beginFirstRun()) as string;
 			const s = await auth.setup(token, PASSWORD);
-			const res = await open(path, `mfw_session=${s.token}`);
+			const res = await open(path, `mfw_session=${s.token}`, s.requestKey);
 			await res.body?.cancel();
 			expect(res.status).toBe(404);
 		});
@@ -276,7 +348,11 @@ describe("stream lifetime (reviewer M1)", () => {
 		const token = (await auth.beginFirstRun()) as string;
 		const s = await auth.setup(token, PASSWORD);
 		const req = new Request(`${ORIGIN}/api/trpc/system.projects`, {
-			headers: { host: "localhost:7777", cookie: `mfw_session=${s.token}` },
+			headers: {
+				host: "localhost:7777",
+				cookie: `mfw_session=${s.token}`,
+				[REQUEST_KEY_HEADER]: s.requestKey,
+			},
 		});
 		const res = await serveTrpc(
 			req,

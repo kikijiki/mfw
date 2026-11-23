@@ -6,7 +6,7 @@ export const Route = createFileRoute("/api/health")({
 	server: {
 		handlers: {
 			GET: async ({ request }) => {
-				const guarded = await guard(request);
+				const guarded = await guard(request, { api: true });
 				if (!guarded.ok) return guarded.response;
 				return jsonResponse(200, { ok: true });
 			},
