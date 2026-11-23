@@ -85,6 +85,7 @@ const NOT_FACTS = [
 	"role",
 	"runDirLayout",
 	"workspaceKind",
+	"approvalMode",
 ];
 
 const REPO = resolve(import.meta.dir, "../../..");

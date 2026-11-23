@@ -308,6 +308,13 @@ export const runs = sqliteTable(
 		runDirLayout: text("run_dir_layout").$type<"split" | null>(),
 		/** What the workspace really was at launch. Never re-derived from config. */
 		workspaceKind: text("workspace_kind").$type<"worktree" | "clone" | null>(),
+		/**
+		 * The approval mode the agent was launched under (0026). Finalization reads
+		 * this, never the project's current mode; null counts as autonomous.
+		 */
+		approvalMode: text("approval_mode").$type<
+			"autonomous" | "interactive" | null
+		>(),
 	},
 	(t) => [
 		index("ix_runs_state").on(t.state),

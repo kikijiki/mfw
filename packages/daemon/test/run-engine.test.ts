@@ -367,6 +367,20 @@ describe("RunEngine v2", () => {
 		await rm(f.root, { recursive: true, force: true });
 	}, 20_000);
 
+	test("a launched run records the approval mode it launched under", async () => {
+		const f = await fixture();
+		const t = await f.tasks.create({ title: "mode" });
+		await f.tasks.move(t.id, "ready", "human");
+		const { runId } = await f.engine.startTask(t.id);
+		expect((await f.registry.get(runId))?.approvalMode).toBe("interactive");
+		await waitFor(async () => {
+			const exit = await f.host.readExit(f.registry.runDir(runId));
+			return exit.kind === "exit";
+		});
+		f.handle.close();
+		await rm(f.root, { recursive: true, force: true });
+	}, 20_000);
+
 	test("startTask resolves the run model from the task's model_tier", async () => {
 		const f = await fixture({ modelTiers: { strong: "claude-opus-5" } });
 

@@ -1213,7 +1213,6 @@ export async function attachProject(
 		projectRoot: root,
 		checkPrefix: cfg.checkPrefix,
 		envPolicy: cfg.envPolicy,
-		approvalMode: cfg.approvalMode ?? DEFAULTS.approvalMode,
 		verification,
 		providerHolds,
 		projectName: cfg.name,
