@@ -17,12 +17,14 @@
  * it exists, so an unreferenced merge commit survives the seed and a crash
  * leaves a ref `sweep` can find.
  */
-import { mkdir, readdir, rm } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import type { CheckRunner } from "../containment/check-runner.ts";
 import { git } from "../git.ts";
 import { assertRunId } from "../host-git/fetch.ts";
 import type { HostGit } from "../host-git/runner.ts";
 import type { CacheDeclaration } from "./caches.ts";
+import { removeTree } from "./remove-tree.ts";
 import { seedWorkspace } from "./seed.ts";
 
 const ID_PREFIX = "verify-";
@@ -38,6 +40,8 @@ export interface VerifierCloneOptions {
 	gitBin?: string;
 	host?: HostGit;
 	log?: (msg: string) => void;
+	/** Runs a check in the verifier sandbox. Without it, checks are refused. */
+	checkRunner?: CheckRunner;
 }
 
 /** One verification clone: check it out of `path`, then `dispose` it. */
@@ -61,9 +65,12 @@ export function isVerifierCloneId(id: string): boolean {
 
 export class VerifierClones {
 	private readonly root: string;
+	/** Null means no check may run: the host never runs a candidate's code. */
+	readonly checkRunner: CheckRunner | null;
 
 	constructor(private readonly opts: VerifierCloneOptions) {
 		this.root = resolve(opts.workspaceRoot);
+		this.checkRunner = opts.checkRunner ?? null;
 	}
 
 	/** Seed a clone of `rev` (a commit in the primary, or a ref that names one). */
@@ -91,6 +98,8 @@ export class VerifierClones {
 				workspaceRoot: this.root,
 				primaryRoot: this.opts.primaryRoot,
 				baseSha: sha,
+				// A check needs the commit, not the project's history.
+				history: "tip",
 				...(this.opts.caches ? { caches: this.opts.caches } : {}),
 				...(this.opts.gitBin ? { gitBin: this.opts.gitBin } : {}),
 				...(this.opts.host ? { host: this.opts.host } : {}),
@@ -100,6 +109,13 @@ export class VerifierClones {
 			await git(["update-ref", "-d", ref], this.opts.primaryRoot);
 			throw e;
 		}
+		// Beside `tree/` and `git/`, never bound: what marks this as a host-owned
+		// clone to the sandbox builders.
+		await writeFile(
+			join(seeded.dir, "mfw-workspace.json"),
+			`${JSON.stringify({ version: 1, runId: id, role: "verifier", baseSha: sha })}\n`,
+			{ mode: 0o600 },
+		);
 		let disposed = false;
 		return {
 			id,
@@ -108,10 +124,23 @@ export class VerifierClones {
 			dispose: async () => {
 				if (disposed) return;
 				disposed = true;
-				await rm(seeded.dir, { recursive: true, force: true });
+				const left = await removeTree(seeded.dir);
+				// Whatever the check did to the tree, the pin never outlives it.
 				await git(["update-ref", "-d", ref], this.opts.primaryRoot);
+				if (left.length > 0) {
+					throw new Error(`could not remove ${left.slice(0, 3).join(", ")}`);
+				}
 			},
 		};
+	}
+
+	/** Whether the commit itself has this path. Asks the trusted primary. */
+	async fileInCommit(sha: string, path: string): Promise<boolean> {
+		const r = await git(
+			["cat-file", "-e", `${sha}:${path}`],
+			this.opts.primaryRoot,
+		);
+		return r.exitCode === 0;
 	}
 
 	/** Run `fn` against a fresh clone of `rev`, and dispose it however `fn` ends. */
@@ -138,8 +167,10 @@ export class VerifierClones {
 		let removed = 0;
 		for (const id of await readdir(this.root).catch(() => [] as string[])) {
 			if (!isVerifierCloneId(id)) continue;
-			await rm(join(this.root, id), { recursive: true, force: true });
-			removed++;
+			// One clone that cannot be removed must not stop the others or the refs.
+			const left = await removeTree(join(this.root, id));
+			if (left.length === 0) removed++;
+			else this.opts.log?.(`verifier clone ${id} not removed: ${left[0]}`);
 		}
 		const refs = await git(
 			["for-each-ref", "--format=%(refname)", REF_PREFIX],

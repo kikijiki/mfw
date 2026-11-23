@@ -8,7 +8,7 @@ import {
 	buildRunner,
 	describeVerificationEnvironment,
 	scrubEnv,
-	verify,
+	verify as verifyHostOrRefuse,
 } from "../src/verifier.ts";
 
 async function repo(): Promise<string> {
@@ -24,6 +24,15 @@ async function repo(): Promise<string> {
 
 const dod = (checks: unknown[]) =>
 	({ verifier: "deterministic", checks }) as never;
+
+/** These cover the check semantics, on the one path that may use the host. */
+const verify = (
+	...[cwd, checks, base, opts]: Parameters<typeof verifyHostOrRefuse>
+) =>
+	verifyHostOrRefuse(cwd, checks, base, {
+		hostExecution: "interactive-worktree",
+		...opts,
+	});
 
 describe("verifier v2: checks", () => {
 	test("run checks pass/fail on the expected exit code, with output tail", async () => {

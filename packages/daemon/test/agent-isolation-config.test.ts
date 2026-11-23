@@ -9,12 +9,10 @@ import {
 	loadConfig,
 	toBootProjects,
 } from "../src/config.ts";
+import { agentSandboxRefusal } from "../src/containment/agent-preflight.ts";
 import { git } from "../src/git.ts";
 import { silentLogger } from "../src/log.ts";
-import {
-	autonomySandboxRefusal,
-	SandboxUnavailableError,
-} from "../src/sandbox.ts";
+import { SandboxUnavailableError } from "../src/sandbox.ts";
 import { runShTmux } from "./support/run-sh-tmux.ts";
 
 /** Security review G5: autonomy without isolation is refused at the launch choke point and in config. */
@@ -103,9 +101,12 @@ describe("config: agentIsolation none needs interactive approvals (X5)", () => {
 	}, 30_000);
 
 	test("autonomous dispatch of such a project is refused with sandbox_unavailable", async () => {
-		const refusal = await autonomySandboxRefusal({
+		const refusal = await agentSandboxRefusal({
 			approvalMode: "autonomous",
 			isolation: undefined,
+			runWorkspace: "worktree",
+			projectRoot: "/nonexistent",
+			mfwHome: "/nonexistent",
 		});
 		expect(refusal?.code).toBe("sandbox_unavailable");
 	});

@@ -252,10 +252,23 @@ describe("role ceilings", () => {
 		);
 	});
 
-	test.each([...WRITING])("%s may hold every writable grant", (role) => {
+	test.each([
+		"task",
+		"repair",
+	] as const)("%s may hold every writable grant", (role) => {
 		const p = parseSandboxProfile({ ...base(), role });
 		expect(p.filesystem?.workspace?.access).toBe("rw");
 		expect(p.filesystem?.fleetConfig?.writable).toEqual(["sessions", "cache"]);
+	});
+
+	// Narrowed by P7: these roles run the candidate's code.
+	test.each([
+		"verifier",
+		"merge-verify",
+	] as const)("%s may not hold a task's grants", (role) => {
+		expect(() => parseSandboxProfile({ ...base(), role })).toThrow(
+			ProfileRejectedError,
+		);
 	});
 
 	describe.each([...READ_ONLY])("%s", (role) => {

@@ -447,18 +447,45 @@ export async function probeChildMain(): Promise<void> {
 		.map((kv) => kv.split("=")[0] as string);
 
 	// ---- real syscalls, last: an unfiltered one may leave a descriptor behind
-	const libc = ffi.dlopen("libc.so.6", {
-		syscall: {
-			args: Array(7).fill(ffi.FFIType.i64),
-			returns: ffi.FFIType.i64,
+	// A raw `syscall` instruction: the kernel's -errno comes back in the return
+	// value. Reading libc's errno takes a second FFI call, and the runtime can
+	// overwrite it in between. libc is used only to map the stub's page.
+	const SYSCALL_STUB = [
+		0x48, 0x89, 0xf8, 0x48, 0x89, 0xf7, 0x48, 0x89, 0xd6, 0x48, 0x89, 0xca,
+		0x4d, 0x89, 0xc2, 0x4d, 0x89, 0xc8, 0x4c, 0x8b, 0x4c, 0x24, 0x08, 0x0f,
+		0x05, 0xc3,
+	];
+	const libcMem = ffi.dlopen("libc.so.6", {
+		mmap: {
+			args: [
+				ffi.FFIType.ptr,
+				ffi.FFIType.u64,
+				ffi.FFIType.i32,
+				ffi.FFIType.i32,
+				ffi.FFIType.i32,
+				ffi.FFIType.i64,
+			],
+			returns: ffi.FFIType.ptr,
 		},
-		__errno_location: { args: [], returns: ffi.FFIType.ptr },
+		mprotect: {
+			args: [ffi.FFIType.ptr, ffi.FFIType.u64, ffi.FFIType.i32],
+			returns: ffi.FFIType.i32,
+		},
+	});
+	const stubPage = libcMem.symbols.mmap(null, 4096, 3, 0x22, -1, 0);
+	if (!stubPage || Number(stubPage) === -1) throw new Error("no stub page");
+	ffi.toBuffer(stubPage, 0, SYSCALL_STUB.length).set(SYSCALL_STUB);
+	if (libcMem.symbols.mprotect(stubPage, 4096, 5) !== 0) {
+		throw new Error("cannot make the syscall stub executable");
+	}
+	const sys = ffi.CFunction({
+		ptr: stubPage,
+		args: Array(7).fill(ffi.FFIType.i64),
+		returns: ffi.FFIType.i64,
 	});
 	const raw = (nr: number, a0 = 0, a1 = 0, a2 = 0, a3 = 0, a4 = 0, a5 = 0) => {
-		const rc = Number(libc.symbols.syscall(nr, a0, a1, a2, a3, a4, a5));
-		if (rc !== -1) return { rc, errno: 0 };
-		const loc = libc.symbols.__errno_location();
-		return { rc, errno: loc ? ffi.read.i32(loc) : -1 };
+		const rc = Number(sys(nr, a0, a1, a2, a3, a4, a5));
+		return rc < 0 && rc >= -4095 ? { rc: -1, errno: -rc } : { rc, errno: 0 };
 	};
 	const control = raw(39).rc === process.pid;
 

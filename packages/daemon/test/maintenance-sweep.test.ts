@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DefinitionOfDone } from "@mfw/core/taskfile";
@@ -15,6 +15,7 @@ import { SessionService } from "../src/session.ts";
 import type { TaskService } from "../src/task-service.ts";
 import { WorktreeManager } from "../src/worktree.ts";
 import { MFW_EXCLUDE, makeTasks } from "./fixtures/board.ts";
+import { useCheckClones } from "./support/check-clones.ts";
 
 interface F {
 	root: string;
@@ -51,6 +52,7 @@ async function fixture(mergeChecks?: DefinitionOfDone | null): Promise<F> {
 	await git(["commit", "-q", "-m", "board"], root);
 
 	const now = { value: Date.now() };
+	const dropClones = useCheckClones(root);
 	const maint = new Maintenance({
 		handle,
 		bus,
@@ -70,6 +72,7 @@ async function fixture(mergeChecks?: DefinitionOfDone | null): Promise<F> {
 		maint,
 		now,
 		cleanup: async () => {
+			await dropClones();
 			handle.close();
 			await rm(root, { recursive: true, force: true });
 		},
@@ -106,134 +109,6 @@ describe("regression sweep: the red-main safety net", () => {
 		expect(r.broken).toEqual([]);
 		expect(r.mainRed).toBe(false);
 		expect(await f.maint.isMainRed()).toBe(false);
-		await f.cleanup();
-	}, 30_000);
-
-	// A bare `git worktree` lacks gitignored installed deps, so re-run checks failed
-	// with "Cannot find module" and tripped `main_red` with no way to clear.
-	test("the sweep reads a SNAPSHOT, not the live checkout", async () => {
-		// Symlinking at the primary made a sweep during an install read a half-written
-		// tree. Deleting the primary's copy after the snapshot stands in for that.
-		const f = await fixture();
-		await mkdir(join(f.root, "node_modules", "left-pad"), { recursive: true });
-		await writeFile(
-			join(f.root, "node_modules", "left-pad", "index.js"),
-			"module.exports = 1;\n",
-		);
-		await writeFile(join(f.root, "bun.lock"), "{}\n");
-		await writeFile(join(f.root, ".gitignore"), "node_modules/\n");
-		await git(["add", "-A"], f.root);
-		await git(["commit", "-q", "-m", "ignore deps"], f.root);
-
-		const t = await f.tasks.create({
-			title: "needs its dependencies",
-			dod: {
-				verifier: "deterministic",
-				checks: [{ files_exist: ["node_modules/left-pad/index.js"] }],
-			},
-		});
-		await mergeDone(f, t.id);
-
-		expect((await f.maint.regressionSweep()).broken).toEqual([]);
-
-		// The snapshot keeps its hard links, so the verdict must not change.
-		await rm(join(f.root, "node_modules"), { recursive: true, force: true });
-
-		const r = await f.maint.regressionSweep();
-		expect(r.broken).toEqual([]);
-		expect(r.mainRed).toBe(false);
-		expect((await f.tasks.get(t.id))?.status).toBe("done");
-		await f.cleanup();
-	}, 60_000);
-
-	test("the sweep sees the dependencies the run was verified with", async () => {
-		const f = await fixture();
-		await mkdir(join(f.root, "node_modules", "left-pad"), { recursive: true });
-		await writeFile(
-			join(f.root, "node_modules", "left-pad", "index.js"),
-			"module.exports = 1;\n",
-		);
-		await mkdir(join(f.root, "packages", "a", "node_modules", "dep"), {
-			recursive: true,
-		});
-		await writeFile(join(f.root, ".gitignore"), "node_modules/\n");
-		await git(["add", "-A"], f.root);
-		await git(["commit", "-q", "-m", "ignore deps"], f.root);
-
-		const t = await f.tasks.create({
-			title: "needs its dependencies",
-			dod: {
-				verifier: "deterministic",
-				checks: [
-					{ files_exist: ["node_modules/left-pad/index.js"] },
-					{ files_exist: ["packages/a/node_modules/dep"] },
-				],
-			},
-		});
-		await mergeDone(f, t.id);
-
-		const r = await f.maint.regressionSweep();
-
-		expect(r.broken).toEqual([]);
-		expect(r.mainRed).toBe(false);
-		expect(await f.maint.isMainRed()).toBe(false);
-		expect((await f.tasks.get(t.id))?.status).toBe("done");
-		await f.cleanup();
-	}, 30_000);
-
-	test("a workspace package resolves to the worktree's own sources, and a broken worktree source makes the sweep red", async () => {
-		const f = await fixture();
-		// bun installs workspaces as a RELATIVE symlink into the source tree. Copied
-		// verbatim into the snapshot it resolved to a dir holding only `node_modules`.
-		await writeFile(
-			join(f.root, "package.json"),
-			JSON.stringify({ name: "root", workspaces: ["packages/*"] }),
-		);
-		await mkdir(join(f.root, "packages", "a"), { recursive: true });
-		await writeFile(
-			join(f.root, "packages", "a", "package.json"),
-			JSON.stringify({ name: "@t/a" }),
-		);
-		await writeFile(
-			join(f.root, "packages", "a", "index.ts"),
-			"export const a=1;\n",
-		);
-		// Own installed deps, so the snapshot copies that path.
-		await mkdir(join(f.root, "packages", "a", "node_modules", "dep"), {
-			recursive: true,
-		});
-		await mkdir(join(f.root, "node_modules", "@t"), { recursive: true });
-		await symlink("../../packages/a", join(f.root, "node_modules", "@t", "a"));
-		await writeFile(join(f.root, ".gitignore"), "node_modules/\n");
-		await git(["add", "-A"], f.root);
-		await git(["commit", "-q", "-m", "workspace"], f.root);
-
-		const t = await f.tasks.create({
-			title: "imports a workspace package",
-			dod: {
-				verifier: "deterministic",
-				// Reachable only if the link points at real sources.
-				checks: [{ files_exist: ["node_modules/@t/a/index.ts"] }],
-			},
-		});
-		await mergeDone(f, t.id);
-
-		const r = await f.maint.regressionSweep();
-
-		expect(r.broken).toEqual([]);
-		expect(r.mainRed).toBe(false);
-		expect((await f.tasks.get(t.id))?.status).toBe("done");
-
-		// The package in the CHECKED-OUT tree decides the verdict; if shadowLink
-		// pointed elsewhere, this committed change could not turn it red.
-		await rm(join(f.root, "packages", "a", "index.ts"));
-		await git(["add", "-A"], f.root);
-		await git(["commit", "-q", "-m", "break workspace source"], f.root);
-
-		const broken = await f.maint.regressionSweep();
-		expect(broken.broken).toEqual([t.id]);
-		expect(broken.mainRed).toBe(true);
-		expect((await f.tasks.get(t.id))?.status).toBe("done");
 		await f.cleanup();
 	}, 30_000);
 
@@ -656,53 +531,43 @@ describe("regression sweep: the red-main safety net", () => {
 		await f.cleanup();
 	}, 30_000);
 
-	// A failing check may be a sweep-side fault (here the dependency snapshot
-	// loses a package with no commit). Corroborating against the last green
-	// commit, which is the current tip, shows the code is not the cause.
-	test("a sweep-side failure is not blamed on the task, and does not gate main red", async () => {
+	// Until P8 the sandbox has no installed dependencies, so a failing check there
+	// says nothing about the code, and it is never retried on the host.
+	test("a check that fails for want of dependencies is infrastructure, not a regression", async () => {
 		const f = await fixture();
-		await mkdir(join(f.root, "node_modules", "left-pad"), { recursive: true });
-		await writeFile(
-			join(f.root, "node_modules", "left-pad", "index.js"),
-			"module.exports = 1;\n",
-		);
-		await writeFile(join(f.root, "bun.lock"), "{}\n");
-		await writeFile(join(f.root, ".gitignore"), "node_modules/\n");
-		await git(["add", "-A"], f.root);
-		await git(["commit", "-q", "-m", "ignore deps"], f.root);
-
+		await writeFile(join(f.root, "package.json"), '{"name":"root"}\n');
+		await git(["add", "package.json"], f.root);
+		await git(["commit", "-q", "-m", "manifest"], f.root);
 		const t = await f.tasks.create({
 			title: "needs its dependencies",
 			dod: {
 				verifier: "deterministic",
-				checks: [{ files_exist: ["node_modules/left-pad/index.js"] }],
+				checks: [{ run: "test -d node_modules/left-pad", expect_exit: 0 }],
 			},
 		});
 		await mergeDone(f, t.id);
-
-		// Clean sweep records this commit as last known-good.
-		const first = await f.maint.regressionSweep();
-		expect(first.broken).toEqual([]);
-		expect(first.infra).toEqual([]);
-		expect(first.mainRed).toBe(false);
-
-		// Broken install with no commit; the lockfile size change forces a snapshot rebuild.
-		await rm(join(f.root, "node_modules", "left-pad"), { recursive: true });
-		await writeFile(join(f.root, "bun.lock"), '{"changed":true}\n');
-
-		const events: string[] = [];
-		f.bus.subscribe((e) => events.push(e.type));
-
-		const second = await f.maint.regressionSweep();
-		expect(second.broken).toEqual([]);
-		expect(second.infra).toEqual([t.id]);
-		expect(second.mainRed).toBe(false);
-		expect(await f.maint.isMainRed()).toBe(false);
-		expect((await f.tasks.get(t.id))?.status).toBe("done");
-		expect(events).toContain("sweep.infra_failure");
-		expect(events).not.toContain("main.red");
+		const r = await f.maint.regressionSweep();
+		expect(r.broken).toEqual([]);
+		expect(r.infra).toEqual([t.id]);
+		expect(r.mainRed).toBe(false);
 		await f.cleanup();
-	}, 60_000);
+	}, 30_000);
+
+	test("a command the sandbox cannot find is infrastructure, not a regression", async () => {
+		const f = await fixture();
+		const t = await f.tasks.create({
+			title: "needs a tool",
+			dod: {
+				verifier: "deterministic",
+				checks: [{ run: "exit 127", expect_exit: 0 }],
+			},
+		});
+		await mergeDone(f, t.id);
+		const r = await f.maint.regressionSweep();
+		expect(r.broken).toEqual([]);
+		expect(r.infra).toEqual([t.id]);
+		await f.cleanup();
+	}, 30_000);
 
 	test("a sweep that cannot create its verification worktree alarms without blaming or gating a task", async () => {
 		const f = await fixture();
@@ -1024,9 +889,9 @@ describe("regression sweep: the red-main safety net", () => {
 		expect((diagnosed[0] as { outputTail: string }).outputTail).toContain(
 			"feature-missing",
 		);
-		expect((diagnosed[0] as { environment: string }).environment).toContain(
-			"allowed ambient names: PATH, CI",
-		);
+		const environment = (diagnosed[0] as { environment: string }).environment;
+		expect(environment).toContain("attested verifier sandbox");
+		expect(environment).toContain("no ambient environment");
 		await f.cleanup();
 	}, 30_000);
 

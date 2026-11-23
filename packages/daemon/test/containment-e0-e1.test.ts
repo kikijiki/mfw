@@ -3,9 +3,6 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentHost } from "../src/agent-host.ts";
-import { runProc } from "../src/proc.ts";
-import { bwrapAvailable, probeSandbox } from "../src/sandbox.ts";
-import { TEST_TMUX_SOCKET } from "./support/tmux-test-socket.ts";
 
 /**
  * G2a: the sandbox experiments' E0 (daemon environment) and E1 (tmux server
@@ -27,106 +24,7 @@ async function waitExit(host: AgentHost, runDir: string) {
 	throw new Error("run did not exit");
 }
 
-async function usable(): Promise<string | null> {
-	if (!(await bwrapAvailable())) return "no bwrap";
-	const r = await probeSandbox({ mode: "bwrap", hidePaths: [] });
-	return r.ok ? null : `bwrap cannot run here (${r.detail})`;
-}
-
 describe("E0/E1 reproductions", () => {
-	test("canary env and the masked tmux socket are absent inside; the driver still runs", async () => {
-		const why = await usable();
-		if (why) return console.log(`skip: ${why}`);
-		const base = await mkdtemp(join(tmpdir(), "mfw-e0e1-"));
-		dirs.push(base);
-		const runDir = join(base, "run");
-		const cwd = join(base, "wt");
-		await mkdir(runDir, { recursive: true });
-		await mkdir(cwd, { recursive: true });
-		const canary = `canary-${Math.random().toString(36).slice(2)}`;
-		process.env.MFW_G2A_CANARY = canary;
-		const sock = TEST_TMUX_SOCKET;
-		const host = new AgentHost();
-		const runId = `e${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
-		try {
-			// start the tmux server (and a session) so its socket exists on the host
-			const driverScript = join(base, "driver.ts");
-			await runProc(
-				[
-					"tmux",
-					"-L",
-					sock,
-					"new-session",
-					"-d",
-					"-s",
-					"g2a-keepalive",
-					"sleep 60",
-				],
-				{ timeoutMs: 5000 },
-			);
-			const sockPath = (
-				await runProc(
-					[
-						"tmux",
-						"-L",
-						sock,
-						"display-message",
-						"-p",
-						"-t",
-						"g2a-keepalive",
-						"#{socket_path}",
-					],
-					{ timeoutMs: 5000 },
-				)
-			).stdout.trim();
-			await writeFile(
-				driverScript,
-				`
-const env = JSON.stringify(process.env);
-console.log("canary-visible:" + env.includes(${JSON.stringify(canary)}));
-let connected = "no-socket-path";
-const p = ${JSON.stringify(sockPath)};
-if (p) {
-  connected = await Bun.connect({ unix: p, socket: { data() {} } }).then(
-    (s) => { s.end(); return "connected"; },
-    () => "refused",
-  );
-}
-console.log("tmux-socket:" + connected);
-console.log("mfw-run-id:" + (process.env.MFW_RUN_ID ?? "missing"));
-process.exit(0);
-`,
-			);
-			await host.launch({
-				runId,
-				runDir,
-				cwd,
-				projectRoot: base,
-				driverScript,
-				agentArgv: ["true"],
-				env: { MFW_RUN_ID: runId },
-				model: "m",
-				initialMessage: "",
-				steer: false,
-				approvalMode: "interactive",
-				isolation: { mode: "bwrap", hidePaths: [] },
-			});
-			await waitExit(host, runDir);
-			const raw = await readFile(join(runDir, "raw.log"), "utf8");
-			expect(await host.readExit(runDir)).toEqual({ kind: "exit", code: 0 });
-			expect(raw).toContain("canary-visible:false");
-			expect(raw).toContain("tmux-socket:refused");
-			// per-run public values still arrive
-			expect(raw).toContain(`mfw-run-id:${runId}`);
-		} finally {
-			delete process.env.MFW_G2A_CANARY;
-			await runProc(
-				["tmux", "-L", sock, "kill-session", "-t", "g2a-keepalive"],
-				{ timeoutMs: 5000 },
-			).catch(() => undefined);
-		}
-	});
-
 	test("the tmux server itself is started clean: the daemon canary is not in its global environment", async () => {
 		if (!Bun.which("tmux")) return console.log("skip: no tmux");
 		const base = await mkdtemp(join(tmpdir(), "mfw-e1-"));

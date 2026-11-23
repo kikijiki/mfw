@@ -89,12 +89,19 @@ describe("compile: run dir section", () => {
 		expect(dir).toBeLessThan(remount);
 	});
 
-	test("a read-only role cannot have a writable outbox", () => {
-		expect(() => profile({ runDir }, "reviewer")).toThrow(/writable outbox/);
-		const c = compiled(
+	test("the outbox is the only run path a read-only role can write", () => {
+		const c = compiled(profile({ runDir }, "reviewer"));
+		expect(c.pinnedBinds.filter((b) => b.writable).map((b) => b.label)).toEqual(
+			["run outbox"],
+		);
+		const ro = compiled(
 			profile({ runDir: { source: RUN, outbox: "ro" } }, "reviewer"),
 		);
-		expect(c.pinnedBinds.every((b) => !b.writable)).toBe(true);
+		expect(ro.pinnedBinds.every((b) => !b.writable)).toBe(true);
+	});
+
+	test("a verifier role has no run directory at all", () => {
+		expect(() => profile({ runDir }, "verifier")).toThrow(/run directory/);
 	});
 
 	test("narrowing can make the outbox read-only", () => {

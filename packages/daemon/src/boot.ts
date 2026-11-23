@@ -43,6 +43,7 @@ import {
 	PROJECT_DEFAULTS,
 } from "./config.ts";
 import { agentSandboxRefusal } from "./containment/agent-preflight.ts";
+import { createCheckSandbox } from "./containment/check-sandbox.ts";
 import { runDirLayout } from "./containment/run-dir.ts";
 import { assertRunDead } from "./containment/run-liveness.ts";
 import { CredentialStore, WorkloadSecretGrantStore } from "./credentials.ts";
@@ -137,10 +138,12 @@ import { RunEngine } from "./run-engine.ts";
 import { RunRegistry } from "./run-registry.ts";
 import {
 	configureRunWorkspace,
+	createCheckClones,
 	createVerifierClones,
 	rebaseCloneOptions,
 } from "./run-workspace/factory.ts";
 import { rebaseQuarantineInScratch } from "./run-workspace/rebase-clone.ts";
+import { sweepRoleClones } from "./run-workspace/role-clone.ts";
 import { sandboxFinalSnapshot } from "./run-workspace/wip-snapshot.ts";
 import {
 	RunPodAccountService,
@@ -189,7 +192,6 @@ import { VerificationCoordinator } from "./verification-coordinator.ts";
 import {
 	type EnvPolicy,
 	type VerificationResult,
-	verify,
 	verifyInClone,
 } from "./verifier.ts";
 import { WorkspaceService } from "./workspace.ts";
@@ -277,6 +279,7 @@ export interface ProjectConfig {
 	maxConcurrentDraftExpansions?: number;
 	/** Dispatch preflight memory floor in MiB; see `config.ts`. */
 	minFreeMemoryMb?: number;
+	checkMaxTreeMb?: number;
 	/** Live-run watchdog limits and scope policy; see `config.ts`. Applied live by settings. */
 	watchdog?: import("./config.ts").WatchdogConfig;
 	/** Optional narrowing of the machine-wide RunPod policy. */
@@ -595,6 +598,16 @@ export async function attachProject(
 		// this setting must still be handled as the clone it is.
 		clone: {
 			workspaceRoot: join(opts.mfwHome, "workspaces"),
+			// A candidate's checks run only in the attested verifier role.
+			checkRunner: createCheckSandbox({
+				db: handle.db,
+				mfwHome: opts.mfwHome,
+				projectRoot: root,
+				stateDir: mfwDir,
+				...(cfg.checkMaxTreeMb
+					? { maxTreeBytes: cfg.checkMaxTreeMb * 1024 * 1024 }
+					: {}),
+			}),
 			runDirOf: (runId) => registry.runDir(runId),
 			controlPath: (runId) =>
 				join(runDirLayout(registry.runDir(runId)).control, "control.jsonl"),
@@ -717,7 +730,7 @@ export async function attachProject(
 			return new AgentReviewInference({
 				subject: { projectRoot: root, ...subject },
 				harness: type,
-				hidePaths: [opts.mfwHome],
+				host: { mfwHome: opts.mfwHome, stateDir: mfwDir },
 			});
 		},
 		registry,
@@ -755,6 +768,11 @@ export async function attachProject(
 	await verifierClones?.sweep().catch((e) => {
 		plog.warn({ err: e }, "verifier clone sweep failed");
 	});
+	await sweepRoleClones(root, (runId) => host.sessionLiveness(runId)).catch(
+		(e) => {
+			plog.warn({ err: e }, "role clone sweep failed");
+		},
+	);
 	const rebaseOpts = rebaseCloneOptions(root);
 	type MergeVerdict = { passed: boolean; detail?: string; crashed?: boolean };
 	const verdictOf = (result: VerificationResult): MergeVerdict => ({
@@ -785,23 +803,23 @@ export async function attachProject(
 				envPolicy: cfg.envPolicy,
 				gate: { primaryRoot: root, baseRev: baseSha },
 			};
-			const runClones = createVerifierClones(root, run);
+			// The merge queue never executes a check on the host: a worktree run is
+			// verified from its committed branch tip, in a disposable clone.
+			const clones = createCheckClones(root);
+			const rev = createVerifierClones(root, run)
+				? quarantineRef(job.runId)
+				: run.branch;
+			if (!clones || !rev) {
+				return {
+					passed: false,
+					detail: "no verifier sandbox or commit to re-check this run in",
+				};
+			}
 			const result = await verification.foreground(() =>
-				runClones
-					? verifyInClone(
-							runClones,
-							quarantineRef(job.runId),
-							job.runId,
-							dod,
-							run.baseSha as string,
-							opts,
-						)
-					: verify(
-							run.worktreePath as string,
-							dod,
-							run.baseSha as string,
-							opts,
-						),
+				verifyInClone(clones, rev, job.runId, dod, run.baseSha as string, {
+					...opts,
+					role: "merge-verify",
+				}),
 			);
 			return verdictOf(result);
 		},
@@ -842,6 +860,7 @@ export async function attachProject(
 						envPolicy: cfg.envPolicy,
 						// The target as it was before this merge commit.
 						gate: { primaryRoot: root, baseRev: `${mergeSha}^1` },
+						role: "merge-verify",
 					},
 				),
 			);
@@ -1187,6 +1206,7 @@ export async function attachProject(
 		projectRoot: root,
 		checkPrefix: cfg.checkPrefix,
 		envPolicy: cfg.envPolicy,
+		approvalMode: cfg.approvalMode ?? DEFAULTS.approvalMode,
 		verification,
 		providerHolds,
 		projectName: cfg.name,

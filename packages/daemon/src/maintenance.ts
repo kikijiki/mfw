@@ -1,17 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { Dirent } from "node:fs";
-import {
-	mkdir,
-	mkdtemp,
-	readdir,
-	readFile,
-	rm,
-	stat,
-	symlink,
-	writeFile,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { rm } from "node:fs/promises";
+import { resolve } from "node:path";
 import type { ProjectDbHandle } from "@mfw/db/client";
 import { appendEvent, type EventBus } from "@mfw/db/eventlog";
 import { engineKv, events as eventRows } from "@mfw/db/schema";
@@ -19,14 +8,17 @@ import { eq } from "drizzle-orm";
 import { runEventsPath } from "./containment/run-dir.ts";
 import { git, gitComplete } from "./git.ts";
 import type { Logger } from "./log.ts";
-import { runProc } from "./proc.ts";
 import { loadReopenPolicies, reopenDefinitionHash } from "./reopen-policy.ts";
 import {
 	CLAIM_HOLDING_RUN_STATES,
 	type RunRegistry,
 	type RunRow,
 } from "./run-registry.ts";
-import { createRunWorkspace } from "./run-workspace/factory.ts";
+import {
+	createCheckClones,
+	createRunWorkspace,
+} from "./run-workspace/factory.ts";
+import type { VerifierClones } from "./run-workspace/verifier-clone.ts";
 import type { RaiseInput } from "./session.ts";
 import type { TaskService } from "./task-service.ts";
 import type { DefinitionOfDone, DoDCheck } from "./tasks/types.ts";
@@ -36,7 +28,7 @@ import {
 	type EnvPolicy,
 	type VerificationResult,
 	type VerifyOptions,
-	verify,
+	verifyInClone,
 } from "./verifier.ts";
 
 /**
@@ -308,13 +300,25 @@ export class Maintenance {
 			};
 		}
 
-		const wt = await this.sweepWorktree();
-		if (!wt) {
-			this.deps.log.warn("regression sweep skipped: no verify worktree");
+		// Merged code is still candidate-written, so it never runs on the host.
+		const clones = createCheckClones(this.deps.projectRoot);
+		const tip = await git(
+			[
+				"rev-parse",
+				"--verify",
+				"-q",
+				`${this.deps.integrationBranch}^{commit}`,
+			],
+			this.deps.projectRoot,
+		);
+		if (!clones?.checkRunner || tip.exitCode !== 0) {
+			this.deps.log.warn(
+				"regression sweep skipped: no verifier sandbox or tip",
+			);
 			const affected = toCheck.map((task) => task.id);
 			await this.setInfraState(
 				affected,
-				"the sweep could not create its detached verification worktree; " +
+				"the sweep has no verifier sandbox or integration tip to check; " +
 					"no task was checked or blamed, and main was not newly gated",
 			);
 			const red = await this.mainRedState();
@@ -338,16 +342,16 @@ export class Maintenance {
 		// Failing result for a residual regression this pass, so an escalation can quote the check's tail.
 		const resultsByTask = new Map<string, VerificationResult>();
 		let cleanPass = true;
-		let tipSha = "";
-		try {
-			const baseSha = (await git(["rev-parse", "HEAD"], wt)).stdout.trim();
-			tipSha = baseSha;
+		const baseSha = tip.stdout.trim();
+		const tipSha = baseSha;
+		{
 			const opts: VerifyOptions = {
 				checkPrefix: this.deps.checkPrefix,
 				envPolicy: this.deps.envPolicy,
 				// A sweep must not be held up by one pathological check.
 				defaultTimeoutMs: 5 * 60_000,
 				signal,
+				sandbox: { run: clones.checkRunner, role: "merge-verify" },
 			};
 			for (const task of toCheck) {
 				if (signal?.aborted) throw new Error("regression sweep preempted");
@@ -357,8 +361,9 @@ export class Maintenance {
 					const checkFingerprint = JSON.stringify(check);
 					let checkResult = tipCheckResults.get(checkFingerprint);
 					if (!checkResult) {
-						checkResult = await verify(
-							wt,
+						checkResult = await this.checkInClone(
+							clones,
+							baseSha,
 							{ verifier: task.dod.verifier, checks: [check] },
 							baseSha,
 							opts,
@@ -419,7 +424,7 @@ export class Maintenance {
 				let infrastructural = infrastructureVerdicts.get(planFingerprint);
 				if (infrastructural === undefined) {
 					infrastructural = await this.isInfrastructural(
-						wt,
+						clones,
 						task.dod,
 						baseSha,
 						opts,
@@ -477,8 +482,6 @@ export class Maintenance {
 				// A failed shared check is an incident against the tip, not proof this task caused it. Never move completed cards backwards from a sweep.
 			}
 			if (cleanPass) await this.setLastGreenSha(baseSha);
-		} finally {
-			await this.removeSweepWorktree(wt);
 		}
 
 		await this.setRegressions(regressions);
@@ -531,16 +534,16 @@ export class Maintenance {
 	 * (so it is infra, not this task's regression).
 	 *
 	 * If that commit is the current tip the code is unchanged, so the failure
-	 * cannot be a code regression and no second checkout is needed. Otherwise check
-	 * out the green sha, re-run, then restore the tip. With no baseline, the
-	 * failure is trusted.
+	 * cannot be a code regression and no second run is needed. Otherwise re-run in
+	 * a fresh clone of the green sha. With no baseline, or a green commit that no
+	 * longer exists, the failure is trusted.
 	 *
 	 * `!corroboration.passed` also treats a signal death at green as infrastructural:
 	 * the tip run was already ruled not-a-crash, so this is a second unknown-cause
 	 * failure.
 	 */
 	private async isInfrastructural(
-		wt: string,
+		clones: VerifierClones,
 		dod: DefinitionOfDone,
 		tipSha: string,
 		opts: VerifyOptions,
@@ -548,30 +551,53 @@ export class Maintenance {
 		const green = await this.getLastGreenSha();
 		if (!green) return false;
 		if (green === tipSha) return true;
-
-		// `-f`: the worktree is a disposable copy, and DoD checks may legitimately
-		// modify tracked files (formatter, codegen, lockfile). Without it a checkout
-		// can refuse, and an unchecked failed restore would make later tasks verify
-		// against the wrong commit.
-		const co = await git(["checkout", "--detach", "-f", "-q", green], wt);
-		let corroboration: VerificationResult = {
-			passed: true,
-			checks: [],
-			crashed: false,
-		};
-		if (co.exitCode === 0) {
-			await this.linkDependencies(wt);
-			corroboration = await verify(wt, dod, green, opts);
-		}
-		const restore = await git(["checkout", "--detach", "-f", "-q", tipSha], wt);
-		if (restore.exitCode !== 0) {
-			// Force still failing means the worktree state is unknown: abort the sweep rather than mis-verify the remaining tasks. `regressionSweep`'s `finally` tears the worktree down and nothing is persisted for an unfinished pass.
-			throw new Error(
-				`regression sweep could not restore its worktree to the tip after corroborating at ${green}: ${restore.stderr || restore.stdout}`,
-			);
-		}
-		await this.linkDependencies(wt);
+		const known = await git(
+			["rev-parse", "--verify", "-q", `${green}^{commit}`],
+			this.deps.projectRoot,
+		);
+		if (known.exitCode !== 0) return false;
+		const corroboration = await this.checkInClone(
+			clones,
+			green,
+			dod,
+			green,
+			opts,
+		);
 		return !corroboration.passed;
+	}
+
+	/**
+	 * One verification of a commit in a fresh clone, in the `merge-verify` role.
+	 * A clone that cannot be made is an infrastructure result, like a crash.
+	 */
+	private async checkInClone(
+		clones: VerifierClones,
+		rev: string,
+		dod: DefinitionOfDone,
+		baseSha: string,
+		opts: VerifyOptions,
+	): Promise<VerificationResult> {
+		try {
+			return await verifyInClone(clones, rev, "maintenance", dod, baseSha, {
+				...opts,
+				role: "merge-verify",
+			});
+		} catch (err) {
+			if (opts.signal?.aborted) throw err;
+			const detail = `the verification clone failed: ${err instanceof Error ? err.message : String(err)}`;
+			return {
+				passed: false,
+				crashed: true,
+				failureClass: "runtime",
+				checks: dod.checks.map((check) => ({
+					check: JSON.stringify(check),
+					ok: false,
+					classification: "crashed",
+					failureClass: "runtime",
+					detail,
+				})),
+			};
+		}
 	}
 
 	/**
@@ -707,7 +733,7 @@ export class Maintenance {
 					.join("\n"),
 				exitCode: exitCodes.size === 1 ? (failing[0]?.exitCode ?? null) : null,
 				environment: [
-					"regression sweep in an ephemeral worktree off the integration branch",
+					"regression sweep in a disposable clone of the integration tip",
 					describeVerificationEnvironment(opts),
 				].join("; "),
 				// `isInfrastructural` already ruled out `false`: green is absent (unknown) or passed there (true).
@@ -722,248 +748,6 @@ export class Maintenance {
 		return outcome.status === "ok" && outcome.verdict
 			? outcome.verdict
 			: "regression";
-	}
-
-	/** A throwaway checkout of the integration branch tip. */
-	private async sweepWorktree(): Promise<string | null> {
-		const dir = join(this.deps.projectRoot, ".mfw", "sweep");
-		await this.removeSweepWorktree(dir);
-		const r = await git(
-			["worktree", "add", "--detach", "-q", dir, this.deps.integrationBranch],
-			this.deps.projectRoot,
-		);
-		if (r.exitCode !== 0) {
-			this.deps.log.warn({ err: r.stderr }, "sweep worktree add failed");
-			return null;
-		}
-		await this.linkDependencies(dir);
-		return dir;
-	}
-
-	/**
-	 * Give the sweep the run's installed dependencies from a snapshot, not the live
-	 * checkout: a bare worktree lacks gitignored packages (checks fail as false
-	 * regressions), while symlinking the primary checkout let an in-progress
-	 * install look like a regression.
-	 *
-	 * One snapshot under `.mfw/sweep-deps` is rebuilt only when the lockfile
-	 * changes. It uses hard links (`cp -al`), so it costs inodes not bytes and later
-	 * writes replace files instead of mutating them. Best effort: projects with no
-	 * dependency directories link nothing.
-	 */
-	private async linkDependencies(dir: string): Promise<void> {
-		const snapshot = await this.dependencySnapshot();
-		if (!snapshot) return;
-		const workspace = await this.workspacePackages(dir);
-		for (const rel of snapshot.dirs) {
-			try {
-				await this.shadowLink(
-					join(snapshot.root, rel),
-					join(dir, rel),
-					workspace,
-					dir,
-				);
-			} catch (e) {
-				// One unlinkable directory must not abort the sweep; the checks that
-				// need it fail loudly with their own output.
-				this.deps.log.debug({ err: e, rel }, "sweep dependency link skipped");
-			}
-		}
-	}
-
-	/**
-	 * Mirror one snapshot dependency directory into the worktree as a real
-	 * directory of per-entry symlinks, redirecting workspace packages to the
-	 * worktree's own sources.
-	 *
-	 * Workspace packages are relative symlinks
-	 * (`apps/start/node_modules/@mfw/api -> ../../../../packages/api`) that
-	 * `cp -al` preserves but which then resolve inside the snapshot, where no
-	 * sources exist; `@mfw/*` silently became unresolvable and typechecks failed as
-	 * false regressions. Entries inside a symlinked directory cannot be replaced,
-	 * hence per-entry links; scope directories (`@mfw`) are descended into for the
-	 * same reason.
-	 */
-	private async shadowLink(
-		src: string,
-		dest: string,
-		workspace: Map<string, string>,
-		worktree: string,
-	): Promise<void> {
-		await mkdir(dest, { recursive: true });
-		const entries = await readdir(src, { withFileTypes: true });
-		for (const entry of entries) {
-			// A scope is a plain directory of packages; package names are known one level down.
-			if (entry.name.startsWith("@") && entry.isDirectory()) {
-				const scope = join(dest, entry.name);
-				await mkdir(scope, { recursive: true });
-				for (const child of await readdir(join(src, entry.name))) {
-					await this.linkPackage(
-						`${entry.name}/${child}`,
-						join(src, entry.name, child),
-						join(scope, child),
-						workspace,
-						worktree,
-					);
-				}
-				continue;
-			}
-			await this.linkPackage(
-				entry.name,
-				join(src, entry.name),
-				join(dest, entry.name),
-				workspace,
-				worktree,
-			);
-		}
-	}
-
-	/** One `node_modules` entry: the worktree's own copy for a workspace package, else the snapshot's. */
-	private async linkPackage(
-		name: string,
-		fromSnapshot: string,
-		link: string,
-		workspace: Map<string, string>,
-		worktree: string,
-	): Promise<void> {
-		const own = workspace.get(name);
-		const target = own ? join(worktree, own) : fromSnapshot;
-		await symlink(target, link, "dir").catch((e) => {
-			this.deps.log.debug({ err: e, name }, "sweep package link skipped");
-		});
-	}
-
-	/**
-	 * The worktree's own workspace packages by name (the sources under
-	 * verification, not the primary checkout). Only `dir/*` and literal
-	 * `workspaces` forms are expanded; other packages stay linked to the snapshot.
-	 */
-	private async workspacePackages(dir: string): Promise<Map<string, string>> {
-		const out = new Map<string, string>();
-		const root = await readFile(join(dir, "package.json"), "utf8")
-			.then((raw) => JSON.parse(raw) as { workspaces?: unknown })
-			.catch(() => null);
-		const globs = Array.isArray(root?.workspaces)
-			? (root.workspaces as unknown[]).filter(
-					(w): w is string => typeof w === "string",
-				)
-			: [];
-		for (const glob of globs) {
-			const candidates: string[] = [];
-			if (glob.endsWith("/*")) {
-				const base = glob.slice(0, -2);
-				const kids = await readdir(join(dir, base), {
-					withFileTypes: true,
-				}).catch(() => [] as Dirent[]);
-				for (const kid of kids) {
-					if (kid.isDirectory()) candidates.push(join(base, kid.name));
-				}
-			} else if (!glob.includes("*")) {
-				candidates.push(glob);
-			}
-			for (const rel of candidates) {
-				const name = await readFile(join(dir, rel, "package.json"), "utf8")
-					.then((raw) => (JSON.parse(raw) as { name?: string }).name)
-					.catch(() => undefined);
-				if (name) out.set(name, rel);
-			}
-		}
-		return out;
-	}
-
-	/** The dependency snapshot, rebuilt when the lockfile changed since it was taken. Null when there is nothing to snapshot. */
-	private async dependencySnapshot(): Promise<{
-		root: string;
-		dirs: string[];
-	} | null> {
-		const root = join(this.deps.projectRoot, ".mfw", "sweep-deps");
-		const stampFile = join(root, ".stamp.json");
-		const stamp = await this.lockStamp();
-
-		// A valid snapshot is used as-is with its recorded directory list; re-deriving it from the live checkout would reintroduce the coupling.
-		const prev = await readFile(stampFile, "utf8")
-			.then((raw) => JSON.parse(raw) as { stamp?: string; dirs?: string[] })
-			.catch(() => null);
-		if (prev?.stamp === stamp && prev.dirs && prev.dirs.length > 0) {
-			return { root, dirs: prev.dirs };
-		}
-
-		const dirs = await this.dependencyDirs();
-		if (dirs.length === 0) return null;
-
-		await rm(root, { recursive: true, force: true });
-		for (const rel of dirs) {
-			const dest = join(root, rel);
-			await mkdir(dirname(dest), { recursive: true });
-			// `cp -al`: hard links; `-a` keeps symlinks as symlinks.
-			const r = await runProc(
-				["cp", "-al", join(this.deps.projectRoot, rel), dest],
-				{ timeoutMs: 5 * 60_000 },
-			);
-			if (r.exitCode !== 0) {
-				this.deps.log.warn(
-					{ rel, err: tailOf(r.stderr) },
-					"sweep dependency snapshot failed",
-				);
-				await rm(root, { recursive: true, force: true });
-				return null;
-			}
-		}
-		await writeFile(stampFile, JSON.stringify({ stamp, dirs }), "utf8").catch(
-			() => {},
-		);
-		this.deps.log.info(
-			{ dirs: dirs.length },
-			"sweep dependency snapshot built",
-		);
-		return { root, dirs };
-	}
-
-	/** Identity of the installed set (lockfile size and mtime); moves whenever an install does. */
-	private async lockStamp(): Promise<string> {
-		const parts: string[] = [];
-		for (const name of [
-			"bun.lock",
-			"bun.lockb",
-			"package-lock.json",
-			"yarn.lock",
-		]) {
-			const st = await stat(join(this.deps.projectRoot, name)).catch(
-				() => null,
-			);
-			if (st) parts.push(`${name}:${st.size}:${st.mtimeMs}`);
-		}
-		return parts.join("|") || "none";
-	}
-
-	/** Installed-dependency directories in the primary checkout, relative to it. Never descends into a matched directory. */
-	private async dependencyDirs(root = "", depth = 0): Promise<string[]> {
-		if (depth > 3) return [];
-		const abs = join(this.deps.projectRoot, root);
-		let entries: Dirent[];
-		try {
-			entries = await readdir(abs, { withFileTypes: true });
-		} catch {
-			return [];
-		}
-		const out: string[] = [];
-		for (const entry of entries) {
-			if (!entry.isDirectory()) continue;
-			const rel = root ? join(root, entry.name) : entry.name;
-			if (entry.name === "node_modules") {
-				out.push(rel);
-				continue; // matched: do not walk inside it
-			}
-			// Skip places a checkout is not installed into, including our own `.mfw/sweep` and `.mfw/sweep-deps`.
-			if (entry.name.startsWith(".") || entry.name === "worktrees") continue;
-			out.push(...(await this.dependencyDirs(rel, depth + 1)));
-		}
-		return out;
-	}
-
-	private async removeSweepWorktree(dir: string): Promise<void> {
-		await git(["worktree", "remove", "--force", dir], this.deps.projectRoot);
-		await rm(dir, { recursive: true, force: true });
 	}
 
 	async isMainRed(): Promise<boolean> {
@@ -1290,32 +1074,19 @@ export class Maintenance {
 				});
 				this.deps.bus.publish([started]);
 				result.checked.push(candidate.id);
-				let temporary: string | undefined;
 				let outcome: "passed" | "failed" | "error" = "error";
 				let detail = "";
 				try {
-					let cwd = this.deps.projectRoot;
-					if (policy.checkout === "integration-worktree") {
-						temporary = await mkdtemp(join(tmpdir(), "mfw-reopen-check-"));
-						cwd = join(temporary, "checkout");
-						const added = await git(
-							[
-								"worktree",
-								"add",
-								"--detach",
-								"-q",
-								cwd,
-								this.deps.integrationBranch,
-							],
-							this.deps.projectRoot,
-						);
-						if (added.exitCode !== 0)
-							throw new Error(
-								added.stderr || "could not create reopen verification worktree",
-							);
+					// Armed or not, the command runs on repository content, so it runs
+					// in a clone of the integration tip and never on the host.
+					const clones = createCheckClones(this.deps.projectRoot);
+					if (!clones?.checkRunner) {
+						throw new Error("this project has no verifier sandbox");
 					}
-					const verified = await verify(
-						cwd,
+					const verified = await verifyInClone(
+						clones,
+						this.deps.integrationBranch,
+						"reopen",
 						{ verifier: "deterministic", checks: candidate.commands },
 						"",
 						{
@@ -1323,9 +1094,15 @@ export class Maintenance {
 							envPolicy: this.deps.envPolicy,
 							defaultTimeoutMs: 5 * 60_000,
 							signal,
+							role: "merge-verify",
 						},
 					);
-					outcome = verified.passed ? "passed" : "failed";
+					// A check that could not run proves nothing either way.
+					outcome = verified.passed
+						? "passed"
+						: verified.crashed
+							? "error"
+							: "failed";
 					detail = JSON.stringify({
 						conditions: candidate.conditions,
 						result: verified,
@@ -1333,13 +1110,6 @@ export class Maintenance {
 				} catch (error) {
 					detail = error instanceof Error ? error.message : String(error);
 				} finally {
-					if (temporary) {
-						await git(
-							["worktree", "remove", "--force", join(temporary, "checkout")],
-							this.deps.projectRoot,
-						);
-						await rm(temporary, { recursive: true, force: true });
-					}
 					const finished = await this.deps.handle.withTx((tx) =>
 						appendEvent(tx, {
 							type: "task.reopen_check",
@@ -1645,9 +1415,4 @@ export class Maintenance {
 			}
 		}
 	}
-}
-
-/** Last few lines of a command's stderr, for a log line that stays readable. */
-function tailOf(s: string): string {
-	return s.trimEnd().split("\n").slice(-3).join("\n");
 }

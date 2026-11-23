@@ -11,13 +11,7 @@
  * The files are read with `git config --file`, which neither follows includes
  * nor runs anything. An unreadable config counts as a refusal.
  */
-import {
-	existsSync,
-	lstatSync,
-	mkdirSync,
-	readFileSync,
-	writeFileSync,
-} from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { runProc } from "../proc.ts";
 import { requireHostTool } from "../sandbox.ts";
@@ -137,56 +131,6 @@ export function discoverGitDirs(cwd: string): GitDirs | null {
 		if (up === cur) return null;
 		cur = up;
 	}
-}
-
-/**
- * What a sandbox may touch of the gitdir behind `cwd`. A plain repository is
- * read-only. A linked worktree needs its common dir writable, because git takes
- * `packed-refs.lock` there on every ref update, so each entry that steers git
- * is bound read-only over it: a mount cannot be replaced or renamed. Only its
- * private gitdir, the object store and its branch's ref and log directories
- * are writable below those.
- */
-export function sandboxGitBinds(
-	cwd: string,
-): { writable: string[]; readOnly: string[]; reopened: string[] } | null {
-	const dirs = discoverGitDirs(cwd);
-	if (!dirs) return null;
-	const { gitDir, commonDir } = dirs;
-	if (!isDir(commonDir)) return null;
-	if (gitDir === commonDir) {
-		return { writable: [], readOnly: [commonDir], reopened: [] };
-	}
-	// An absent `packed-refs` could be created to forge a branch.
-	const packed = join(commonDir, "packed-refs");
-	if (!existsSync(packed)) writeFileSync(packed, "", { flag: "a" });
-	const readOnly = [
-		"config",
-		"HEAD",
-		"packed-refs",
-		"hooks",
-		"info",
-		"refs",
-		"logs",
-		"worktrees",
-	]
-		.map((name) => join(commonDir, name))
-		.filter((path) => existsSync(path));
-	const reopened = [gitDir, join(commonDir, "objects")];
-	const head = readTrimmed(join(gitDir, "HEAD"));
-	const ref = head?.startsWith("ref: refs/heads/")
-		? head.slice("ref: ".length)
-		: null;
-	// A branch at the top of refs/heads would expose its siblings, so only a
-	// namespaced one (`mfw/<run>`) gets a writable directory.
-	if (ref && ref.split("/").length > 3) {
-		const refDir = dirname(join(commonDir, ref));
-		const logDir = dirname(join(commonDir, "logs", ref));
-		mkdirSync(refDir, { recursive: true });
-		mkdirSync(logDir, { recursive: true });
-		reopened.push(refDir, logDir);
-	}
-	return { writable: [commonDir], readOnly, reopened };
 }
 
 interface CachedAudit {

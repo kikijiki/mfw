@@ -47,6 +47,11 @@ import { EGRESS_RELAY, hostScript } from "./host-script.ts";
 import { launchSandbox } from "./launch-sandbox.ts";
 import { attestSandbox } from "./probe-run.ts";
 import { ProfileRejectedError, type SandboxProfile } from "./profile.ts";
+import {
+	buildReadOnlyAgentProfile,
+	isReadOnlyAgentRole,
+	READ_ONLY_AGENT_ROLES,
+} from "./role-profiles.ts";
 import { RUN_CONTROL_DIR, runDirLayout } from "./run-dir.ts";
 
 const AbsolutePath = z.string().startsWith("/").max(4096);
@@ -55,7 +60,7 @@ const AbsolutePath = z.string().startsWith("/").max(4096);
 export const AgentLaunchRequestSchema = z.strictObject({
 	version: z.literal(1),
 	runId: z.string().regex(/^[A-Za-z0-9_.-]{1,128}$/),
-	role: z.enum(["task", "repair"]),
+	role: z.enum(["task", "repair", ...READ_ONLY_AGENT_ROLES]),
 	approvalMode: z.enum(["autonomous", "interactive"]),
 	cli: z.enum(["claude", "codex"]),
 	tree: AbsolutePath,
@@ -67,6 +72,8 @@ export const AgentLaunchRequestSchema = z.strictObject({
 	/** Names read from the launcher's own environment; values never touch a file. */
 	secretNames: z.array(z.string()),
 	egressSocketDir: AbsolutePath.optional(),
+	/** Brain role: the directory holding this turn's socket and token. */
+	brainSocketDir: AbsolutePath.optional(),
 	/** A host-started one-shot: the WIP helper alone, with no agent, secret or network. */
 	purpose: z.literal("wip-snapshot").optional(),
 });
@@ -106,6 +113,12 @@ export interface AgentLaunchDeps {
 	warn(message: string): void;
 }
 
+/** The host-side steps of a launch; only the tests' caged launcher swaps them. */
+export type LauncherSteps = Pick<
+	AgentLaunchDeps,
+	"compileHost" | "attest" | "authorize" | "launch"
+>;
+
 export const realLaunchSteps = {
 	attest: attestSandbox,
 	authorize: authorizeAutonomousLaunch,
@@ -141,6 +154,7 @@ export function launchRoots(req: AgentLaunchRequest): string[] {
 		req.runDir,
 		join(req.mfwHome, "agents"),
 		...(req.egressSocketDir ? [dirname(req.egressSocketDir)] : []),
+		...(req.brainSocketDir ? [dirname(req.brainSocketDir)] : []),
 	];
 }
 
@@ -184,6 +198,21 @@ export async function launchAgentSandbox(
 ): Promise<AgentLaunchResult> {
 	// A snapshot launch runs only the helper, whatever argv the caller passed.
 	const snapshot = req.purpose === "wip-snapshot";
+	const readOnly = isReadOnlyAgentRole(req.role);
+	if (readOnly && snapshot) {
+		return refuse(
+			"profile_rejected",
+			`a ${req.role} run has no work to snapshot`,
+			"request a snapshot only for task and repair runs",
+		);
+	}
+	if (req.brainSocketDir && req.role !== "brain") {
+		return refuse(
+			"profile_rejected",
+			`a ${req.role} run cannot hold the brain socket`,
+			"pass the socket only to a brain turn",
+		);
+	}
 	const argv = snapshot ? ["bun"] : requestedArgv;
 	const command = argv[0];
 	if (!command) {
@@ -210,7 +239,11 @@ export async function launchAgentSandbox(
 		secrets[name] = value;
 	}
 
-	const required = ["bun", "git", "sh", command];
+	// A read-only role has no WIP helper. Its bun is only the egress relay's and
+	// the brain's MCP server's; the probe brings its own.
+	const needsBun =
+		!readOnly || req.egressSocketDir !== undefined || req.role === "brain";
+	const required = [...(needsBun ? ["bun"] : []), "git", "sh", command];
 	let host: CompileHost;
 	let profile: SandboxProfile;
 	try {
@@ -237,25 +270,39 @@ export async function launchAgentSandbox(
 				),
 			},
 		};
-		profile = buildRunProfile({
-			role: req.role,
+		const env = {
+			...req.env,
+			// A brain turn keeps its session's name, or `--resume` finds nothing.
+			...(req.cli === "claude" && !snapshot && req.role !== "brain"
+				? { CLAUDE_CODE_PROJECT_DIR_NAME: `mfw-run-${req.runId}` }
+				: {}),
+			...secrets,
+		};
+		const common = {
 			tree: req.tree,
 			runDir: req.runDir,
 			cli: req.cli,
 			fleetDir: join(req.mfwHome, "agents", req.cli),
 			binaries,
-			env: {
-				...req.env,
-				...(req.cli === "claude" && !snapshot
-					? { CLAUDE_CODE_PROJECT_DIR_NAME: `mfw-run-${req.runId}` }
-					: {}),
-				...secrets,
-			},
-			...(req.egressSocketDir && !snapshot
-				? { egressSocketDir: req.egressSocketDir }
-				: {}),
-			...(snapshot ? { snapshotOnly: true } : {}),
-		});
+			env,
+		};
+		profile = isReadOnlyAgentRole(req.role)
+			? buildReadOnlyAgentProfile({
+					...common,
+					role: req.role,
+					...(req.egressSocketDir
+						? { egressSocketDir: req.egressSocketDir }
+						: {}),
+					...(req.brainSocketDir ? { brainSocketDir: req.brainSocketDir } : {}),
+				})
+			: buildRunProfile({
+					...common,
+					role: req.role,
+					...(req.egressSocketDir && !snapshot
+						? { egressSocketDir: req.egressSocketDir }
+						: {}),
+					...(snapshot ? { snapshotOnly: true } : {}),
+				});
 	} catch (err) {
 		if (err instanceof AgentProfileError) {
 			return refuse("workspace_not_clone", err.message, err.fix);
@@ -306,24 +353,26 @@ export async function launchAgentSandbox(
 		host.toolchain.resolved.find((b) => b.name === name)?.path;
 	const bunPath = toolPath("bun");
 	const shPath = toolPath("sh");
-	if (!bunPath || !shPath) {
+	if (!shPath || (needsBun && !bunPath)) {
 		return refuse(
 			"compile_refused",
 			"bun or sh is not in the sandbox toolchain, so the WIP helper and egress relay cannot run",
 			"install them in a known toolchain root",
 		);
 	}
-	installWipHelper(runDirLayout(req.runDir).control);
-	const sandboxArgv = snapshot
-		? wipSnapshotArgv(shPath, bunPath, req.runId)
-		: wipSupervisorArgv(
-				shPath,
-				bunPath,
-				req.runId,
-				req.egressSocketDir
-					? withEgressRelay(req, bunPath, finalArgv)
-					: finalArgv,
-			);
+	const relayed = () =>
+		req.egressSocketDir
+			? withEgressRelay(req, bunPath as string, finalArgv)
+			: finalArgv;
+	let sandboxArgv: string[];
+	if (readOnly) {
+		sandboxArgv = relayed();
+	} else {
+		installWipHelper(runDirLayout(req.runDir).control);
+		sandboxArgv = snapshot
+			? wipSnapshotArgv(shPath, bunPath as string, req.runId)
+			: wipSupervisorArgv(shPath, bunPath as string, req.runId, relayed());
+	}
 	const compiled = compileBwrap(profile, sandboxArgv, host);
 	if (!compiled.ok) {
 		return refuse(

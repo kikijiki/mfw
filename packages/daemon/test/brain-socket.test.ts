@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, statSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
 	BRAIN_TURN_HEADER,
 	BrainSocket,
@@ -79,7 +79,9 @@ describe("brain socket", () => {
 	test("the socket and token file are 0600 under a 0700 run directory", async () => {
 		const { dir, socket } = await setup();
 		const access = await socket.issue(binding);
-		expect(access.socketPath).toBe(join(dir, "run", "brain.sock"));
+		expect(access.socketPath.startsWith(join(dir, "run", "b"))).toBe(true);
+		expect(basename(access.socketPath)).toBe("brain.sock");
+		expect(dirname(access.tokenFile)).toBe(dirname(access.socketPath));
 		expect(statSync(access.socketPath).mode & 0o777).toBe(0o600);
 		expect(statSync(join(dir, "run")).mode & 0o777).toBe(0o700);
 		expect(statSync(access.tokenFile).mode & 0o777).toBe(0o600);
@@ -124,7 +126,9 @@ describe("brain socket", () => {
 		expect((await call(access, token)).status).toBe(200);
 		await socket.revoke("R1");
 		expect(existsSync(access.tokenFile)).toBe(false);
-		expect((await call(access, token)).status).toBe(401);
+		// The turn's listener is gone with it, so there is nothing to connect to.
+		expect(existsSync(access.socketPath)).toBe(false);
+		await expect(call(access, token)).rejects.toThrow();
 		expect(seen).toHaveLength(1);
 		await socket.revoke("R1"); // idempotent
 	});
@@ -166,16 +170,23 @@ describe("brain socket", () => {
 		expect(a.tokenFile).not.toBe(b.tokenFile);
 		const ta = await tokenOf(a);
 		const tb = await tokenOf(b);
-		// A token is tied to its own turn.
+		// A token is tied to its own turn's listener.
 		expect(
 			(
 				await call(a, tb, {
 					input: { json: { project: "alpha", turnRunId: "R1" } },
 				})
 			).status,
-		).toBe(403);
+		).toBe(401);
 		await socket.revoke("R1");
-		expect((await call(a, ta)).status).toBe(401);
+		await expect(call(a, ta)).rejects.toThrow();
+		expect(
+			(
+				await call(b, ta, {
+					input: { json: { project: "alpha", turnRunId: "R2" } },
+				})
+			).status,
+		).toBe(401);
 		expect(
 			(
 				await call(b, tb, {
@@ -236,8 +247,19 @@ describe("brain socket", () => {
 		sockets.push(next);
 		next.setHandler(async () => new Response("{}"));
 		const fresh = await next.issue({ ...binding, runId: "R9" });
-		expect(await readdir(join(dir, "run", "brain-turn"))).toEqual(["R9.token"]);
+		expect(await readdir(join(dir, "run", "b"))).toEqual([
+			basename(dirname(fresh.tokenFile)),
+		]);
+		expect(existsSync(access.tokenFile)).toBe(false);
 		expect((await call(fresh, old)).status).toBe(401);
+	});
+
+	test("a turn's token does not work on another turn's socket", async () => {
+		const { socket } = await setup();
+		const a = await socket.issue(binding);
+		const b = await socket.issue({ ...binding, runId: "R2" });
+		expect(dirname(a.socketPath)).not.toBe(dirname(b.socketPath));
+		expect((await call(b, await tokenOf(a))).status).toBe(401);
 	});
 
 	test("stop removes the socket and tokens", async () => {

@@ -608,8 +608,15 @@ describe("egress proxy: limits", () => {
 				s.write("X");
 			}
 		}, 100);
-		await new Promise((res) => s.on("close", res));
+		// The proxy's hang-up is the FIN it sends after the 408. A client with a
+		// write in flight does not always turn that FIN into a "close" (observed
+		// on Bun), so the end of the stream is the hang-up, not the socket close.
+		await new Promise((res) => {
+			s.once("end", res);
+			s.once("close", res);
+		});
 		clearInterval(drip);
+		s.destroy();
 		expect(drips).toBeLessThan(40);
 		expect(Buffer.concat(out).toString()).toContain("408");
 	});

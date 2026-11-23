@@ -18,6 +18,7 @@ import {
 	type AgentLaunchDeps,
 	type AgentLaunchRequest,
 	AgentLaunchRequestSchema,
+	type LauncherSteps,
 	launchAgentSandbox,
 } from "./agent-launch.ts";
 import { RUN_CONTROL_DIR } from "./run-dir.ts";
@@ -181,11 +182,7 @@ function recordOutputKill(requestPath: string, req: AgentLaunchRequest): void {
 	}
 }
 
-/** The host-side steps of a launch; only the tests' caged launcher swaps them. */
-export type LauncherSteps = Pick<
-	AgentLaunchDeps,
-	"compileHost" | "attest" | "authorize" | "launch"
->;
+export type { LauncherSteps };
 
 /** Run one launch and relay its stdio until the agent exits. Never returns. */
 export async function runLauncher(

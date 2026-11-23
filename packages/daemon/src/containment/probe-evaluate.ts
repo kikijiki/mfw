@@ -39,6 +39,7 @@
 
 import { z } from "zod";
 import { dangerousGitKeys } from "./git-config-scan.ts";
+import { SEALED_PROBE_PREFIX } from "./probe-runtime.ts";
 
 export const PROBE_ITEMS = [
 	"compiled_flags",
@@ -175,6 +176,10 @@ export interface ProbeExpectation {
 	sweepTolerated: readonly string[];
 	/** Executables allowed in writable fleet directories, by sandbox path and hash. */
 	fleetExecBaseline: readonly { path: string; sha256: string }[];
+	/** The one further socket this role may hold: its brain socket. */
+	brainSocket?: string;
+	/** The child descriptors holding the probe's own sealed runtime. */
+	sealedFds?: readonly number[];
 }
 
 const EPERM = 1;
@@ -253,7 +258,9 @@ function checkSockets(o: ProbeObservations, e: ProbeExpectation): Verdict {
 		e.egress === "proxy" && o.egress.entries[0]?.type === "socket"
 			? `${e.egressDir}/${o.egress.entries[0].name}`
 			: null;
-	const bad = o.sweep.sockets.filter((s) => s !== allowed);
+	const bad = o.sweep.sockets.filter(
+		(s) => s !== allowed && s !== e.brainSocket,
+	);
 	return bad.length ? `sockets in bound paths: ${list(bad)}` : null;
 }
 
@@ -339,7 +346,19 @@ function checkSocketFamilies(
 	return wrong.length ? `wrong answer for family: ${list(wrong)}` : null;
 }
 
-function checkFds(o: ProbeObservations): Verdict {
+/** A descriptor of the sealed runtime, at exactly the number it was given. */
+function isSealedRuntime(
+	f: { fd: number; target: string },
+	e: ProbeExpectation,
+): boolean {
+	return (
+		(e.sealedFds ?? []).includes(f.fd) &&
+		f.target.startsWith(`/memfd:${SEALED_PROBE_PREFIX}`) &&
+		f.target.endsWith(" (deleted)")
+	);
+}
+
+export function checkFds(o: ProbeObservations, e: ProbeExpectation): Verdict {
 	const byFd = new Map(o.fds.map((f) => [f.fd, f.target]));
 	for (const fd of [0, 1, 2]) {
 		const target = byFd.get(fd) ?? "closed";
@@ -347,7 +366,9 @@ function checkFds(o: ProbeObservations): Verdict {
 			return `descriptor ${fd} is ${clean(target)}, expected a pipe or socketpair`;
 		}
 	}
-	const own = o.fds.filter((f) => f.fd > 2 && !benignFd(f.target));
+	const own = o.fds.filter(
+		(f) => f.fd > 2 && !benignFd(f.target) && !isSealedRuntime(f, e),
+	);
 	if (own.length) {
 		return `unexpected descriptors: ${list(own.map((f) => `${f.fd}=${f.target}`))}`;
 	}

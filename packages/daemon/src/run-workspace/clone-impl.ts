@@ -10,6 +10,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import type { CheckRunner } from "../containment/check-runner.ts";
 import { readSmallRegularFile } from "../containment/safe-file.ts";
 import { git } from "../git.ts";
 import {
@@ -116,6 +117,8 @@ export interface CloneWorkspaceOptions {
 	 * the in-sandbox helper (`wip-helper.ts`) for a snapshot through it.
 	 */
 	controlPath?: (runId: string) => string;
+	/** Runs DoD checks in the verifier sandbox (`containment/check-sandbox.ts`). */
+	checkRunner?: CheckRunner;
 	/**
 	 * Proves a *live* run is quiescent (for example its cgroup is frozen), so a
 	 * snapshot bundle can be imported before the run ends. Without it

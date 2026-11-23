@@ -31,6 +31,15 @@ export const EGRESS_PROXY: HostScript = {
 	file: "containment/egress-proxy-main.ts",
 	fromRoot: `${CONTAINMENT}/egress-proxy-main.ts`,
 };
+/** The same proxy, for a module that sits beside it in `containment/`. */
+export const EGRESS_PROXY_BESIDE: HostScript = {
+	...EGRESS_PROXY,
+	file: "egress-proxy-main.ts",
+};
+export const BRAIN_TRANSCRIPT: HostScript = {
+	file: "containment/brain-transcript-main.ts",
+	fromRoot: `${CONTAINMENT}/brain-transcript-main.ts`,
+};
 export const EGRESS_RELAY: HostScript = {
 	file: "egress-relay.ts",
 	fromRoot: `${CONTAINMENT}/egress-relay.ts`,
