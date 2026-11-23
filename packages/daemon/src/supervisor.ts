@@ -835,11 +835,13 @@ export class Supervisor {
 				} else if (run.state === "starting") {
 					await this.deps.registry.recordExit(run.id, {
 						outcome: "start_failed",
+						evidence: { provenance: "host-observed", source: "reconcile" },
 					});
 					report.startFailed++;
 				} else {
 					await this.deps.registry.recordExit(run.id, {
 						outcome: "interrupted",
+						evidence: { provenance: "host-observed", source: "reconcile" },
 					});
 					report.interrupted++;
 				}
@@ -859,11 +861,13 @@ export class Supervisor {
 			} else if (run.state === "starting") {
 				await this.deps.registry.recordExit(run.id, {
 					outcome: "start_failed",
+					evidence: { provenance: "host-observed", source: "reconcile" },
 				});
 				report.startFailed++;
 			} else {
 				await this.deps.registry.recordExit(run.id, {
 					outcome: "interrupted",
+					evidence: { provenance: "host-observed", source: "reconcile" },
 				});
 				report.interrupted++;
 			}

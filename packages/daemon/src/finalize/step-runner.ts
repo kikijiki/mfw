@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { access, readFile } from "node:fs/promises";
+import { access, lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { normalizeOwnsPattern, validateOwnsPattern } from "@mfw/board";
 import { filesOutsideOwns } from "@mfw/board-core";
@@ -26,6 +26,7 @@ import {
 	isAuthFailure,
 } from "../auth-failure.ts";
 import { runDirLayout } from "../containment/run-dir.ts";
+import { readRegularFile } from "../containment/safe-file.ts";
 import { git } from "../git.ts";
 import {
 	type CleanupResult,
@@ -45,6 +46,12 @@ import type {
 } from "../review-verdict.ts";
 import { parseRoutingRecord } from "../routing.ts";
 import { RunEventTail } from "../run-event-tail.ts";
+import {
+	exitFactSource,
+	exitProvenance,
+	readExitEvidence,
+	readOutboxExitClaim,
+} from "../run-exit-evidence.ts";
 import type { BeginStepResult, RunRegistry, RunRow } from "../run-registry.ts";
 import {
 	createRunWorkspace,
@@ -615,6 +622,28 @@ function foldReportIdentity(
 // StepRunner
 // ---------------------------------------------------------------------------
 
+/** Past this a report is not parsed: its bytes are the agent's to inflate. */
+const MAX_REPORT_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Read a report from a path the agent controls: null when it is absent or not
+ * a regular file. A symlink must not pull a host file into the journal and the
+ * stored facts, and a FIFO must not hang finalize.
+ */
+async function readAgentReport(path: string): Promise<Buffer | null> {
+	let st: Awaited<ReturnType<typeof lstat>>;
+	try {
+		st = await lstat(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw error;
+	}
+	if (!st.isFile()) return null;
+	const read = await readRegularFile(path, MAX_REPORT_BYTES);
+	if (!read) throw new Error(`could not read the report at ${path}`);
+	return read.buffer;
+}
+
 export class StepRunner {
 	private readonly deps: StepRunnerDeps;
 	private readonly log: Logger;
@@ -1123,9 +1152,10 @@ export class StepRunner {
 			}
 		}
 
-		const exit = await this.deps.host.readExit(
-			this.deps.registry.runDir(run.id),
-		);
+		const runDir = this.deps.registry.runDir(run.id);
+		// The verdict reads only this. `outbox/exit` is recorded below as a claim.
+		const exitEvidence = await readExitEvidence(this.deps.host, runDir);
+		const exit = exitEvidence.exit;
 		// A login problem ends the run non-zero with the CLI's own message at the
 		// tail. It rides the rate-limit path (hold, requeue without a repair
 		// attempt) but holds for the owner instead of a reset time.
@@ -1163,7 +1193,13 @@ export class StepRunner {
 				? { killReason: killReason as KillReason }
 				: {}),
 			outcome,
+			evidence: {
+				provenance: exitProvenance(exitEvidence.source, run.runDirLayout),
+				source: exitFactSource(exitEvidence.source),
+			},
 		});
+		const claim = await readOutboxExitClaim(runDir);
+		if (claim) await this.deps.registry.recordAgentExitClaim(run.id, claim);
 		await this.deps.registry.transition(run.id, "finalizing");
 		const background = await this.labelActivity(run, null);
 		return {
@@ -1277,15 +1313,10 @@ export class StepRunner {
 		let report: Record<string, unknown> | null = null;
 		let worktreeReport: WorktreeReportIdentity = { state: "absent" };
 		for (const path of candidates) {
-			let content: Buffer;
-			try {
-				content = await readFile(path);
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-				// A transient/permission failure is not "no report"; fail the step so
-				// cleanup never erases bytes we could not read.
-				throw error;
-			}
+			// A transient/permission failure throws: it is not "no report", and
+			// cleanup must never erase bytes we could not read.
+			const content = await readAgentReport(path);
+			if (content === null) continue;
 			if (path === worktreeReportPath) {
 				worktreeReport = {
 					state: "present",
@@ -1302,6 +1333,7 @@ export class StepRunner {
 				// Corrupt: journaled as no usable report (bytes were observed, unlike a read failure).
 			}
 		}
+		if (report) await this.deps.registry.recordReportFact(built.run.id, report);
 		const question = foldReport({ report })?.question ?? null;
 		if (question) await this.labelActivity(built.run, question);
 		return { report, worktreeReport };

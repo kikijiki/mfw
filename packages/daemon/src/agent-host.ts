@@ -25,6 +25,7 @@ import {
 } from "./execution-environment.ts";
 import type { Logger } from "./log.ts";
 import { runProc } from "./proc.ts";
+import type { ExitEvidence, ExitSource } from "./run-exit-evidence.ts";
 import {
 	type BwrapIsolation,
 	bwrapAvailable,
@@ -254,6 +255,8 @@ export class AgentHost {
 		await this.pruneControl(control);
 		// A stale record from an earlier run that reused this id must not read as this run's exit.
 		await rm(exitRecord, { force: true });
+		// Likewise a `control/exit` left in a run dir that was flat, and writable, before.
+		if (spec.isolation) await rm(exitPath, { force: true });
 
 		const publicEnvironment = spec.env ?? {};
 		const secretEnvironment =
@@ -644,14 +647,21 @@ export class AgentHost {
 	 * back to the run dir, read without following links or blocking.
 	 */
 	async readExit(runDir: string): Promise<RunExit> {
+		return (await this.readExitEvidence(runDir)).exit;
+	}
+
+	/** The recorded exit and which record it came from (`run-exit-evidence.ts`). */
+	async readExitEvidence(runDir: string): Promise<ExitEvidence> {
 		const runId = basename(runDir);
 		const control = await this.controlRoot();
 		const authoritative = await readSmallRegularFile(
 			join(control, `exit-${runId}`),
 		);
 		let s: string | null;
+		let source: ExitSource;
 		if (authoritative !== null) {
 			s = authoritative;
+			source = "host-exit-record";
 			// The run script (host-only, no secrets) is done with.
 			await rm(join(control, `run-${runId}.sh`), { force: true }).catch(
 				() => {},
@@ -662,19 +672,23 @@ export class AgentHost {
 				() => false,
 			)
 		) {
-			return { kind: "running" };
+			return { exit: { kind: "running" }, source: null };
 		} else {
-			// A split run's copy is host-written. The flat path of an older or
-			// remote run is all there is for it.
-			s = await readSmallRegularFile(join(runHostFilesDir(runDir), "exit"));
+			// A split run's copy is host-written; the flat path of an older or remote
+			// run is all there is for it. `exitProvenance` decides what each is worth.
+			const hostFiles = runHostFilesDir(runDir);
+			source = hostFiles === runDir ? "flat-exit" : "control-exit";
+			s = await readSmallRegularFile(join(hostFiles, "exit"));
 		}
-		if (s === null) return { kind: "running" }; // no exit recorded (yet)
+		if (s === null) return { exit: { kind: "running" }, source: null }; // no exit recorded (yet)
 		s = s.trim();
 		const exit = /^exit:(\d+)$/.exec(s);
-		if (exit) return { kind: "exit", code: Number(exit[1]) };
+		if (exit) return { exit: { kind: "exit", code: Number(exit[1]) }, source };
 		const killed = /^killed:(.+)$/.exec(s);
-		if (killed) return { kind: "killed", reason: killed[1] as string };
-		return { kind: "running" };
+		if (killed) {
+			return { exit: { kind: "killed", reason: killed[1] as string }, source };
+		}
+		return { exit: { kind: "running" }, source: null };
 	}
 
 	/** Old run scripts and exit records of long-finished runs; the control dir is not a log. */
