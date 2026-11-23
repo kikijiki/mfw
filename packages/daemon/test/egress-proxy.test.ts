@@ -591,15 +591,26 @@ describe("egress proxy: limits", () => {
 
 	test("a drip client does not reset the deadline", async () => {
 		const h = await startHarness({ limits: { headerDeadlineMs: 400 } });
-		const started = Date.now();
 		const s = net.connect(h.proxy.socketPath);
 		const out: Buffer[] = [];
 		s.on("data", (d) => out.push(Buffer.from(d)));
 		s.on("error", () => {});
-		const drip = setInterval(() => s.writable && s.write("X"), 100);
+		// The client drips one byte every 100 ms for at most 40 drips (4 s, ten
+		// deadlines). A deadline that each byte reset would stay open for the
+		// whole budget, so the proof is that the proxy hung up while the client
+		// was still dripping; counting drips instead of reading the wall clock
+		// keeps the check independent of how late a loaded host runs timers.
+		let drips = 0;
+		const drip = setInterval(() => {
+			if (drips >= 40) return clearInterval(drip);
+			if (s.writable) {
+				drips++;
+				s.write("X");
+			}
+		}, 100);
 		await new Promise((res) => s.on("close", res));
 		clearInterval(drip);
-		expect(Date.now() - started).toBeLessThan(1000);
+		expect(drips).toBeLessThan(40);
 		expect(Buffer.concat(out).toString()).toContain("408");
 	});
 
