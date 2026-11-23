@@ -55,12 +55,13 @@ const expectation = (
 	envNames: ["PATH", "HOME", "PWD"],
 	secrets: [{ name: "ANTHROPIC_API_KEY", value: SECRET }],
 	syscalls: [
-		{ name: "bpf", expect: 1 },
-		{ name: "clone3", expect: 38 },
+		{ name: "bpf", expect: 1, provable: true },
+		{ name: "clone3", expect: 38, provable: true },
 	],
 	scope: "systemd",
 	limits: { tasksMax: 256, memoryMaxBytes: 1024 ** 3 },
 	sweepTolerated: [],
+	seccompFilters: 1,
 	...over,
 });
 
@@ -84,6 +85,7 @@ const good = (): ProbeObservations => ({
 		capAmb: "0000000000000000",
 		noNewPrivs: "1",
 		seccomp: "2",
+		seccompFilters: "1",
 	},
 	syscallControl: true,
 	syscalls: [
@@ -259,6 +261,13 @@ const NEGATIVES: Negative[] = [
 		name: "no filter is installed",
 		weaken: (o) => {
 			o.proc.seccomp = "0";
+		},
+	},
+	{
+		item: "seccomp_eperm",
+		name: "the filter count is not the launcher's plus one",
+		weaken: (o) => {
+			o.proc.seccompFilters = "0";
 		},
 	},
 	{
@@ -608,6 +617,22 @@ describe("probe evaluation", () => {
 		expect(at(["/usr"])).toBe("pass");
 		expect(at([])).toBe("fail");
 		expect(at(["/us"])).toBe("fail");
+	});
+
+	test("a pass says how many denials the filter count alone proves", () => {
+		const items = evaluateProbe(
+			good(),
+			expectation({
+				syscalls: [
+					{ name: "bpf", expect: 1, provable: false },
+					{ name: "clone3", expect: 38, provable: true },
+				],
+			}),
+			scope(),
+		);
+		const detail = items.find((i) => i.id === "seccomp_eperm")?.detail;
+		expect(detail).toContain("1 of 2");
+		expect(detail).toContain("without a filter");
 	});
 
 	test("a wrong nonce fails every item", () => {

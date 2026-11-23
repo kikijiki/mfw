@@ -22,6 +22,7 @@ import {
 	compileBwrap,
 } from "../src/containment/compile-bwrap.ts";
 import type { Check } from "../src/containment/host-caps.ts";
+import { launchSandbox } from "../src/containment/launch-sandbox.ts";
 import { PROBE_READY, PROBE_RESULT } from "../src/containment/probe-child.ts";
 import type {
 	CgroupObservation,
@@ -35,6 +36,7 @@ import {
 	collectProbe,
 	decodeBwrapOptions,
 	probeCommand,
+	probeSyscallPlan,
 	probeToolchainTargets,
 	sandboxFingerprint,
 } from "../src/containment/probe-run.ts";
@@ -597,6 +599,50 @@ describe.skipIf(skip !== null)("the probe in a real sandbox", () => {
 		expect(measured(r.items)).toBe(true);
 		expect(failed(r.items)).toContain("secrets_absent");
 		expect(failed(r.items)).toContain("home_absent");
+	}, 45_000);
+
+	test("every syscall marked provable really differs without a filter", async () => {
+		const plan = probeSyscallPlan();
+		const script = `
+			const { dlopen, FFIType, read } = require("bun:ffi");
+			const l = dlopen("libc.so.6", {
+				syscall: { args: Array(7).fill(FFIType.i64), returns: FFIType.i64 },
+				__errno_location: { args: [], returns: FFIType.ptr },
+			});
+			const same = [];
+			for (const s of ${JSON.stringify(plan)}) {
+				const rc = Number(l.symbols.syscall(s.nr, s.arg0, 0, 0, 0, 0, 0));
+				const errno = rc === -1 ? read.i32(l.symbols.__errno_location()) : 0;
+				if (errno === s.expect) same.push(s.name);
+			}
+			console.log(JSON.stringify(same));`;
+		const host = compileHost();
+		const compiled = compileBwrap(
+			baseProfile(),
+			[
+				host.toolchain.resolved[0]?.path as string,
+				"--cwd=/",
+				"--config=/dev/null",
+				"--no-env-file",
+				"-e",
+				script,
+			],
+			host,
+		) as CompiledSandbox;
+		const unfiltered = withOptions((o) => {
+			const at = o.indexOf("--seccomp");
+			return [...o.slice(0, at), ...o.slice(at + 2)];
+		})(compiled);
+		const child = launchSandbox(unfiltered, { scope: "none" });
+		(child.stdin as unknown as { end(): void }).end();
+		const out = await new Response(
+			child.stdout as unknown as ReadableStream,
+		).text();
+		expect(await child.exited).toBe(0);
+		const same = JSON.parse(out) as string[];
+		const provable = plan.filter((s) => s.provable).map((s) => s.name);
+		expect(same.filter((n) => provable.includes(n))).toEqual([]);
+		expect(provable.length).toBeGreaterThan(20);
 	}, 45_000);
 
 	test("exec_sweep finds a planted git hook", async () => {

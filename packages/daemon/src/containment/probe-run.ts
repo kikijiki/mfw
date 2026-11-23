@@ -98,6 +98,27 @@ const FD_ARG0 = new Set([
 	"ptrace",
 ]);
 
+/**
+ * Denied syscalls whose expected errno proves nothing alone. Without a filter
+ * the first eleven still return it to an unprivileged caller; `bpf` and
+ * `io_uring_setup` do on hosts that disable them by sysctl.
+ */
+const NOT_PROVABLE_SYSCALLS: ReadonlySet<string> = new Set([
+	"userfaultfd",
+	"move_mount",
+	"fsopen",
+	"fsmount",
+	"fspick",
+	"kexec_load",
+	"kexec_file_load",
+	"init_module",
+	"finit_module",
+	"delete_module",
+	"fanotify_init",
+	"bpf",
+	"io_uring_setup",
+]);
+
 /** Every syscall the filter must deny, with the errno it must produce. */
 export function probeSyscallPlan(): ProbeSyscall[] {
 	const plain = Object.entries(DENIED_SYSCALLS).map(([name, nr]) => ({
@@ -105,12 +126,14 @@ export function probeSyscallPlan(): ProbeSyscall[] {
 		nr,
 		arg0: FD_ARG0.has(name) ? -1 : 0,
 		expect: EPERM,
+		provable: !NOT_PROVABLE_SYSCALLS.has(name),
 	}));
 	const enosys = Object.entries(ENOSYS_SYSCALLS).map(([name, nr]) => ({
 		name,
 		nr,
 		arg0: 0,
 		expect: ENOSYS,
+		provable: true,
 	}));
 	// CLONE_THREAD without CLONE_SIGHAND is EINVAL, so nothing is created
 	// if the filter is missing.
@@ -119,6 +142,7 @@ export function probeSyscallPlan(): ProbeSyscall[] {
 		nr: m.nr,
 		arg0: m.mask | CLONE_THREAD,
 		expect: EPERM,
+		provable: true,
 	}));
 	return [...plain, ...enosys, ...masked];
 }
@@ -341,7 +365,12 @@ export function buildProbePlan(
 			// bwrap sets PWD itself when it changes directory.
 			envNames: [...Object.keys(compiled.env), "PWD"],
 			secrets,
-			syscalls: syscalls.map((s) => ({ name: s.name, expect: s.expect })),
+			syscalls: syscalls.map((s) => ({
+				name: s.name,
+				expect: s.expect,
+				provable: s.provable,
+			})),
+			seccompFilters: hostSeccompFilters() + 1,
 			scope: opts.scope,
 			limits: {
 				tasksMax: limits.tasksMax,
@@ -350,6 +379,17 @@ export function buildProbePlan(
 			sweepTolerated: targets.toolchainBinds.map(escapedPath),
 		},
 	};
+}
+
+/** This process's filter count, which every child inherits; -2 if unreadable. */
+function hostSeccompFilters(): number {
+	try {
+		const status = readFileSync("/proc/self/status", "utf8");
+		const m = /^Seccomp_filters:\s*(\d+)$/m.exec(status);
+		return m ? Number(m[1]) : -2;
+	} catch {
+		return -2;
+	}
 }
 
 /** The scope's limits, read from the host's cgroup tree. */

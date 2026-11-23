@@ -14,10 +14,11 @@
  * - The child is trusted for the moment it runs. It runs from a read-only
  *   toolchain before any agent code, with bun's config and dotenv loading off.
  *   If the toolchain itself were hostile it could report anything.
- * - Most denied syscalls would fail differently without the filter, but
- *   `kexec_*`, `*init_module`, `delete_module`, `fanotify_init`,
- *   `open_by_handle_at` and the mount calls are EPERM for any unprivileged
- *   caller. For those the proof is the Seccomp mode plus the filter hash.
+ * - Some denied syscalls return the expected errno with no filter at all, for
+ *   an unprivileged caller or under a host sysctl (`NOT_PROVABLE_SYSCALLS` in
+ *   probe-run.ts, held honest by a live test). For those the proof is the
+ *   Seccomp mode, the exact filter count and the filter hash, and the item's
+ *   detail says how many there are.
  * - With seccomp on, the filter answers first, so `--disable-userns` cannot be
  *   observed separately. `compiled_flags` checks that it was passed.
  * - The sweep skips `/nix/store`: the store is read-only and the NAR format has
@@ -95,6 +96,7 @@ export const ProbeObservationsSchema = z.strictObject({
 		capAmb: z.string(),
 		noNewPrivs: z.string(),
 		seccomp: z.string(),
+		seccompFilters: z.string(),
 	}),
 	syscallControl: z.boolean(),
 	syscalls: z.array(z.strictObject({ name: z.string(), errno: z.number() })),
@@ -144,7 +146,9 @@ export interface ProbeExpectation {
 	envNames: readonly string[];
 	/** Values that must not appear in pid 1's command line. */
 	secrets: readonly { name: string; value: string }[];
-	syscalls: readonly { name: string; expect: number }[];
+	syscalls: readonly { name: string; expect: number; provable: boolean }[];
+	/** The launching process's filter count plus the one bwrap installs. */
+	seccompFilters: number;
 	scope: "systemd" | "none";
 	limits: { tasksMax: number; memoryMaxBytes: number };
 	/**
@@ -252,6 +256,9 @@ function checkMounts(o: ProbeObservations, e: ProbeExpectation): Verdict {
 function checkSeccomp(o: ProbeObservations, e: ProbeExpectation): Verdict {
 	if (o.proc.seccomp !== "2") {
 		return `Seccomp mode is ${clean(o.proc.seccomp)}, expected 2`;
+	}
+	if (o.proc.seccompFilters !== String(e.seccompFilters)) {
+		return `Seccomp_filters is ${clean(o.proc.seccompFilters)}, expected ${e.seccompFilters}`;
 	}
 	if (!o.syscallControl) return "the syscall control failed";
 	if (e.syscalls.length === 0) return "no syscalls were planned";
@@ -417,6 +424,13 @@ const CHECKS: Record<
 	cgroup_limits: (_o, e, c) => checkCgroupLimits(c, e),
 };
 
+function passDetail(id: ProbeItemId, e: ProbeExpectation): string {
+	if (id !== "seccomp_eperm") return "ok";
+	const total = e.syscalls.length;
+	const weak = e.syscalls.filter((s) => !s.provable).length;
+	return `${total} denied; ${weak} of ${total} can return this errno without a filter, so the filter count is their proof`;
+}
+
 /** Judge one observation. A wrong nonce fails every item. */
 export function evaluateProbe(
 	observed: ProbeObservations,
@@ -429,7 +443,7 @@ export function evaluateProbe(
 	return PROBE_ITEMS.map((id) => {
 		const problem = CHECKS[id](observed, expected, cgroup);
 		return problem === null
-			? { id, status: "pass", detail: "ok" }
+			? { id, status: "pass", detail: passDetail(id, expected) }
 			: { id, status: "fail", detail: problem };
 	});
 }

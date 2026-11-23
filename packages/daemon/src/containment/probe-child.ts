@@ -23,7 +23,7 @@
  *   (returning into JS from a forked copy of the runtime crashes it).
  * - Many denied syscalls are EPERM for an unprivileged caller anyway. The
  *   arguments are chosen by the host so that most would fail differently
- *   without the filter (see `probeSyscallPlan`).
+ *   without the filter, and the rest are marked (see `probeSyscallPlan`).
  * - libc `syscall()` reads six arguments. All six are passed, because a
  *   register left unset holds garbage.
  */
@@ -37,6 +37,8 @@ export interface ProbeSyscall {
 	arg0: number;
 	/** The errno the filter must produce. */
 	expect: number;
+	/** False when an unfiltered kernel can return the same errno. */
+	provable: boolean;
 }
 
 /** What the host tells the child to look at. Holds no secret. */
@@ -221,6 +223,7 @@ export async function probeChildMain(): Promise<void> {
 		capAmb: field("CapAmb"),
 		noNewPrivs: field("NoNewPrivs"),
 		seccomp: field("Seccomp"),
+		seccompFilters: field("Seccomp_filters"),
 	};
 
 	// ---- mounts
