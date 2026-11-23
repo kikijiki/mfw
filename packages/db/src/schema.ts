@@ -1034,7 +1034,9 @@ export type BrainActionStatus =
 	| "rejected"
 	| "failed"
 	/** Validated by the real invariants, recorded, never executed (shadow mode). */
-	| "proposed";
+	| "proposed"
+	/** Valid, but the owner decides: waits on a decision card, nothing has run. */
+	| "held";
 
 /** Outbox and action audit: one row per act-tool call, keyed for idempotency. */
 export const brainActions = sqliteTable(

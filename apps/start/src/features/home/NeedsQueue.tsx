@@ -65,6 +65,8 @@ const KIND_ICON: Record<InboxKind, LucideIcon> = {
 	auth_hold: ShieldAlert,
 	brain_stuck: BrainCircuit,
 	brain_notice: BrainCircuit,
+	brain_decision: ShieldAlert,
+	brain_breaker: ShieldAlert,
 };
 
 const SEVERITY_RANK: Record<InboxSeverity, number> = {
@@ -101,6 +103,8 @@ export type InlineKind =
 	| "merge"
 	| "review"
 	| "brain"
+	| "decision"
+	| "breaker"
 	| "open";
 
 export function inlineKind(kind: InboxKind): InlineKind {
@@ -109,6 +113,8 @@ export function inlineKind(kind: InboxKind): InlineKind {
 	if (kind === "merge_parked") return "merge";
 	if (kind === "review") return "review";
 	if (kind === "brain_notice") return "brain";
+	if (kind === "brain_decision") return "decision";
+	if (kind === "brain_breaker") return "breaker";
 	return "open";
 }
 
@@ -409,6 +415,40 @@ function NeedRow({
 						<AppLink to={target} onClick={onNavigate}>
 							Open in the brain
 						</AppLink>
+					</Button>
+				</div>
+			) : null}
+
+			{inline === "decision" && item.requestId ? (
+				<div className="flex flex-wrap items-center gap-2">
+					<Button
+						size="sm"
+						variant="outline"
+						disabled={actions.resolving}
+						onClick={() => actions.resolveDecision(item, true)}
+					>
+						Approve
+					</Button>
+					<Button
+						size="sm"
+						variant="ghost"
+						disabled={actions.resolving}
+						onClick={() => actions.resolveDecision(item, false)}
+					>
+						Decline
+					</Button>
+				</div>
+			) : null}
+
+			{inline === "breaker" ? (
+				<div className="flex flex-wrap items-center gap-2">
+					<Button
+						size="sm"
+						variant="outline"
+						disabled={actions.resolving}
+						onClick={() => actions.resetBreaker(item)}
+					>
+						Reset the breaker
 					</Button>
 				</div>
 			) : null}

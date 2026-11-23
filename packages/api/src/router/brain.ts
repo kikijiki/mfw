@@ -133,6 +133,32 @@ export const brainRouter = createTRPCRouter({
 			return ctx.svc.brainRuntime.view();
 		}),
 
+	/**
+	 * The owner's answer on a decision card. Idempotent: answering a card
+	 * twice runs the held action at most once.
+	 */
+	resolveDecision: projectProcedure
+		.input(
+			z.object({
+				actionId: z.string().min(1),
+				approve: z.boolean(),
+				reason: z.string().trim().max(2000).optional(),
+			}),
+		)
+		.mutation(({ ctx, input }) =>
+			ctx.svc.brainRuntime.actions.resolveHeld({
+				actionId: input.actionId,
+				approve: input.approve,
+				...(input.reason ? { reason: input.reason } : {}),
+			}),
+		),
+
+	/** The owner closes the act breaker. */
+	resetActBreaker: projectProcedure.mutation(async ({ ctx }) => {
+		await ctx.svc.brainRuntime.actions.breaker.reset();
+		return { ok: true };
+	}),
+
 	/** One read tool of the brain's MCP server. */
 	read: projectProcedure
 		.input(

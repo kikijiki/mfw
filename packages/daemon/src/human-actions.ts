@@ -32,7 +32,10 @@ export type HumanAction =
 	| "pause"
 	// Levers on the brain (human-override.ts).
 	| "override"
-	| "brain.message";
+	| "brain.message"
+	// The owner's answer on a decision card (decision-rights.ts).
+	| "brain.approve"
+	| "brain.decline";
 
 export interface HumanActionInput {
 	action: HumanAction;

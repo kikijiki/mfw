@@ -74,6 +74,8 @@ export interface BrainWorld {
 		/** The brain's own harness / model pick, when the call names one. */
 		pick?: { provider?: string; model?: string },
 	): Promise<{ key: string; until: number; reason: string } | null>;
+	/** Every file a run changed, or null when they cannot be listed (read as protected). */
+	changedFiles?(run: RunRow): Promise<string[] | null>;
 	/** Master stop and per-project pause, as a reason. */
 	dispatchPaused?():
 		| { reason: string }

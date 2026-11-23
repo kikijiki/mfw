@@ -17,6 +17,11 @@ export interface NeedActions {
 	retryMerge: (item: InboxItem) => void;
 	/** Opens the confirmation; the discarding actions never fire on one click. */
 	requestMerge: (item: InboxItem, action: "abandon" | "sendToReady") => void;
+	/** Answer a decision card: the held action runs at most once. */
+	resolveDecision: (item: InboxItem, approve: boolean) => void;
+	resetBreaker: (item: InboxItem) => void;
+	/** A card answer or breaker reset is in flight. */
+	resolving: boolean;
 	/** Render once, anywhere under the provider tree. */
 	dialog: ReactNode;
 }
@@ -110,6 +115,36 @@ export function useNeedActions(): NeedActions {
 		}),
 	);
 
+	const resolveDecision = useMutation(
+		trpc.brain.resolveDecision.mutationOptions({
+			meta: { label: "Answer the decision" },
+			onSuccess: (r) => {
+				const failed = r.status === "failed";
+				toast({
+					tone: failed ? "error" : "success",
+					title: r.alreadyResolved
+						? "This decision was already answered"
+						: failed
+							? "Approved, but it could not run"
+							: r.status === "rejected"
+								? "Declined. Nothing ran."
+								: "Approved",
+					...(r.rejection ? { description: r.rejection.message } : {}),
+				});
+			},
+			onSettled: refresh,
+		}),
+	);
+
+	const resetBreaker = useMutation(
+		trpc.brain.resetActBreaker.mutationOptions({
+			meta: { label: "Reset the breaker" },
+			onSuccess: () =>
+				toast({ tone: "success", title: "The brain can act again" }),
+			onSettled: refresh,
+		}),
+	);
+
 	const isAbandon = confirming?.action === "abandon";
 	const dialog = (
 		<ConfirmDialog
@@ -146,6 +181,16 @@ export function useNeedActions(): NeedActions {
 			if (item.mergeJobId === undefined) return;
 			setConfirming({ item, action });
 		},
+		resolveDecision: (item, approve) => {
+			if (!item.requestId) return;
+			resolveDecision.mutate({
+				project: item.project,
+				actionId: item.requestId,
+				approve,
+			});
+		},
+		resetBreaker: (item) => resetBreaker.mutate({ project: item.project }),
+		resolving: resolveDecision.isPending || resetBreaker.isPending,
 		dialog,
 	};
 }

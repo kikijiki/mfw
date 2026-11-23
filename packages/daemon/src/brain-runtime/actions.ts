@@ -20,8 +20,10 @@ import {
 	events,
 	groupIdOf,
 } from "@mfw/db/schema";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { spendTotals } from "@mfw/db/spend";
+import { and, asc, desc, eq, ne, sql } from "drizzle-orm";
 import { z } from "zod";
+import { recordHumanAction } from "../human-actions.ts";
 import { finishHumanOverride, recordHumanOverride } from "../human-override.ts";
 import { TaskUnmergedError } from "../lifecycle.ts";
 import type { Logger } from "../log.ts";
@@ -35,13 +37,32 @@ import {
 	VerificationPlanSchema,
 } from "../tasks/types.ts";
 import {
+	ActBreaker,
+	type ActBreakerConfig,
+	type ActBreakerState,
+} from "./act-breaker.ts";
+import {
 	NewTask,
 	type NewTaskSpec,
 	OwnsList,
 	Priority,
 	Size,
 } from "./board-effects.ts";
+import {
+	classifyAction,
+	DEFAULT_RIGHTS,
+	decide,
+	type RightsDecision,
+	type RightsFacts,
+	type RightsTable,
+	verificationCommands,
+} from "./decision-rights.ts";
 import type { BrainActionExecutor } from "./executor.ts";
+import {
+	knownNonOwnerTask,
+	sessionProvenance,
+	taskProvenance,
+} from "./provenance.ts";
 import type { BrainReadService, BrainWorld } from "./reads.ts";
 
 /**
@@ -141,7 +162,7 @@ export interface ActResult {
 
 export class BrainActionError extends Error {
 	constructor(
-		readonly code: "no_live_turn" | "unknown_tool",
+		readonly code: "no_live_turn" | "unknown_tool" | "unknown_action",
 		message: string,
 	) {
 		super(message);
@@ -159,7 +180,24 @@ export interface BrainActionDeps {
 	executor: BrainActionExecutor;
 	log: Logger;
 	caps?: Partial<ActionCaps>;
+	/** The decision-rights table; the owner's defaults when unset. */
+	rights?: RightsTable;
+	/** Thresholds of the act breaker; the defaults when unset. */
+	breaker?: Partial<ActBreakerConfig>;
 	now?: () => number;
+}
+
+/** The inbox id of the card that holds an action. */
+export const decisionCardId = (actionId: string) =>
+	`brain_decision:${actionId}`;
+
+export interface HeldResolution {
+	actionId: string;
+	status: BrainActionStatus;
+	/** The action had already been resolved: this call changed nothing. */
+	alreadyResolved?: boolean;
+	result?: Record<string, unknown>;
+	rejection?: Rejection;
 }
 
 // ---------------------------------------------------------------------------
@@ -424,6 +462,49 @@ export function idempotencyKey(
 		.digest("hex");
 }
 
+/** The call without the brain's commentary: what two requests must share to be the same. */
+function withoutMemo(args: Record<string, unknown>): Record<string, unknown> {
+	const {
+		rationale: _r,
+		alternatives: _a,
+		confidence: _c,
+		key: _k,
+		...rest
+	} = args;
+	return rest;
+}
+
+function breakerRejection(s: ActBreakerState): Verdict {
+	return reject(
+		"breaker_open",
+		`the act tools are paused for this project: ${s.detail ?? "the breaker is open"}`,
+		{
+			kind: "ui",
+			text:
+				typeof s.until === "number"
+					? `End your turn. Read tools still work. It closes at ${new Date(s.until).toISOString()} or when the owner resets it.`
+					: "End your turn. Read tools still work. Only the owner can reset it.",
+		},
+	);
+}
+
+/** What the model is told about a held call. */
+function heldResult(
+	actionId: string,
+	rights: RightsDecision,
+): Record<string, unknown> {
+	return {
+		held: true,
+		cardId: decisionCardId(actionId),
+		actionClass: rights.actionClass,
+		cause: rights.cause,
+		message:
+			rights.cause === "taint"
+				? "This session read untrusted text, so the owner decides this action. Nothing ran. Do not retry it; you are woken with the answer."
+				: "This action is reserved for the owner. Nothing ran. Do not retry it; you are woken with the answer.",
+	};
+}
+
 /** What a call is about, for the loop guard and the audit row. */
 function subjectOf(args: Record<string, unknown>): {
 	taskId: string | null;
@@ -440,10 +521,31 @@ function subjectOf(args: Record<string, unknown>): {
 export class BrainActionService {
 	private readonly caps: ActionCaps;
 	private readonly now: () => number;
+	/** Pauses the act tools of this project; the read tools never consult it. */
+	readonly breaker: ActBreaker;
 
 	constructor(private readonly deps: BrainActionDeps) {
 		this.caps = { ...DEFAULT_ACTION_CAPS, ...deps.caps };
 		this.now = deps.now ?? (() => Date.now());
+		this.breaker = new ActBreaker(
+			{
+				handle: deps.handle,
+				now: this.now,
+				brainSpendUsd: async () =>
+					(
+						await spendTotals(deps.handle.db, {
+							since: new Date(this.now() - 86_400_000),
+							kind: "brain",
+						})
+					).usd,
+				onTrip: (s) =>
+					deps.log.warn(
+						{ cause: s.cause, detail: s.detail },
+						"brain act breaker tripped",
+					),
+			},
+			deps.breaker,
+		);
 	}
 
 	/**
@@ -488,17 +590,28 @@ export class BrainActionService {
 		const evaluated = await this.evaluate(tool as ActTool, rawArgs, turnRunId);
 		const args = evaluated.args;
 		const verdict = evaluated.verdict;
+		const rights = evaluated.rights;
+		const hold = verdict.ok && rights?.right === "ask_first";
+		// The same request from a later turn joins the open card.
+		if (hold) {
+			const twin = await this.heldTwin(tool, args);
+			if (twin) return { ...twin, duplicate: true };
+		}
 
 		// 2. record. The effect ids are minted here and written with the row,
 		// before anything takes effect (the outbox rule).
 		const inline = APPLIED_INLINE.has(tool);
 		const status: BrainActionStatus = !verdict.ok
 			? "rejected"
-			: inline
-				? "applied"
-				: "accepted";
-		const effects =
-			verdict.ok && !inline
+			: hold
+				? "held"
+				: inline
+					? "applied"
+					: "accepted";
+		// A held action mints its ids when the owner approves it.
+		const effects = hold
+			? { rights }
+			: verdict.ok && !inline
 				? await this.effectsFor(tool as ActTool, args)
 				: null;
 		const actionId = ulid();
@@ -511,6 +624,7 @@ export class BrainActionService {
 			...(verdict.ok
 				? { result: { ...verdict.preview, ...(effects ?? {}) } }
 				: { rejection: verdict.rejection }),
+			...(rights ? { rights } : {}),
 		};
 		const alternatives = (args.alternatives ?? null) as
 			| { option: string; why_not: string }[]
@@ -606,8 +720,9 @@ export class BrainActionService {
 		const rejected = !verdict.ok;
 		const endTurn =
 			rejected &&
-			(await this.rejectionCount(turnRunId, tool, args)) >=
-				this.caps.rejectionsToEndTurn;
+			(verdict.rejection.code === "breaker_open" ||
+				(await this.rejectionCount(turnRunId, tool, args)) >=
+					this.caps.rejectionsToEndTurn);
 
 		// 3. effect. Spawns wait for the scheduler's admission; the rest run now.
 		let finalStatus: BrainActionStatus = status;
@@ -617,6 +732,7 @@ export class BrainActionService {
 		let result: Record<string, unknown> | undefined = verdict.ok
 			? { ...verdict.preview, ...(effects ?? {}) }
 			: undefined;
+		if (hold && rights) result = heldResult(actionId, rights);
 		if (verdict.ok && status === "accepted") {
 			if (tool === "spawn" || tool === "spawn_attempts") {
 				this.deps.executor.nudge();
@@ -634,6 +750,11 @@ export class BrainActionService {
 				}
 			}
 		}
+		// After the effect, so a failed effect counts. The next call reads the
+		// state itself, so a failed observation cannot let an open breaker pass.
+		await this.breaker.observe().catch((e) => {
+			this.deps.log.error({ err: e }, "could not update the act breaker");
+		});
 		return {
 			actionId,
 			status: finalStatus,
@@ -651,14 +772,314 @@ export class BrainActionService {
 	async check(
 		tool: string,
 		args: Record<string, unknown>,
+		opts: { turnRunId?: string } = {},
 	): Promise<
-		| { ok: true; preview: Record<string, unknown> }
+		| {
+				ok: true;
+				preview: Record<string, unknown>;
+				/** What `act` would do with this valid call. */
+				rights: RightsDecision;
+		  }
 		| { ok: false; rejection: Rejection }
 	> {
 		if (!(ACT_TOOLS as readonly string[]).includes(tool)) {
 			throw new BrainActionError("unknown_tool", `unknown act tool '${tool}'`);
 		}
-		return (await this.evaluate(tool as ActTool, args, null)).verdict;
+		const { verdict, args: parsed } = await this.evaluate(
+			tool as ActTool,
+			args,
+			null,
+		);
+		if (!verdict.ok) return verdict;
+		return {
+			...verdict,
+			rights: await this.rightsFor(
+				tool as ActTool,
+				parsed,
+				opts.turnRunId ?? null,
+			),
+		};
+	}
+
+	// -----------------------------------------------------------------------
+	// decision rights: what a valid call may do without the owner
+	// -----------------------------------------------------------------------
+
+	/** The right for a valid call, from what its session has read. */
+	async rightsFor(
+		tool: ActTool,
+		args: Record<string, unknown>,
+		turnRunId: string | null,
+	): Promise<RightsDecision> {
+		const sessionId = turnRunId
+			? await this.deps.executor.sessionOf(turnRunId)
+			: (
+					await this.deps.handle.db
+						.select({ id: brainSessions.id })
+						.from(brainSessions)
+						.where(ne(brainSessions.status, "retired"))
+				)[0]?.id;
+		const provenance = sessionId
+			? await sessionProvenance(this.deps.handle, sessionId)
+			: [];
+		return decide(
+			classifyAction(tool, args, await this.rightsFacts(tool, args)),
+			provenance,
+			this.deps.rights ?? DEFAULT_RIGHTS,
+		);
+	}
+
+	private async rightsFacts(
+		tool: ActTool,
+		args: Record<string, unknown>,
+	): Promise<RightsFacts> {
+		const all = await this.deps.tasks.list();
+		const nonOwner = new Set(all.filter(knownNonOwnerTask).map((t) => t.id));
+		const trusted = all.filter(
+			(t) => taskProvenance(t) === "owner_board" || t.id === args.id,
+		);
+		let changedFiles: string[] | null = [];
+		if (tool === "select_winner") {
+			const run = await this.deps.registry.get(String(args.runId));
+			changedFiles =
+				run && this.deps.world.changedFiles
+					? await this.deps.world.changedFiles(run).catch(() => null)
+					: null;
+		}
+		return {
+			ownerAuthored: (id) => !nonOwner.has(id),
+			knownCommands: new Set(
+				trusted.flatMap((t) => verificationCommands(t.verification)),
+			),
+			changedFiles,
+		};
+	}
+
+	/** An open card for the same tool and arguments, whichever turn raised it. */
+	private async heldTwin(
+		tool: string,
+		args: Record<string, unknown>,
+	): Promise<ActResult | null> {
+		const want = canonical(withoutMemo(args));
+		const rows = await this.deps.handle.db
+			.select()
+			.from(brainActions)
+			.where(and(eq(brainActions.status, "held"), eq(brainActions.tool, tool)));
+		const row = rows.find((r) => canonical(withoutMemo(r.args)) === want);
+		if (!row) return null;
+		const rights = (row.effects as { rights?: RightsDecision } | null)?.rights;
+		return {
+			actionId: row.id,
+			status: "held",
+			decisionId: row.decisionId,
+			...(rights ? { result: heldResult(row.id, rights) } : {}),
+		};
+	}
+
+	/** The actions waiting on the owner, oldest first. */
+	async heldActions() {
+		return this.deps.handle.db
+			.select()
+			.from(brainActions)
+			.where(eq(brainActions.status, "held"))
+			.orderBy(asc(brainActions.createdAt), asc(brainActions.id));
+	}
+
+	/**
+	 * The owner's answer on a decision card. Exactly once: the `held` to
+	 * `accepted` transition is a compare-and-set, so a double click or a retry
+	 * finds the action resolved and starts nothing. An approved action passes
+	 * the same validators again, because the board may have moved while it
+	 * waited. After the transition the row is an ordinary outbox entry, so a
+	 * crash before the effect is replayed by `executor.recover()`.
+	 */
+	async resolveHeld(input: {
+		actionId: string;
+		approve: boolean;
+		reason?: string;
+	}): Promise<HeldResolution> {
+		const row = await this.deps.executor.action(input.actionId);
+		if (!row) {
+			throw new BrainActionError(
+				"unknown_action",
+				`no action '${input.actionId}'`,
+			);
+		}
+		const settled = (r: typeof row): HeldResolution => ({
+			actionId: r.id,
+			status: r.status,
+			alreadyResolved: true,
+			...(r.rejection ? { rejection: r.rejection as Rejection } : {}),
+		});
+		if (row.status !== "held") return settled(row);
+		const reason =
+			input.reason?.trim() ||
+			(input.approve ? "approved by the owner" : "declined by the owner");
+		const tool = row.tool as ActTool;
+
+		let next: {
+			status: BrainActionStatus;
+			rejection?: Rejection;
+			effects?: Record<string, unknown> | null;
+		};
+		if (!input.approve) {
+			next = {
+				status: "rejected",
+				rejection: { code: "owner_declined", message: reason },
+			};
+		} else {
+			const verdict = await this.validate(tool, row.args);
+			next = verdict.ok
+				? {
+						status: "accepted",
+						effects: await this.effectsFor(tool, row.args),
+					}
+				: {
+						status: "failed",
+						rejection: {
+							code: "stale_on_approval",
+							message: `approved, but no longer valid: ${verdict.rejection.message}`,
+							...(verdict.rejection.fix ? { fix: verdict.rejection.fix } : {}),
+						},
+					};
+		}
+		if (!(await this.transitionHeld(row, next, input.approve, reason))) {
+			const cur = await this.deps.executor.action(row.id);
+			return settled(cur ?? row);
+		}
+		const subject = subjectOf(row.args);
+		await recordHumanAction(
+			this.deps,
+			{
+				action: input.approve ? "brain.approve" : "brain.decline",
+				taskId: subject.taskId,
+				runId: subject.runId,
+				reason,
+				input: { actionId: row.id, tool: row.tool },
+				kind: "override",
+				output: { status: next.status },
+			},
+			this.now,
+		);
+		if (next.status !== "accepted") {
+			return {
+				actionId: row.id,
+				status: next.status,
+				...(next.rejection ? { rejection: next.rejection } : {}),
+			};
+		}
+		if (tool === "spawn" || tool === "spawn_attempts") {
+			this.deps.executor.nudge();
+			return {
+				actionId: row.id,
+				status: "accepted",
+				...(next.effects ? { result: next.effects } : {}),
+			};
+		}
+		const out = await this.deps.executor.execute(row.id);
+		return out.status === "applied"
+			? { actionId: row.id, status: "applied", result: out.result ?? {} }
+			: {
+					actionId: row.id,
+					status: "failed",
+					rejection: out.rejection ?? {
+						code: "effect_failed",
+						message: out.error ?? "the effect failed",
+					},
+				};
+	}
+
+	/** Compare-and-set out of `held`, with the audit and the brain's wake in one transaction. */
+	private async transitionHeld(
+		row: typeof brainActions.$inferSelect,
+		next: {
+			status: BrainActionStatus;
+			rejection?: Rejection;
+			effects?: Record<string, unknown> | null;
+		},
+		approved: boolean,
+		reason: string,
+	): Promise<boolean> {
+		const nowMs = this.now();
+		const published: StoredEvent[] = [];
+		const won = await this.deps.handle.withTx(async (tx) => {
+			const [cur] = await tx
+				.select()
+				.from(brainActions)
+				.where(eq(brainActions.id, row.id));
+			if (cur?.status !== "held") return false;
+			const resolution = { by: "owner", approved, reason, at: nowMs };
+			const effects = {
+				...(cur.effects ?? {}),
+				...(next.effects ?? {}),
+				resolution,
+			};
+			await tx
+				.update(brainActions)
+				.set({
+					status: next.status,
+					effects,
+					...(next.rejection ? { rejection: next.rejection } : {}),
+					...(next.status === "accepted" ? {} : { appliedAt: new Date(nowMs) }),
+				})
+				.where(eq(brainActions.id, row.id));
+			if (cur.decisionId) {
+				const [d] = await tx
+					.select()
+					.from(decisions)
+					.where(eq(decisions.id, cur.decisionId));
+				await tx
+					.update(decisions)
+					.set({
+						output: {
+							...((d?.output as Record<string, unknown> | null) ?? {}),
+							status: next.status,
+							effects,
+							...(next.rejection ? { rejection: next.rejection } : {}),
+						},
+					})
+					.where(eq(decisions.id, cur.decisionId));
+			}
+			const subject = subjectOf(cur.args);
+			published.push(
+				await appendEvent(
+					tx,
+					{
+						type: "brain.action",
+						runId: cur.turnRunId,
+						...(subject.taskId ? { taskId: subject.taskId } : {}),
+						payload: {
+							actionId: cur.id,
+							tool: cur.tool,
+							status: next.status,
+							...(cur.decisionId ? { decisionId: cur.decisionId } : {}),
+							sessionId: cur.sessionId,
+						},
+					},
+					nowMs,
+				),
+				// `brain.action` of a brain turn is hidden from the digest: this
+				// is how the brain learns the owner's answer, and it wakes it.
+				await appendEvent(
+					tx,
+					{
+						type: "human.brain_message",
+						payload: {
+							text: `${approved ? "Approved" : "Declined"} your held ${cur.tool} (${cur.id}): ${
+								next.status === "failed"
+									? (next.rejection?.message ?? "it could not run")
+									: reason
+							}`,
+							about: `action:${cur.id}`,
+						},
+					},
+					nowMs,
+				),
+			);
+			return true;
+		});
+		this.deps.bus.publish(published);
+		return won;
 	}
 
 	/**
@@ -858,7 +1279,16 @@ export class BrainActionService {
 		tool: ActTool,
 		rawArgs: Record<string, unknown>,
 		turnRunId: string | null,
-	): Promise<{ verdict: Verdict; args: Record<string, unknown> }> {
+	): Promise<{
+		verdict: Verdict;
+		args: Record<string, unknown>;
+		/** Set on a valid call of a live turn. */
+		rights?: RightsDecision;
+	}> {
+		const breaker = await this.breaker.status();
+		if (breaker.open) {
+			return { args: rawArgs, verdict: breakerRejection(breaker) };
+		}
 		const parsed = ARGS[tool].safeParse(rawArgs);
 		if (!parsed.success) {
 			return {
@@ -884,9 +1314,13 @@ export class BrainActionService {
 			};
 		}
 		const guarded = turnRunId ? await this.guard(turnRunId, tool, args) : null;
+		const verdict = guarded ?? (await this.validate(tool, args));
 		return {
 			args,
-			verdict: guarded ?? (await this.validate(tool, args)),
+			verdict,
+			...(verdict.ok && turnRunId
+				? { rights: await this.rightsFor(tool, args, turnRunId) }
+				: {}),
 		};
 	}
 
@@ -1000,9 +1434,12 @@ export class BrainActionService {
 					.from(decisions)
 					.where(eq(decisions.id, row.decisionId))
 			: [];
-		const result = (
-			d?.output as { result?: Record<string, unknown> } | undefined
-		)?.result;
+		const rights = (row.effects as { rights?: RightsDecision } | null)?.rights;
+		const result =
+			row.status === "held" && rights
+				? heldResult(row.id, rights)
+				: (d?.output as { result?: Record<string, unknown> } | undefined)
+						?.result;
 		return {
 			actionId: row.id,
 			status: row.status,

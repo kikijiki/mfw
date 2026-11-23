@@ -1060,6 +1060,17 @@ export class BrainRuntime {
 				`You have used ${turnsHour} of ${p.cfg.maxTurnsPerHour} turns this hour; batch your decisions.`,
 			);
 		}
+		for (const h of (await this.actions.heldActions()).slice(0, 10)) {
+			reminders.push(
+				`Waiting on the owner's decision, do not retry: ${h.tool} (${h.id}).`,
+			);
+		}
+		const breaker = await this.actions.breaker.status();
+		if (breaker.open) {
+			reminders.push(
+				`Your act tools are paused (${breaker.detail ?? "breaker open"}). Read if you must, then end your turn.`,
+			);
+		}
 		const hint = p.session.wakeHint;
 		if (hint) reminders.push(`Wake hint you left: ${JSON.stringify(hint)}`);
 		// Nothing expands a draft by itself: the brain spawns the planning run.

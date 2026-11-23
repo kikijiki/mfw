@@ -10,6 +10,7 @@ import { and, desc, eq, inArray, isNotNull, max } from "drizzle-orm";
 /** Which of an act call's states a decision row carries (`brain_actions.status`, mirrored in `decisions.output.status`). */
 export type BrainActionState =
 	| "proposed"
+	| "held"
 	| "applied"
 	| "accepted"
 	| "rejected"
@@ -17,6 +18,7 @@ export type BrainActionState =
 
 const ACTION_STATES: ReadonlySet<string> = new Set([
 	"proposed",
+	"held",
 	"applied",
 	"accepted",
 	"rejected",
