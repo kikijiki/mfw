@@ -10,7 +10,7 @@ import {
 	type AppServerResponse,
 	parseAppServerEnvelope,
 } from "../app-server-protocol.ts";
-import { limitAgentEvent } from "../event-limits.ts";
+import { limitAgentEvent, stripTerminalControls } from "../event-limits.ts";
 import { AgentEventSchema } from "../events.ts";
 
 const runDir = process.argv[2];
@@ -178,7 +178,7 @@ void readLines(
 );
 void readLines(
 	child.stderr,
-	(line) => process.stderr.write(`${line}\n`),
+	(line) => process.stderr.write(`${stripTerminalControls(line)}\n`),
 	false,
 );
 

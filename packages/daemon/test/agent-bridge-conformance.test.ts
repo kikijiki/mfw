@@ -930,6 +930,7 @@ describe.skipIf(skip !== null)("the real drivers and bridges", () => {
 			steer?: boolean;
 			secretEnvironment?: SecretEnvironment;
 			whileRunning?: (host: AgentHost) => Promise<void>;
+			maxWaitMs?: number;
 		} = {},
 	) {
 		const bridge = join(
@@ -972,7 +973,17 @@ describe.skipIf(skip !== null)("the real drivers and bridges", () => {
 			providerId: `${cli}-cli`,
 		});
 		await opts.whileRunning?.(host);
-		await procs.get("mfw_r1")?.exited;
+		const session = procs.get("mfw_r1");
+		let timedOut = false;
+		if (opts.maxWaitMs) {
+			const limit = Bun.sleep(opts.maxWaitMs).then(() => "late" as const);
+			if ((await Promise.race([session?.exited, limit])) === "late") {
+				timedOut = true;
+				session?.kill("SIGKILL");
+				Bun.spawnSync(["pkill", "-KILL", "-f", f.runDir]);
+			}
+		}
+		await session?.exited;
 		const exit = await host.readExit(f.runDir);
 		const raw = readFileSync(join(f.runDir, "raw.log"), "utf8");
 		const eventsPath = runEventsPath(f.runDir);
@@ -982,7 +993,7 @@ describe.skipIf(skip !== null)("the real drivers and bridges", () => {
 					.split("\n")
 					.map((l) => JSON.parse(l) as { type: string; reason?: string })
 			: [];
-		return { exit, raw, events, eventsPath };
+		return { exit, raw, events, eventsPath, timedOut };
 	}
 
 	test("claude runs under the bridge, in the sandbox", async () => {
@@ -1088,6 +1099,35 @@ describe.skipIf(skip !== null)("the real drivers and bridges", () => {
 		expect(call).toBeDefined();
 		expect(call.id.length).toBeLessThanOrEqual(256);
 		expect(call.name.length).toBeLessThanOrEqual(256);
+	}, 90_000);
+
+	test("m1: terminal escapes never reach the persisted events or log", async () => {
+		const osc = "\\u001b]52;c;ZXZpbA==\\u0007";
+		const csi = "\\u001b[2J";
+		writeFileSync(
+			join(f.bin, "fake-claude.ts"),
+			`for await (const bytes of Bun.stdin.stream()) {
+  console.error("stderr ${osc}${csi}visible");
+  console.log(JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "text ${osc}${csi}visible" }, { type: "tool_use", id: "t1", name: "Bash", input: { command: "echo ${osc}visible" } }] } }));
+  console.log(JSON.stringify({ type: "result", result: "done ${csi}visible", usage: {} }));
+  break;
+}`,
+		);
+		const script = join(f.bin, "claude");
+		writeFileSync(
+			script,
+			`#!/bin/sh\nexec bun --config=/dev/null --no-env-file run '${join(f.bin, "fake-claude.ts")}'\n`,
+		);
+		chmodSync(script, 0o755);
+		const r = await runBridged("claude");
+		const persisted = readFileSync(r.eventsPath, "utf8");
+		expect(persisted).toContain("visible");
+		expect(persisted).not.toContain("\\u001b");
+		expect(persisted).not.toContain("\u001b");
+		expect(persisted).not.toContain("]52;");
+		expect(r.raw).toContain("visible");
+		expect(r.raw).not.toContain("\u001b");
+		expect(r.raw).not.toContain("]52;");
 	}, 90_000);
 
 	test("codex runs under the bridge, in the sandbox", async () => {
