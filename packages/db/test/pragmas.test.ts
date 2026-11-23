@@ -66,7 +66,7 @@ describe("openDbAt connection pragmas", () => {
 			});
 			expect(await pragmas(h)).toEqual(INTENDED);
 		}
-		// raw client transactions reconnect too
+		// a client-level transaction runs on a connection with the pragmas too
 		const t = await h.client.transaction("write");
 		await t.commit();
 		expect(await pragmas(h)).toEqual(INTENDED);
@@ -82,8 +82,10 @@ describe("openDbAt connection pragmas", () => {
 			const fk = await tx.all<{ foreign_keys: number }>(
 				sql`PRAGMA foreign_keys`,
 			);
+			const busy = await tx.all<{ timeout: number }>(sql`PRAGMA busy_timeout`);
 			expect(sync[0]?.synchronous).toBe(1);
 			expect(fk[0]?.foreign_keys).toBe(1);
+			expect(busy[0]?.timeout).toBe(5000);
 		});
 	});
 
