@@ -25,6 +25,7 @@ import {
 	AUTH_HOLD_REASON,
 	isAuthFailure,
 } from "../auth-failure.ts";
+import { runDirLayout } from "../containment/run-dir.ts";
 import { git } from "../git.ts";
 import {
 	type CleanupResult,
@@ -1266,6 +1267,10 @@ export class StepRunner {
 			: null;
 		const candidates = [
 			worktreeReportPath,
+			join(
+				runDirLayout(this.deps.registry.runDir(built.run.id)).outbox,
+				"MFW_REPORT.json",
+			),
 			join(this.deps.registry.runDir(built.run.id), "MFW_REPORT.json"),
 		].filter((p): p is string => p !== null);
 

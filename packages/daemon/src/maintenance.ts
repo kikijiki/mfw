@@ -16,6 +16,7 @@ import type { ProjectDbHandle } from "@mfw/db/client";
 import { appendEvent, type EventBus } from "@mfw/db/eventlog";
 import { engineKv, events as eventRows, runs } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
+import { runEventsPath } from "./containment/run-dir.ts";
 import { git } from "./git.ts";
 import type { Logger } from "./log.ts";
 import { runProc } from "./proc.ts";
@@ -1417,7 +1418,7 @@ export class Maintenance {
 			if (run.transcriptSummary === null) {
 				try {
 					const summary = await summarizeTranscript(
-						join(dir, "events.jsonl"),
+						runEventsPath(dir),
 						this.deps.now?.() ?? Date.now(),
 					);
 					await this.deps.handle.db

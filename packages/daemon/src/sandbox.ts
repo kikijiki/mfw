@@ -13,6 +13,7 @@ import {
 	PROBE_EXIT_CODE,
 	PROBE_SENTINEL,
 } from "./containment/minimal-probe.ts";
+import { runDirLayout, runStateRoot } from "./containment/run-dir.ts";
 import { runProc } from "./proc.ts";
 
 /**
@@ -277,12 +278,24 @@ export interface BwrapCoreOptions {
 	/** Paths bound read-only AFTER the writable binds (the reviewer's checkouts). */
 	readOnly?: readonly string[];
 	masks?: readonly string[];
+	/**
+	 * Mount a split run dir: `control/` read-only, `outbox/` writable, and the
+	 * rest of the run root hidden. When the run sits in a project's `.mfw`, all
+	 * of `.mfw` is hidden, because the writable HOME bind would otherwise expose
+	 * the project DB and every sibling run.
+	 */
+	splitRunDir?: boolean;
 }
 
 /** The bwrap flags shared by the driver sandbox and the reviewer: no env, no command. */
 export function bwrapCore(o: BwrapCoreOptions): string[] {
 	const home = homedir();
-	const writable = [...new Set([home, o.cwd, o.runDir])];
+	const layout = o.splitRunDir ? runDirLayout(o.runDir) : null;
+	const hidden = layout ? (runStateRoot(o.runDir) ?? o.runDir) : null;
+	const insideHidden = (p: string) => hidden !== null && within(p, hidden);
+	const writable = [
+		...new Set(layout ? [home, o.cwd] : [home, o.cwd, o.runDir]),
+	];
 	const tokens: string[] = [
 		o.bwrapPath,
 		"--die-with-parent",
@@ -304,12 +317,27 @@ export function bwrapCore(o: BwrapCoreOptions): string[] {
 		"--tmpfs",
 		"/tmp",
 	];
-	for (const p of writable) tokens.push("--bind", p, p);
+	for (const p of writable) {
+		if (!insideHidden(p)) tokens.push("--bind", p, p);
+	}
+	if (layout && hidden) {
+		// After HOME and the cwd, so it covers them; what the run needs from
+		// inside is bound back on the empty tmpfs.
+		tokens.push("--tmpfs", hidden);
+		for (const p of writable) {
+			if (insideHidden(p)) tokens.push("--bind", p, p);
+		}
+		tokens.push("--ro-bind", layout.control, layout.control);
+		tokens.push("--bind", layout.outbox, layout.outbox);
+	}
 	for (const p of new Set(o.readOnly ?? [])) tokens.push("--ro-bind", p, p);
 	// After every writable bind, so a masked path under one overlays it.
 	for (const p of new Set([...(o.masks ?? []), ...o.isolation.hidePaths])) {
 		tokens.push("--tmpfs", p);
 	}
+	// Last: every mount point inside exists, and the tmpfs holding them can no
+	// longer be written, so `control` and `outbox` cannot be renamed or shadowed.
+	if (hidden) tokens.push("--remount-ro", hidden);
 	tokens.push("--clearenv");
 	return tokens;
 }
@@ -350,6 +378,7 @@ function planSandbox(o: {
 	isolation: BwrapIsolation;
 	passEnv: readonly string[];
 	readOnly?: readonly string[];
+	splitRunDir?: boolean;
 	env?: NodeJS.ProcessEnv;
 }): SandboxPlan {
 	const bwrapPath = pinnedTool("bwrap");
@@ -383,6 +412,7 @@ function planSandbox(o: {
 		isolation,
 		masks,
 		readOnly: o.readOnly,
+		splitRunDir: o.splitRunDir,
 	});
 	const agentPath = agentSandboxPath(env.PATH);
 	return {
@@ -416,7 +446,7 @@ export function wrapWithBwrap(
 	runDir: string,
 	isolation: BwrapIsolation,
 	passEnv: readonly string[] = [],
-	extra: { readOnly?: readonly string[] } = {},
+	extra: { readOnly?: readonly string[]; splitRunDir?: boolean } = {},
 ): string {
 	const plan = planSandbox({
 		cwd,
@@ -424,6 +454,7 @@ export function wrapWithBwrap(
 		isolation,
 		passEnv,
 		readOnly: extra.readOnly,
+		splitRunDir: extra.splitRunDir,
 	});
 	return [
 		"_mfw_env=()",

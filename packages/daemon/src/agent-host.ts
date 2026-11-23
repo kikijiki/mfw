@@ -13,6 +13,11 @@ import {
 } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
+import {
+	driverRunPaths,
+	ensureRunDirLayout,
+	runHostFilesDir,
+} from "./containment/run-dir.ts";
 import { readSmallRegularFile } from "./containment/safe-file.ts";
 import {
 	assertDisjointEnvironmentNames,
@@ -38,14 +43,19 @@ import {
  * AgentHost v2: tmux mechanics only, no domain logic. Rows/state live in
  * RunRegistry; completion handling in the Supervisor. Run dir contract:
  *
- *   meta.json     written once by RunRegistry, never mutated
- *   events.jsonl  normalized AgentEvents, single writer: the driver process
- *   raw.log       verbatim pane output, tmux pipe-pane target
- *   exit          "exit:<code>" (run.sh) | "killed:<reason>" (kill, compare-and-skip)
- *   steer.jsonl   daemon appends (O_APPEND), driver reads
- *   control.jsonl daemon appends typed controls, shared app-server driver reads
- *   driver.json   invocation config for the driver
- *   run.sh        session wrapper (go-signal gate; writes `exit`)
+ *   meta.json             written once by RunRegistry, never mutated
+ *   raw.log               verbatim pane output, tmux pipe-pane target
+ *   control/              host-written, read-only in the sandbox
+ *     exit                "exit:<code>" (run.sh) | "killed:<reason>" (kill, compare-and-skip)
+ *     steer.jsonl         daemon appends (O_APPEND), driver reads
+ *     control.jsonl       daemon appends typed controls, app-server driver reads
+ *     driver.json         invocation config for the driver
+ *   outbox/               the only run path the sandbox can write: agent claims
+ *     events.jsonl        normalized AgentEvents, written by the driver
+ *
+ * Only a sandboxed launch is split. An unsandboxed run (`isolation` unset) and
+ * a run launched before the split keep these files flat in the run dir.
+ * `run.sh` (the session wrapper) lives in the host-only control root.
  */
 
 /** POSIX single-quote for safe embedding in a generated shell script. */
@@ -233,10 +243,12 @@ export class AgentHost {
 			);
 		}
 		const dir = spec.runDir;
+		// No sandbox means no boundary to split along.
+		const hostFiles = spec.isolation ? ensureRunDirLayout(dir).control : dir;
 		const control = await this.controlRoot();
 		const scriptPath = join(control, `run-${spec.runId}.sh`);
 		const rawLog = join(dir, "raw.log");
-		const exitPath = join(dir, "exit");
+		const exitPath = join(hostFiles, "exit");
 		// The authoritative exit record: host-only, never the agent-writable run dir (security review X9).
 		const exitRecord = join(control, `exit-${spec.runId}`);
 		await this.pruneControl(control);
@@ -255,7 +267,7 @@ export class AgentHost {
 		}
 
 		await writeFileAtomic(
-			join(dir, "driver.json"),
+			join(hostFiles, "driver.json"),
 			JSON.stringify(
 				{
 					argv: spec.agentArgv,
@@ -276,8 +288,8 @@ export class AgentHost {
 				2,
 			),
 		);
-		await writeFile(join(dir, "steer.jsonl"), "", { flag: "a" });
-		await writeFile(join(dir, "control.jsonl"), "", { flag: "a" });
+		await writeFile(join(hostFiles, "steer.jsonl"), "", { flag: "a" });
+		await writeFile(join(hostFiles, "control.jsonl"), "", { flag: "a" });
 		await writeFile(rawLog, "", { flag: "a" });
 
 		// .envrc trust gate: load direnv only if the worktree's .envrc is byte-identical
@@ -338,6 +350,7 @@ export class AgentHost {
 							...(spec.providerArgv ?? []),
 						].filter((a) => a.startsWith("/")),
 					].filter(underPrivateTmp),
+					splitRunDir: true,
 				},
 			);
 		}
@@ -594,13 +607,13 @@ export class AgentHost {
 			}
 		};
 		await create(join(await this.controlRoot(), `exit-${runId}`));
-		await create(join(runDir, "exit"));
+		await create(join(runHostFilesDir(runDir), "exit"));
 	}
 
 	/** Append one steering message (O_APPEND, no read-modify-write races). */
 	async appendSteer(runDir: string, message: string): Promise<void> {
 		await appendFile(
-			join(runDir, "steer.jsonl"),
+			driverRunPaths(runDir).steer,
 			`${JSON.stringify(message)}\n`,
 		);
 	}
@@ -618,7 +631,7 @@ export class AgentHost {
 			  },
 	): Promise<void> {
 		await appendFile(
-			join(runDir, "control.jsonl"),
+			driverRunPaths(runDir).controls,
 			`${JSON.stringify(control)}\n`,
 		);
 	}
@@ -651,7 +664,9 @@ export class AgentHost {
 		) {
 			return { kind: "running" };
 		} else {
-			s = await readSmallRegularFile(join(runDir, "exit"));
+			// A split run's copy is host-written. The flat path of an older or
+			// remote run is all there is for it.
+			s = await readSmallRegularFile(join(runHostFilesDir(runDir), "exit"));
 		}
 		if (s === null) return { kind: "running" }; // no exit recorded (yet)
 		s = s.trim();

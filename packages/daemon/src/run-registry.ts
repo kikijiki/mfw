@@ -43,6 +43,7 @@ import {
 } from "drizzle-orm";
 import type { SubagentFold } from "./agents/activity.ts";
 import { isBrainTurnRun } from "./brain-runtime/turn-run.ts";
+import { runEventsPath } from "./containment/run-dir.ts";
 import { readRegularFile } from "./containment/safe-file.ts";
 import { writeRunSubagents } from "./run-subagents.ts";
 
@@ -1045,8 +1046,9 @@ export class RunRegistry {
 	): Promise<{ chunk: string; size: number; complete: boolean }> {
 		// Resolve the id through the run table before it becomes a path segment.
 		if (!(await this.get(runId))) throw new Error(`unknown run ${runId}`);
-		const path = join(this.runDir(runId), file);
-		// The run dir is agent-writable: never follow a link out of it, never block on a
+		const dir = this.runDir(runId);
+		const path = file === "events.jsonl" ? runEventsPath(dir) : join(dir, file);
+		// The outbox is agent-writable: never follow a link out of it, never block on a
 		// FIFO, and only read a regular file (security review X9).
 		const read = await readRegularFile(path, 1024 * 1024, offset);
 		if (!read) return { chunk: "", size: 0, complete: true };

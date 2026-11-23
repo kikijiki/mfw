@@ -130,6 +130,17 @@ export function runStateRoot(root: string): string | null {
 	return basename(runs) === "runs" && basename(state) === ".mfw" ? state : null;
 }
 
+/**
+ * The directory holding a run's host-written files: `control/` once the host
+ * launched it split, else the flat run dir. Only for locating files. Whether a
+ * file there can be trusted is decided from the run row, because an agent in
+ * an older flat run dir could have created `control/driver.json` itself.
+ */
+export function runHostFilesDir(runDir: string): string {
+	const control = join(runDir, RUN_CONTROL_DIR);
+	return existsSync(join(control, "driver.json")) ? control : runDir;
+}
+
 /** Where the driver finds its host-written inputs and writes its events. */
 export function driverRunPaths(runDir: string): {
 	config: string;
