@@ -234,6 +234,38 @@ describe("MergeQueue v2, real git matrix", () => {
 		await f.cleanup();
 	});
 
+	test("a merge never runs hooks planted in the shared gitdir", async () => {
+		const f = await fixture();
+		const fired = join(f.root, "..", `${f.root.split("/").pop()}-fired`);
+		for (const hook of [
+			"pre-merge-commit",
+			"prepare-commit-msg",
+			"commit-msg",
+			"post-merge",
+			"post-commit",
+			"post-checkout",
+			"reference-transaction",
+		]) {
+			await writeFile(
+				join(f.root, ".git/hooks", hook),
+				`#!/bin/sh\necho ${hook} >> "${fired}"\n`,
+				{ mode: 0o755 },
+			);
+		}
+		// Planted after the fixture's own setup, so only the queue can fire them.
+		const runId = await f.makeBranchRun("mfw/t1", "a.txt", "hello\n");
+		await rm(fired, { force: true });
+		await f.queue.enqueue({
+			runId,
+			taskId: "MFW-1",
+			branch: "mfw/t1",
+			targetBranch: "main",
+		});
+		expect(await f.queue.tick()).toBe("merged");
+		expect(existsSync(fired)).toBe(false);
+		await f.cleanup();
+	});
+
 	test("a merge with pushing off stays local", async () => {
 		const f = await fixture();
 		const remote = await mkdtemp(join(tmpdir(), "mfw-remote-"));
