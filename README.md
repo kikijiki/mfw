@@ -215,25 +215,45 @@ under Settings > API tokens, or on the host:
 mfw auth token create --name editor --scope board:read --write-file
 mfw auth token list
 mfw auth token revoke <id>
+mfw auth token audit
 ```
 
 A token is shown once and stored only as a hash. It expires after 24 hours unless
 you pass `--ttl` (for example `30m`, `7d`, at most `90d`), and `--project` limits it
-to one project. Send it only as `Authorization: Bearer <token>`.
+to one project, which must exist when you create the token in Settings. The CLI
+warns instead, and both lists mark a token whose project is not attached. Send a
+token only as `Authorization: Bearer <token>`.
 
 | Scope | Allows |
 | --- | --- |
 | `status:read` | health, inbox, what is running |
 | `board:read` | tasks, ADRs, clarifications, audit events |
-| `board:write` | task title, body, priority and size; file tasks in backlog |
-| `runs:act` | start and stop task runs, read transcripts, move a task to ready |
+| `board:write` | file tasks in backlog; edit the text of tasks parked by hand; change priority and size |
+| `runs:act` | start and stop task runs, read their transcripts, edit dispatchable tasks, move a task to ready |
 
 No scope reaches settings, hosts, triggers, merges, approvals, passwords or token
-management. A token cannot set verification commands, routing or review labels.
-Changing the password or signing out everywhere revokes every token.
+management, or the brain's and other internal runs. A token cannot set verification
+commands, routing or review labels. Changing the password or signing out
+everywhere revokes every token.
+
+`board:write` cannot cause work to start. Without `runs:act`, a token can change a
+task's title, body or criteria only while the task is in backlog, parked by hand,
+with no reopen condition. It cannot reword a checked criterion, and it cannot move
+a finished task or one with a reopen condition back to backlog.
+
+**Text written by a token is untrusted.** A task a token has created or edited stays
+marked for good, even if you edit it afterwards. The brain treats it like
+agent-written text, so consequential actions after reading it need your approval.
+
+`mfw auth token audit` and Settings > API tokens show what each token changed and
+which streams it opened. Refused calls are a per-token count, so they cannot push
+real actions out of the log. Successful reads are not recorded.
 
 `mfw mcp` takes its token from `--token-file <path>`, then `MFW_TOKEN`, then
-`$MFW_HOME/mcp-token`, which must be a 0600 file. It refuses to send a token over
+`$MFW_HOME/mcp-token`, which must be a 0600 file. That stored file is used only for
+the default `http://localhost:7777` URL. For any other `MFW_URL`, name the token
+explicitly, and create the file with `--write-file --origin <url>`: a file that
+records an origin is never sent anywhere else. `mfw mcp` also refuses to send a token over
 plain HTTP except to loopback. The tools need these scopes: `list_tasks`,
 `get_task`, `graph` and `task_trace` need `board:read`; `create_task`, `edit_task`,
 `criteria` and `move_task` need `board:write`; `inbox` and `health` need

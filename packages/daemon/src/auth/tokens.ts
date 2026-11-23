@@ -13,9 +13,9 @@ export const TOKEN_SCOPES = [
 	"status:read",
 	/** Tasks, ADRs, clarifications and the audit stream. */
 	"board:read",
-	/** Task content. Cannot dispatch work or set commands. */
+	/** Text of tasks parked by hand. Cannot cause work to start or set commands. */
 	"board:write",
-	/** Start and stop task runs, read transcripts, move a task to ready. */
+	/** Start and stop task runs, read their transcripts, edit dispatchable tasks. */
 	"runs:act",
 ] as const;
 

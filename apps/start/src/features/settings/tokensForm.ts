@@ -14,12 +14,12 @@ export const TOKEN_SCOPE_CHOICES = [
 	{
 		scope: "board:write",
 		label: "Board write",
-		hint: "Edit task content and file tasks in backlog.",
+		hint: "File tasks in backlog and edit parked ones. Cannot start work. Its text is untrusted.",
 	},
 	{
 		scope: "runs:act",
 		label: "Run tasks",
-		hint: "Start and stop runs, read transcripts, move tasks to ready.",
+		hint: "Start and stop task runs, read their transcripts, move tasks to ready.",
 	},
 ] as const;
 
