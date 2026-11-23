@@ -102,6 +102,18 @@ function formatIp(bytes: Uint8Array): string {
 	return start < 0 ? hex(0, 8) : `${hex(0, start)}::${hex(start + length, 8)}`;
 }
 
+/** What an IP literal means, and whether this is its one canonical spelling. */
+export function ipLiteral(
+	raw: string,
+): { canonical: boolean; unspecified: boolean } | null {
+	const bytes = parseIp(raw);
+	if (!bytes) return null;
+	return {
+		canonical: formatIp(bytes) === raw,
+		unspecified: bytes.every((b) => b === 0),
+	};
+}
+
 export function isLoopbackAddress(raw: string): boolean {
 	const b = parseIp(raw);
 	if (!b) return false;

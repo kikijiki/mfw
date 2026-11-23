@@ -288,22 +288,61 @@ describe("throttle behind a trusted proxy", () => {
 describe("exposure at startup", () => {
 	const TLS = { NITRO_SSL_CERT: "cert", NITRO_SSL_KEY: "key" };
 
-	for (const HOST of ["127.0.0.1", "127.8.8.8", "::1", "[::1]", "localhost"])
+	for (const HOST of ["127.0.0.1", "127.8.8.8", "::1", "localhost"])
 		test(`loopback HOST=${HOST} starts`, () => {
 			expect(checkExposure({ HOST })).toBeNull();
 		});
 
-	for (const HOST of ["100.64.0.1", "192.168.1.5", "box.example", "fd00::1"])
+	for (const HOST of ["100.64.0.1", "192.168.1.5", "fd00::1"])
 		test(`plain HTTP on ${HOST} is refused with the fix`, () => {
 			const why = checkExposure({ HOST });
 			expect(why).toContain("not loopback");
 			expect(why).toContain("MFW_TRUSTED_PROXIES");
 		});
 
-	for (const HOST of ["0.0.0.0", "::", "[::]"])
-		test(`wildcard ${HOST} is refused even with TLS or a proxy`, () => {
+	// Review F4: every spelling of the unspecified address.
+	for (const HOST of [
+		"0.0.0.0",
+		"::",
+		"0:0:0:0:0:0:0:0",
+		"::0",
+		"0000::",
+		"::ffff:0.0.0.0",
+		"::ffff:0:0",
+	])
+		test(`unspecified ${HOST} is refused even with TLS or a proxy`, () => {
 			expect(checkExposure({ HOST, ...TLS })).toContain("every interface");
 			expect(checkExposure({ HOST, ...ENV })).toContain("every interface");
+		});
+
+	// Anything but `localhost` or a canonical literal can mean something else.
+	for (const HOST of [
+		"00.0.0.0",
+		"0",
+		"0.0",
+		"0x0",
+		"*",
+		"[::]",
+		"[::1]",
+		"::%lo",
+		"::1%lo",
+		"127.1",
+		"127.0.0.01",
+		"2130706433",
+		"0:0:0:0:0:0:0:1",
+		"::0001",
+		"::ffff:127.0.0.1",
+		"FD00::1",
+		"fd00:0::1",
+		"LOCALHOST",
+		"localhost.",
+		"foo.localhost",
+		"box.example",
+		" 127.0.0.1",
+	])
+		test(`non-canonical HOST '${HOST}' is refused even with TLS or a proxy`, () => {
+			expect(checkExposure({ HOST, ...TLS })).toContain("canonical");
+			expect(checkExposure({ HOST, ...ENV })).toContain("canonical");
 		});
 
 	test("an unset HOST is refused: Bun would listen everywhere", () => {

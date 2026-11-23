@@ -1,4 +1,8 @@
-import { isLoopbackAddress, parseTrustedProxies } from "./trusted-proxy";
+import {
+	ipLiteral,
+	isLoopbackAddress,
+	parseTrustedProxies,
+} from "./trusted-proxy";
 
 /**
  * What this server may be exposed to, decided from configuration alone. A
@@ -55,9 +59,10 @@ export const bindHost = (env: Env): string | undefined =>
 export const hasNativeTls = (env: Env): boolean =>
 	!!env.NITRO_SSL_CERT && !!env.NITRO_SSL_KEY;
 
+/** Only the exact name and canonical literals: anything else may resolve elsewhere. */
 function isLoopbackBind(host: string): boolean {
-	const bare = host.toLowerCase().replace(/^\[|\]$/g, "");
-	return bare === "localhost" || isLoopbackAddress(bare);
+	if (host === "localhost") return true;
+	return ipLiteral(host)?.canonical === true && isLoopbackAddress(host);
 }
 
 /** True when this listener can be reached from beyond loopback. */
@@ -83,8 +88,11 @@ export function checkExposure(env: Env): string | null {
 	const host = bindHost(env);
 	if (host === undefined)
 		return `HOST is not set, so the server would listen on every interface. ${BIND_FIX}`;
-	if (WILDCARD_BINDS.has(host.toLowerCase()))
+	const literal = ipLiteral(host);
+	if (literal?.unspecified)
 		return `HOST=${host} listens on every interface, which mfw never does. ${BIND_FIX}`;
+	if (host !== "localhost" && !literal?.canonical)
+		return `HOST=${host} is not 'localhost' or a canonical IP address. ${BIND_FIX}`;
 	if (isLoopbackBind(host) || hasNativeTls(env)) return null;
 	if (proxies.proxies.length > 0 && allowed.hosts.length > 0) return null;
 	return `HOST=${host} is not loopback and has no TLS. ${BIND_FIX}`;

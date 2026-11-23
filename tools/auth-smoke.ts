@@ -1085,6 +1085,24 @@ async function trustedProxy(): Promise<void> {
 			scratch,
 		);
 		await refusesToStart("no HOST", base, {}, scratch);
+		// Review F4: these bound the unspecified address when a proxy was set.
+		for (const HOST of [
+			"0:0:0:0:0:0:0:0",
+			"::0",
+			"0000::",
+			"::ffff:0.0.0.0",
+			"00.0.0.0",
+		])
+			await refusesToStart(
+				`unspecified spelling ${HOST}`,
+				base,
+				{
+					HOST,
+					MFW_TRUSTED_PROXIES: PROXY_PEER,
+					MFW_ALLOWED_HOSTS: EXTERNAL,
+				},
+				scratch,
+			);
 		await refusesToStart(
 			"a wildcard allowed host",
 			base,
