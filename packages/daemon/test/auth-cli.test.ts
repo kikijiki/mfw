@@ -21,7 +21,7 @@ import {
 	AuthService,
 	FREE_ATTEMPTS,
 } from "../src/auth/service.ts";
-import { acquireDaemonLock } from "../src/host-resources/daemon-lock.ts";
+import { acquireDaemonLock } from "../src/resources/daemon-lock.ts";
 import { pinnedTool } from "../src/sandbox.ts";
 
 const PASSWORD = "correct horse battery";

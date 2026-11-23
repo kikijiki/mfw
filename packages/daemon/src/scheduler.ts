@@ -1,20 +1,13 @@
 import { overlappingPatterns } from "@mfw/board";
 import type { ProjectDbHandle } from "@mfw/db/client";
-import { appendEvent, type EventBus, type StoredEvent } from "@mfw/db/eventlog";
-import {
-	engineKv,
-	type RunKind,
-	type RunState,
-	resourceSlots,
-	resources,
-} from "@mfw/db/schema";
-import { and, eq, type SQL, sql } from "drizzle-orm";
+import { appendEvent, type EventBus } from "@mfw/db/eventlog";
+import { engineKv, type RunKind, type RunState } from "@mfw/db/schema";
+import { eq, sql } from "drizzle-orm";
 import type {
 	LaunchOutcome,
 	PendingSpawn,
 	TaskHolds,
 } from "./brain-runtime/executor.ts";
-import type { HostAdmissionSnapshot } from "./host-resources/index.ts";
 import type { Logger } from "./log.ts";
 import { refusalFix } from "./refusal-fix.ts";
 import type { RunRegistry, RunRow } from "./run-registry.ts";
@@ -76,9 +69,7 @@ export interface SchedulerConfig {
 
 /** The slice of RunEngine the scheduler is allowed to touch. */
 export interface DispatchEngine {
-	readonly admissionIntegrated?: boolean;
 	syncEligibleTasks?(taskIds: readonly string[]): Promise<void>;
-	captureAdmissionSnapshot?(): HostAdmissionSnapshot | undefined;
 }
 
 /**
@@ -88,10 +79,7 @@ export interface DispatchEngine {
  */
 export interface SpawnSource {
 	pending(): Promise<PendingSpawn[]>;
-	launch(
-		actionId: string,
-		ctx: { hostSnapshot?: HostAdmissionSnapshot },
-	): Promise<LaunchOutcome>;
+	launch(actionId: string): Promise<LaunchOutcome>;
 	/** Tasks the brain paused or parked for a person: their spawns wait. */
 	holds(): Promise<TaskHolds>;
 }
@@ -285,14 +273,6 @@ interface Gates {
 	} | null;
 }
 
-interface SlotRef {
-	resourceId: string;
-	slot: number;
-}
-
-/** Free-slot bookkeeping for one tick: DB state + this wave's reservations. */
-type SlotState = Map<string, { max: number; used: Set<number> }>;
-
 /** Runs that still occupy a concurrency slot. */
 const LIVE_STATES: RunState[] = [
 	"starting",
@@ -306,14 +286,6 @@ const LIVE_STATES: RunState[] = [
  *  subprocesses and would otherwise starve dispatch. */
 const COUNTED_KINDS: RunKind[] = ["task", "repair", "import", "plan", "action"];
 
-/** A lost race on a slot insert; rolls the acquisition transaction back. */
-export class SlotConflictError extends Error {
-	constructor(readonly slot: SlotRef) {
-		super(`resource ${slot.resourceId} slot ${slot.slot} was taken`);
-		this.name = "SlotConflictError";
-	}
-}
-
 export class Scheduler {
 	private readonly log: Logger;
 	private readonly now: () => number;
@@ -324,8 +296,6 @@ export class Scheduler {
 	/** Last `waitingFor` announced per task; re-announced only on change. */
 	private readonly announcedHolds = new Map<string, string>();
 
-	/** Resource ids already warned about as unregistered (warn once). */
-	private readonly warnedUnknownResources = new Set<string>();
 	/** Health surface. */
 	readonly stats = {
 		lastTickAt: 0,
@@ -657,16 +627,6 @@ export class Scheduler {
 		if (!spawns) return;
 		const holds = await spawns.holds().catch(() => ({}) as TaskHolds);
 		const claimed = await this.runningOwnership(liveRuns);
-		const integrated = this.deps.engine.admissionIntegrated === true;
-		const hostSnapshot = integrated
-			? this.deps.engine.captureAdmissionSnapshot?.()
-			: undefined;
-		if (integrated && !hostSnapshot) {
-			throw new Error(
-				"integrated host admission did not provide a wave snapshot",
-			);
-		}
-		let slots: SlotState | null = null;
 		let used = 0;
 		for (const job of pending) {
 			if (used >= room) {
@@ -698,35 +658,11 @@ export class Scheduler {
 			}
 			if (await this.holdForOverlap(task, claimed, stats)) continue;
 
-			// Project resources: one reservation per run, all or nothing.
-			const plans: SlotRef[][] = [];
-			if (!integrated) {
-				if ((task.requiresResources ?? []).length > 0) {
-					slots ??= await this.slotState();
-					let blocked: string[] | null = null;
-					for (let i = 0; i < need && !blocked; i++) {
-						const r = this.reserve(task, slots);
-						if ("blockedBy" in r) blocked = r.blockedBy;
-						else plans.push(r.plan);
-					}
-					if (blocked) {
-						for (const plan of plans) {
-							for (const p of plan)
-								slots.get(p.resourceId)?.used.delete(p.slot);
-						}
-						stats.heldForResource.push(task.id);
-						await this.announceHold(task.id, blocked);
-						continue;
-					}
-				}
-			}
 			this.announcedHolds.delete(task.id);
 
 			let outcome: LaunchOutcome | null = null;
 			try {
-				outcome = await spawns.launch(job.actionId, {
-					...(hostSnapshot ? { hostSnapshot } : {}),
-				});
+				outcome = await spawns.launch(job.actionId);
 			} catch (e) {
 				stats.errors++;
 				this.stats.tickErrors++;
@@ -753,15 +689,7 @@ export class Scheduler {
 				continue;
 			}
 			if (outcome.outcome !== "applied") continue;
-			for (const [i, runId] of outcome.runIds.entries()) {
-				const plan = plans[i];
-				if (!integrated && plan && plan.length > 0) {
-					await this.acquireSlots(runId, plan).catch(async (e: unknown) => {
-						stats.errors++;
-						this.log.error({ err: e, runId }, "slot acquisition failed");
-						await this.releaseSlots(runId).catch(() => {});
-					});
-				}
+			for (const _runId of outcome.runIds) {
 				stats.started.push(task.id);
 				this.stats.dispatched++;
 				used++;
@@ -813,183 +741,6 @@ export class Scheduler {
 			reason: `owns overlaps: ${pairs.join(", ")}`,
 		});
 		return true;
-	}
-
-	// ------------------------------------------------------------------
-	// resource semaphore
-	// ------------------------------------------------------------------
-
-	private async slotState(): Promise<SlotState> {
-		const defs = await this.deps.handle.db.select().from(resources);
-		const held = await this.deps.handle.db.select().from(resourceSlots);
-		const state: SlotState = new Map();
-		for (const r of defs) {
-			state.set(r.id, {
-				max: Math.max(1, r.maxConcurrent),
-				used: new Set<number>(),
-			});
-		}
-		for (const s of held) state.get(s.resourceId)?.used.add(s.slot);
-		return state;
-	}
-
-	/**
-	 * All-or-nothing reservation against `state`. Every required resource must
-	 * yield a free slot; if one does not, every slot already taken for this task
-	 * is handed back. Unknown resource ids impose no constraint.
-	 */
-	private reserve(
-		task: TaskRow,
-		state: SlotState,
-	): { plan: SlotRef[] } | { blockedBy: string[] } {
-		const required = [
-			...new Set(
-				(task.requiresResources ?? [])
-					.filter(
-						(requirement) =>
-							typeof requirement === "string" ||
-							requirement.scope === "project",
-					)
-					.map((requirement) =>
-						typeof requirement === "string" ? requirement : requirement.id,
-					),
-			),
-		];
-		if (required.length === 0) return { plan: [] };
-
-		const plan: SlotRef[] = [];
-		const blockedBy: string[] = [];
-		for (const resourceId of required) {
-			const entry = state.get(resourceId);
-			if (!entry) {
-				// An unregistered resource imposes no constraint. Failing closed would
-				// wedge a board on a typo, and forward-declaring a resource before
-				// registering it is legitimate, so warn once instead.
-				if (!this.warnedUnknownResources.has(resourceId)) {
-					this.warnedUnknownResources.add(resourceId);
-					this.log.warn(
-						{ taskId: task.id, resourceId },
-						"task requires an unregistered resource, dispatching with NO " +
-							"constraint from it; register it (Settings → Resources) if it " +
-							"is meant to limit concurrency",
-					);
-				}
-				continue;
-			}
-			let free: number | null = null;
-			for (let slot = 0; slot < entry.max; slot++) {
-				if (!entry.used.has(slot)) {
-					free = slot;
-					break;
-				}
-			}
-			if (free === null) {
-				blockedBy.push(resourceId);
-				continue;
-			}
-			entry.used.add(free);
-			plan.push({ resourceId, slot: free });
-		}
-		if (blockedBy.length > 0) {
-			for (const p of plan) state.get(p.resourceId)?.used.delete(p.slot);
-			return { blockedBy };
-		}
-		return { plan };
-	}
-
-	/** Persist a reservation in ONE transaction; a slot lost to a concurrent
-	 *  writer throws and rolls everything back. */
-	async acquireSlots(runId: string, plan: SlotRef[]): Promise<void> {
-		if (plan.length === 0) return;
-		const events = await this.deps.handle.withTx(async (tx) => {
-			const out: StoredEvent[] = [];
-			for (const p of plan) {
-				const won = await tx
-					.insert(resourceSlots)
-					.values({
-						resourceId: p.resourceId,
-						slot: p.slot,
-						runId,
-						lockedAt: new Date(this.now()),
-					})
-					.onConflictDoNothing()
-					.returning({ slot: resourceSlots.slot });
-				if (won.length === 0) throw new SlotConflictError(p);
-				out.push(
-					await appendEvent(tx, {
-						type: "resource.locked",
-						runId,
-						payload: { resourceId: p.resourceId, slot: p.slot },
-					}),
-				);
-			}
-			return out;
-		});
-		this.deps.bus.publish(events);
-	}
-
-	/**
-	 * Free every slot a run holds. Public because the StepRunner/merge path and
-	 * the watchdog release through it. Idempotent.
-	 */
-	async releaseSlots(
-		runId: string,
-		opts: { forced?: boolean } = {},
-	): Promise<number> {
-		return this.freeSlots(eq(resourceSlots.runId, runId), opts.forced ?? false);
-	}
-
-	/**
-	 * Operator force-unlock: free a resource's slots (one or all) whatever run
-	 * holds them. Emits `resource.released` per slot with `forced: true`, the
-	 * only record that a human freed the capacity.
-	 */
-	async forceReleaseSlots(resourceId: string, slot?: number): Promise<number> {
-		const where =
-			slot === undefined
-				? eq(resourceSlots.resourceId, resourceId)
-				: and(
-						eq(resourceSlots.resourceId, resourceId),
-						eq(resourceSlots.slot, slot),
-					);
-		return this.freeSlots(where as SQL, true);
-	}
-
-	/** The one delete-and-announce path: every release, forced or not. */
-	private async freeSlots(where: SQL, forced: boolean): Promise<number> {
-		const events = await this.deps.handle.withTx(async (tx) => {
-			const freed = await tx.delete(resourceSlots).where(where).returning();
-			const out: StoredEvent[] = [];
-			for (const row of freed) {
-				await tx
-					.update(resources)
-					.set({ lastUnlockedAt: new Date(this.now()) })
-					.where(eq(resources.id, row.resourceId));
-				out.push(
-					await appendEvent(tx, {
-						type: "resource.released",
-						payload: {
-							resourceId: row.resourceId,
-							slot: row.slot,
-							runId: row.runId,
-							forced,
-						},
-					}),
-				);
-			}
-			return out;
-		});
-		this.deps.bus.publish(events);
-		return events.length;
-	}
-
-	/** Slot refs currently held by a run (health/debug surface). */
-	async heldSlots(runId: string): Promise<SlotRef[]> {
-		const rows = await this.deps.handle.db
-			.select()
-			.from(resourceSlots)
-			.where(eq(resourceSlots.runId, runId));
-		return rows.map((r) => ({ resourceId: r.resourceId, slot: r.slot }));
 	}
 
 	private async announceHold(

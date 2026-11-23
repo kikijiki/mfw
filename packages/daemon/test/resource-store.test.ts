@@ -3,7 +3,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createClient } from "@libsql/client";
-import { openHostResourceStore } from "../src/host-resources/index.ts";
 import {
 	openResourceStore,
 	type ResourceStore,
@@ -106,28 +105,6 @@ afterEach(async () => {
 });
 
 describe("store and host.db", () => {
-	test("shares host.db with the existing store without touching its version", async () => {
-		const legacy = await openHostResourceStore(home, {
-			kernelBootId: "k",
-			processBootId: "p",
-		});
-		legacy.close();
-		store.close();
-		store = await openResourceStore(home, { now });
-		const again = await openHostResourceStore(home, {
-			kernelBootId: "k",
-			processBootId: "p2",
-		});
-		again.close();
-		const client = createClient({
-			url: `file:${join(home, "host", "host.db")}`,
-		});
-		const version = await client.execute("PRAGMA user_version");
-		client.close();
-		expect(Number(version.rows[0]?.[0])).toBeGreaterThan(0);
-		expect((await store.summaries()).length).toBe(4);
-	});
-
 	test("refuses a newer resource schema", async () => {
 		store.close();
 		const client = createClient({
@@ -139,7 +116,7 @@ describe("store and host.db", () => {
 			code: "INCOMPATIBLE_SCHEMA",
 		});
 		const fix = createClient({ url: `file:${join(home, "host", "host.db")}` });
-		await fix.execute("UPDATE rp_schema SET version=1");
+		await fix.execute("UPDATE rp_schema SET version=2");
 		fix.close();
 		store = await openResourceStore(home, { now });
 	});

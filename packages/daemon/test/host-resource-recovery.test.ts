@@ -2,17 +2,18 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { HostLease } from "../src/resources/host-types.ts";
+import { SystemLeaseLiveness } from "../src/resources/liveness.ts";
+import { ResourceError, type ResourceLease } from "../src/resources/types.ts";
 import {
-	type Grant,
-	type HostLease,
 	HostResourceCoordinator,
-	HostStoreError,
-	type HostTransition,
-	type LeaseLivenessInspector,
-	type LivenessEvidence,
+	type LegacyTransition as HostTransition,
+	type LegacyLiveness as LeaseLivenessInspector,
+	type LegacyEvidence as LivenessEvidence,
 	openHostResourceStore,
-	SystemLeaseLiveness,
-} from "../src/host-resources/index.ts";
+} from "./support/legacy-host.ts";
+
+type Grant = HostLease;
 
 const homes: string[] = [];
 afterEach(async () => {
@@ -215,13 +216,14 @@ describe("host resource recovery", () => {
 			.trim()
 			.split(/\s+/)[19] as string;
 		const inspector = new SystemLeaseLiveness({ kernelBootId: "kernel-a" });
-		const base: HostLease = {
+		const base: ResourceLease = {
 			id: "lease",
 			waiterId: "waiter",
 			projectId: "project",
+			scopes: [],
 			state: "active",
-			fence: 1n,
-			allocations: [],
+			fence: 1,
+			runId: "run",
 			run: {
 				runId: "run",
 				runDir: "/detached/run",
@@ -229,23 +231,22 @@ describe("host resource recovery", () => {
 				processStartTime: startTime,
 				kernelBootId: "kernel-a",
 			},
-			ownerProcessBootId: "old-process",
+			ownerBootId: "old-process",
 			grantedAt: 1,
 			activatedAt: 1,
 			lastRenewedAt: 1,
 			expiresAt: 2,
 			releaseReason: null,
-		};
+			releasedAt: null,
+		} as ResourceLease;
 		const persistedRun = base.run;
 		if (!persistedRun) throw new Error("test lease is missing run identity");
-		expect((await inspector.inspect(base)).status).toBe("live");
+		expect(await inspector.inspect(base)).toBe("live");
 		expect(
-			(
-				await inspector.inspect({
-					...base,
-					run: { ...persistedRun, processStartTime: `${startTime}-reused` },
-				})
-			).status,
+			await inspector.inspect({
+				...base,
+				run: { ...persistedRun, processStartTime: `${startTime}-reused` },
+			}),
 		).toBe("absent");
 
 		const tmuxLease = {
@@ -265,8 +266,8 @@ describe("host resource recovery", () => {
 			kernelBootId: "kernel-a",
 			sessions: { isAlive: async () => false },
 		});
-		expect((await tmuxLive.inspect(tmuxLease)).status).toBe("live");
-		expect((await tmuxGone.inspect(tmuxLease)).status).toBe("absent");
+		expect(await tmuxLive.inspect(tmuxLease)).toBe("live");
+		expect(await tmuxGone.inspect(tmuxLease)).toBe("absent");
 	});
 
 	test("force release needs current fence, fresh conclusive liveness, actor and reason", async () => {
@@ -297,7 +298,7 @@ describe("host resource recovery", () => {
 				actor: "",
 				reason: "incident response",
 			}),
-		).rejects.toBeInstanceOf(HostStoreError);
+		).rejects.toBeInstanceOf(ResourceError);
 		clock = 2_000; // evidence is now stale
 		await expect(
 			c.forceRelease({

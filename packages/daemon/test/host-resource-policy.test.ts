@@ -1,15 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import {
-	cpuObservationFromHealth,
-	evaluateRamFormula,
-	memoryObservationFromHealth,
-	memoryObservationFromSample,
-	RAM_OBSERVATION_MAX_AGE_MS,
-} from "../src/host-resources/index.ts";
 import type {
 	ObservationHealth,
 	StoredObservation,
-} from "../src/host-resources/types.ts";
+} from "../src/resources/host-types.ts";
+import {
+	cpuObservationFromHealth,
+	memoryObservationFromHealth,
+	memoryObservationFromSample,
+} from "../src/resources/observation-policy.ts";
+import {
+	evaluateRamFormula,
+	RAM_OBSERVATION_MAX_AGE_MS,
+} from "../src/resources/quantity.ts";
 
 const NOW = Date.parse("2026-08-24T00:00:10.000Z");
 const identity = { processBootId: "process-current", kernelBootId: "kernel-a" };

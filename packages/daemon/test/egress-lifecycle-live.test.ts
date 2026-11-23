@@ -75,7 +75,7 @@ function ask(socketPath: string): Promise<string> {
 
 beforeEach(() => {
 	mkdirSync(FIXTURES, { recursive: true });
-	base = realpathSync(mkdtempSync(join(FIXTURES, "egress-life-")));
+	base = realpathSync(mkdtempSync(join(FIXTURES, "egl-")));
 	mfwHome = join(base, "mfw");
 	control = join(base, "control");
 	mkdirSync(control, { mode: 0o700 });

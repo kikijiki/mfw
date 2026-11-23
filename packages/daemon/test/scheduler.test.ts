@@ -6,37 +6,31 @@ import type { Priority as TaskPriority } from "@mfw/core/types";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
 import { EventBus } from "@mfw/db/eventlog";
 import { ulid } from "@mfw/db/ids";
-import { engineKv, events, resourceSlots, resources } from "@mfw/db/schema";
+import { engineKv, events } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
 import type {
 	LaunchOutcome,
 	PendingSpawn,
 	TaskHolds,
 } from "../src/brain-runtime/executor.ts";
-import type { HostAdmissionSnapshot } from "../src/host-resources/index.ts";
 import { silentLogger } from "../src/log.ts";
 import { AdmissionHeldError } from "../src/project-dispatch-admission.ts";
-import { ProviderHoldStore } from "../src/provider-holds.ts";
 import { routeWith } from "../src/routing.ts";
 import { RunRegistry } from "../src/run-registry.ts";
 import {
 	NO_BRAIN_ROUTE_REASON,
 	Scheduler,
 	type SchedulerDeps,
-	SlotConflictError,
 	type SpawnSource,
 } from "../src/scheduler.ts";
 import type { TaskService } from "../src/task-service.ts";
 import { TaskOwnershipHeldError } from "../src/tasks/index.ts";
 import { makeTasks } from "./fixtures/board.ts";
+import { openTestHolds } from "./support/host-ledger.ts";
 
 /** RunEngine double: claims the task and creates a real `runs` row (for the slot FK and concurrency count). No tmux/git. */
 class FakeEngine {
 	calls: string[] = [];
-	admissionIntegrated = false;
-	hostSnapshot: HostAdmissionSnapshot | undefined;
-	hostSnapshotsSeen: Array<HostAdmissionSnapshot | undefined> = [];
-	captureCalls = 0;
 	runIds = new Map<string, string>();
 	/** Task ids whose start should throw. */
 	failOn = new Set<string>();
@@ -50,20 +44,16 @@ class FakeEngine {
 		private readonly cwd: string,
 	) {}
 
-	captureAdmissionSnapshot(): HostAdmissionSnapshot | undefined {
-		this.captureCalls++;
-		return this.hostSnapshot;
-	}
+	async syncEligibleTasks(): Promise<void> {}
 
 	async startTask(
 		taskId: string,
-		opts?: { model?: string; hostSnapshot?: HostAdmissionSnapshot },
+		_opts?: { model?: string },
 	): Promise<{ runId: string }> {
 		this.concurrent++;
 		this.maxConcurrent = Math.max(this.maxConcurrent, this.concurrent);
 		try {
 			this.calls.push(taskId);
-			this.hostSnapshotsSeen.push(opts?.hostSnapshot);
 			if (this.delayMs) await Bun.sleep(this.delayMs);
 			if (this.failOn.has(taskId)) throw new Error(`start failed: ${taskId}`);
 			// Claim before the row exists, as the real engine's prepare does: a
@@ -142,17 +132,12 @@ class FakeSpawns implements SpawnSource {
 		return this.holdsNow;
 	}
 
-	async launch(
-		actionId: string,
-		ctx: { hostSnapshot?: HostAdmissionSnapshot },
-	): Promise<LaunchOutcome> {
+	async launch(actionId: string): Promise<LaunchOutcome> {
 		const job = this.jobs.find((j) => j.actionId === actionId);
 		if (!job || job.done) return { outcome: "noop" };
 		this.launches.push(actionId);
 		try {
-			const r = await this.engine.startTask(job.taskId, {
-				hostSnapshot: ctx.hostSnapshot,
-			});
+			const r = await this.engine.startTask(job.taskId);
 			job.done = true;
 			return { outcome: "applied", runIds: [r.runId] };
 		} catch (e) {
@@ -186,13 +171,8 @@ interface Fixture {
 	now: { value: number };
 	/** Create a task; unless `spawn: false`, the brain spawns it right away. */
 	seed: (over?: SeedOpts) => Promise<string>;
-	resource: (id: string, maxConcurrent: number) => Promise<void>;
 	/** Park a slot under a throwaway run row (simulates another run holding it). */
-	occupy: (resourceId: string, slot: number) => Promise<string>;
 	eventTypes: () => Promise<string[]>;
-	slotRows: () => Promise<
-		{ resourceId: string; slot: number; runId: string }[]
-	>;
 	cleanup: () => Promise<void>;
 }
 
@@ -285,36 +265,8 @@ async function fixture(
 			if (over.spawn !== false) spawns.spawn(t.id);
 			return t.id;
 		},
-		resource: async (id, maxConcurrent) => {
-			await handle.db.insert(resources).values({
-				id,
-				name: id,
-				type: "fixed",
-				cost: "free",
-				maxConcurrent,
-				createdAt: new Date(),
-			});
-		},
-		occupy: async (resourceId, slot) => {
-			const run = await registry.create({
-				kind: "task",
-				label: "squatter",
-				model: "sonnet",
-				cwd: root,
-			});
-			await handle.db
-				.insert(resourceSlots)
-				.values({ resourceId, slot, runId: run.id, lockedAt: new Date() });
-			return run.id;
-		},
 		eventTypes: async () =>
 			(await handle.db.select().from(events)).map((e) => e.type),
-		slotRows: async () =>
-			(await handle.db.select().from(resourceSlots)).map((r) => ({
-				resourceId: r.resourceId,
-				slot: r.slot,
-				runId: r.runId,
-			})),
 		cleanup: async () => {
 			await sched.stop();
 			handle.close();
@@ -385,50 +337,6 @@ describe("Scheduler v2: picking", () => {
 
 		f.spawns.holdsNow = {};
 		expect((await f.sched.tick()).started).toEqual([a]);
-		await f.cleanup();
-	});
-
-	test("resource admission remains authoritative for spawned tasks", async () => {
-		const f = await fixture({ maxConcurrent: 3 });
-		await f.resource("gpu", 1);
-		const first = await f.seed({ title: "gpu-a", requiresResources: ["gpu"] });
-		const second = await f.seed({
-			title: "gpu-b",
-			requiresResources: ["gpu"],
-		});
-
-		const stats = await f.sched.tick();
-		expect(stats.started).toEqual([first]);
-		expect(stats.heldForResource).toEqual([second]);
-		expect(await f.slotRows()).toHaveLength(1);
-		await f.cleanup();
-	});
-
-	test("integrated admission captures once and passes one snapshot to the entire candidate wave", async () => {
-		const f = await fixture({ maxConcurrent: 3 });
-		for (let index = 0; index < 3; index++) {
-			await f.seed({ title: `snapshot-${index}` });
-		}
-		const snapshot: HostAdmissionSnapshot = {
-			generation: 41n,
-			capturedAt: 1_000,
-			processBootId: "process-a",
-			kernelBootId: "kernel-a",
-			definitions: {},
-			bindings: {},
-			health: {},
-			observations: {},
-		};
-		f.engine.admissionIntegrated = true;
-		f.engine.hostSnapshot = snapshot;
-
-		const stats = await f.sched.tick();
-		expect(stats.started).toHaveLength(3);
-		expect(f.engine.captureCalls).toBe(1);
-		expect(f.engine.hostSnapshotsSeen).toEqual([snapshot, snapshot, snapshot]);
-		expect(f.engine.hostSnapshotsSeen.every((item) => item === snapshot)).toBe(
-			true,
-		);
 		await f.cleanup();
 	});
 
@@ -587,17 +495,6 @@ describe("Scheduler: declared ownership (owns)", () => {
 		const f = await fixture({ maxConcurrent: 5 });
 		const first = await f.seed({ title: "first", owns: ["pkg"] });
 		const second = await f.seed({ title: "second", owns: ["pkg/x.ts"] });
-		f.engine.admissionIntegrated = true;
-		f.engine.hostSnapshot = {
-			generation: 1n,
-			capturedAt: 1_000,
-			processBootId: "p",
-			kernelBootId: "k",
-			definitions: {},
-			bindings: {},
-			health: {},
-			observations: {},
-		};
 
 		const stats = await f.sched.tick();
 		expect(stats.started).toEqual([first]);
@@ -626,112 +523,6 @@ describe("Scheduler: declared ownership (owns)", () => {
 		const stats = await f.sched.tick();
 		expect(stats.started.sort()).toEqual([x, y].sort());
 		expect(stats.heldForOverlap).toEqual([]);
-		await f.cleanup();
-	});
-});
-
-describe("Scheduler v2: resource semaphore", () => {
-	test("maxConcurrent 2 really grants TWO holders (the v1 mutex bug)", async () => {
-		const f = await fixture({ maxConcurrent: 5 });
-		await f.resource("gpu", 2);
-		const a = await f.seed({ title: "a", requiresResources: ["gpu"] });
-		const b = await f.seed({ title: "b", requiresResources: ["gpu"] });
-		const c = await f.seed({ title: "c", requiresResources: ["gpu"] });
-
-		const stats = await f.sched.tick();
-		expect(stats.started).toEqual([a, b]);
-		expect(stats.heldForResource).toEqual([c]);
-		expect(f.engine.calls).not.toContain(c);
-
-		const slots = await f.slotRows();
-		expect(slots.length).toBe(2);
-		expect(slots.map((s) => s.slot).sort()).toEqual([0, 1]);
-		expect(await f.eventTypes()).toContain("task.held_for_resource");
-		expect(await f.eventTypes()).toContain("resource.locked");
-		await f.cleanup();
-	});
-
-	test("maxConcurrent 1 admits exactly one", async () => {
-		const f = await fixture({ maxConcurrent: 5 });
-		await f.resource("serial", 1);
-		const a = await f.seed({ title: "a", requiresResources: ["serial"] });
-		const b = await f.seed({ title: "b", requiresResources: ["serial"] });
-
-		const stats = await f.sched.tick();
-		expect(stats.started).toEqual([a]);
-		expect(stats.heldForResource).toEqual([b]);
-		expect((await f.slotRows()).length).toBe(1);
-		await f.cleanup();
-	});
-
-	test("an unknown resource id imposes no constraint", async () => {
-		const f = await fixture();
-		const a = await f.seed({ title: "a", requiresResources: ["nope"] });
-		expect((await f.sched.tick()).started).toEqual([a]);
-		expect((await f.slotRows()).length).toBe(0);
-		await f.cleanup();
-	});
-
-	test("ALL-OR-NOTHING: one free + one full acquires neither", async () => {
-		const f = await fixture();
-		await f.resource("free", 1);
-		await f.resource("busy", 1);
-		await f.occupy("busy", 0);
-		const t = await f.seed({
-			title: "both",
-			requiresResources: ["free", "busy"],
-		});
-
-		const stats = await f.sched.tick();
-		expect(stats.started).toEqual([]);
-		expect(stats.heldForResource).toEqual([t]);
-		// no partial hold on the free resource
-		expect((await f.slotRows()).filter((s) => s.resourceId === "free")).toEqual(
-			[],
-		);
-		await f.cleanup();
-	});
-
-	test("ALL-OR-NOTHING: a lost race rolls the whole acquisition back", async () => {
-		const f = await fixture();
-		await f.resource("pool", 2);
-		await f.occupy("pool", 1);
-		const run = await f.registry.create({
-			kind: "task",
-			label: "mine",
-			model: "sonnet",
-			cwd: f.root,
-		});
-
-		await expect(
-			f.sched.acquireSlots(run.id, [
-				{ resourceId: "pool", slot: 0 },
-				{ resourceId: "pool", slot: 1 },
-			]),
-		).rejects.toBeInstanceOf(SlotConflictError);
-		// slot 0 was inserted first; rollback must undo it
-		expect(await f.sched.heldSlots(run.id)).toEqual([]);
-		await f.cleanup();
-	});
-
-	test("releaseSlots frees capacity for the next tick", async () => {
-		const f = await fixture({ maxConcurrent: 5 });
-		await f.resource("serial", 1);
-		const a = await f.seed({ title: "a", requiresResources: ["serial"] });
-		const b = await f.seed({ title: "b", requiresResources: ["serial"] });
-
-		await f.sched.tick();
-		const runA = f.engine.runIds.get(a) as string;
-		expect((await f.sched.tick()).started).toEqual([]); // still held
-
-		const freed = await f.sched.releaseSlots(runA);
-		expect(freed).toBe(1);
-		expect(await f.eventTypes()).toContain("resource.released");
-
-		expect((await f.sched.tick()).started).toEqual([b]);
-		expect((await f.slotRows()).map((s) => s.runId)).toEqual([
-			f.engine.runIds.get(b) as string,
-		]);
 		await f.cleanup();
 	});
 });
@@ -777,7 +568,7 @@ describe("Scheduler v2: gates", () => {
 
 	test("a Claude provider hold does not block a Codex-routed task", async () => {
 		const home = await mkdtemp(join(tmpdir(), "mfw-holds-"));
-		const holds = ProviderHoldStore.at(home);
+		const holds = await openTestHolds(home);
 		const router = {
 			settings: () => ({
 				provider: { id: "claude-cli", type: "claude-cli" as const },
@@ -1126,12 +917,7 @@ describe("Scheduler v2: status tells the truth about both switches", () => {
 describe("Scheduler v2: failure is surfaced, never swallowed", () => {
 	test("a startTask failure is counted, logged, and the wave continues", async () => {
 		const f = await fixture({ maxConcurrent: 5 });
-		await f.resource("gpu", 1);
-		const bad = await f.seed({
-			title: "bad",
-			priority: "critical",
-			requiresResources: ["gpu"],
-		});
+		const bad = await f.seed({ title: "bad", priority: "critical" });
 		const good = await f.seed({ title: "good" });
 		f.engine.failOn.add(bad);
 
@@ -1139,14 +925,11 @@ describe("Scheduler v2: failure is surfaced, never swallowed", () => {
 		expect(stats.errors).toBe(1);
 		expect(stats.started).toEqual([good]);
 		expect(f.engine.calls).toEqual([bad, good]);
-		// the failed task leaked no slot
-		expect((await f.slotRows()).length).toBe(0);
 		expect(f.sched.stats.tickErrors).toBe(1);
 		expect((await f.sched.status()).errors).toBe(1);
 
 		f.engine.failOn.clear();
 		expect((await f.sched.tick()).started).toEqual([bad]);
-		expect((await f.slotRows()).length).toBe(1);
 		await f.cleanup();
 	});
 
@@ -1246,43 +1029,6 @@ describe("Scheduler v2: the loop", () => {
 		await Bun.sleep(60);
 		await f.sched.stop();
 		expect(f.sched.stats.tickErrors).toBeGreaterThan(0);
-		await f.cleanup();
-	});
-});
-
-describe("resource slots are released when a run terminates", () => {
-	test("capacity comes back without a manual releaseSlots call", async () => {
-		const f = await fixture({ maxConcurrent: 4 });
-		await f.handle.db.insert(resources).values({
-			id: "gpu",
-			name: "gpu",
-			type: "fixed",
-			cost: "paid",
-			maxConcurrent: 1,
-			createdAt: new Date(),
-		});
-
-		const mk = async (title: string) => {
-			const t = await f.tasks.create({ title, requiresResources: ["gpu"] });
-			await f.tasks.move(t.id, "ready", "human");
-			return t;
-		};
-		const a = await mk("first");
-		const second = await mk("second");
-		f.spawns.spawn(a.id);
-		f.spawns.spawn(second.id);
-
-		await f.sched.tick();
-		expect(f.engine.calls.length).toBe(1); // the semaphore holds the second
-
-		// terminate the holder the way the supervisor does, then release
-		const runId = f.engine.runIds.get(a.id) as string;
-		await f.registry.finish(runId, "completed");
-		await f.sched.releaseSlots(runId);
-		await f.tasks.release(a.id, runId, "done", "scheduler");
-
-		await f.sched.tick();
-		expect(f.engine.calls.length).toBe(2); // capacity really came back
 		await f.cleanup();
 	});
 });

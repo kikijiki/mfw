@@ -110,7 +110,7 @@ async function makeFixture(
 	// Not under /tmp: the sandbox has its own /tmp, where a write to a fixture
 	// path would land on a private tmpfs and look like an escape.
 	mkdirSync(FIXTURES, { recursive: true });
-	const base = realpathSync(mkdtempSync(join(FIXTURES, "conformance-")));
+	const base = realpathSync(mkdtempSync(join(FIXTURES, "cf-")));
 	const home = join(base, "home");
 	const bin = join(home, ".local/bin");
 	mkdirSync(bin, { recursive: true });

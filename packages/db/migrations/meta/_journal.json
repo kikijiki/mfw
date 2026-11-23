@@ -169,6 +169,13 @@
       "when": 1795427821844,
       "tag": "0024_run_result_import",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1795431421844,
+      "tag": "0025_drop_resource_slots",
+      "breakpoints": true
     }
   ]
 }

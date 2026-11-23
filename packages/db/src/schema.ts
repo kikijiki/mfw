@@ -691,25 +691,6 @@ export const resources = sqliteTable("resources", {
 	createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 });
 
-/** Semaphore: one row per held slot. */
-export const resourceSlots = sqliteTable(
-	"resource_slots",
-	{
-		resourceId: text("resource_id")
-			.notNull()
-			.references(() => resources.id, { onDelete: "cascade" }),
-		slot: integer("slot").notNull(), // 0 .. maxConcurrent-1
-		runId: text("run_id")
-			.notNull()
-			.references(() => runs.id, { onDelete: "cascade" }),
-		lockedAt: integer("locked_at", { mode: "timestamp_ms" }).notNull(),
-	},
-	(t) => [
-		primaryKey({ columns: [t.resourceId, t.slot] }), // single winner per slot
-		index("ix_slots_run").on(t.runId),
-	],
-);
-
 // ---------- project-to-host dispatch admission ----------
 
 export type DispatchAdmissionState =

@@ -2,16 +2,21 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { HostResourceDefinition } from "../src/resources/host-types.ts";
 import {
 	formatIecBytes,
-	HostResourceCoordinator,
-	type HostResourceDefinition,
-	openHostResourceStore,
 	parseIecBytes,
 	parseIntegerQuantity,
 	QuantityParseError,
 	RAM_OBSERVATION_MAX_AGE_MS,
-} from "../src/host-resources/index.ts";
+} from "../src/resources/quantity.ts";
+import {
+	HostResourceCoordinator,
+	openHostResourceStore,
+} from "./support/legacy-host.ts";
+
+/** The core accounts RAM in whole MiB, rounding only against admission. */
+const MiB = 1n << 20n;
 
 const homes: string[] = [];
 
@@ -186,7 +191,7 @@ describe("durable quantity admission", () => {
 			projectId: "project-b",
 			requirements: [{ resourceId: "ram", amount: 6n * GiB }],
 		});
-		const generation = (await a.store.readModel()).generation;
+		const generation = (await a.store.freshModel()).generation;
 		const raced = await Promise.all([
 			a.tryGrant(first.id, generation),
 			b.tryGrant(second.id, generation),
@@ -454,18 +459,18 @@ describe("durable quantity admission", () => {
 		const path = await tempHome();
 		const now = () => Date.parse("2026-08-24T00:00:00Z");
 		const c = await coordinator(path, "process-current", now);
-		await c.putDefinition(ramDefinition(10n, 2n, true));
+		await c.putDefinition(ramDefinition(10n * MiB, 2n * MiB, true));
 		const waiter = await c.putWaiter({
 			requestKey: "ignored-observation",
 			projectId: "a",
-			requirements: [{ resourceId: "ram", amount: 7n }],
+			requirements: [{ resourceId: "ram", amount: 7n * MiB }],
 		});
 		expect("kind" in (await c.tryGrant(waiter.id, waiter.generation))).toBe(
 			false,
 		);
 		const capacity = c.readModel().effectiveCapacities[0];
 		expect(capacity).toMatchObject({
-			effectiveCapacity: 3n,
+			effectiveCapacity: 3n * MiB,
 			observation: { policy: "ignored-explicitly" },
 			ramFormula: null,
 		});
@@ -480,22 +485,22 @@ describe("durable quantity admission", () => {
 		const path = await tempHome();
 		const now = () => Date.parse("2026-08-24T00:00:00Z");
 		const c = await coordinator(path, "process-current", now);
-		await c.putDefinition(ramDefinition(10n, 2n));
+		await c.putDefinition(ramDefinition(10n * MiB, 2n * MiB));
 		const waiter = await c.putWaiter({
 			requestKey: "missing-observation",
 			projectId: "a",
-			requirements: [{ resourceId: "ram", amount: 7n }],
+			requirements: [{ resourceId: "ram", amount: 7n * MiB }],
 		});
 		expect(await c.tryGrant(waiter.id, waiter.generation)).toMatchObject({
 			kind: "held",
 			reason: "observation",
 			diagnostics: [{ reason: "observation-missing" }],
 		});
-		await c.putDefinition(ramDefinition(10n, 2n, true));
+		await c.putDefinition(ramDefinition(10n * MiB, 2n * MiB, true));
 		const grant = await c.tryGrant(waiter.id, c.readModel().generation);
 		expect("kind" in grant).toBe(false);
 		expect(c.readModel().effectiveCapacities[0]).toMatchObject({
-			effectiveCapacity: 3n,
+			effectiveCapacity: 3n * MiB,
 			observation: { policy: "ignored-explicitly", sequence: null },
 			ramFormula: null,
 		});
@@ -507,7 +512,7 @@ describe("durable quantity admission", () => {
 		const timestamp = Date.parse("2026-08-24T00:00:00Z");
 		const now = () => timestamp;
 		const c = await coordinator(path, "process-current", now);
-		await c.putDefinition(ramDefinition(10n, 2n));
+		await c.putDefinition(ramDefinition(10n * MiB, 2n * MiB));
 		for (const id of ["ram:a", "ram:b"]) {
 			await c.putBinding({
 				id,
@@ -533,13 +538,13 @@ describe("durable quantity admission", () => {
 		const waiter = await c.putWaiter({
 			requestKey: "ambiguous-observation",
 			projectId: "a",
-			requirements: [{ resourceId: "ram", amount: 1n }],
+			requirements: [{ resourceId: "ram", amount: MiB }],
 		});
 		expect(await c.tryGrant(waiter.id, waiter.generation)).toMatchObject({
 			kind: "held",
 			diagnostics: [{ reason: "observation-ambiguous" }],
 		});
-		await c.putDefinition(ramDefinition(10n, 2n, true));
+		await c.putDefinition(ramDefinition(10n * MiB, 2n * MiB, true));
 		expect(
 			"kind" in (await c.tryGrant(waiter.id, c.readModel().generation)),
 		).toBe(false);

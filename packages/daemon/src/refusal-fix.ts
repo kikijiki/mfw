@@ -7,8 +7,8 @@
  */
 
 import type { PreflightCode } from "./dispatch-preflight.ts";
-import type { Held, HostCapacityHoldReason } from "./host-resources/types.ts";
 import type { RemoteRefusalCode } from "./remote-experimental.ts";
+import type { Held, HostCapacityHoldReason } from "./resources/host-types.ts";
 
 export interface RefusalFix {
 	/** Where the remedy lives: a project setting, a shell command, or a screen. */
@@ -46,6 +46,7 @@ export type RefusalCode =
 	| "project_slot_recovery"
 	| "compensation"
 	| "route_invalid"
+	| "pool_held"
 	| RemoteRefusalCode
 	| PreflightCode;
 
@@ -100,6 +101,26 @@ export const REFUSAL_FIXES: Record<RefusalCode, FixFor> = {
 	headroom: ui(
 		(ids) =>
 			`Free memory on the host, or lower the safetyHeadroom of ${ids} (hostResources.updateDefinition).`,
+	),
+	pool_held: ui(
+		(ids) =>
+			`${ids} is on hold, so this task waits in its place. The Resources page shows the hold's reason and how to clear it.`,
+	),
+	operator: ui(
+		(ids) =>
+			`An operator hold is on ${ids}. Clear it on the Resources page when the resource should take work again.`,
+	),
+	auth: ui(
+		(ids) =>
+			`Log the account behind ${ids} in again with the vendor's own login, then clear the hold in Settings → Routing.`,
+	),
+	rate_limit: ui(
+		(ids) =>
+			`Nothing to change: ${ids} is rate limited and this task resumes in its place when the limit resets.`,
+	),
+	budget: ui(
+		(ids) =>
+			`The budget for ${ids} is used up. Wait for its window to reset, or raise the limit on the Budgets page.`,
 	),
 	disabled: ui(
 		(ids) => `Make host resource ${ids} available on the Host Resources page.`,

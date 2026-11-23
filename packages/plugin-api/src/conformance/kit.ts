@@ -32,6 +32,8 @@ export interface Subject {
 	 */
 	restart?(): object | Promise<object>;
 	host?: FakeHost;
+	/** Pool and shape the machine suite provisions; defaults suit the fakes. */
+	machine?: { poolId: string; shape: Record<string, unknown> };
 }
 
 type AnyFn = (params: unknown, ctx: unknown) => Promise<unknown>;
@@ -194,7 +196,7 @@ async function resourceSuite(r: Runner, spec: ContractSpec, subject: Subject) {
 		await r.check("quote returns a valid quote", async () => {
 			await callValid(spec, plugin, r.host, "quote", {
 				poolId: first.poolId,
-				shape: { units: 1, attributes: {} },
+				shape: subject.machine?.shape ?? { units: 1, attributes: {} },
 			});
 		});
 	}
@@ -211,11 +213,11 @@ async function resourceSuite(r: Runner, spec: ContractSpec, subject: Subject) {
 async function machineSuite(r: Runner, spec: ContractSpec, subject: Subject) {
 	await resourceSuite(r, spec, subject);
 	const plugin = await subject.create();
-	const pool = "fake.machines";
+	const pool = subject.machine?.poolId ?? "fake.machines";
 	const base = {
 		leaseId: "lease-conf",
 		poolId: pool,
-		shape: { units: 1, attributes: {} },
+		shape: subject.machine?.shape ?? { units: 1, attributes: {} },
 		ownershipToken: "mfw-conformance-token-1",
 		sshPublicKey: "ssh-ed25519 AAAAconformance",
 	};

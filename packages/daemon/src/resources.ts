@@ -1,14 +1,13 @@
 import type { ProjectDbHandle } from "@mfw/db/client";
-import { resourceSlots, resources, runs } from "@mfw/db/schema";
+import { appendEvent, type EventBus } from "@mfw/db/eventlog";
+import { resources, runs } from "@mfw/db/schema";
 import { asc, eq, inArray } from "drizzle-orm";
-import type { Scheduler } from "./scheduler.ts";
+import type { HostLedger } from "./resources/host-ledger.ts";
 
 /**
- * Read/admin surface over the `resources` + `resource_slots` semaphore.
- *
- * The scheduler owns every slot mutation (acquisition, and `releaseSlots` /
- * `forceReleaseSlots` as the single release path). This service owns resource
- * definitions and the joined holder/capacity read, so no second release path exists.
+ * Read/admin surface over project semaphores. Each definition is a pool in the
+ * resource core, which owns every grant and release; this service owns the
+ * definitions and the joined holder/capacity read.
  */
 
 export type ResourceRow = typeof resources.$inferSelect;
@@ -42,9 +41,58 @@ export class ResourceService {
 	constructor(
 		private readonly deps: {
 			handle: ProjectDbHandle;
-			scheduler: Pick<Scheduler, "forceReleaseSlots">;
+			bus: EventBus;
+			projectId: string;
+			ledger: Pick<
+				HostLedger,
+				| "syncProjectPool"
+				| "retireProjectPool"
+				| "projectHolders"
+				| "forceReleaseProjectPool"
+			>;
 		},
 	) {}
+
+	/** Makes the core's pools match the stored definitions (attach and repair). */
+	async syncPools(): Promise<void> {
+		const defs = await this.deps.handle.db.select().from(resources);
+		for (const def of defs) {
+			await this.deps.ledger.syncProjectPool(
+				this.deps.projectId,
+				def.id,
+				def.maxConcurrent,
+			);
+		}
+	}
+
+	private async announceReleased(
+		resourceId: string,
+		freed: readonly { slot: number; runId: string | null }[],
+	): Promise<void> {
+		if (freed.length === 0) return;
+		const emitted = await this.deps.handle.withTx(async (tx) => {
+			await tx
+				.update(resources)
+				.set({ lastUnlockedAt: new Date() })
+				.where(eq(resources.id, resourceId));
+			const out = [];
+			for (const item of freed) {
+				out.push(
+					await appendEvent(tx, {
+						type: "resource.released",
+						payload: {
+							resourceId,
+							slot: item.slot,
+							runId: item.runId ?? "",
+							forced: true,
+						},
+					}),
+				);
+			}
+			return out;
+		});
+		this.deps.bus.publish(emitted);
+	}
 
 	async list(): Promise<ResourceView[]> {
 		const defs = await this.deps.handle.db
@@ -53,10 +101,27 @@ export class ResourceService {
 			.orderBy(asc(resources.id));
 		if (defs.length === 0) return [];
 
-		const held = await this.deps.handle.db
-			.select()
-			.from(resourceSlots)
-			.orderBy(asc(resourceSlots.resourceId), asc(resourceSlots.slot));
+		const held: {
+			resourceId: string;
+			slot: number;
+			runId: string;
+			lockedAt: Date;
+		}[] = [];
+		for (const def of defs) {
+			for (const holder of await this.deps.ledger.projectHolders(
+				this.deps.projectId,
+				def.id,
+			)) {
+				held.push({
+					resourceId: def.id,
+					slot: holder.slot,
+					runId: holder.lease.runId ?? holder.lease.id,
+					lockedAt: new Date(
+						holder.lease.activatedAt ?? holder.lease.grantedAt,
+					),
+				});
+			}
+		}
 		const runIds = [...new Set(held.map((h) => h.runId))];
 		const runRows =
 			runIds.length > 0
@@ -127,25 +192,35 @@ export class ResourceService {
 					},
 				}),
 		);
+		await this.deps.ledger.syncProjectPool(
+			this.deps.projectId,
+			values.id,
+			values.maxConcurrent,
+		);
 		return (await this.get(input.id)) as ResourceView;
 	}
 
-	/** Remove a definition. Held slots are force-released FIRST: the FK cascade would otherwise drop holds without `resource.released` events. */
+	/** Remove a definition. Held slots are force-released first, with their events. */
 	async unregister(id: string): Promise<{ released: number }> {
-		const released = await this.deps.scheduler.forceReleaseSlots(id);
+		const { released } = await this.forceRelease(id);
+		await this.deps.ledger.retireProjectPool(this.deps.projectId, id);
 		await this.deps.handle.withTx((tx) =>
 			tx.delete(resources).where(eq(resources.id, id)),
 		);
 		return { released };
 	}
 
-	/** Force-release capacity; emits `resource.released { forced: true }` per slot via the scheduler. */
+	/** Force-release capacity; emits `resource.released { forced: true }` per slot. */
 	async forceRelease(
 		resourceId: string,
 		slot?: number,
 	): Promise<{ released: number }> {
-		return {
-			released: await this.deps.scheduler.forceReleaseSlots(resourceId, slot),
-		};
+		const freed = await this.deps.ledger.forceReleaseProjectPool(
+			this.deps.projectId,
+			resourceId,
+			slot,
+		);
+		await this.announceReleased(resourceId, freed);
+		return { released: freed.length };
 	}
 }

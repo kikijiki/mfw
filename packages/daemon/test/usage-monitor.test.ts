@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ProviderHoldStore } from "../src/provider-holds.ts";
 import {
 	type UsageProbe,
 	UsageProbeError,
@@ -10,6 +9,7 @@ import {
 	type UsageWindow,
 } from "../src/usage/types.ts";
 import { USAGE_HOLD_PREFIX, UsageMonitor } from "../src/usage-monitor.ts";
+import { openTestHolds } from "./support/host-ledger.ts";
 
 const MIN = 60_000;
 
@@ -321,14 +321,14 @@ describe("UsageMonitor", () => {
 
 	describe("provider holds", () => {
 		const store = () =>
-			ProviderHoldStore.at(
+			openTestHolds(
 				mkdtempSync(join(tmpdir(), "mfw-usage-holds-")),
 				() => 1_000_000,
 			);
 
 		test("a window at 100% holds the provider until its reset, and a drop clears only its own hold", async () => {
 			const c = clock(1_000_000);
-			const holds = store();
+			const holds = await store();
 			const { probe, p } = fakeProbe("claude-cli");
 			const reset = c.now() + 90 * MIN;
 			probe.next = async () => ({
@@ -354,7 +354,7 @@ describe("UsageMonitor", () => {
 
 		test("a rate-limit hold from a run is left alone", async () => {
 			const c = clock(1_000_000);
-			const holds = store();
+			const holds = await store();
 			await holds.hold("claude-cli", {
 				until: 5_000_000,
 				reason: "rate_limited",
@@ -375,7 +375,7 @@ describe("UsageMonitor", () => {
 
 		test("under 100% or with no reset time places no hold", async () => {
 			const c = clock(1_000_000);
-			const holds = store();
+			const holds = await store();
 			const { probe, p } = fakeProbe("codex-cli");
 			probe.next = async () => ({
 				windows: [

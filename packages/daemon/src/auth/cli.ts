@@ -7,7 +7,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
-import { acquireDaemonLock } from "../host-resources/daemon-lock.ts";
+import { acquireDaemonLock } from "../resources/daemon-lock.ts";
 import { pinnedTool } from "../sandbox.ts";
 import { AuthService, authDbPath, isAuthRefused } from "./service.ts";
 import {
