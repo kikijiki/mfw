@@ -521,6 +521,52 @@ export const runSubagents = sqliteTable(
 	],
 );
 
+/**
+ * Sandbox attestations (design "Probe barrier"): what the host observed when
+ * it ran the in-child probe for a run. Append-only, enforced by triggers in
+ * migration 0020 that drizzle does not model; the newest row for a run is the
+ * one that counts. Written and read through
+ * `containment/attestation-store.ts`, which validates each row on the way out.
+ */
+export const sandboxAttestations = sqliteTable(
+	"sandbox_attestations",
+	{
+		id: text("id").primaryKey(),
+		runId: text("run_id").notNull(),
+		/** The probe's version. A row from another version never satisfies the gate. */
+		version: integer("version").notNull(),
+		profileHash: text("profile_hash").notNull(),
+		/** The compiled bwrap options and bind sources, with secret values redacted. */
+		optionsHash: text("options_hash").notNull(),
+		seccompHash: text("seccomp_hash").notNull(),
+		bwrapVersion: text("bwrap_version").notNull(),
+		/** `systemd | none`. Only `systemd` can satisfy the gate. */
+		scope: text("scope").notNull(),
+		/** `pass | fail` */
+		outcome: text("outcome").notNull(),
+		/** One `{ id, status, detail }` per probe item. */
+		items: text("items", { mode: "json" })
+			.$type<{ id: string; status: "pass" | "fail"; detail: string }[]>()
+			.notNull(),
+		/** The identity of each bind source the probe saw, for the launcher to compare. */
+		pins: text("pins", { mode: "json" })
+			.$type<{ dest: string; dev: string; ino: string }[]>()
+			.notNull(),
+		createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+	},
+	(t) => [index("ix_sandbox_attestations_run").on(t.runId, t.createdAt)],
+);
+
+/**
+ * One row per attestation a launch has used. The primary key is what makes an
+ * attestation single-use. Append-only, by the triggers in migration 0020.
+ */
+export const sandboxAttestationUses = sqliteTable("sandbox_attestation_uses", {
+	attestationId: text("attestation_id").primaryKey(),
+	runId: text("run_id").notNull(),
+	usedAt: integer("used_at", { mode: "timestamp_ms" }).notNull(),
+});
+
 // ---------- comments ----------
 
 export const comments = sqliteTable(

@@ -166,7 +166,10 @@ async function guarded(script: string): Promise<CompiledSandbox> {
 	if (!scenario.bwrapArgs.equals(probe.bwrapArgs)) {
 		throw new Error("refusing to launch: control used a different sandbox");
 	}
-	const child = launchSandbox(probe, { scope: "none" });
+	const child = launchSandbox(probe, {
+		approvalMode: "interactive",
+		scope: "none",
+	});
 	(child.stdin as unknown as { end(): void }).end();
 	const [out, code] = await Promise.all([
 		new Response(child.stdout as unknown as ReadableStream).text(),
@@ -181,7 +184,10 @@ async function guarded(script: string): Promise<CompiledSandbox> {
 }
 
 async function run(c: CompiledSandbox) {
-	const child = launchSandbox(c, { scope: "none" });
+	const child = launchSandbox(c, {
+		approvalMode: "interactive",
+		scope: "none",
+	});
 	(child.stdin as unknown as { end(): void }).end();
 	const [out, err, code] = await Promise.all([
 		new Response(child.stdout as unknown as ReadableStream).text(),
@@ -261,6 +267,7 @@ describe.skipIf(skip !== null)("launchSandbox under bwrap", () => {
 		// Repeated, because the stale close lands at exit or at finalization.
 		for (let round = 0; round < 12; round++) {
 			let child: ReturnType<typeof launchSandbox> | null = launchSandbox(c, {
+				approvalMode: "interactive",
 				scope: "none",
 			});
 			// These take any number the launch wrongly gave back.
@@ -289,7 +296,11 @@ describe.skipIf(skip !== null)("launchSandbox under bwrap", () => {
 		const tmp = join(root, "tmp");
 		mkdirSync(tmp);
 		const c = await guarded("true");
-		const child = launchSandbox(c, { scope: "none", tmpDir: tmp });
+		const child = launchSandbox(c, {
+			approvalMode: "interactive",
+			scope: "none",
+			tmpDir: tmp,
+		});
 		(child.stdin as unknown as { end(): void }).end();
 		expect(Array.from(new Bun.Glob("*").scanSync(tmp))).toEqual([]);
 		expect(await child.exited).toBe(0);
@@ -337,9 +348,13 @@ describe.skipIf(skip !== null)("launchSandbox under bwrap", () => {
 		const c = await guarded("true");
 		const file = openSync(join(root, "log"), "w");
 		try {
-			expect(() => launchSandbox(c, { scope: "none", stdout: file })).toThrow(
-				SandboxLaunchError,
-			);
+			expect(() =>
+				launchSandbox(c, {
+					approvalMode: "interactive",
+					scope: "none",
+					stdout: file,
+				}),
+			).toThrow(SandboxLaunchError);
 		} finally {
 			closeSync(file);
 		}
@@ -348,9 +363,9 @@ describe.skipIf(skip !== null)("launchSandbox under bwrap", () => {
 	test("a pin that no longer verifies stops the launch", async () => {
 		const c = await guarded("touch /work/launched");
 		rmSync(work, { recursive: true });
-		expect(() => launchSandbox(c, { scope: "none" })).toThrow(
-			SandboxLaunchError,
-		);
+		expect(() =>
+			launchSandbox(c, { approvalMode: "interactive", scope: "none" }),
+		).toThrow(SandboxLaunchError);
 	});
 
 	test("a compiled result with a misnumbered pin is refused", async () => {
@@ -359,9 +374,9 @@ describe.skipIf(skip !== null)("launchSandbox under bwrap", () => {
 			...c,
 			pinnedBinds: c.pinnedBinds.map((p) => ({ ...p, fd: p.fd + 1 })),
 		};
-		expect(() => launchSandbox(bad, { scope: "none" })).toThrow(
-			SandboxLaunchError,
-		);
+		expect(() =>
+			launchSandbox(bad, { approvalMode: "interactive", scope: "none" }),
+		).toThrow(SandboxLaunchError);
 	});
 });
 
@@ -395,7 +410,10 @@ describe.skipIf(scopeSkip !== null)("launchSandbox through systemd-run", () => {
 			...c,
 			argv: [Bun.which("systemd-run") as string, ...c.argv.slice(1)],
 		};
-		const child = launchSandbox(withScope, { scope: "systemd" });
+		const child = launchSandbox(withScope, {
+			approvalMode: "interactive",
+			scope: "systemd",
+		});
 		(child.stdin as unknown as { end(): void }).end();
 		expect(await child.exited).toBe(0);
 		expect(existsSync(join(work, "through-scope"))).toBe(true);

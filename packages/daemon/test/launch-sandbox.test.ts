@@ -73,7 +73,12 @@ describe("launchSandbox refusals", () => {
 		try {
 			for (const key of ["stdin", "stdout", "stderr"]) {
 				expect(
-					refusedWith(() => launchSandbox(compiled(), { [key]: fd })),
+					refusedWith(() =>
+						launchSandbox(compiled(), {
+							approvalMode: "interactive",
+							[key]: fd,
+						}),
+					),
 				).toBe("stdio_not_pipe");
 			}
 		} finally {
@@ -84,9 +89,11 @@ describe("launchSandbox refusals", () => {
 	test("a closed descriptor on stdio", () => {
 		const fd = openSync(join(root, "log"), "w");
 		closeSync(fd);
-		expect(refusedWith(() => launchSandbox(compiled(), { stdout: fd }))).toBe(
-			"stdio_not_pipe",
-		);
+		expect(
+			refusedWith(() =>
+				launchSandbox(compiled(), { approvalMode: "interactive", stdout: fd }),
+			),
+		).toBe("stdio_not_pipe");
 	});
 
 	test.each([
@@ -96,9 +103,11 @@ describe("launchSandbox refusals", () => {
 		["another args descriptor", ARGV.map((a) => (a === "4" ? "9" : a))],
 		["no command", ARGV.slice(0, -1)],
 	])("an argv with %s", (_name, argv) => {
-		expect(refusedWith(() => launchSandbox(compiled({ argv })))).toBe(
-			"invalid_compiled",
-		);
+		expect(
+			refusedWith(() =>
+				launchSandbox(compiled({ argv }), { approvalMode: "interactive" }),
+			),
+		).toBe("invalid_compiled");
 	});
 
 	test("a pin off its declared descriptor", () => {
@@ -107,9 +116,13 @@ describe("launchSandbox refusals", () => {
 		const pinnedBinds = [
 			{ fd: 6, source, dest: "/work", writable: true, label: "workspace" },
 		];
-		expect(refusedWith(() => launchSandbox(compiled({ pinnedBinds })))).toBe(
-			"invalid_compiled",
-		);
+		expect(
+			refusedWith(() =>
+				launchSandbox(compiled({ pinnedBinds }), {
+					approvalMode: "interactive",
+				}),
+			),
+		).toBe("invalid_compiled");
 	});
 
 	test("a source that fails to pin leaves nothing open", () => {
@@ -126,9 +139,13 @@ describe("launchSandbox refusals", () => {
 			},
 		];
 		const before = openFds();
-		expect(refusedWith(() => launchSandbox(compiled({ pinnedBinds })))).toBe(
-			"pin_failed",
-		);
+		expect(
+			refusedWith(() =>
+				launchSandbox(compiled({ pinnedBinds }), {
+					approvalMode: "interactive",
+				}),
+			),
+		).toBe("pin_failed");
 		expect(openFds()).toBe(before);
 	});
 

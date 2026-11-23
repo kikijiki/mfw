@@ -30,6 +30,9 @@ worktrees/
 # fixtures of the live sandbox tests
 /.live-sandbox/
 
+# per-worktree logs and scratch of agent runs
+/.work/
+
 # skills installed for other agent CLIs by `mfw board skill install` (generated)
 /.agents/
 
