@@ -116,10 +116,13 @@ describe("the enumeration is real", () => {
 		expect(procedures.some((p) => p.type === "mutation")).toBe(true);
 	});
 
-	test("it covers the give-direction and held-decision procedures", () => {
+	test("it covers the direction, chat and held-decision procedures", () => {
 		const names = procedures.map((p) => p.path);
 		for (const name of [
 			"brain.giveDirection",
+			"brain.chatThread",
+			"brain.chatAsk",
+			"brain.chatGiveDirection",
 			"brain.directions",
 			"brain.decisions",
 			"brain.resolveDecision",
