@@ -52,6 +52,8 @@ export interface BwrapIsolation {
 	hidePaths: string[];
 	/** The daemon's home. Task and repair runs need it to find their fleet config. */
 	mfwHome?: string;
+	/** Owner opt-in: let task and repair runs reach their CLI's telemetry hosts. */
+	egressTelemetry?: boolean;
 }
 
 /**

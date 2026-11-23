@@ -16,10 +16,12 @@ import { createHash } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { chmod, mkdir, rm } from "node:fs/promises";
 import net from "node:net";
+import { networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
 import {
 	type AllowEntry,
 	buildAllowlist,
+	canonicalAddress,
 	checkTarget,
 	deny,
 	type EgressDenial,
@@ -129,6 +131,8 @@ export interface EgressProxyOptions {
 	gate: ConnectionGate;
 	/** Rule 11: the ClientHello SNI must equal the CONNECT host. Off by default. */
 	sni?: boolean;
+	/** This machine's addresses, read per request. Default: its network interfaces. */
+	localAddresses?: () => readonly string[];
 	/** Upstream dialer, given the pinned IP. Default `net.connect`. */
 	connect?: (ip: string, port: number) => net.Socket;
 }
@@ -175,6 +179,11 @@ const defaultResolver: Resolver = async (host) => {
 	return answers.map((a) => a.address);
 };
 
+const hostInterfaceAddresses = (): string[] =>
+	Object.values(networkInterfaces()).flatMap((list) =>
+		(list ?? []).map((i) => i.address),
+	);
+
 /** Start the proxy. Resolves once the socket is listening (mode 0600). */
 export async function startEgressProxy(
 	opts: EgressProxyOptions,
@@ -199,6 +208,12 @@ export async function startEgressProxy(
 		}
 	};
 	const sockets = new Set<net.Socket>();
+	const readLocal = opts.localAddresses ?? hostInterfaceAddresses;
+	/** Read per request: an interface can gain an address while a run is live. */
+	const isOwnAddress = (): ((ip: string) => boolean) => {
+		const own = new Set(readLocal().map(canonicalAddress));
+		return (ip) => own.has(canonicalAddress(ip));
+	};
 
 	const denyLog = (
 		d: EgressDenial,
@@ -277,7 +292,7 @@ export async function startEgressProxy(
 		const pinned = await withDeadline(
 			// Fully qualified: the policy keeps the normalised name, but the
 			// resolver must not retry it under the host's DNS search domains.
-			resolvePinned(`${target.host}.`, resolve),
+			resolvePinned(`${target.host}.`, resolve, isOwnAddress()),
 			limits.resolveMs,
 			deny(504, "dns-timeout"),
 		);

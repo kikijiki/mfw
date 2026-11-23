@@ -328,6 +328,11 @@ const projectSchema = z.object({
 	 */
 	agentIsolation: z.enum(["none", "bwrap"]).optional(),
 	/**
+	 * Let sandboxed runs reach their CLI's telemetry and error-report hosts.
+	 * Off by default: those hosts are refused and the CLI is told not to send.
+	 */
+	agentEgressTelemetry: z.boolean().optional(),
+	/**
 	 * Where a run's files live: a git `worktree` under the project (default),
 	 * or a private `clone` under `$MFW_HOME/workspaces` whose result the host
 	 * imports as a verified bundle (`run-workspace/clone-impl.ts`). Experimental

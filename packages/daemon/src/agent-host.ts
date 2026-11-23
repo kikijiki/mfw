@@ -26,6 +26,10 @@ import {
 } from "./containment/agent-preflight.ts";
 import { withoutAutonomyFlags } from "./containment/agent-profile.ts";
 import { SANDBOX_PATHS } from "./containment/compile-bwrap.ts";
+import {
+	harnessAllowlist,
+	harnessEgressEnv,
+} from "./containment/egress-allowlists.ts";
 import { prepareRunEgress } from "./containment/egress-run.ts";
 import {
 	driverRunPaths,
@@ -686,16 +690,21 @@ export class AgentHost {
 			approvalMode === "autonomous" ? argv : withoutAutonomyFlags(argv);
 		const agentArgv = forMode(spec.agentArgv);
 		const providerArgv = forMode(spec.providerArgv ?? spec.agentArgv);
-		const env = { ...(spec.env ?? {}) };
+		const egressOptions = {
+			telemetry: spec.isolation?.egressTelemetry === true,
+		};
+		const env = {
+			...(spec.env ?? {}),
+			...harnessEgressEnv(cli, egressOptions),
+		};
 		if ("MFW_REPORT_PATH" in env) {
 			env.MFW_REPORT_PATH = `${SANDBOX_PATHS.workspace}/MFW_REPORT.json`;
 		}
-		// Deny-by-default until a harness list is supplied.
 		const egress = prepareRunEgress({
 			mfwHome: await realpath(mfwHome),
 			runDir,
 			runId: spec.runId,
-			allow: [],
+			allow: harnessAllowlist(cli, egressOptions),
 		});
 		const request: AgentLaunchRequest = {
 			version: 1,
