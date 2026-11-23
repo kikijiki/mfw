@@ -22,6 +22,7 @@ import {
 	compileBwrap,
 } from "../src/containment/compile-bwrap.ts";
 import type { Check } from "../src/containment/host-caps.ts";
+import type { LaunchAuthorization } from "../src/containment/launch-authorization.ts";
 import {
 	launchSandbox,
 	SandboxLaunchError,
@@ -177,11 +178,122 @@ const record = (c: CompiledSandbox) =>
 const authorize = (c: CompiledSandbox) =>
 	authorizeAutonomousLaunch(handle.db, {
 		runId: "r1",
-		flags: ["yolo"],
+		approvalMode: "autonomous",
 		profile: profile(),
 		compiled: c,
 		bwrapVersion: "0.13.1",
 	});
+
+async function authorized(c: CompiledSandbox): Promise<LaunchAuthorization> {
+	const d = await authorize(c);
+	if (!d.ok || !d.authorization) throw new Error("the gate refused");
+	return d.authorization;
+}
+
+const launchAutonomous = (
+	c: CompiledSandbox,
+	authorization: LaunchAuthorization,
+) => launchSandbox(c, { approvalMode: "autonomous", authorization });
+
+function codeOf(fn: () => unknown): string | null {
+	try {
+		fn();
+		return null;
+	} catch (err) {
+		if (err instanceof SandboxLaunchError) return err.code;
+		throw err;
+	}
+}
+
+describe.skipIf(skip !== null)("the autonomy requirement", () => {
+	test("an autonomous launch with no attestation is refused", async () => {
+		const d = await authorizeAutonomousLaunch(handle.db, {
+			runId: "no-record",
+			approvalMode: "autonomous",
+			flags: [],
+			profile: profile(),
+			compiled: compile(),
+			bwrapVersion: "0.13.1",
+		} as never);
+		expect(d.ok).toBe(false);
+	});
+
+	for (const approvalMode of [undefined, "yolo", "AUTONOMOUS", null, 1]) {
+		test(`approvalMode ${JSON.stringify(approvalMode)} is refused by the gate and the launcher`, async () => {
+			const c = compile();
+			await record(c);
+			const d = await authorizeAutonomousLaunch(handle.db, {
+				runId: "r1",
+				approvalMode,
+				profile: profile(),
+				compiled: c,
+				bwrapVersion: "0.13.1",
+			} as never);
+			expect(d.ok).toBe(false);
+			if (!d.ok) expect(d.code).toBe("approval_mode_invalid");
+			expect(codeOf(() => launchSandbox(c, { approvalMode } as never))).toBe(
+				"invalid_approval_mode",
+			);
+		});
+	}
+
+	test("an interactive launch needs no attestation and gets no authorization", async () => {
+		const d = await authorizeAutonomousLaunch(handle.db, {
+			runId: "no-record",
+			approvalMode: "interactive",
+			profile: profile(),
+			compiled: compile(),
+			bwrapVersion: "0.13.1",
+		});
+		expect(d).toEqual({ ok: true, attestationId: null, authorization: null });
+	});
+
+	test("a look-alike authorization is refused", () => {
+		for (const authorization of [{}, null, "token", Object.freeze({})]) {
+			expect(
+				codeOf(() =>
+					launchAutonomous(
+						compile(),
+						authorization as unknown as LaunchAuthorization,
+					),
+				),
+			).toBe("not_authorized");
+		}
+	});
+
+	test("an authorization works once, for its own sandbox", async () => {
+		const c = compile();
+		await record(c);
+		const authorization = await authorized(c);
+		expect(codeOf(() => launchAutonomous(compile(), authorization))).toBe(
+			"not_authorized",
+		);
+		expect(codeOf(() => launchAutonomous(c, authorization))).toBe(
+			"not_authorized",
+		);
+	});
+
+	test("only the gate can issue an authorization", async () => {
+		const src = resolve(import.meta.dir, "../src");
+		const users: string[] = [];
+		for await (const rel of new Bun.Glob("**/*.ts").scan({ cwd: src })) {
+			if (rel === "containment/launch-authorization.ts") continue;
+			const text = await Bun.file(join(src, rel)).text();
+			if (text.includes("issueLaunchAuthorization")) users.push(rel);
+		}
+		expect(users).toEqual(["containment/attestation-gate.ts"]);
+	});
+
+	test("the launcher refuses an autonomous launch without an authorization", () => {
+		expect(() =>
+			launchSandbox(compile(), {
+				scope: "none",
+				approvalMode: "autonomous",
+			} as never),
+		).toThrow(SandboxLaunchError);
+		expect(existsSync(join(work, "ran"))).toBe(false);
+	});
+});
 
 describe.skipIf(skip !== null)("single-use attestations", () => {
 	test("one attestation authorizes one launch", async () => {
@@ -234,21 +346,19 @@ describe.skipIf(skip !== null)("single-use attestations", () => {
 	test("the launcher refuses a workspace replaced after the probe", async () => {
 		const c = compile();
 		await record(c);
-		const expectPins = pinsOf(c);
+		const authorization = await authorized(c);
 		renameSync(work, `${work}-old`);
 		mkdirSync(work);
-		expect(() => launchSandbox(c, { scope: "none", expectPins })).toThrow(
-			SandboxLaunchError,
+		expect(codeOf(() => launchAutonomous(c, authorization))).toBe(
+			"pin_changed",
 		);
 		expect(existsSync(join(work, "ran"))).toBe(false);
 	});
 
 	test("the launcher runs a workspace that is still the probed one", async () => {
 		const c = compile();
-		const child = launchSandbox(c, {
-			scope: "none",
-			expectPins: pinsOf(c),
-		});
+		await record(c);
+		const child = launchAutonomous(c, await authorized(c));
 		(child.stdin as unknown as { end(): void }).end();
 		expect(await child.exited).toBe(0);
 		expect(existsSync(join(work, "ran"))).toBe(true);

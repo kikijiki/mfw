@@ -3,8 +3,10 @@
  * flag without a passing attestation).
  *
  * Not wired into the engine's launch path yet; P5b calls
- * {@link authorizeAutonomousLaunch} where it spawns the agent. A launch with no
- * autonomous flag does not need an attestation.
+ * {@link authorizeAutonomousLaunch} where it spawns the agent. The requirement
+ * is derived here from a required `approvalMode`: only `interactive` skips the
+ * attestation, and a missing or unknown value is refused. The result is an
+ * opaque authorization that `launchSandbox` demands for autonomous launches.
  *
  * Each attestation authorizes one launch: the sandbox may hold anything after
  * an agent has run in it, so every launch needs a fresh probe.
@@ -14,9 +16,9 @@
  * same sandbox the agent is about to get: same profile, compiled options and
  * bind sources, seccomp program and bwrap version.
  *
- * Residual: the gate compares against what the caller compiled. A caller that
- * launches something other than the `compiled` it passed here bypasses it,
- * which is why P5b must route the launch through this seam.
+ * Residual: a caller can still state `interactive` and pass autonomous flags in
+ * the command, which the launcher cannot see. P5b must derive both from the
+ * same setting.
  */
 
 import type { ProjectDb } from "@mfw/db/client";
@@ -27,6 +29,10 @@ import {
 	latestAttestation,
 } from "./attestation-store.ts";
 import type { CompiledSandbox } from "./compile-bwrap.ts";
+import {
+	issueLaunchAuthorization,
+	type LaunchAuthorization,
+} from "./launch-authorization.ts";
 import type { PinIdentity } from "./pinned-binds.ts";
 import { PROBE_ITEMS } from "./probe-evaluate.ts";
 import { sandboxFingerprint } from "./probe-run.ts";
@@ -35,9 +41,11 @@ import type { SandboxProfile } from "./profile.ts";
 /** How long a passing probe stands in for a fresh one. */
 export const ATTESTATION_MAX_AGE_MS = 60 * 60 * 1000;
 
-export type AutonomousFlag = "yolo" | "auto";
+/** The codebase's own setting; anything else is refused rather than mapped. */
+export type ApprovalMode = "autonomous" | "interactive";
 
 export type GateRefusalCode =
+	| "approval_mode_invalid"
 	| "attestation_missing"
 	| "attestation_version"
 	| "attestation_failed"
@@ -47,19 +55,29 @@ export type GateRefusalCode =
 	| "attestation_consumed"
 	| "attestation_mismatch";
 
+export interface GateRefusal {
+	ok: false;
+	code: GateRefusalCode;
+	reason: string;
+	fix: string;
+}
+
+/** A stored record's verdict, before anything is consumed. */
+export type AttestationJudgement =
+	| { ok: true; attestationId: string; pins: readonly PinIdentity[] }
+	| GateRefusal;
+
 export type GateDecision =
-	| {
-			ok: true;
-			attestationId: string | null;
-			/** The directories the probe covered; the launcher must open exactly these. */
-			pins: readonly PinIdentity[];
-	  }
-	| { ok: false; code: GateRefusalCode; reason: string; fix: string };
+	/** Interactive: no attestation needed, and none is granted. */
+	| { ok: true; attestationId: null; authorization: null }
+	/** Autonomous: pass `authorization` to `launchSandbox`. It works once. */
+	| { ok: true; attestationId: string; authorization: LaunchAuthorization }
+	| GateRefusal;
 
 export interface GateRequest {
 	runId: string;
-	/** The autonomous flags this launch asks for; empty needs no attestation. */
-	flags: readonly AutonomousFlag[];
+	/** Required, with no default: the agent host's own default is autonomous. */
+	approvalMode: ApprovalMode;
 	profile: SandboxProfile;
 	compiled: CompiledSandbox;
 	bwrapVersion: string;
@@ -78,15 +96,15 @@ export function judgeAttestation(
 	row: Attestation | null,
 	req: GateRequest,
 	clock: GateClock = { now: Date.now(), maxAgeMs: ATTESTATION_MAX_AGE_MS },
-): GateDecision {
+): AttestationJudgement {
 	const refuse = (
 		code: GateRefusalCode,
 		reason: string,
 		fix = REPROBE,
-	): GateDecision => ({
+	): GateRefusal => ({
 		ok: false,
 		code,
-		reason: `${req.flags.join(", ")} refused for run ${req.runId}: ${reason}`,
+		reason: `autonomous launch refused for run ${req.runId}: ${reason}`,
 		fix,
 	});
 	if (!row) return refuse("attestation_missing", "no sandbox attestation");
@@ -153,18 +171,35 @@ export function judgeAttestation(
 	return { ok: true, attestationId: row.id, pins: row.pins };
 }
 
-/** The seam P5b calls before launching an agent with autonomous flags. */
+/** The seam P5b calls before every agent launch, whatever its approval mode. */
 export async function authorizeAutonomousLaunch(
 	db: ProjectDb,
 	req: GateRequest,
 ): Promise<GateDecision> {
-	if (req.flags.length === 0) {
-		return { ok: true, attestationId: null, pins: [] };
+	// Read as untyped input: a caller's mapping may produce anything at runtime.
+	const mode: unknown = req.approvalMode;
+	if (mode === "interactive") {
+		return { ok: true, attestationId: null, authorization: null };
+	}
+	if (mode !== "autonomous") {
+		return {
+			ok: false,
+			code: "approval_mode_invalid",
+			reason: `run ${req.runId}: approvalMode is ${JSON.stringify(mode) ?? "missing"}`,
+			fix: "pass approvalMode as autonomous or interactive",
+		};
 	}
 	const row = await latestAttestation(db, req.runId);
 	const decision = judgeAttestation(row, req);
-	if (!decision.ok || !row) return decision;
-	if (await consumeAttestation(db, row, new Date())) return decision;
+	if (!decision.ok) return decision;
+	const used = { id: decision.attestationId, runId: req.runId };
+	if (await consumeAttestation(db, used, new Date())) {
+		return {
+			ok: true,
+			attestationId: decision.attestationId,
+			authorization: issueLaunchAuthorization(req.compiled, decision.pins),
+		};
+	}
 	return {
 		ok: false,
 		code: "attestation_consumed",

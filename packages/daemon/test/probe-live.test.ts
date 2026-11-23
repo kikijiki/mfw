@@ -637,7 +637,10 @@ describe.skipIf(skip !== null)("the probe in a real sandbox", () => {
 			const at = o.indexOf("--seccomp");
 			return [...o.slice(0, at), ...o.slice(at + 2)];
 		})(compiled);
-		const child = launchSandbox(unfiltered, { scope: "none" });
+		const child = launchSandbox(unfiltered, {
+			approvalMode: "interactive",
+			scope: "none",
+		});
 		(child.stdin as unknown as { end(): void }).end();
 		const out = await new Response(
 			child.stdout as unknown as ReadableStream,
@@ -892,7 +895,7 @@ describe.skipIf(skip !== null)("forged results", () => {
 		) as CompiledSandbox;
 		const d = await authorizeAutonomousLaunch(handle.db, {
 			runId: "r1",
-			flags: ["yolo"],
+			approvalMode: "autonomous",
 			profile,
 			compiled,
 			bwrapVersion: "0.13.1",
@@ -988,12 +991,12 @@ describe.skipIf(skip !== null)("forged results", () => {
 		) as CompiledSandbox;
 		const d = await authorizeAutonomousLaunch(handle.db, {
 			runId: "no-record",
-			flags: [],
+			approvalMode: "interactive",
 			profile,
 			compiled,
 			bwrapVersion: "0.13.1",
 		});
-		expect(d).toEqual({ ok: true, attestationId: null, pins: [] });
+		expect(d).toEqual({ ok: true, attestationId: null, authorization: null });
 	});
 
 	test("a profile without bun cannot be attested", async () => {
@@ -1031,7 +1034,7 @@ describe.skipIf(noScope !== "")("the real systemd scope chain", () => {
 		const compiled = compileBwrap(profile, ["/agent"], host) as CompiledSandbox;
 		const d = await authorizeAutonomousLaunch(handle.db, {
 			runId: "r1",
-			flags: ["yolo"],
+			approvalMode: "autonomous",
 			profile,
 			compiled,
 			bwrapVersion: "0.13.1",

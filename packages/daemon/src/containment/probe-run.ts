@@ -452,6 +452,9 @@ export async function collectProbe(
 	let child: ReturnType<typeof launchSandbox>;
 	try {
 		child = launchSandbox(compiled, {
+			// The probe is host code. It grants nothing, and it is what an
+			// autonomous launch needs first.
+			approvalMode: "interactive",
 			scope: opts.scope,
 			tmpDir: opts.tmpDir,
 			observePins: opts.observePins,

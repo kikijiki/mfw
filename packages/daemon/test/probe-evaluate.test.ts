@@ -568,7 +568,7 @@ const gate = (r: Attestation | null) =>
 		r,
 		{
 			runId: "r1",
-			flags: ["yolo"],
+			approvalMode: "autonomous",
 			profile,
 			compiled,
 			bwrapVersion: "0.13.1",
@@ -773,7 +773,7 @@ describe("autonomy gate", () => {
 				passing(),
 				{
 					runId: "r1",
-					flags: ["yolo"],
+					approvalMode: "autonomous",
 					profile,
 					compiled,
 					bwrapVersion: "0.13.1",

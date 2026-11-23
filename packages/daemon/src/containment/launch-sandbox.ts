@@ -40,6 +40,10 @@ import {
 	FIRST_PINNED_FD,
 } from "./compile-bwrap.ts";
 import {
+	type LaunchAuthorization,
+	redeemLaunchAuthorization,
+} from "./launch-authorization.ts";
+import {
 	type OpenPins,
 	openPinnedBinds,
 	type PinIdentity,
@@ -64,13 +68,24 @@ export interface LaunchOptions {
 	scope?: "systemd" | "none";
 	/** Where the unnamed option files are created. */
 	tmpDir?: string;
-	/** Refuse unless the opened bind sources are exactly these directories. */
-	expectPins?: readonly PinIdentity[];
 	/** Told which directories were opened, before anything runs. */
 	observePins?: (pins: PinIdentity[]) => void;
 }
 
+/**
+ * Whether the command may act without a human, stated by every caller. There is
+ * no default, because the agent host's own default is autonomous. An autonomous
+ * launch needs the gate's authorization.
+ */
+export type LaunchApproval =
+	| { approvalMode: "interactive" }
+	| { approvalMode: "autonomous"; authorization: LaunchAuthorization };
+
+export type LaunchRequest = LaunchOptions & LaunchApproval;
+
 export type LaunchRefusalCode =
+	| "invalid_approval_mode"
+	| "not_authorized"
 	| "stdio_tty"
 	| "stdio_not_pipe"
 	| "invalid_compiled"
@@ -225,7 +240,7 @@ function scopeEnv(scope: "systemd" | "none"): Record<string, string> {
  */
 export function launchSandbox(
 	compiled: CompiledSandbox,
-	options: LaunchOptions = {},
+	options: LaunchRequest,
 ) {
 	const scope = options.scope ?? "systemd";
 	const stdin = options.stdin ?? "pipe";
@@ -236,9 +251,10 @@ export function launchSandbox(
 	checkStdio("stderr", stderr);
 	const argv = launchArgv(compiled, scope);
 	checkPinNumbers(compiled);
+	const expectPins = approvedPins(compiled, options);
 
 	const opened = openSandboxFds(compiled, options.tmpDir);
-	if (options.expectPins && !samePins(options.expectPins, opened.pins)) {
+	if (expectPins && !samePins(expectPins, opened.pins)) {
 		opened.close();
 		throw new SandboxLaunchError(
 			"pin_changed",
@@ -259,6 +275,28 @@ export function launchSandbox(
 	}
 	opened.release();
 	return child;
+}
+
+/** The attested pins of an autonomous launch, null for an interactive one. */
+function approvedPins(
+	compiled: CompiledSandbox,
+	options: LaunchApproval,
+): readonly PinIdentity[] | null {
+	if (options.approvalMode === "interactive") return null;
+	if (options.approvalMode !== "autonomous") {
+		throw new SandboxLaunchError(
+			"invalid_approval_mode",
+			"approvalMode must be stated as interactive or autonomous",
+		);
+	}
+	const pins = redeemLaunchAuthorization(options.authorization, compiled);
+	if (!pins) {
+		throw new SandboxLaunchError(
+			"not_authorized",
+			"an autonomous launch needs an unused authorization for this sandbox",
+		);
+	}
+	return pins;
 }
 
 function spawnWithFds(

@@ -12,7 +12,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { ProjectDb } from "@mfw/db/client";
-import { sandboxAttestations, sandboxAttestationUses } from "@mfw/db/schema";
+import { sandboxAttestations } from "@mfw/db/schema";
 import { desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 
