@@ -19,6 +19,7 @@ import {
 	launchSandbox,
 	SandboxLaunchError,
 } from "../src/containment/launch-sandbox.ts";
+import { probeChildSource } from "../src/containment/probe-child.ts";
 import { checkFds } from "../src/containment/probe-evaluate.ts";
 import { attestSandbox } from "../src/containment/probe-run.ts";
 import {
@@ -184,6 +185,41 @@ describe.skipIf(skip !== null)("the sealed runtime", () => {
 			}),
 		).toThrow(SandboxLaunchError);
 	});
+});
+
+// Review P7, m4: errno was read in a second FFI call, which the runtime could
+// overwrite first, so a correct filter sometimes failed the probe.
+describe("how the probe reads a syscall's result", () => {
+	test("from the return value, never from libc's errno", () => {
+		const source = probeChildSource();
+		expect(source).not.toContain("__errno_location");
+		expect(source).not.toContain("symbols.syscall");
+	});
+});
+
+describe.skipIf(skip !== null)("the probe's descriptors", () => {
+	test("repeated probes all measure their syscalls", async () => {
+		for (let i = 0; i < 8; i++) {
+			const r = await attestSandbox({
+				db: handle.db,
+				runId: `sealed-repeat-${i}`,
+				profile: parseSandboxProfile({ version: 1, role: "trigger" }),
+				host: host(),
+				targets: {
+					home: join(root, "home"),
+					mfwHome: join(root, "mfw"),
+					protectedPaths: [join(root, "home/.ssh")],
+					fleetExecBaseline: [],
+				},
+				scope: "none",
+				timeoutMs: 40_000,
+			});
+			if (!r.ok) throw new Error(r.reason);
+			expect(
+				r.items.filter((x) => x.status === "fail").map((x) => x.id),
+			).toEqual(["cgroup_limits"]);
+		}
+	}, 120_000);
 });
 
 describe("the descriptor check", () => {
