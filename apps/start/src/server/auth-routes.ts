@@ -92,6 +92,8 @@ export async function handleAuthAction(
 	guarded: Extract<GuardResult, { ok: true }>,
 	auth: AuthService,
 	base = appBase(),
+	/** The socket peer; injectable for tests. */
+	peer: string | undefined = peerAddress(req),
 ): Promise<Response> {
 	const method = req.method.toUpperCase();
 	if (action === "state" && (method === "GET" || method === "HEAD")) {
@@ -136,7 +138,7 @@ export async function handleAuthAction(
 				body.current,
 				body.next,
 				guarded.session.sessionId,
-				peerAddress(req),
+				peer,
 			);
 			return jsonResponse(200, { ok: true });
 		} catch (e) {
@@ -149,7 +151,6 @@ export async function handleAuthAction(
 		if (!hasAuthIntent(req)) return badRequest();
 		const body = await readJson(req);
 		if (!body || typeof body.password !== "string") return badRequest();
-		const peer = peerAddress(req);
 		try {
 			let issued: Awaited<ReturnType<AuthService["login"]>>;
 			if (action === "setup") {

@@ -263,6 +263,12 @@ describe("guard edges", () => {
 			expect((await unauth(path)).ok).toBe(false);
 		});
 
+	test("an asset that reaches the app does not exist: 404, not the router", async () => {
+		const r = await unauth("/assets/missing.map");
+		expect(r.ok).toBe(false);
+		if (!r.ok) expect(r.response.status).toBe(404);
+	});
+
 	test("a public GET path is not public for POST", async () => {
 		expect((await unauth("/login", "POST")).ok).toBe(false);
 		expect((await unauth("/api/health", "POST")).ok).toBe(false);

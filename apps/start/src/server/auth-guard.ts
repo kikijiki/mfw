@@ -25,7 +25,11 @@ const COOKIE_PLAIN = "mfw_session";
 const COOKIE_TLS = "__Secure-mfw_session";
 
 const SAFE_METHODS = new Set(["GET", "HEAD"]);
-/** One flat file name: no slash, no percent-encoding, nothing to traverse with. */
+/**
+ * One flat file name: no slash, no percent-encoding, nothing to traverse with.
+ * The static handler serves real assets before the app runs, so one that gets
+ * here does not exist.
+ */
 const ASSET = /^assets\/[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /** Exact paths (relative to the base) reachable without a session. */
@@ -41,8 +45,7 @@ const PUBLIC_PATHS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
 export function isPublicPath(rel: string | null, method: string): boolean {
 	if (rel === null) return false;
 	const m = method.toUpperCase();
-	if (PUBLIC_PATHS.get(rel)?.has(m)) return true;
-	return SAFE_METHODS.has(m) && ASSET.test(rel);
+	return PUBLIC_PATHS.get(rel)?.has(m) === true;
 }
 
 /** The app's base path, always with a trailing slash. */
@@ -180,6 +183,15 @@ export async function guardRequest(
 	const base = deps.base ?? appBase();
 	const url = new URL(req.url);
 	const rel = relativePath(url.pathname, base);
+	if (
+		rel !== null &&
+		ASSET.test(rel) &&
+		SAFE_METHODS.has(req.method.toUpperCase())
+	)
+		return {
+			ok: false,
+			response: jsonResponse(404, { error: "not_found", message: "not found" }),
+		};
 	const isApi = deps.api === true || isApiPath(rel);
 
 	// Sibling localhost ports are "same-site", so SameSite does not stop them.

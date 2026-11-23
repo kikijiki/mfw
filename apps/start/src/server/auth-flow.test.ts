@@ -283,6 +283,30 @@ describe("the throttle source (reviewer B2)", () => {
 	});
 });
 
+describe("the throttle uses the peer it is given (reviewer B2)", () => {
+	test("failures from one peer do not lock another", async () => {
+		const token = (await auth.beginFirstRun()) as string;
+		await auth.setup(token, PASSWORD);
+		const login = async (password: string, peer: string) => {
+			const req = new Request(`${ORIGIN}/api/auth/login`, {
+				method: "POST",
+				headers: {
+					host: "localhost:7777",
+					"content-type": "application/json",
+					[AUTH_INTENT_HEADER]: "1",
+				},
+				body: JSON.stringify({ password }),
+			});
+			const guarded = await guardRequest(req, { auth, base: "/", env: {} });
+			if (!guarded.ok) return guarded.response;
+			return handleAuthAction("login", req, guarded, auth, "/", peer);
+		};
+		for (let i = 0; i < 5; i++) await login("wrong password!", "10.0.0.66");
+		expect((await login(PASSWORD, "10.0.0.66")).status).toBe(429);
+		expect((await login(PASSWORD, "10.0.0.1")).status).toBe(200);
+	});
+});
+
 describe("a stolen cookie is not enough (reviewer B1)", () => {
 	const signedIn = async () => {
 		const token = (await auth.beginFirstRun()) as string;
