@@ -13,12 +13,11 @@ import { join } from "node:path";
  *
  * 1. `writeFileAtomic` fsyncs the temp file and then its directory. Make
  *    `FileHandle.sync()` a no-op.
- * 2. libsql hands the connection to each transaction and opens a fresh one
- *    afterwards, which silently reverts the per-connection
- *    `PRAGMA synchronous=NORMAL` that `openDbAt` sets to FULL: every commit
- *    after the first fsyncs the WAL. Open every connection with `synchronous=OFF`.
- *    A test that asserts a store's FULL promise sets `sqliteSync.off = false`
- *    for its duration (`test/support/real-sqlite-sync.ts`).
+ * 2. Open every libsql connection with `synchronous=OFF`, and rewrite any
+ *    `PRAGMA synchronous=...` to OFF (`openDbAt` re-applies NORMAL on every
+ *    replacement connection libsql opens after a transaction). A test that
+ *    asserts a store's FULL/NORMAL promise sets `sqliteSync.off = false` for
+ *    its duration (`test/support/real-sqlite-sync.ts`).
  */
 const flags = globalThis as { __mfwTestSqliteSync?: { off: boolean } };
 const sqliteSync = flags.__mfwTestSqliteSync ?? { off: true };
