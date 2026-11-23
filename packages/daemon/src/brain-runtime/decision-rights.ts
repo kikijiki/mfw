@@ -113,17 +113,126 @@ export interface RightsFacts {
 	changedFiles: readonly string[] | null;
 }
 
-const HOST_EXECUTED_DIRS = [".claude", ".codex", ".vscode"];
-const HOST_EXECUTED_FILES = ["claude.md", "agents.md", ".envrc", "flake.nix"];
+/**
+ * What each supported harness loads from a project checkout, by catalogue id.
+ * A new harness without an entry fails `merge-host-executed-gate.test.ts`.
+ */
+export const HARNESS_CONFIG_PATHS: Readonly<Record<string, readonly string[]>> =
+	{
+		"claude-cli": [
+			".claude/settings.json",
+			".claude.json",
+			".mcp.json",
+			"CLAUDE.md",
+			"CLAUDE.local.md",
+		],
+		"codex-cli": [".codex/config.toml", "AGENTS.md", "AGENTS.override.md"],
+		"gemini-cli": [".gemini/settings.json", "GEMINI.md"],
+		"cursor-agent": [".cursor/mcp.json", ".cursor/cli.json", ".cursorrules"],
+		opencode: ["opencode.json", "opencode.jsonc", ".opencode/opencode.json"],
+		pi: [".pi/mcp.json", ".pi/settings.json"],
+	};
 
-/** The default protected class (§6u.4), at any depth and in any letter case. */
+const HOST_EXECUTED_DIRS = [
+	// Harness configuration.
+	".claude",
+	".codex",
+	".gemini",
+	".cursor",
+	".opencode",
+	".pi",
+	".vscode",
+	// Git hooks.
+	".husky",
+	".githooks",
+	// CI that runs on a push.
+	".circleci",
+	".buildkite",
+	".woodpecker",
+];
+const HOST_EXECUTED_NESTED_DIRS = [
+	[".github", "workflows"],
+	[".github", "actions"],
+	[".forgejo", "workflows"],
+	[".gitea", "workflows"],
+];
+const HOST_EXECUTED_FILES = [
+	// Harness instructions and configuration.
+	"claude.md",
+	"claude.local.md",
+	".claude.json",
+	".mcp.json",
+	"agents.md",
+	"agents.override.md",
+	"gemini.md",
+	".cursorrules",
+	"opencode.json",
+	"opencode.jsonc",
+	// Development shell.
+	".envrc",
+	"flake.nix",
+	"flake.lock",
+	"shell.nix",
+	"default.nix",
+	"devenv.nix",
+	"devenv.yaml",
+	"devenv.lock",
+	".tool-versions",
+	"mise.toml",
+	".mise.toml",
+	// Package managers: install scripts, registries, resolved versions.
+	"package.json",
+	"bun.lock",
+	"bun.lockb",
+	"bunfig.toml",
+	".npmrc",
+	".yarnrc",
+	".yarnrc.yml",
+	".pnpmfile.cjs",
+	"pnpm-workspace.yaml",
+	"pnpm-lock.yaml",
+	"package-lock.json",
+	"npm-shrinkwrap.json",
+	"yarn.lock",
+	// Git behaviour: filters, drivers, submodule URLs, hook managers.
+	".gitattributes",
+	".gitmodules",
+	".gitconfig",
+	".pre-commit-config.yaml",
+	"lefthook.yml",
+	"lefthook.yaml",
+	".lefthook.yml",
+	".lefthook.yaml",
+	// Build entry points a person or hook runs.
+	"makefile",
+	"gnumakefile",
+	"justfile",
+	".justfile",
+	"taskfile.yml",
+	"taskfile.yaml",
+	// CI defined by a single file.
+	".gitlab-ci.yml",
+	".travis.yml",
+	".woodpecker.yml",
+	"azure-pipelines.yml",
+	"jenkinsfile",
+];
+
+/**
+ * The default protected class (§6u.4), at any depth and in any letter case.
+ * A directory name also matches as the last component: replacing `.claude`
+ * with a symlink changes one entry, named exactly that.
+ */
 export function isHostExecutedPath(path: string): boolean {
 	const parts = path.toLowerCase().split("/").filter(Boolean);
 	const base = parts.at(-1) ?? "";
 	if (HOST_EXECUTED_FILES.includes(base)) return true;
-	const dirs = parts.slice(0, -1);
-	if (dirs.some((d) => HOST_EXECUTED_DIRS.includes(d))) return true;
-	return dirs.some((d, i) => d === ".github" && dirs[i + 1] === "workflows");
+	if (parts.some((d) => HOST_EXECUTED_DIRS.includes(d))) return true;
+	return parts.some((d, i) =>
+		HOST_EXECUTED_NESTED_DIRS.some(
+			([outer, inner]) => d === outer && parts[i + 1] === inner,
+		),
+	);
 }
 
 /** The shell commands a verification plan would run. */

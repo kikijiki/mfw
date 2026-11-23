@@ -86,6 +86,7 @@ import { LifetimeManager } from "./lifetime.ts";
 import { createLocalExecutionTarget } from "./local-execution-target.ts";
 import { type Logger, rootLogger } from "./log.ts";
 import { Maintenance } from "./maintenance.ts";
+import { hostExecutedChange } from "./merge-gate.ts";
 import { type MergeJobView, MergeQueue } from "./merge-queue.ts";
 import { makeNotifier, type NotifyConfig } from "./notify.ts";
 import { OpenAICompatibleInference } from "./openai-compatible-inference.ts";
@@ -1427,6 +1428,19 @@ export async function attachProject(
 			changedFiles: async (run) => {
 				if (!run.branch || !run.baseSha) return null;
 				return branchChangedFiles(root, run.baseSha, run.branch);
+			},
+			hostExecutedChange: async (run) => {
+				if (!run.branch || !run.baseSha) return null;
+				const quarantine = quarantineRef(run.id);
+				const found = await git(
+					["rev-parse", "--verify", "-q", `${quarantine}^{commit}`],
+					root,
+				);
+				return hostExecutedChange(
+					root,
+					run.baseSha,
+					found.exitCode === 0 ? quarantine : run.branch,
+				);
 			},
 			routeHeld: async (task, pick) => {
 				const held = (await engine.routeTask(task, pick ? { brain: pick } : {}))

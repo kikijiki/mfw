@@ -28,6 +28,11 @@ import { recordHumanAction } from "../human-actions.ts";
 import { finishHumanOverride, recordHumanOverride } from "../human-override.ts";
 import { TaskUnmergedError } from "../lifecycle.ts";
 import type { Logger } from "../log.ts";
+import {
+	applyHostMergeDecision,
+	HOST_MERGE_TOOL,
+	recordHostMergeApproval,
+} from "../merge-gate.ts";
 import { isIndependent } from "../review-verdict.ts";
 import type { GroupRunSpec } from "../run-engine.ts";
 import type { RunRegistry } from "../run-registry.ts";
@@ -608,7 +613,7 @@ export class BrainActionService {
 					: "accepted";
 		// A held action mints its ids when the owner approves it.
 		const effects = hold
-			? { rights }
+			? { rights, ...(await this.approvedContent(tool, args, rights)) }
 			: verdict.ok && !inline
 				? await this.effectsFor(tool as ActTool, args)
 				: null;
@@ -873,6 +878,30 @@ export class BrainActionService {
 		};
 	}
 
+	/**
+	 * What an approved `select_winner` of host-executed files approves: the
+	 * content on the card, so the merge queue does not ask a second time and
+	 * does not accept anything else. Unreadable content records nothing, and
+	 * the queue then raises its own card.
+	 */
+	private async approvedContent(
+		tool: string,
+		args: Record<string, unknown>,
+		rights: RightsDecision | undefined,
+	): Promise<{ approvedContent?: { runId: string; fingerprint: string } }> {
+		if (tool !== "select_winner") return {};
+		if (!rights?.classes.includes("host_executed_merge")) return {};
+		const runId = String(args.runId);
+		const run = await this.deps.registry.get(runId);
+		if (!run || !this.deps.world.hostExecutedChange) return {};
+		const change = await this.deps.world
+			.hostExecutedChange(run)
+			.catch(() => null);
+		return change
+			? { approvedContent: { runId, fingerprint: change.fingerprint } }
+			: {};
+	}
+
 	/** An open card for the same tool and arguments, whichever turn raised it. */
 	private async heldTwin(
 		tool: string,
@@ -945,6 +974,9 @@ export class BrainActionService {
 				status: "rejected",
 				rejection: { code: "owner_declined", message: reason },
 			};
+		} else if (row.tool === HOST_MERGE_TOOL) {
+			// The queue re-checks the commit itself when it runs the job again.
+			next = { status: "applied" };
 		} else {
 			const verdict = await this.validate(tool, row.args);
 			next = verdict.ok
@@ -979,6 +1011,9 @@ export class BrainActionService {
 			},
 			this.now,
 		);
+		if (row.tool === HOST_MERGE_TOOL && !input.approve) {
+			await this.deps.executor.settleDeclinedHostMerge(row.id);
+		}
 		if (next.status !== "accepted") {
 			return {
 				actionId: row.id,
@@ -1026,6 +1061,22 @@ export class BrainActionService {
 				.from(brainActions)
 				.where(eq(brainActions.id, row.id));
 			if (cur?.status !== "held") return false;
+			if (cur.tool === HOST_MERGE_TOOL) {
+				await applyHostMergeDecision(tx, cur, approved, reason);
+			}
+			const content = (
+				cur.effects as {
+					approvedContent?: { runId: string; fingerprint: string };
+				} | null
+			)?.approvedContent;
+			if (approved && next.status === "accepted" && content) {
+				await recordHostMergeApproval(
+					tx,
+					content.runId,
+					content.fingerprint,
+					cur.id,
+				);
+			}
 			const resolution = { by: "owner", approved, reason, at: nowMs };
 			const effects = {
 				...(cur.effects ?? {}),

@@ -472,7 +472,10 @@ export class Supervisor {
 		// Verified work merges here.
 		try {
 			let drained = 0;
-			while ((await this.deps.mergeQueue?.tick()) === "merged") {
+			// A held job has left the queue, so the next one may still merge.
+			for (;;) {
+				const outcome = await this.deps.mergeQueue?.tick();
+				if (outcome !== "merged" && outcome !== "held") break;
 				if (++drained > 50) break; // never starve the rest of the pass
 			}
 		} catch (e) {

@@ -1,6 +1,7 @@
 import type { ProjectDbHandle } from "@mfw/db/client";
 import { brainActions, engineKv } from "@mfw/db/schema";
 import { eq, gte } from "drizzle-orm";
+import { HOST_MERGE_TOOL } from "../merge-gate.ts";
 
 /**
  * The act breaker (DESIGN W2 "decision rights with taint and the breaker"):
@@ -124,6 +125,7 @@ export class ActBreaker {
 		const rows = (
 			await this.deps.handle.db
 				.select({
+					tool: brainActions.tool,
 					status: brainActions.status,
 					rejection: brainActions.rejection,
 					createdAt: brainActions.createdAt,
@@ -133,6 +135,8 @@ export class ActBreaker {
 		).filter(
 			(r) =>
 				r.rejection?.code !== "breaker_open" &&
+				// Raised by the merge queue: not something the brain did.
+				r.tool !== HOST_MERGE_TOOL &&
 				// Strictly after: what happened in the reset's own millisecond is before it.
 				r.createdAt.getTime() > state.countFrom,
 		);

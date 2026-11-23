@@ -1,7 +1,12 @@
 import { overlappingPatterns } from "@mfw/board";
 import type { ProjectDbHandle } from "@mfw/db/client";
 import { appendEvent, type EventBus } from "@mfw/db/eventlog";
-import { engineKv, type RunKind, type RunState } from "@mfw/db/schema";
+import {
+	engineKv,
+	mergeJobs,
+	type RunKind,
+	type RunState,
+} from "@mfw/db/schema";
 import { eq, sql } from "drizzle-orm";
 import type {
 	LaunchOutcome,
@@ -534,11 +539,24 @@ export class Scheduler {
 		return out;
 	}
 
+	/**
+	 * What uses a concurrency slot. A merge held on the owner's card runs nothing
+	 * and may wait for days, so it must not stop the rest of the fleet. Its task
+	 * keeps its claim, so nothing else can start on the same work.
+	 */
 	private async inFlightRuns(): Promise<RunRow[]> {
-		return this.deps.registry.list({
-			states: LIVE_STATES,
-			kinds: COUNTED_KINDS,
-		});
+		const [live, held] = await Promise.all([
+			this.deps.registry.list({
+				states: LIVE_STATES,
+				kinds: COUNTED_KINDS,
+			}),
+			this.deps.handle.db
+				.select({ runId: mergeJobs.runId })
+				.from(mergeJobs)
+				.where(eq(mergeJobs.state, "held")),
+		]);
+		const waiting = new Set(held.map((h) => h.runId));
+		return live.filter((r) => !waiting.has(r.id));
 	}
 
 	/** Read every gate. `tick()` and `status()` both apply the same precedence

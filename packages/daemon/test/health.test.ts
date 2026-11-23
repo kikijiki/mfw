@@ -270,3 +270,26 @@ describe("Health taskTrace", () => {
 		await f.cleanup();
 	});
 });
+
+describe("a merge held for the owner", () => {
+	test("is waiting, not stuck", async () => {
+		const f = await fixture();
+		const run = await seedRun(f, { state: "merging" });
+		await f.handle.db.insert(mergeJobs).values({
+			runId: run.id,
+			branch: "b",
+			targetBranch: "main",
+			state: "queued",
+			enqueuedAt: new Date(),
+			updatedAt: new Date(),
+		});
+		f.now.value += 60 * 60_000;
+		expect(await f.health.stuckRuns()).toContain(run.id);
+		await f.handle.db
+			.update(mergeJobs)
+			.set({ state: "held" })
+			.where(eq(mergeJobs.runId, run.id));
+		expect(await f.health.stuckRuns()).not.toContain(run.id);
+		await f.cleanup();
+	});
+});

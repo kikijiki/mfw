@@ -51,6 +51,8 @@ export async function brainUnit(
 		socket?: BrainSocket;
 		/** What `select_winner` sees a run changed; null = cannot be listed. */
 		changedFiles?: (runId: string) => string[] | null;
+		/** The fingerprint of what `select_winner` would land; none by default. */
+		hostFingerprint?: string;
 		/** Chat's fake model, budget and inbox. */
 		chat?: BrainRuntimeDeps["chat"];
 	} = {},
@@ -268,6 +270,10 @@ export async function brainUnit(
 			maxConcurrent: () => opts.maxConcurrent ?? 2,
 			changedFiles: async (run) =>
 				opts.changedFiles ? opts.changedFiles(run.id) : [],
+			hostExecutedChange: async () =>
+				opts.hostFingerprint
+					? { paths: [".envrc"], fingerprint: opts.hostFingerprint }
+					: null,
 			...(opts.dispatchBlock
 				? {
 						dispatchPaused: async () =>

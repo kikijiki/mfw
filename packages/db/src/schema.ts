@@ -421,6 +421,8 @@ export type MergeJobState =
 	| "reverifying"
 	| "merged"
 	| "parked"
+	// Waiting on the owner's decision card: the merge changes host-executed files.
+	| "held"
 	// Terminal, operator-chosen (`abandon` or `sendToReady`); distinct from `merged`.
 	| "abandoned";
 

@@ -18,6 +18,7 @@ import { z } from "zod";
 import { parseAgentEvents } from "../agents/events.ts";
 import { git } from "../git.ts";
 import type { Logger } from "../log.ts";
+import type { HostExecutedChange } from "../merge-gate.ts";
 import type { ProviderHold } from "../routing.ts";
 import type { RunRegistry, RunRow } from "../run-registry.ts";
 import type { TaskService, TaskWithRefs } from "../task-service.ts";
@@ -76,6 +77,8 @@ export interface BrainWorld {
 	): Promise<{ key: string; until: number; reason: string } | null>;
 	/** Every file a run changed, or null when they cannot be listed (read as protected). */
 	changedFiles?(run: RunRow): Promise<string[] | null>;
+	/** The run's host-executed content, to bind an approved `select_winner` to it. */
+	hostExecutedChange?(run: RunRow): Promise<HostExecutedChange | null>;
 	/** Master stop and per-project pause, as a reason. */
 	dispatchPaused?():
 		| { reason: string }

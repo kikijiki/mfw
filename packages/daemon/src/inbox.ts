@@ -19,6 +19,7 @@ import { loadHostEvidence } from "./claims-evidence.ts";
 import { TASK_QUESTION_KIND } from "./clarify.ts";
 import { EGRESS_BREACH_KEY_PREFIX } from "./egress-ledger.ts";
 import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
+import { HOST_MERGE_TOOL } from "./merge-gate.ts";
 import { PUSH_REFUSED_KEY } from "./merge-queue.ts";
 import type { TaskRow, TaskService } from "./task-service.ts";
 
@@ -1038,6 +1039,7 @@ export function describeHeld(row: {
 	args: Record<string, unknown>;
 	effects: Record<string, unknown> | null;
 }): { title: string; detail: string; taskId?: string } {
+	if (row.tool === HOST_MERGE_TOOL) return describeHostMerge(row.args);
 	const {
 		rationale,
 		alternatives: _a,
@@ -1053,6 +1055,10 @@ export function describeHeld(row: {
 		rights?.cause === "taint"
 			? "The brain read untrusted text (agent output, CI, repo or web) in this session, so it may have been steered."
 			: "This class of action is reserved for you.";
+	const publishes =
+		rights?.actionClass === "host_executed_merge"
+			? " Approving also lets this merge be pushed if push after merge is on."
+			: "";
 	const json = JSON.stringify(call);
 	const args = json.length > 1200 ? `${json.slice(0, 1200)}…` : json;
 	const taskId =
@@ -1063,12 +1069,34 @@ export function describeHeld(row: {
 				: undefined;
 	return {
 		title: `decide: ${row.tool} (${what})`,
-		detail: `${why} Would run: ${args}${
+		detail: `${why}${publishes} Would run: ${args}${
 			typeof rationale === "string" && rationale
 				? ` The brain's stated reason (unverified): ${rationale.slice(0, 400)}`
 				: ""
 		}`,
 		...(taskId ? { taskId } : {}),
+	};
+}
+
+/** The card for a merge the queue stopped: what lands, and what approving does. */
+function describeHostMerge(args: Record<string, unknown>): {
+	title: string;
+	detail: string;
+	taskId?: string;
+} {
+	const paths = Array.isArray(args.paths) ? args.paths.map(String) : [];
+	const count =
+		typeof args.pathCount === "number" ? args.pathCount : paths.length;
+	const more = count > paths.length ? ` and ${count - paths.length} more` : "";
+	const commit = String(args.commit ?? "").slice(0, 12);
+	return {
+		title: `approve merge of host-executed files: ${String(args.branch)}`,
+		detail:
+			`Merging into ${String(args.target)} (commit ${commit}) changes files this machine later runs or loads: ${paths.join(", ")}${more}. ` +
+			`Nothing has landed. Approving lands exactly this content${
+				args.pushes === true ? " and pushes it to the remote" : ""
+			}; if it changes, you are asked again. Declining hands the task back.`,
+		...(typeof args.taskId === "string" ? { taskId: args.taskId } : {}),
 	};
 }
 
