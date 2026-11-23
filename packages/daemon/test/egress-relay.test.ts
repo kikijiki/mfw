@@ -221,3 +221,50 @@ describe("egress relay", () => {
 		).rejects.toThrow();
 	});
 });
+
+describe("the relay in front of a command", () => {
+	const RELAY = join(import.meta.dir, "../src/containment/egress-relay.ts");
+	const relayed = (port: number, command: string[]) =>
+		Bun.spawn(
+			[
+				process.execPath,
+				"--config=/dev/null",
+				"--no-env-file",
+				"run",
+				RELAY,
+				"--socket",
+				"/nonexistent/e.sock",
+				"--port",
+				String(port),
+				"--",
+				...command,
+			],
+			{ stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+		);
+
+	test("passes on the command's output and exit status", async () => {
+		const child = relayed(0, ["sh", "-c", "echo from-command; exit 7"]);
+		const out = await new Response(child.stdout).text();
+		expect(await child.exited).toBe(7);
+		expect(out).toBe("from-command\n");
+	});
+
+	test("reports a command it cannot run", async () => {
+		const child = relayed(0, ["/nonexistent/agent"]);
+		expect(await child.exited).toBe(127);
+	});
+
+	test("never starts the command if it cannot listen", async () => {
+		const taken = net.createServer();
+		await new Promise<void>((r) => taken.listen(0, "127.0.0.1", r));
+		const { port } = taken.address() as net.AddressInfo;
+		try {
+			const child = relayed(port, ["sh", "-c", "echo started"]);
+			const out = await new Response(child.stdout).text();
+			expect(await child.exited).toBe(78);
+			expect(out).toBe("");
+		} finally {
+			await new Promise<void>((r) => taken.close(() => r()));
+		}
+	});
+});

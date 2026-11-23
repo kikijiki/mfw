@@ -232,6 +232,8 @@ const EGRESS_PROXY_MAIN = join(
 
 /** 0.05 s each: how long `run.sh` waits for the proxy socket. */
 const EGRESS_START_POLLS = 400;
+/** 0.05 s each: past the proxy's own shutdown deadline. */
+const EGRESS_STOP_POLLS = 60;
 
 const FLEET_CLI: Readonly<Record<string, "claude" | "codex">> = {
 	"claude-cli": "claude",
@@ -526,8 +528,20 @@ export class AgentHost {
 			...secretGate,
 			bridge ? `${driverCmd} 8>&-` : driverCmd,
 			"rc=$?",
-			// Closing the pipe stops the proxy; its final counters land before the exit does.
-			...(bridge ? ["exec 8>&-", 'wait "$mfw_egress_pid" 2>/dev/null'] : []),
+			// Closing the pipe stops the proxy, and its final counters land before the
+			// exit does. Bounded: a stuck proxy must never hold up the run's exit record.
+			...(bridge
+				? [
+						"exec 8>&-",
+						"mfw_egress_wait=0",
+						`while kill -0 "$mfw_egress_pid" 2>/dev/null && [ "$mfw_egress_wait" -lt ${EGRESS_STOP_POLLS} ]; do`,
+						"  mfw_egress_wait=$((mfw_egress_wait + 1))",
+						"  sleep 0.05",
+						"done",
+						'kill -9 "$mfw_egress_pid" 2>/dev/null',
+						'wait "$mfw_egress_pid" 2>/dev/null',
+					]
+				: []),
 			'mfw_record_exit "exit:$rc"',
 			'exit "$rc"',
 			"}",
