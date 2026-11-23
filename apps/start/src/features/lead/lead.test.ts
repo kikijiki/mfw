@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AppRouter } from "@mfw/api";
+import { DIRECTION_MAX_CHARS } from "@mfw/daemon/brain-runtime/directions";
 import type { Headline } from "@mfw/daemon/headlines";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createTRPCClient } from "@trpc/client";
@@ -12,6 +13,9 @@ import { TRPCProvider } from "../../lib/trpc";
 import { LeadPage } from "./LeadPage";
 import {
 	brainParagraph,
+	DIRECTION_CHARS,
+	directionBadge,
+	directionsOpen,
 	drillLinks,
 	headlineFor,
 	intentSentence,
@@ -88,7 +92,35 @@ describe("lead rules", () => {
 	});
 });
 
-function render(seed: { headlines?: Headline[]; plan?: string }): string {
+describe("direction rules", () => {
+	test("the box's limit is the server's", () => {
+		expect(DIRECTION_CHARS).toBe(DIRECTION_MAX_CHARS);
+	});
+
+	test("each status reads plainly, and an unreceived one is not drafting", () => {
+		expect(directionBadge("drafting", false).label).toBe(
+			"waiting for the brain",
+		);
+		expect(directionBadge("drafting", true).label).toBe("drafting");
+		expect(directionBadge("held", true).tone).toBe("warn");
+		expect(directionBadge("no_draft", true).label).toBe("no draft");
+	});
+
+	test("polling stops once every direction is settled", () => {
+		expect(directionsOpen([{ status: "done" }, { status: "no_draft" }])).toBe(
+			false,
+		);
+		expect(directionsOpen([{ status: "held" }])).toBe(true);
+		expect(directionsOpen(undefined)).toBe(false);
+	});
+});
+
+function render(seed: {
+	headlines?: Headline[];
+	plan?: string;
+	directions?: unknown[];
+	brainEnabled?: boolean;
+}): string {
 	const queryClient = new QueryClient();
 	const client = createTRPCClient<AppRouter>({ links: [] });
 	const trpc = createTRPCOptionsProxy<AppRouter>({ client, queryClient });
@@ -103,8 +135,18 @@ function render(seed: { headlines?: Headline[]; plan?: string }): string {
 	);
 	queryClient.setQueryData(trpc.runs.active.queryKey(), [] as never);
 	queryClient.setQueryData(trpc.brain.states.queryKey(), [
-		{ project, enabled: true, state: "idle", failures: 0, error: null },
+		{
+			project,
+			enabled: seed.brainEnabled ?? true,
+			state: "idle",
+			failures: 0,
+			error: null,
+		},
 	] as never);
+	queryClient.setQueryData(
+		trpc.brain.directions.queryKey({ project }),
+		(seed.directions ?? []) as never,
+	);
 	queryClient.setQueryData(
 		trpc.brain.decisions.queryKey({ project, kind: "plan", limit: 1 }),
 		(seed.plan ? [{ reason: seed.plan }] : []) as never,
@@ -147,6 +189,41 @@ describe("LeadPage", () => {
 		expect(html.indexOf("Landed 7")).toBeLessThan(
 			html.indexOf("Ship the importer first."),
 		);
+	});
+
+	test("the direction box is one text field and no form fields", () => {
+		const html = render({});
+		expect(html).toContain('aria-label="Give direction"');
+		expect(html.match(/<textarea/g)).toHaveLength(1);
+		expect(html).toContain(`maxLength="${DIRECTION_CHARS}"`);
+	});
+
+	test("the box is disabled while the brain is off", () => {
+		const html = render({ brainEnabled: false });
+		expect(html).toMatch(/<textarea[^>]*disabled/);
+	});
+
+	test("a direction's text renders as inert text", () => {
+		const evil = "<img src=x onerror=alert(1)><script>alert(2)</script>";
+		const html = render({
+			directions: [
+				{
+					id: "D1",
+					text: evil,
+					at: 1_800_000_000_000,
+					status: "held",
+					received: true,
+					taskIds: ["MFW-9"],
+					heldActionIds: ["A1"],
+				},
+			],
+		});
+		expect(html).not.toContain("<img src=x");
+		expect(html).not.toContain("<script>alert");
+		expect(html).toContain("&lt;img src=x");
+		expect(html).toContain("held for you");
+		expect(html).toContain("/p/mfw#needs-you");
+		expect(html).toContain("MFW-9");
 	});
 
 	test("drill-down links and the needs section are present", () => {

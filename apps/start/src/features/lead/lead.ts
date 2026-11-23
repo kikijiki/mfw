@@ -84,6 +84,46 @@ export function intentSentence(
 	};
 }
 
+/** The server's limit (`DIRECTION_MAX_CHARS`); a test keeps them equal. */
+export const DIRECTION_CHARS = 500;
+
+export type DirectionState =
+	| "drafting"
+	| "drafted"
+	| "held"
+	| "done"
+	| "no_draft";
+
+/** How a direction's status reads on Lead. */
+export function directionBadge(
+	status: DirectionState,
+	received: boolean,
+): { label: string; tone: "neutral" | "accent" | "ok" | "warn" } {
+	switch (status) {
+		case "drafting":
+			return received
+				? { label: "drafting", tone: "accent" }
+				: { label: "waiting for the brain", tone: "neutral" };
+		case "drafted":
+			return { label: "drafted", tone: "accent" };
+		case "held":
+			return { label: "held for you", tone: "warn" };
+		case "done":
+			return { label: "done", tone: "ok" };
+		case "no_draft":
+			return { label: "no draft", tone: "neutral" };
+	}
+}
+
+/** Poll only while something can still change on its own. */
+export function directionsOpen(
+	list: readonly { status: DirectionState }[] | undefined,
+): boolean {
+	return (list ?? []).some(
+		(d) => d.status !== "done" && d.status !== "no_draft",
+	);
+}
+
 export interface DrillLink {
 	label: string;
 	to: string;
