@@ -75,7 +75,7 @@ describe("native resume", () => {
 		// Per-turn MCP config is attributed to its turn.
 		const cfg = JSON.parse(
 			await readFile(
-				join(fx.svc.mfwDir, "runs", t2?.runId ?? "", "mcp.json"),
+				join(fx.svc.mfwDir, "runs", t2?.runId ?? "", "control", "mcp.json"),
 				"utf8",
 			),
 		);

@@ -54,10 +54,10 @@ describe("X9: the host does not trust or follow files in the writable run dir", 
 			driver,
 			`
 const fs = require("node:fs");
-fs.writeFileSync(${JSON.stringify(join(runDir, "exit"))}, "exit:0");
-fs.writeFileSync(${JSON.stringify(join(runDir, "forged"))}, "1");
+fs.writeFileSync(${JSON.stringify(join(runDir, "outbox", "exit"))}, "exit:0");
+fs.writeFileSync(${JSON.stringify(join(runDir, "outbox", "forged"))}, "1");
 const t0 = Date.now();
-while (!fs.existsSync(${JSON.stringify(join(runDir, "release"))}) && Date.now() - t0 < 10000) await new Promise((r) => setTimeout(r, 25));
+while (!fs.existsSync(${JSON.stringify(join(runDir, "outbox", "release"))}) && Date.now() - t0 < 10000) await new Promise((r) => setTimeout(r, 25));
 process.exit(3);
 `,
 		);
@@ -67,9 +67,11 @@ process.exit(3);
 			...baseSpec(base, `xrun-forge-${uid}`, runDir, mk("wt")),
 			driverScript: driver,
 		});
-		expect(await waitFor(() => existsSync(join(runDir, "forged")))).toBe(true);
+		expect(
+			await waitFor(() => existsSync(join(runDir, "outbox", "forged"))),
+		).toBe(true);
 		expect((await host.readExit(runDir)).kind).toBe("running");
-		writeFileSync(join(runDir, "release"), "1");
+		writeFileSync(join(runDir, "outbox", "release"), "1");
 		await procs.get(`mfw_xrun-forge-${uid}`)?.exited;
 		expect(
 			await waitFor(async () => (await host.readExit(runDir)).kind === "exit"),

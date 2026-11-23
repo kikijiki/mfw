@@ -43,6 +43,7 @@ import {
 	mfwHome as configuredMfwHome,
 	type StoredBrainConfig,
 } from "../config.ts";
+import { ensureRunDirLayout } from "../containment/run-dir.ts";
 import { HumanOverrideService } from "../human-override.ts";
 import type { Logger } from "../log.ts";
 import type { ProviderHold, RoutingDecision } from "../routing.ts";
@@ -810,7 +811,11 @@ export class BrainRuntime {
 			const scratchDir = join(this.deps.mfwDir, "brain", session.id);
 			await mkdir(scratchDir, { recursive: true });
 			const mcp = await this.mcpServer(session.id, runId);
-			const mcpConfigPath = join(runDir, "mcp.json");
+			// Read by the agent inside the sandbox, which sees only control/ and outbox/.
+			const mcpConfigPath = join(
+				ensureRunDirLayout(runDir).control,
+				"mcp.json",
+			);
 			await writeFile(
 				mcpConfigPath,
 				`${JSON.stringify({ mcpServers: { [mcp.name]: { command: mcp.command, args: mcp.args, env: mcp.env } } }, null, "\t")}\n`,

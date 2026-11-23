@@ -13,6 +13,7 @@ import {
 import { parseAgentEvents } from "./agents/events.ts";
 import { isBrainTurnRun } from "./brain-runtime/turn-run.ts";
 import { PROJECT_DEFAULTS } from "./config.ts";
+import { runEventsPath } from "./containment/run-dir.ts";
 import type { StepRunner } from "./finalize/step-runner.ts";
 import type { Logger } from "./log.ts";
 import type { NotificationType } from "./notify.ts";
@@ -768,7 +769,7 @@ export class Supervisor {
 
 	private async outputMtime(runDir: string): Promise<number> {
 		try {
-			return (await stat(join(runDir, "events.jsonl"))).mtimeMs;
+			return (await stat(runEventsPath(runDir))).mtimeMs;
 		} catch {
 			return 0; // no events yet: idle is measured from startedAt
 		}
@@ -834,11 +835,13 @@ export class Supervisor {
 				} else if (run.state === "starting") {
 					await this.deps.registry.recordExit(run.id, {
 						outcome: "start_failed",
+						evidence: { provenance: "host-observed", source: "reconcile" },
 					});
 					report.startFailed++;
 				} else {
 					await this.deps.registry.recordExit(run.id, {
 						outcome: "interrupted",
+						evidence: { provenance: "host-observed", source: "reconcile" },
 					});
 					report.interrupted++;
 				}
@@ -858,11 +861,13 @@ export class Supervisor {
 			} else if (run.state === "starting") {
 				await this.deps.registry.recordExit(run.id, {
 					outcome: "start_failed",
+					evidence: { provenance: "host-observed", source: "reconcile" },
 				});
 				report.startFailed++;
 			} else {
 				await this.deps.registry.recordExit(run.id, {
 					outcome: "interrupted",
+					evidence: { provenance: "host-observed", source: "reconcile" },
 				});
 				report.interrupted++;
 			}

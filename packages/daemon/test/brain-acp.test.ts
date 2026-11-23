@@ -130,7 +130,7 @@ describe("ACP brain turns (mock agent)", () => {
 		// The runtime's mcp.json names the same server the agent was given.
 		const cfg = JSON.parse(
 			await readFile(
-				join(f.svc.mfwDir, "runs", t2?.runId ?? "", "mcp.json"),
+				join(f.svc.mfwDir, "runs", t2?.runId ?? "", "control", "mcp.json"),
 				"utf8",
 			),
 		);

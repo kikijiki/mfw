@@ -13,6 +13,11 @@ import {
 } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
+import {
+	driverRunPaths,
+	ensureRunDirLayout,
+	runHostFilesDir,
+} from "./containment/run-dir.ts";
 import { readSmallRegularFile } from "./containment/safe-file.ts";
 import {
 	assertDisjointEnvironmentNames,
@@ -20,6 +25,7 @@ import {
 } from "./execution-environment.ts";
 import type { Logger } from "./log.ts";
 import { runProc } from "./proc.ts";
+import type { ExitEvidence, ExitSource } from "./run-exit-evidence.ts";
 import {
 	type BwrapIsolation,
 	bwrapAvailable,
@@ -38,14 +44,19 @@ import {
  * AgentHost v2: tmux mechanics only, no domain logic. Rows/state live in
  * RunRegistry; completion handling in the Supervisor. Run dir contract:
  *
- *   meta.json     written once by RunRegistry, never mutated
- *   events.jsonl  normalized AgentEvents, single writer: the driver process
- *   raw.log       verbatim pane output, tmux pipe-pane target
- *   exit          "exit:<code>" (run.sh) | "killed:<reason>" (kill, compare-and-skip)
- *   steer.jsonl   daemon appends (O_APPEND), driver reads
- *   control.jsonl daemon appends typed controls, shared app-server driver reads
- *   driver.json   invocation config for the driver
- *   run.sh        session wrapper (go-signal gate; writes `exit`)
+ *   meta.json             written once by RunRegistry, never mutated
+ *   raw.log               verbatim pane output, tmux pipe-pane target
+ *   control/              host-written, read-only in the sandbox
+ *     exit                "exit:<code>" (run.sh) | "killed:<reason>" (kill, compare-and-skip)
+ *     steer.jsonl         daemon appends (O_APPEND), driver reads
+ *     control.jsonl       daemon appends typed controls, app-server driver reads
+ *     driver.json         invocation config for the driver
+ *   outbox/               the only run path the sandbox can write: agent claims
+ *     events.jsonl        normalized AgentEvents, written by the driver
+ *
+ * Only a sandboxed launch is split. An unsandboxed run (`isolation` unset) and
+ * a run launched before the split keep these files flat in the run dir.
+ * `run.sh` (the session wrapper) lives in the host-only control root.
  */
 
 /** POSIX single-quote for safe embedding in a generated shell script. */
@@ -233,15 +244,19 @@ export class AgentHost {
 			);
 		}
 		const dir = spec.runDir;
+		// No sandbox means no boundary to split along.
+		const hostFiles = spec.isolation ? ensureRunDirLayout(dir).control : dir;
 		const control = await this.controlRoot();
 		const scriptPath = join(control, `run-${spec.runId}.sh`);
 		const rawLog = join(dir, "raw.log");
-		const exitPath = join(dir, "exit");
+		const exitPath = join(hostFiles, "exit");
 		// The authoritative exit record: host-only, never the agent-writable run dir (security review X9).
 		const exitRecord = join(control, `exit-${spec.runId}`);
 		await this.pruneControl(control);
 		// A stale record from an earlier run that reused this id must not read as this run's exit.
 		await rm(exitRecord, { force: true });
+		// Likewise a `control/exit` left in a run dir that was flat, and writable, before.
+		if (spec.isolation) await rm(exitPath, { force: true });
 
 		const publicEnvironment = spec.env ?? {};
 		const secretEnvironment =
@@ -255,7 +270,7 @@ export class AgentHost {
 		}
 
 		await writeFileAtomic(
-			join(dir, "driver.json"),
+			join(hostFiles, "driver.json"),
 			JSON.stringify(
 				{
 					argv: spec.agentArgv,
@@ -276,8 +291,8 @@ export class AgentHost {
 				2,
 			),
 		);
-		await writeFile(join(dir, "steer.jsonl"), "", { flag: "a" });
-		await writeFile(join(dir, "control.jsonl"), "", { flag: "a" });
+		await writeFile(join(hostFiles, "steer.jsonl"), "", { flag: "a" });
+		await writeFile(join(hostFiles, "control.jsonl"), "", { flag: "a" });
 		await writeFile(rawLog, "", { flag: "a" });
 
 		// .envrc trust gate: load direnv only if the worktree's .envrc is byte-identical
@@ -338,6 +353,7 @@ export class AgentHost {
 							...(spec.providerArgv ?? []),
 						].filter((a) => a.startsWith("/")),
 					].filter(underPrivateTmp),
+					splitRunDir: true,
 				},
 			);
 		}
@@ -594,13 +610,13 @@ export class AgentHost {
 			}
 		};
 		await create(join(await this.controlRoot(), `exit-${runId}`));
-		await create(join(runDir, "exit"));
+		await create(join(runHostFilesDir(runDir), "exit"));
 	}
 
 	/** Append one steering message (O_APPEND, no read-modify-write races). */
 	async appendSteer(runDir: string, message: string): Promise<void> {
 		await appendFile(
-			join(runDir, "steer.jsonl"),
+			driverRunPaths(runDir).steer,
 			`${JSON.stringify(message)}\n`,
 		);
 	}
@@ -618,7 +634,7 @@ export class AgentHost {
 			  },
 	): Promise<void> {
 		await appendFile(
-			join(runDir, "control.jsonl"),
+			driverRunPaths(runDir).controls,
 			`${JSON.stringify(control)}\n`,
 		);
 	}
@@ -631,14 +647,21 @@ export class AgentHost {
 	 * back to the run dir, read without following links or blocking.
 	 */
 	async readExit(runDir: string): Promise<RunExit> {
+		return (await this.readExitEvidence(runDir)).exit;
+	}
+
+	/** The recorded exit and which record it came from (`run-exit-evidence.ts`). */
+	async readExitEvidence(runDir: string): Promise<ExitEvidence> {
 		const runId = basename(runDir);
 		const control = await this.controlRoot();
 		const authoritative = await readSmallRegularFile(
 			join(control, `exit-${runId}`),
 		);
 		let s: string | null;
+		let source: ExitSource;
 		if (authoritative !== null) {
 			s = authoritative;
+			source = "host-exit-record";
 			// The run script (host-only, no secrets) is done with.
 			await rm(join(control, `run-${runId}.sh`), { force: true }).catch(
 				() => {},
@@ -649,17 +672,23 @@ export class AgentHost {
 				() => false,
 			)
 		) {
-			return { kind: "running" };
+			return { exit: { kind: "running" }, source: null };
 		} else {
-			s = await readSmallRegularFile(join(runDir, "exit"));
+			// A split run's copy is host-written; the flat path of an older or remote
+			// run is all there is for it. `exitProvenance` decides what each is worth.
+			const hostFiles = runHostFilesDir(runDir);
+			source = hostFiles === runDir ? "flat-exit" : "control-exit";
+			s = await readSmallRegularFile(join(hostFiles, "exit"));
 		}
-		if (s === null) return { kind: "running" }; // no exit recorded (yet)
+		if (s === null) return { exit: { kind: "running" }, source: null }; // no exit recorded (yet)
 		s = s.trim();
 		const exit = /^exit:(\d+)$/.exec(s);
-		if (exit) return { kind: "exit", code: Number(exit[1]) };
+		if (exit) return { exit: { kind: "exit", code: Number(exit[1]) }, source };
 		const killed = /^killed:(.+)$/.exec(s);
-		if (killed) return { kind: "killed", reason: killed[1] as string };
-		return { kind: "running" };
+		if (killed) {
+			return { exit: { kind: "killed", reason: killed[1] as string }, source };
+		}
+		return { exit: { kind: "running" }, source: null };
 	}
 
 	/** Old run scripts and exit records of long-finished runs; the control dir is not a log. */

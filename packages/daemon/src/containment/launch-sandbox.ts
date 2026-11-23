@@ -52,6 +52,7 @@ import {
 	pinIdentities,
 	samePins,
 } from "./pinned-binds.ts";
+import { RunDirLayoutError, verifyRunDirLayout } from "./run-dir.ts";
 
 const O_TMPFILE = 0o20000000 | constants.O_DIRECTORY;
 
@@ -195,9 +196,14 @@ export function openSandboxFds(
 ): SandboxFds {
 	let pins: OpenPins;
 	try {
+		// The pins prove which directories are mounted; this proves no other
+		// user can write the run root that holds them.
+		if (compiled.runDirRoot) verifyRunDirLayout(compiled.runDirRoot);
 		pins = openPinnedBinds(compiled.pinnedBinds);
 	} catch (err) {
-		if (!(err instanceof PinnedBindError)) throw err;
+		if (!(err instanceof PinnedBindError || err instanceof RunDirLayoutError)) {
+			throw err;
+		}
 		throw new SandboxLaunchError("pin_failed", err.message);
 	}
 	const files: number[] = [];

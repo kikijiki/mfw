@@ -58,7 +58,7 @@ esac
 		const driver = join(base, "d.ts");
 		writeFileSync(
 			driver,
-			`require("node:fs").writeFileSync(${JSON.stringify(join(runDir, "env.txt"))}, String(process.env.FROM_DIRENV));`,
+			`require("node:fs").writeFileSync(${JSON.stringify(join(runDir, "outbox", "env.txt"))}, String(process.env.FROM_DIRENV));`,
 		);
 		const { runner, procs } = runShTmux(
 			{},
@@ -71,9 +71,11 @@ esac
 			driverScript: driver,
 		});
 		await procs.get("mfw_x14")?.exited;
-		expect(await waitFor(() => existsSync(join(runDir, "env.txt")))).toBe(true);
+		expect(
+			await waitFor(() => existsSync(join(runDir, "outbox", "env.txt"))),
+		).toBe(true);
 		// direnv's exports still reach the driver, but its trust record is not in HOME.
-		expect(await readFile(join(runDir, "env.txt"), "utf8")).toBe("1");
+		expect(await readFile(join(runDir, "outbox", "env.txt"), "utf8")).toBe("1");
 		expect(existsSync(join(home, ".local/share/direnv/allow/trusted"))).toBe(
 			false,
 		);
