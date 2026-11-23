@@ -42,18 +42,3 @@ export function useThemeName(): {
 	}, []);
 	return { name, setName };
 }
-
-/** The theme on <html>, following every change (the switcher is another component). */
-export function usePaintedTheme(): ThemeId {
-	const [name, setName] = useState<ThemeId>(DEFAULT_THEME);
-	useEffect(() => {
-		setName(paintedTheme());
-		const observer = new MutationObserver(() => setName(paintedTheme()));
-		observer.observe(document.documentElement, {
-			attributes: true,
-			attributeFilter: ["data-theme"],
-		});
-		return () => observer.disconnect();
-	}, []);
-	return name;
-}

@@ -100,6 +100,47 @@ describe("theme files", () => {
 	}
 });
 
+/**
+ * Themes restyle; they never move anything. A declaration of one of these
+ * properties fails unless its file and value are listed in LAYOUT_ALLOWLIST
+ * with the reason. The list is empty on purpose.
+ */
+const LAYOUT_PROPERTY =
+	/(?:^|[;{\s])(grid(?:-template(?:-[a-z]+)?|-area|-column(?:-start|-end)?|-row(?:-start|-end)?|-auto-[a-z]+)?|flex-direction|flex-flow|flex-wrap|order|float|position|display|visibility|translate|inset(?:-[a-z]+)?)\s*:\s*([^;}]+)/g;
+const LAYOUT_ALLOWLIST: readonly string[] = [];
+
+function layoutDeclarations(css: string): string[] {
+	const code = css.replace(/\/\*[\s\S]*?\*\//g, "");
+	return [...code.matchAll(LAYOUT_PROPERTY)].map(
+		(m) => `${m[1]}: ${(m[2] ?? "").trim()}`,
+	);
+}
+
+describe("themes do not change the layout", () => {
+	for (const file of ["bridge", ...STYLED.map((t) => t.id as string)]) {
+		test(`${file}.css declares no layout-moving property`, () => {
+			const css = readFileSync(join(DIR, `${file}.css`), "utf8");
+			const found = layoutDeclarations(css).filter(
+				(d) => !LAYOUT_ALLOWLIST.includes(`${file}: ${d}`),
+			);
+			expect(found).toEqual([]);
+		});
+	}
+
+	test("the scan catches what it is meant to catch", () => {
+		expect(
+			layoutDeclarations(
+				"a { flex-direction: row; } b { position: fixed; color: red } c { display:none } /* order: 1 */ d { grid-template-columns: 1fr }",
+			),
+		).toEqual([
+			"flex-direction: row",
+			"position: fixed",
+			"display: none",
+			"grid-template-columns: 1fr",
+		]);
+	});
+});
+
 // --- a minimal <html>, window and storage -----------------------------------
 
 function fakeRoot() {
@@ -157,20 +198,20 @@ describe("pre-paint bootstrap", () => {
 
 	test("applies the stored theme and mode", () => {
 		const root = runBootstrap({
-			stored: { [THEME_NAME_KEY]: "docket", "mfw:v2:theme": "light" },
+			stored: { [THEME_NAME_KEY]: "margin", "mfw:v2:theme": "light" },
 			osDark: true,
 		});
-		expect(root.attrs.get("data-theme")).toBe("docket");
+		expect(root.attrs.get("data-theme")).toBe("margin");
 		expect(root.attrs.get("data-mode")).toBe("light");
 		expect(root.classes.has("dark")).toBe(false);
 	});
 
 	test("the URL wins over storage", () => {
 		const root = runBootstrap({
-			search: "?theme=bench&mode=dark",
-			stored: { [THEME_NAME_KEY]: "docket", "mfw:v2:theme": "light" },
+			search: "?theme=slab&mode=dark",
+			stored: { [THEME_NAME_KEY]: "margin", "mfw:v2:theme": "light" },
 		});
-		expect(root.attrs.get("data-theme")).toBe("bench");
+		expect(root.attrs.get("data-theme")).toBe("slab");
 		expect(root.attrs.get("data-mode")).toBe("dark");
 		expect(root.classes.has("dark")).toBe(true);
 	});
@@ -223,21 +264,21 @@ describe("selectTheme", () => {
 
 	test("applies and persists", () => {
 		const { root, store } = install("http://x/");
-		selectTheme("switchyard");
-		expect(root.attrs.get("data-theme")).toBe("switchyard");
-		expect(store.get(THEME_NAME_KEY)).toBe("switchyard");
-		expect(paintedTheme()).toBe("switchyard");
+		selectTheme("pebble");
+		expect(root.attrs.get("data-theme")).toBe("pebble");
+		expect(store.get(THEME_NAME_KEY)).toBe("pebble");
+		expect(paintedTheme()).toBe("pebble");
 	});
 
 	test("still applies when storage is blocked", () => {
 		const { root } = install("http://x/", true);
-		selectTheme("singlefile");
-		expect(root.attrs.get("data-theme")).toBe("singlefile");
+		selectTheme("gauge");
+		expect(root.attrs.get("data-theme")).toBe("gauge");
 	});
 
 	test("drops ?theme= so a reload keeps the choice", () => {
-		const { replaced } = install("http://x/p?theme=docket&tab=1");
-		selectTheme("bench");
+		const { replaced } = install("http://x/p?theme=margin&tab=1");
+		selectTheme("slab");
 		expect(replaced).toEqual(["http://x/p?tab=1"]);
 	});
 });

@@ -1,0 +1,287 @@
+/* biome-ignore-all lint/complexity/noImportantStyles: shared components set these inline; a theme can only restyle them with !important */
+/* biome-ignore-all lint/style/noDescendingSpecificity: rules are grouped by component */
+/* Slab: chunky and direct. Thick borders, large heavy type and flat blocks of muted colour. */
+@import "@fontsource-variable/archivo/wght.css";
+@import "@fontsource-variable/jetbrains-mono/wght.css";
+
+:root[data-theme="slab"] {
+	--mfw-font-ui: "Archivo Variable", system-ui, sans-serif;
+	--mfw-font-display: "Archivo Variable", system-ui, sans-serif;
+	--mfw-font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+	--mfw-radius-sm: 3px;
+	--mfw-radius-md: 4px;
+	--mfw-radius-lg: 6px;
+	--radius: 0.25rem;
+	--mfw-shadow-raised: none;
+	--mfw-shadow-overlay: 0 0 0 2px var(--mfw-fg);
+	--mfw-text-2xs: 12px;
+	--mfw-text-xs: 13px;
+	--mfw-text-sm: 14px;
+	--mfw-text-md: 16px;
+	--mfw-text-lg: 19px;
+	--mfw-text-xl: 23px;
+	--mfw-text-2xl: 30px;
+	--mfw-leading-data: 1.34;
+	--mfw-leading-prose: 1.5;
+	--mfw-panel-border: var(--mfw-fg);
+	--mfw-panel-title-tracking: 0.03em;
+	--mfw-panel-title-size: var(--mfw-text-xs);
+	--mfw-panel-title-fg: var(--mfw-fg);
+}
+:root[data-theme="slab"]:not([data-density="compact"]) {
+	--mfw-row-h: 40px;
+}
+
+:root[data-theme="slab"]:not(.dark) {
+	--mfw-bg: #f3f3f1;
+	--mfw-bg-subtle: #e6e6e3;
+	--mfw-bg-raised: #fcfcfb;
+	--mfw-bg-inset: #dfdfdb;
+	--mfw-bg-hover: #d9d9d4;
+	--mfw-border: #b3b3ad;
+	--mfw-border-strong: #1e2026;
+	--mfw-fg: #1e2026;
+	--mfw-fg-muted: #41434a;
+	--mfw-fg-faint: #52545b;
+	--mfw-fg-on-accent: #ffffff;
+	--mfw-accent: #454a8c;
+	--mfw-accent-hover: #363a73;
+	--mfw-accent-subtle: #d9dbee;
+	--mfw-link: #3f4486;
+	--mfw-ok: #235c39;
+	--mfw-warn: #654607;
+	--mfw-critical: #8f2a22;
+	--mfw-info: #225270;
+	--mfw-neutral: #52545b;
+	--mfw-status-backlog: #52545b;
+	--mfw-status-ready: #225270;
+	--mfw-status-in-progress: #694207;
+	--mfw-status-blocked: #813518;
+	--mfw-status-review: #5b3c7e;
+	--mfw-status-done: #235c39;
+	--mfw-status-archived: #52545b;
+	--mfw-diff-add-bg: #235c3926;
+	--mfw-diff-del-bg: #8f2a2224;
+	--mfw-diff-add-hl: #235c394d;
+	--mfw-diff-del-hl: #8f2a2248;
+	--mfw-swatch-l-bg: 0.84;
+	--mfw-swatch-l-fg: 0.3;
+	--mfw-swatch-c-bg: 0.05;
+	--mfw-swatch-c-fg: 0.09;
+}
+
+:root[data-theme="slab"].dark {
+	--mfw-bg: #18191d;
+	--mfw-bg-subtle: #212328;
+	--mfw-bg-raised: #26282e;
+	--mfw-bg-inset: #121317;
+	--mfw-bg-hover: #30333a;
+	--mfw-border: #474a53;
+	--mfw-border-strong: #d6d7dc;
+	--mfw-fg: #eeeef0;
+	--mfw-fg-muted: #c6c7cd;
+	--mfw-fg-faint: #acaeb6;
+	--mfw-fg-on-accent: #16171d;
+	--mfw-accent: #b4b8ea;
+	--mfw-accent-hover: #c9ccf1;
+	--mfw-accent-subtle: #33365a;
+	--mfw-link: #b9bdec;
+	--mfw-ok: #8fd0a8;
+	--mfw-warn: #dfc07b;
+	--mfw-critical: #f0a59b;
+	--mfw-info: #9ac8e3;
+	--mfw-neutral: #acaeb6;
+	--mfw-status-backlog: #acaeb6;
+	--mfw-status-ready: #9ac8e3;
+	--mfw-status-in-progress: #e2b67d;
+	--mfw-status-blocked: #eaac8e;
+	--mfw-status-review: #ccb9e7;
+	--mfw-status-done: #8fd0a8;
+	--mfw-status-archived: #acaeb6;
+	--mfw-diff-add-bg: #8fd0a826;
+	--mfw-diff-del-bg: #f0a59b26;
+	--mfw-diff-add-hl: #8fd0a852;
+	--mfw-diff-del-hl: #f0a59b52;
+	--mfw-swatch-l-bg: 0.4;
+	--mfw-swatch-l-fg: 0.92;
+	--mfw-swatch-c-bg: 0.06;
+	--mfw-swatch-c-fg: 0.06;
+}
+
+html[data-theme="slab"] {
+	.mfw-title {
+		font-weight: 800;
+		letter-spacing: -0.02em;
+		--mfw-title-size: 26px;
+
+		/* A phone's title is one truncated line: keep the name readable. */
+		@media (max-width: 767px) {
+			--mfw-title-size: 19px;
+		}
+	}
+	header.border-b {
+		border-bottom-width: 3px;
+		border-bottom-color: var(--mfw-border-strong) !important;
+	}
+	.mfw-panel {
+		border-width: 2px;
+	}
+	.mfw-panel > div:first-child:has(> .mfw-panel-title) {
+		background: var(--mfw-bg-inset);
+		border-bottom-width: 2px;
+		border-bottom-color: var(--mfw-fg) !important;
+	}
+	.mfw-panel-title {
+		font-weight: 800;
+	}
+	nav[data-expanded] {
+		border-right-width: 3px;
+		border-right-color: var(--mfw-border-strong) !important;
+	}
+	nav[data-expanded] > a {
+		font-weight: 600;
+	}
+	nav[data-expanded] > a[aria-current="page"] {
+		background: var(--mfw-accent) !important;
+		color: var(--mfw-fg-on-accent) !important;
+		font-weight: 800;
+	}
+	/* The count badge is accent-filled: invert it on the accent-filled active row. */
+	nav[data-expanded] > a[aria-current="page"] .mfw-num {
+		background: var(--mfw-fg-on-accent) !important;
+		color: var(--mfw-accent) !important;
+	}
+	nav[data-expanded] > a:not([aria-current]):hover {
+		background: var(--mfw-bg-hover) !important;
+		filter: none;
+	}
+
+	[data-slot="button"] {
+		border-width: 2px;
+		font-weight: 700;
+		transition: background-color 80ms linear;
+	}
+	[data-slot="button"][data-variant="default"] {
+		border-color: var(--mfw-fg);
+	}
+	[data-slot="button"][data-variant="outline"] {
+		background: var(--mfw-bg-raised);
+		border-color: var(--mfw-fg);
+	}
+	[data-slot="button"][data-variant="secondary"] {
+		background: var(--mfw-bg-inset);
+		border-color: var(--mfw-border);
+	}
+	[data-slot="button"][data-variant="destructive"] {
+		border-color: var(--mfw-critical);
+	}
+
+	/* Status: a heavy outlined label, the word in bold. */
+	.mfw-status {
+		background: var(--mfw-bg-raised) !important;
+		border-width: 2px;
+		border-color: currentcolor !important;
+		font-weight: 750;
+	}
+	/* Tags are flat blocks, so the outlined status labels stand out from them. */
+	.mfw-chip {
+		background: var(--mfw-bg-inset) !important;
+		border-color: transparent !important;
+		font-weight: 650;
+	}
+	[data-slot="badge"] {
+		border-width: 2px;
+		border-radius: var(--mfw-radius-sm);
+		font-weight: 750;
+	}
+
+	[data-slot="input"],
+	[data-slot="textarea"],
+	[data-slot="select-trigger"] {
+		background: var(--mfw-bg-raised) !important;
+		border-width: 2px;
+		border-color: var(--mfw-fg);
+		box-shadow: none;
+	}
+
+	[data-slot="tabs-list"] {
+		background: var(--mfw-bg-inset);
+		border-radius: var(--mfw-radius-md);
+	}
+	[data-slot="tabs-trigger"] {
+		font-weight: 700;
+	}
+	[data-slot="tabs-trigger"][data-state="active"] {
+		background: var(--mfw-accent) !important;
+		border-color: transparent !important;
+		color: var(--mfw-fg-on-accent) !important;
+		box-shadow: none !important;
+	}
+
+	[data-slot="card"] {
+		border: 2px solid var(--mfw-fg);
+		box-shadow: none;
+		--tw-ring-color: transparent;
+	}
+	th {
+		background: var(--mfw-bg-inset);
+		font-weight: 800;
+		border-bottom: 3px solid var(--mfw-fg);
+	}
+	td {
+		border-bottom: 2px solid var(--mfw-border);
+	}
+
+	[data-slot="dialog-content"],
+	[data-slot="sheet-content"],
+	[data-slot="select-content"],
+	[cmdk-root] {
+		box-shadow: var(--mfw-shadow-overlay);
+		--tw-ring-color: transparent;
+	}
+	[data-slot="tooltip-content"] {
+		background: var(--mfw-fg) !important;
+		color: var(--mfw-bg) !important;
+		font-weight: 600;
+	}
+	[role="meter"],
+	[role="progressbar"] {
+		outline: 2px solid var(--mfw-fg);
+	}
+	pre {
+		background: var(--mfw-bg-inset) !important;
+		border: 2px solid var(--mfw-border);
+	}
+	code,
+	kbd {
+		font-weight: 600;
+	}
+	:focus-visible {
+		outline: 3px solid var(--mfw-accent);
+		outline-offset: 2px;
+	}
+
+	/* Rows carry their state as a thick leading edge. */
+	[data-need] {
+		border-width: 2px 2px 2px 8px;
+		border-radius: var(--mfw-radius-md) !important;
+		background: var(--mfw-bg-raised);
+	}
+	[data-card] {
+		border-width: 2px;
+		border-color: var(--mfw-border) !important;
+	}
+	[data-card][data-selected="true"] {
+		border-color: var(--mfw-accent) !important;
+	}
+	[data-testid="project-row"][data-active] {
+		box-shadow:
+			inset 6px 0 0 var(--mfw-accent),
+			inset 0 0 0 2px var(--mfw-accent) !important;
+		color: var(--mfw-fg) !important;
+		padding-left: 12px;
+	}
+	[data-slot="tabs-trigger"]::after {
+		background: transparent;
+	}
+}
