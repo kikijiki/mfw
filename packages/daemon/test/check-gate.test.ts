@@ -245,6 +245,109 @@ describe("the check gate", () => {
 		expect(refused).not.toBeNull();
 	});
 
+	const refusedPath = async (run: string, prefix?: string) =>
+		(await checkGateRefusal(candidate, run, prefix, gate()))?.path;
+
+	test("an added pre-script is refused", async () => {
+		await writeFile(
+			join(candidate, "package.json"),
+			JSON.stringify({
+				scripts: { check: "./scripts/check.sh", precheck: `touch ${canary}` },
+				version: "1",
+			}),
+		);
+		expect(await refusedPath("bun run check")).toBe("package.json");
+	});
+
+	test("an added post-script is refused", async () => {
+		await writeFile(
+			join(candidate, "package.json"),
+			JSON.stringify({
+				scripts: { check: "./scripts/check.sh", postcheck: `touch ${canary}` },
+				version: "1",
+			}),
+		);
+		expect(await refusedPath("bun run check")).toBe("package.json");
+	});
+
+	test("removing the script so a new check.ts runs instead is refused", async () => {
+		await writeFile(
+			join(candidate, "package.json"),
+			JSON.stringify({ scripts: {}, version: "1" }),
+		);
+		await writeFile(join(candidate, "check.ts"), "evil();\n");
+		expect(await refusedPath("bun run check")).toBe("package.json");
+	});
+
+	test("a new file named like an undefined script is refused", async () => {
+		await writeFile(join(candidate, "lint.ts"), "evil();\n");
+		expect(await refusedPath("bun run lint")).toBe("lint.ts");
+	});
+
+	for (const file of [
+		"bunfig.toml",
+		".npmrc",
+		"bun.lock",
+		"package-lock.json",
+	]) {
+		test(`a new ${file} is refused for a package-runner check`, async () => {
+			await writeFile(join(candidate, file), 'preload = ["./evil.ts"]\n');
+			expect(await refusedPath("bun test")).toBe(file);
+		});
+	}
+
+	test("a changed Make include is refused", async () => {
+		await writeFile(
+			join(root, "Makefile"),
+			"include extra.mk\ncheck:\n\ttrue\n",
+		);
+		await writeFile(join(root, "extra.mk"), "A=1\n");
+		await gitOk(["add", "-A"], root);
+		await gitOk(["commit", "-q", "-m", "make"], root);
+		baseSha = await gitOk(["rev-parse", "HEAD"], root);
+		await gitOk(["pull", "-q", "origin", "main"], candidate);
+		expect(await refusedPath("make check")).toBeUndefined();
+		await writeFile(join(candidate, "extra.mk"), "A=2\n");
+		expect(await refusedPath("make check")).toBe("extra.mk");
+	});
+
+	test("bun test is not confused by a test directory or test.ts", async () => {
+		await mkdir(join(candidate, "test"));
+		await writeFile(join(candidate, "test/a.test.ts"), "changed\n");
+		await writeFile(join(candidate, "test.ts"), "changed\n");
+		expect(await refusedPath("bun test")).toBeUndefined();
+	});
+
+	test("a directory named like a script is not a refusal", async () => {
+		await mkdir(join(candidate, "lint"));
+		expect(await refusedPath("bun run lint")).toBeUndefined();
+	});
+
+	test("a computed Make include is refused", async () => {
+		await writeFile(
+			join(root, "Makefile"),
+			"include $(X).mk\ncheck:\n\ttrue\n",
+		);
+		await gitOk(["add", "-A"], root);
+		await gitOk(["commit", "-q", "-m", "make"], root);
+		baseSha = await gitOk(["rev-parse", "HEAD"], root);
+		await gitOk(["pull", "-q", "origin", "main"], candidate);
+		expect(await refusedPath("make check")).toBe("Makefile");
+	});
+
+	for (const run of [
+		'sh -c "$(cat evil)"',
+		"./scripts/check.sh $(cat evil)",
+		"for f in a; do ./x; done",
+		"export PATH=./bin:$PATH; check",
+	]) {
+		test(`an unanalyzable check is refused: ${run}`, async () => {
+			const refused = await checkGateRefusal(candidate, run, undefined, gate());
+			expect(refused?.reason).toContain("cannot be checked");
+			expect(refused?.fix).toBeTruthy();
+		});
+	}
+
 	test("refs/replace cannot forge the trusted base", async () => {
 		// The reviewer's exploit: replace the base with a commit holding the
 		// candidate's script, so the "base" reads back as the candidate.
