@@ -31,6 +31,7 @@ import {
 	type Resolver,
 	resolvePinned,
 } from "./egress-policy.ts";
+import { assertSocketPathFits, socketRoot } from "./socket-root.ts";
 
 /** One ALLOW or DENY decision, as handed to the log sink. */
 export type EgressLogEntry =
@@ -184,21 +185,16 @@ export interface EgressProxy {
 	close(): Promise<void>;
 }
 
-const UNIX_PATH_MAX = 107;
-
 /**
- * The per-run socket path: `$MFW_HOME/run/s/<12 hex>/e.sock`. The directory
- * is short because a unix socket path is limited to 107 bytes, and it is the
- * unit the engine bind-mounts into exactly one run.
+ * The per-run socket path: `<socket root>/s/<12 hex>/e.sock`, in the short
+ * host-owned directory of socket-root.ts, never under `$MFW_HOME`: a unix
+ * socket path is limited to 107 bytes and a home can be any length. The
+ * directory is the unit the engine bind-mounts into exactly one run.
  */
 export function egressSocketPath(mfwHome: string, runId: string): string {
 	const short = createHash("sha256").update(runId).digest("hex").slice(0, 12);
-	const path = join(mfwHome, "run", "s", short, "e.sock");
-	if (Buffer.byteLength(path) > UNIX_PATH_MAX) {
-		throw new Error(
-			`egress socket path exceeds ${UNIX_PATH_MAX} bytes: ${path}`,
-		);
-	}
+	const path = join(socketRoot(mfwHome), "s", short, "e.sock");
+	assertSocketPathFits(path, "egress socket");
 	return path;
 }
 
@@ -227,9 +223,7 @@ const hostInterfaceAddresses = (): string[] =>
 export async function startEgressProxy(
 	opts: EgressProxyOptions,
 ): Promise<EgressProxy> {
-	if (Buffer.byteLength(opts.socketPath) > UNIX_PATH_MAX) {
-		throw new Error(`egress socket path exceeds ${UNIX_PATH_MAX} bytes`);
-	}
+	assertSocketPathFits(opts.socketPath, "egress socket");
 	if (!opts.gate) {
 		throw new Error("egress proxy requires a global connection gate");
 	}

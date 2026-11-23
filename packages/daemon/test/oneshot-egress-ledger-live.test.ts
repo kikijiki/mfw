@@ -13,6 +13,7 @@ import { dirname, join, resolve } from "node:path";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
 import { TEMPORARY_FLEET_WRITABLE } from "../src/containment/agent-profile.ts";
 import { runOneShotAgent } from "../src/containment/oneshot-agent.ts";
+import { socketRoot } from "../src/containment/socket-root.ts";
 import { type CageConfig, cagedSteps } from "./support/caged-launch.ts";
 
 /**
@@ -150,7 +151,8 @@ echo reviewed
 		expect(String(row?.run_id)).toStartWith("review-");
 		// Recorded first, then the call's directories go.
 		expect(readdirSync(join(stateDir, "runs"))).toEqual([]);
-		expect(existsSync(join(mfwHome, "run/s"))).toBe(true);
-		expect(readdirSync(join(mfwHome, "run/s"))).toEqual([]);
+		const sockets = join(socketRoot(mfwHome), "s");
+		expect(existsSync(sockets)).toBe(true);
+		expect(readdirSync(sockets)).toEqual([]);
 	}, 45_000);
 });

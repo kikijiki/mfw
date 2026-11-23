@@ -21,6 +21,7 @@ import {
 	egressSocketPath,
 	startEgressProxy,
 } from "../src/containment/egress-proxy.ts";
+import { socketRoot } from "../src/containment/socket-root.ts";
 
 /** A name that the stub resolver maps to a documentation-free public IP. */
 const PUBLIC_IP = "93.184.216.34";
@@ -880,11 +881,15 @@ describe("egress proxy: SNI check (rule 11)", () => {
 describe("egress proxy: socket", () => {
 	test("socket path is short, per run, and under the 107-byte limit", () => {
 		const p = egressSocketPath("/var/lib/mfw", "01JABCDEFGHJKMNPQRSTVWXYZ0");
-		expect(p).toMatch(/^\/var\/lib\/mfw\/run\/s\/[0-9a-f]{12}\/e\.sock$/);
+		expect(p.startsWith(`${socketRoot("/var/lib/mfw")}/s/`)).toBe(true);
+		expect(p).toMatch(/\/s\/[0-9a-f]{12}\/e\.sock$/);
+		expect(p.startsWith("/var/lib/mfw")).toBe(false);
 		expect(egressSocketPath("/var/lib/mfw", "x")).not.toBe(
 			egressSocketPath("/var/lib/mfw", "y"),
 		);
-		expect(() => egressSocketPath(`/${"d".repeat(120)}`, "x")).toThrow(/107/);
+		// A long home does not matter: the socket is not under it.
+		const long = egressSocketPath(`/${"d".repeat(300)}`, "x");
+		expect(Buffer.byteLength(long)).toBeLessThanOrEqual(107);
 	});
 
 	test("the socket is 0600 and removed on close", async () => {
