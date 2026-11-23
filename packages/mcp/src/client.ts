@@ -110,14 +110,15 @@ export function makeBrainSocketClient(env: BrainSocketEnv) {
 }
 
 /**
- * The client a brain turn uses: the socket when the daemon gave one
- * (`MFW_SOCKET`, `MFW_BRAIN_TOKEN_FILE`), otherwise the TCP default.
+ * The client a brain turn uses: always the socket the daemon gave it
+ * (`MFW_SOCKET`, `MFW_BRAIN_TOKEN_FILE`). There is no TCP path.
  */
 export function makeBrainClient(
 	env: NodeJS.ProcessEnv = process.env,
 ): MfwClient {
 	const socketPath = env.MFW_SOCKET;
-	if (!socketPath) return makeClient(env.MFW_URL);
+	if (!socketPath)
+		throw new Error("a brain turn needs MFW_SOCKET; it has no TCP path");
 	const tokenFile = env.MFW_BRAIN_TOKEN_FILE;
 	if (!tokenFile)
 		throw new Error("MFW_SOCKET is set but MFW_BRAIN_TOKEN_FILE is not");
