@@ -13,12 +13,20 @@ import {
 } from "@mfw/plugin-api/harness-registry";
 import { CAPABILITIES } from "../src/agents/acp-translate.ts";
 import { isHostExecutedPath } from "../src/brain-runtime/decision-rights.ts";
-import { autonomyFlags } from "../src/containment/agent-profile.ts";
+import {
+	autonomyFlags,
+	withoutAutonomyFlags,
+} from "../src/containment/agent-profile.ts";
 import { buildAllowlist } from "../src/containment/egress-policy.ts";
 import {
 	isAllowedEnvName,
 	parseSandboxProfile,
 } from "../src/containment/profile.ts";
+import {
+	BYPASS_CORPUS,
+	NOT_BYPASS,
+	WRAPPER_ARGV,
+} from "./fixtures/autonomy-bypass-corpus.ts";
 import { captureHarnessMaps } from "./fixtures/harness-maps-snapshot.ts";
 
 interface CatalogueRow {
@@ -274,4 +282,47 @@ describe("a hostile manifest stops at the existing gates too", () => {
 	])("the launch gate still sees %s", (flag) => {
 		expect(autonomyFlags(["cli", flag])).toEqual([flag]);
 	});
+});
+
+describe("the review's bypass cases against the frozen old detector", () => {
+	const frozen: { rows: AutonomyRow[] } = JSON.parse(
+		readFileSync(
+			join(import.meta.dir, "fixtures/autonomy-bypass-frozen.json"),
+			"utf8",
+		),
+	);
+	const key = (argv: readonly string[]) => JSON.stringify(argv);
+	const stillAsks = new Set(NOT_BYPASS.map((row) => key(["cli", ...row])));
+	const bypasses = [
+		...Object.values(BYPASS_CORPUS)
+			.flat()
+			.map((row) => ["cli", ...row]),
+		...WRAPPER_ARGV,
+	];
+
+	test("the snapshot holds every corpus row", () => {
+		expect(frozen.rows.map((r) => key(r.argv)).sort()).toEqual(
+			[...bypasses.map(key), ...stillAsks].sort(),
+		);
+	});
+
+	test("the old detector missed most of them, so the snapshot proves a change", () => {
+		const missed = frozen.rows.filter(
+			(r) => !stillAsks.has(key(r.argv)) && r.flags.length === 0,
+		);
+		expect(missed.length).toBeGreaterThan(50);
+	});
+
+	for (const row of frozen.rows)
+		test(`${JSON.stringify(row.argv)}`, () => {
+			const now = autonomyFlags(row.argv);
+			if (stillAsks.has(key(row.argv))) {
+				// Not a bypass then or now: nothing about it may change.
+				expect(row.flags).toEqual([]);
+				expect(now).toEqual([]);
+				expect(withoutAutonomyFlags(row.argv)).toEqual(row.without);
+			} else {
+				expect(now.length).toBeGreaterThan(0);
+			}
+		});
 });
