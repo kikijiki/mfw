@@ -6,8 +6,7 @@
  *   bun run tools/third-party-notices.ts <out-file>...
  *
  * `apps/start`'s `build` runs it so the notices sit in the build output
- * (`.output/THIRD_PARTY_NOTICES.txt`, and in `.output/public/` so the UI can
- * link them). Workspace packages (`@mfw/*`) are this project, not third party.
+ * (`.output/THIRD_PARTY_NOTICES.txt`). Workspace packages (`@mfw/*`) are this project, not third party.
  */
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
