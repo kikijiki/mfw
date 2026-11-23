@@ -173,11 +173,8 @@ export interface BrainRuntimeDeps {
 	world: BrainWorld;
 	hostname?: string;
 	now?: () => number;
-	/**
-	 * The brain's MCP server. `url` forces the TCP transport (a test seam);
-	 * otherwise a turn talks over the unix socket.
-	 */
-	mcp?: { url?: string; script?: string; command?: string };
+	/** How to launch the brain's MCP server, which talks over the unix socket. */
+	mcp?: { script?: string; command?: string };
 	/** `$MFW_HOME`, where the brain socket lives (default: the configured home). */
 	mfwHome?: string;
 	/** The socket turns authenticate to (default: the home's shared one). */
@@ -852,59 +849,35 @@ export class BrainRuntime {
 	}
 
 	/**
-	 * The MCP server a turn gets. Over the unix socket it carries a per-turn
-	 * token file path and no URL. TCP is the old unauthenticated path: it is
-	 * used only when `mcp.url` is set, when `MFW_BRAIN_TCP=1` asks for it (a
-	 * temporary switch until auth v1), or, loudly, when no router has been
-	 * wired to the socket (a daemon booted without the app).
+	 * The MCP server a turn gets: the unix socket, a per-turn token file path,
+	 * and no URL. The socket is the only transport. A daemon booted without the
+	 * app has no router behind it, so the turn fails to start.
 	 */
 	private async mcpServer(
 		sessionId: string,
 		turnRunId: string,
 	): Promise<BrainMcpServer> {
 		const mcp = this.deps.mcp ?? {};
-		const base = {
-			MFW_PROJECT: this.deps.projectName,
-			MFW_BRAIN_SESSION: sessionId,
-			MFW_BRAIN_TURN: turnRunId,
-		};
 		const socket = this.socket();
-		const tcp =
-			mcp.url !== undefined ||
-			process.env.MFW_BRAIN_TCP === "1" ||
-			!socket.ready;
-		if (tcp && mcp.url === undefined && process.env.MFW_BRAIN_TCP !== "1")
-			this.deps.log.warn(
-				{ turnRunId },
-				"no router is wired to the brain socket: the brain turn uses unauthenticated TCP",
-			);
-		let env: Record<string, string>;
-		if (tcp) {
-			env = {
-				MFW_URL:
-					mcp.url ??
-					process.env.MFW_URL ??
-					"http://localhost:7777/mfw/api/trpc",
-				...base,
-			};
-		} else {
-			const access = await socket.issue({
-				project: this.deps.projectName,
-				sessionId,
-				runId: turnRunId,
-			});
-			this.tokenTurns.add(turnRunId);
-			env = {
-				MFW_SOCKET: access.socketPath,
-				MFW_BRAIN_TOKEN_FILE: access.tokenFile,
-				...base,
-			};
-		}
+		if (!socket.ready)
+			throw new Error("no router is wired to the brain socket");
+		const access = await socket.issue({
+			project: this.deps.projectName,
+			sessionId,
+			runId: turnRunId,
+		});
+		this.tokenTurns.add(turnRunId);
 		return {
 			name: "mfw_brain",
 			command: mcp.command ?? "bun",
 			args: ["run", mcp.script ?? mcpMainScript(), "--brain", sessionId],
-			env,
+			env: {
+				MFW_SOCKET: access.socketPath,
+				MFW_BRAIN_TOKEN_FILE: access.tokenFile,
+				MFW_PROJECT: this.deps.projectName,
+				MFW_BRAIN_SESSION: sessionId,
+				MFW_BRAIN_TURN: turnRunId,
+			},
 		};
 	}
 

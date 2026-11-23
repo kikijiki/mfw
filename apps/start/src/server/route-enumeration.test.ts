@@ -3,7 +3,9 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { appRouter } from "@mfw/api";
+import { OWNER_ONLY_PROCEDURES, TOKEN_PROCEDURES } from "@mfw/api/token-access";
 import { AuthService, type IssuedSession } from "@mfw/daemon/auth/service";
+import { TOKEN_SCOPES } from "@mfw/daemon/auth/tokens";
 import type { Orchestrator } from "@mfw/daemon/services";
 import {
 	guardRequest,
@@ -240,6 +242,98 @@ describe("every tRPC procedure and SSE stream", () => {
 			} else {
 				expect(res.status).toBe(401);
 			}
+		});
+	}
+});
+
+describe("every route and procedure with an API token", () => {
+	let tokens: AuthService;
+	let tokenDir: string;
+	let all: string;
+	const stub = (async () => ({
+		bootId: "boot",
+		startedAt: 0,
+		list: () => [],
+		get: () => {
+			throw new Error("no project");
+		},
+	})) as unknown as () => Promise<Orchestrator>;
+
+	const callWithToken = async (req: Request) =>
+		serveTrpc(
+			req,
+			await guardRequest(req, {
+				auth: tokens,
+				base: "/",
+				env: {},
+				api: true,
+				bearer: true,
+			}),
+			{ auth: tokens, endpoint: ENDPOINT, orchestrator: stub },
+		);
+
+	beforeAll(async () => {
+		tokenDir = mkdtempSync(join(tmpdir(), "mfw-enum-token-"));
+		tokens = await AuthService.open(join(tokenDir, "auth.db"), {
+			tokenRate: { perSecond: 1000, burst: 100_000 },
+		});
+		const setup = (await tokens.beginFirstRun()) as string;
+		await tokens.setup(setup, "correct horse battery");
+		all = (await tokens.createToken({ name: "all", scopes: [...TOKEN_SCOPES] }))
+			.token;
+	});
+
+	afterAll(() => {
+		tokens.close();
+		rmSync(tokenDir, { recursive: true, force: true });
+	});
+
+	for (const { path, type } of procedures) {
+		if (OWNER_ONLY_PROCEDURES.has(path))
+			test(`${type} ${path}: owner-only, refused to a token with every scope`, async () => {
+				const res = await callWithToken(
+					procRequest(path, type, { authorization: `Bearer ${all}` }),
+				);
+				if (type === "subscription")
+					expect(await res.text()).toContain("FORBIDDEN");
+				else expect(res.status).toBe(403);
+			});
+		else
+			test(`${type} ${path}: declared, and a bad token gets 401`, async () => {
+				expect(TOKEN_PROCEDURES.has(path)).toBe(true);
+				const res = await callWithToken(
+					procRequest(path, type, {
+						authorization: `Bearer mfwt_${"x".repeat(43)}`,
+					}),
+				);
+				expect(res.status).toBe(401);
+			});
+
+		test(`${type} ${path}: a cross-site call with a valid token gets 403`, async () => {
+			const res = await callWithToken(
+				procRequest(path, type, {
+					authorization: `Bearer ${all}`,
+					origin: EVIL,
+				}),
+			);
+			expect(res.status).toBe(403);
+		});
+	}
+
+	for (const id of routeIds().filter((r) => r !== "/api/trpc/$")) {
+		if (id === "/api/health") continue;
+		test(`${id}: a token is not accepted`, async () => {
+			const r = await guardRequest(
+				new Request(`${ORIGIN}${concrete(id)}`, {
+					headers: {
+						host: "localhost:7777",
+						authorization: `Bearer ${all}`,
+					},
+				}),
+				{ auth: tokens, base: "/", env: {} },
+			);
+			expect(r.ok).toBe(false);
+			if (!r.ok) expect(r.response.status).toBe(403);
 		});
 	}
 });

@@ -60,6 +60,50 @@ const MIGRATIONS: readonly (readonly string[])[] = [
 		// Bumped whenever existing credentials stop being valid; see `issue`.
 		"ALTER TABLE principals ADD COLUMN credential_epoch INTEGER NOT NULL DEFAULT 0",
 	],
+	[
+		// Scoped tokens for non-browser clients: a digest only, see `auth/tokens.ts`.
+		`CREATE TABLE api_tokens (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			token_hash TEXT NOT NULL UNIQUE,
+			principal_id TEXT NOT NULL REFERENCES principals (id) ON DELETE CASCADE,
+			scopes TEXT NOT NULL,
+			project TEXT,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL,
+			last_used_at INTEGER,
+			revoked_at INTEGER
+		)`,
+		"CREATE INDEX ix_api_tokens_live ON api_tokens (revoked_at, expires_at)",
+		// No foreign key: the record of what a token did outlives the token.
+		`CREATE TABLE token_audit (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			token_id TEXT NOT NULL,
+			token_name TEXT NOT NULL,
+			path TEXT NOT NULL,
+			project TEXT,
+			outcome TEXT NOT NULL,
+			at INTEGER NOT NULL
+		)`,
+		"CREATE INDEX ix_token_audit_token ON token_audit (token_id, id)",
+	],
+	[
+		// Refusals become a counter, so they can never push out a real action.
+		"ALTER TABLE token_audit ADD COLUMN kind TEXT NOT NULL DEFAULT 'mutation'",
+		"CREATE INDEX ix_token_audit_kind ON token_audit (token_id, kind, id)",
+		`CREATE TABLE token_audit_counters (
+			token_id TEXT PRIMARY KEY,
+			token_name TEXT NOT NULL,
+			refused INTEGER NOT NULL DEFAULT 0,
+			last_refused_at INTEGER,
+			last_refused_path TEXT,
+			dropped INTEGER NOT NULL DEFAULT 0
+		)`,
+		`INSERT INTO token_audit_counters (token_id, token_name, refused, last_refused_at)
+			SELECT token_id, MAX(token_name), COUNT(*), MAX(at)
+			FROM token_audit WHERE outcome = 'refused' GROUP BY token_id`,
+		"DELETE FROM token_audit WHERE outcome = 'refused'",
+	],
 ];
 
 export const AUTH_SCHEMA_VERSION = MIGRATIONS.length;

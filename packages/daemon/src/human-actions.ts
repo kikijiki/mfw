@@ -1,5 +1,6 @@
 import type { ProjectDbHandle } from "@mfw/db/client";
 import { type DecisionKind, decisions } from "@mfw/db/schema";
+import { currentTokenActor } from "./auth/actor.ts";
 import type { Logger } from "./log.ts";
 
 /**
@@ -61,6 +62,7 @@ export async function recordHumanAction(
 ): Promise<number | null> {
 	if (!svc.handle) return null;
 	const ts = new Date(now());
+	const actor = currentTokenActor();
 	try {
 		const [row] = await svc.handle.db
 			.insert(decisions)
@@ -73,7 +75,7 @@ export async function recordHumanAction(
 				status: "ok",
 				action: a.action,
 				reason: a.reason ? a.reason.slice(0, MAX_REASON) : null,
-				input: a.input ?? {},
+				input: { ...(a.input ?? {}), ...(actor ? { principal: actor } : {}) },
 				output: a.output ?? { status: "applied" },
 				durationMs: 0,
 				finishedAt: ts,

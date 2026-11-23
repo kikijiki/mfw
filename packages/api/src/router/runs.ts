@@ -14,6 +14,7 @@ import {
 	createTRPCRouter,
 	projectProcedure,
 	publicProcedure,
+	tokenTaskRunOnly,
 } from "../trpc.ts";
 
 /** What the UI shows of a run's routing decision: where it ran and why. Null on pre-routing rows. */
@@ -109,9 +110,9 @@ export const runsRouter = createTRPCRouter({
 			}),
 		)
 		.query(async ({ ctx, input }) => {
-			const rows = (
-				await ctx.svc.registry.list({ taskId: input.taskId })
-			).filter((row) => input.includeInternal || row.kind !== "brain");
+			const rows = (await ctx.svc.registry.list({ taskId: input.taskId }))
+				.filter((row) => input.includeInternal || row.kind !== "brain")
+				.filter((row) => ctx.principal.kind !== "token" || row.kind === "task");
 			const sorted = rows.sort(activeFirst).slice(0, input.limit);
 			const titles = titlesFor(ctx.svc, sorted);
 			return sorted.map((row) => ({
@@ -175,6 +176,7 @@ export const runsRouter = createTRPCRouter({
 
 	get: projectProcedure
 		.input(z.object({ runId: z.string() }))
+		.use(tokenTaskRunOnly)
 		.query(async ({ ctx, input }) => {
 			const row = await ctx.svc.registry.get(input.runId);
 			if (!row) return null;
@@ -198,6 +200,7 @@ export const runsRouter = createTRPCRouter({
 				offset: z.number().int().nonnegative().default(0),
 			}),
 		)
+		.use(tokenTaskRunOnly)
 		.query(async ({ ctx, input }) => {
 			const { chunk, size, complete } = await ctx.svc.registry.readOutput(
 				input.runId,
@@ -214,6 +217,7 @@ export const runsRouter = createTRPCRouter({
 
 	stop: projectProcedure
 		.input(z.object({ runId: z.string() }))
+		.use(tokenTaskRunOnly)
 		.mutation(async ({ ctx, input }) => {
 			await ctx.svc.engine.stop(input.runId);
 			ctx.svc.supervisor.wake(); // finalize promptly, never inline
