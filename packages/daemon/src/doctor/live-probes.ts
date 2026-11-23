@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { existsSync, realpathSync } from "node:fs";
 import { lstat, stat } from "node:fs/promises";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
 	installPath,

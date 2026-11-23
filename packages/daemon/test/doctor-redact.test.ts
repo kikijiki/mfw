@@ -46,30 +46,30 @@ describe("sanitizeText removes credentials wherever they appear", () => {
 });
 
 const CTX = {
-	home: "/home/alice",
-	mfwHome: "/home/alice/.local/share/mfw",
+	home: "/home/user",
+	mfwHome: "/home/user/.local/share/mfw",
 	user: "alice",
 };
 
 describe("redactText", () => {
 	test("the home directory becomes ~", () => {
-		expect(redactText("at /home/alice/dev/x", CTX)).toBe("at ~/dev/x");
+		expect(redactText("at /home/user/dev/x", CTX)).toBe("at ~/dev/x");
 	});
 
 	test("MFW_HOME is named, not spelled out", () => {
-		expect(redactText("/home/alice/.local/share/mfw/auth.db", CTX)).toBe(
+		expect(redactText("/home/user/.local/share/mfw/auth.db", CTX)).toBe(
 			"$MFW_HOME/auth.db",
 		);
 	});
 
 	test("a longer name is not cut by a shorter home", () => {
-		expect(redactText("/srv/x /home/alice2/y", { home: "/home/alice" })).toBe(
+		expect(redactText("/srv/x /home/user.old/y", { home: "/home/user" })).toBe(
 			"/srv/x ~/y",
 		);
 	});
 
 	test("another user's home is hidden too", () => {
-		expect(redactText("/home/bob/a and /Users/carol/b", CTX)).toBe(
+		expect(redactText("/home/agent/a and /Users/me/b", CTX)).toBe(
 			"~/a and ~/b",
 		);
 	});
@@ -99,13 +99,13 @@ describe("redactText", () => {
 
 const leaky = () =>
 	fixture({
-		home: "/home/alice/.local/share/mfw",
-		env: { HOST: "127.0.0.1", HOME: "/home/alice", USER: "alice" },
+		home: "/home/user/.local/share/mfw",
+		env: { HOST: "127.0.0.1", HOME: "/home/user", USER: "alice" },
 		config: async () => ({
 			ok: true,
 			config: {
 				projects: [
-					{ name: "acme", root: "/home/alice/acme", runWorkspace: "clone" },
+					{ name: "acme", root: "/home/user/acme", runWorkspace: "clone" },
 				],
 			},
 		}),
@@ -123,8 +123,8 @@ const leaky = () =>
 function cli(args: string[]) {
 	const out: string[] = [];
 	return runDoctorCommand(args, {
-		env: { HOST: "127.0.0.1", HOME: "/home/alice", USER: "alice" },
-		home: "/home/alice/.local/share/mfw",
+		env: { HOST: "127.0.0.1", HOME: "/home/user", USER: "alice" },
+		home: "/home/user/.local/share/mfw",
 		out: (l) => out.push(l),
 		err: () => {},
 		probes: leaky(),
@@ -141,21 +141,21 @@ describe("the redacted report", () => {
 
 	test("--json is redacted by default", async () => {
 		const text = await cli(["--json"]);
-		expect(text).not.toContain("/home/alice");
+		expect(text).not.toContain("/home/user");
 		expect(text).not.toContain("private-plan.md");
 		DoctorReportSchema.parse(JSON.parse(text));
 	});
 
 	test("--json --no-redact keeps the local detail", async () => {
 		const text = await cli(["--json", "--no-redact"]);
-		expect(text).toContain("/home/alice");
+		expect(text).toContain("/home/user");
 		expect(text).toContain("private-plan.md");
 	});
 
 	test("human output is unredacted unless asked", async () => {
-		expect(await cli([])).toContain("/home/alice");
+		expect(await cli([])).toContain("/home/user");
 		const text = await cli(["--redact"]);
-		expect(text).not.toContain("/home/alice");
+		expect(text).not.toContain("/home/user");
 		expect(text).not.toContain("private-plan.md");
 	});
 

@@ -45,7 +45,8 @@ const sparse = (path: string, bytes: number) => {
 	ftruncateSync(fd, bytes);
 	closeSync(fd);
 };
-const GOOD = "---\nid: good\non: merge.completed\naction: script\nrun: ./deploy.sh\n---\n";
+const GOOD =
+	"---\nid: good\non: merge.completed\naction: script\nrun: ./deploy.sh\n---\n";
 
 describe("a trigger definition cannot exhaust or hang the host", () => {
 	test("a symlink to a 400 MB file is quarantined without reading it", async () => {

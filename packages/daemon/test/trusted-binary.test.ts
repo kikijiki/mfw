@@ -93,10 +93,10 @@ describe("a binary is trusted only when nothing an agent can write leads to it",
 				kind: "link",
 				uid: 0,
 				mode: 0o777,
-				target: "/home/owner/.local/bin/claude",
+				target: "/home/user/.local/bin/claude",
 			},
-			"/home/owner": { kind: "dir", uid: OWNER, mode: 0o755 },
-			"/home/owner/.local/bin/claude": file(OWNER),
+			"/home/user": { kind: "dir", uid: OWNER, mode: 0o755 },
+			"/home/user/.local/bin/claude": file(OWNER),
 		});
 		expect(binaryTrustProblem("/usr/bin/claude", [], io)).not.toBeNull();
 	});
