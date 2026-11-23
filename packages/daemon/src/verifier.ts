@@ -1,5 +1,6 @@
 import { access } from "node:fs/promises";
 import { join } from "node:path";
+import { type CheckGate, checkGateRefusal } from "./containment/check-gate.ts";
 import {
 	type ActionableFailureClass,
 	classifyCheckFailure,
@@ -37,7 +38,9 @@ export type FailureClass =
 	| "missing-file"
 	| "no-change"
 	| "timeout"
-	| "crashed";
+	| "crashed"
+	/** Not run: the candidate changed a file the host would execute for it. */
+	| "refused";
 
 export interface CheckOutcome {
 	check: string;
@@ -106,6 +109,11 @@ export interface VerifyOptions {
 	 * and runs no git in it.
 	 */
 	candidateSha?: string;
+	/**
+	 * Set when `cwd` holds a candidate rather than merged code: a check whose
+	 * entry points differ from this base is refused (`containment/check-gate.ts`).
+	 */
+	gate?: CheckGate;
 }
 
 const DEFAULT_CHECK_TIMEOUT_MS = 10 * 60_000;
@@ -283,6 +291,23 @@ export async function verify(
 		if ("run" in check) {
 			if (opts.signal?.aborted) {
 				throw new Error("verification preempted");
+			}
+			if (opts.gate) {
+				const refused = await checkGateRefusal(
+					cwd,
+					check.run,
+					opts.checkPrefix,
+					opts.gate,
+				);
+				if (refused) {
+					checks.push({
+						check: label,
+						ok: false,
+						classification: "refused",
+						detail: `not run: ${refused.reason}. Fix: ${refused.fix}`,
+					});
+					continue;
+				}
 			}
 			const timeoutMs = check.timeout
 				? check.timeout * 1000

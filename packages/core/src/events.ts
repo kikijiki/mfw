@@ -504,7 +504,14 @@ export const EventSchema = z.discriminatedUnion("type", [
 			check: z.string(),
 			passed: z.boolean(),
 			classification: z
-				.enum(["failed", "missing-file", "no-change", "timeout", "crashed"])
+				.enum([
+					"failed",
+					"missing-file",
+					"no-change",
+					"timeout",
+					"crashed",
+					"refused",
+				])
 				.optional(),
 			detail: z.string().optional(),
 		}),

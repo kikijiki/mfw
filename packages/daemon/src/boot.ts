@@ -759,7 +759,13 @@ export async function attachProject(
 			const run = await registry.get(job.runId);
 			if (!run?.worktreePath || !run.baseSha)
 				return { passed: false, detail: "run worktree is gone" };
-			const opts = { checkPrefix: cfg.checkPrefix, envPolicy: cfg.envPolicy };
+			// After a rebase the candidate sits on the current target, so that is
+			// the baseline its check entry points must match.
+			const opts = {
+				checkPrefix: cfg.checkPrefix,
+				envPolicy: cfg.envPolicy,
+				gate: { primaryRoot: root, baseRev: `refs/heads/${job.targetBranch}` },
+			};
 			const result = await verification.foreground(() =>
 				verifierClones
 					? verifyInClone(
@@ -810,7 +816,12 @@ export async function attachProject(
 								`merge-${job.runId}`,
 								dod,
 								run.baseSha as string,
-								{ checkPrefix: cfg.checkPrefix, envPolicy: cfg.envPolicy },
+								{
+									checkPrefix: cfg.checkPrefix,
+									envPolicy: cfg.envPolicy,
+									// The target as it was before this merge commit.
+									gate: { primaryRoot: root, baseRev: `${mergeSha}^1` },
+								},
 							),
 						);
 						return verdictOf(result);
