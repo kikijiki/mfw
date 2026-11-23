@@ -4,7 +4,7 @@ import { decisions, runGroups } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
 import { type FlowNode, flowTree } from "../src/flow.ts";
 import { groupView } from "../src/group-view.ts";
-import { rerouteRun } from "../src/reroute.ts";
+import { RerouteError, rerouteRun } from "../src/reroute.ts";
 import { taskStory } from "../src/story.ts";
 import { type GroupFixture, groupFixture } from "./support/group-fixture.ts";
 
@@ -246,7 +246,9 @@ describe("reroute", () => {
 		const live = await f.svc.registry.get(oldId);
 		expect(live?.state).toBe("running");
 		const worktree = live?.worktreePath;
-		await f.control({});
+		// The driver reads the control file when it starts, which can be after
+		// the registry already says "running": clearing slow mode here let the
+		// agent finish on its own. Slow mode stays on, so only the stop ends it.
 
 		let done = false;
 		const rerouted = rerouteRun(
@@ -297,6 +299,82 @@ describe("reroute", () => {
 			.where(eq(decisions.id, stopped?.spawnedByDecisionId ?? -1));
 		expect(orig?.overriddenBy).toBe(out.decisionId);
 	}, 120_000);
+
+	test("a run that finished just before the stop is refused as already finished, with a fix", async () => {
+		fx = await groupFixture();
+		const f = fx;
+		const taskId = await f.task("finishes first");
+		const spawned = await f.spawn(taskId);
+		const oldId = (spawned.result?.runIds as string[])[0] as string;
+		await f.svc.scheduler.tick();
+		await f.until(
+			async () => (await f.svc.registry.get(oldId))?.state === "completed",
+			{ what: "the run to finish on its own", timeoutMs: 60_000 },
+		);
+		const err = await rerouteRun(
+			{
+				handle: f.svc.handle,
+				bus: f.svc.bus,
+				registry: f.svc.registry,
+				engine: f.svc.engine,
+			},
+			{ runId: oldId, model: "opus" },
+		).then(
+			() => null,
+			(e: unknown) => e,
+		);
+		expect(err).toBeInstanceOf(RerouteError);
+		expect(err).toMatchObject({
+			code: "already_finished",
+			fix: { kind: "ui" },
+		});
+		expect((err as Error).name).not.toBe("TaskNotClaimableError");
+		// no second run was started
+		expect(await f.svc.registry.get(oldId)).toMatchObject({
+			state: "completed",
+		});
+	}, 90_000);
+
+	test("a run that completes while the stop settles is refused before any decision", async () => {
+		const run = {
+			id: "r1",
+			kind: "task",
+			taskId: "t1",
+			worktreePath: "/w",
+			branch: "b",
+			state: "running" as string,
+			groupId: null,
+		};
+		let reads = 0;
+		const registry = {
+			get: async () => {
+				reads++;
+				// live for the first reads, then it finished on its own
+				return { ...run, state: reads < 3 ? "running" : "completed" };
+			},
+			getGroup: async () => null,
+		};
+		let started = false;
+		await expect(
+			rerouteRun(
+				{
+					handle: {} as never,
+					bus: {} as never,
+					registry: registry as never,
+					engine: {
+						stop: async () => {},
+						startGroupRun: async () => {
+							started = true;
+							return {} as never;
+						},
+					} as never,
+					pollMs: 1,
+				},
+				{ runId: "r1", model: "opus" },
+			),
+		).rejects.toMatchObject({ code: "already_finished" });
+		expect(started).toBe(false);
+	});
 
 	test("refuses a reroute that changes nothing, with a fix", async () => {
 		fx = await groupFixture();

@@ -131,4 +131,29 @@ describe("runs.reroute", () => {
 			cause: { name: "RerouteError", code: "nothing_to_change" },
 		});
 	}, 60_000);
+
+	test("a run that already finished is refused as such, with a fix and no raw claim error", async () => {
+		fx = await groupFixture();
+		const f = fx;
+		const api = createCaller({ orchestrator: f.orchestrator });
+		const taskId = await f.task("done first");
+		const spawned = await f.spawn(taskId);
+		const runId = (spawned.result?.runIds as string[])[0] as string;
+		await f.svc.scheduler.tick();
+		await f.until(
+			async () => (await f.svc.registry.get(runId))?.state === "completed",
+			{ what: "the run to finish", timeoutMs: 60_000 },
+		);
+		let err: unknown;
+		try {
+			await api.runs.reroute({ project: f.svc.name, runId, model: "opus" });
+		} catch (e) {
+			err = e;
+		}
+		expect(err).toMatchObject({
+			code: "PRECONDITION_FAILED",
+			cause: { name: "RerouteError", code: "already_finished" },
+		});
+		expect((err as Error).message).not.toMatch(/not claimable/);
+	}, 90_000);
 });
