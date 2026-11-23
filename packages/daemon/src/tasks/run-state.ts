@@ -36,6 +36,12 @@ export interface RunState {
 	 * task closes, or a human rejects it. Absent = 0.
 	 */
 	reviewRound?: number;
+	/**
+	 * The last API token that wrote to this task. Sticky: the text stays
+	 * untrusted whoever edits it next. Kept here because `edited_by` exists only
+	 * on boards that declare it.
+	 */
+	tokenAuthoredBy?: string | null;
 	/** Last time anything about this task changed; `task-service.ts`'s `touch()`. */
 	updatedAt: number | null;
 }

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { findOwnershipConflicts, type OwnershipConflict } from "@mfw/board";
@@ -122,6 +123,8 @@ export interface TaskRow {
 	createdBy?: string | null;
 	/** The last brain action that edited it (`brain:<actionId>`). */
 	editedBy?: string | null;
+	/** The last API token that wrote to it. Makes the task untrusted for good. */
+	tokenAuthoredBy?: string | null;
 	/** The task that replaced this one in a merge. */
 	supersededBy?: string | null;
 	/** Conditions that move this task from a parked state back to ready. */
@@ -630,6 +633,7 @@ export function toRow(
 		discoveryKey: fm.discovery_key ?? null,
 		createdBy: fm.created_by ?? null,
 		editedBy: fm.edited_by ?? null,
+		tokenAuthoredBy: rec.state.tokenAuthoredBy ?? null,
 		supersededBy: fm.superseded_by ?? null,
 		reopenWhen: fm.reopen_when,
 		body: rec.file.body,
@@ -948,7 +952,15 @@ export class TaskService {
 	// create / read
 	// ---------------------------------------------------------------------
 
-	async create(input: CreateTaskInput): Promise<TaskWithRefs> {
+	async create(
+		input: CreateTaskInput,
+		opts: { token?: TokenAuthor } = {},
+	): Promise<TaskWithRefs> {
+		// In the document itself, so the task is never on the board unmarked. It
+		// is also an idempotency key, so each create needs its own value.
+		const createdBy = opts.token
+			? `token:${opts.token.id}#${randomUUID()}`
+			: input.createdBy;
 		const spec: CreateInput = {
 			title: input.title,
 			body: input.body,
@@ -984,10 +996,16 @@ export class TaskService {
 			discoveredFrom: input.discoveredFrom ?? null,
 			discoveryKey: input.discoveryKey ?? null,
 			reopenWhen: (input.reopenWhen ?? []).map(canonicalReopen),
-			...(input.createdBy ? { createdBy: input.createdBy } : {}),
+			...(createdBy ? { createdBy } : {}),
 			...(input.id ? { id: input.id } : {}),
 		};
-		const { record: rec, replayed } = await this.store.createWithOutcome(spec);
+		const created = await this.store.createWithOutcome(spec);
+		const { replayed } = created;
+		const rec = opts.token
+			? ((await this.store.patchState(created.record.id, {
+					tokenAuthoredBy: opts.token.id,
+				})) ?? created.record)
+			: created.record;
 		// A replay (the key was already on the board) was announced the first time.
 		if (!replayed) {
 			await this.emit({
@@ -996,7 +1014,7 @@ export class TaskService {
 				payload: {
 					source: rec.file.frontmatter.source,
 					title: rec.file.frontmatter.title,
-					...(input.createdBy ? { createdBy: input.createdBy } : {}),
+					...(createdBy ? { createdBy } : {}),
 				},
 			});
 		}
@@ -1706,16 +1724,21 @@ export class TaskService {
 		try {
 			result = await this.store.update(
 				id,
-				(draft, rec) => {
+				async (draft, rec) => {
 					if (token && rewrites) assertTokenMayRewrite(rec, token);
 					const fields = applyPatch(draft, patch);
+					const editedBy =
+						opts?.editedBy ?? (token ? `token:${token.id}` : undefined);
 					if (
 						fields.length > 0 &&
-						opts?.editedBy &&
+						editedBy &&
 						this.store.declaresField("edited_by")
 					) {
-						draft.frontmatter.edited_by = opts.editedBy;
+						draft.frontmatter.edited_by = editedBy;
 					}
+					// Before the write: a crash leaves the task over-marked, never under.
+					if (token && fields.length > 0)
+						await this.store.patchState(id, { tokenAuthoredBy: token.id });
 					if (
 						before?.status === "draft" &&
 						opts?.source !== "brain" &&
@@ -1809,13 +1832,18 @@ export class TaskService {
 		try {
 			result = await this.store.update(
 				id,
-				(draft, rec) => {
+				async (draft, rec) => {
 					// Criteria count: `promoteReady` accepts a body OR a criterion.
 					if (token) assertTokenMayRewrite(rec, token);
 					const next = applyCriteriaOp(draft.criteria, op);
 					itemId = next.itemId;
 					if (eqJson(next.items, draft.criteria)) return [];
 					draft.criteria = next.items;
+					if (token) {
+						if (this.store.declaresField("edited_by"))
+							draft.frontmatter.edited_by = `token:${token.id}`;
+						await this.store.patchState(id, { tokenAuthoredBy: token.id });
+					}
 					return ["criteria"];
 				},
 				opts?.baseRev === undefined ? {} : { baseRev: opts.baseRev },

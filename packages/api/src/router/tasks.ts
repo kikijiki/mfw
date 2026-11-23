@@ -201,15 +201,19 @@ export const tasksRouter = createTRPCRouter({
 		)
 		.mutation(async ({ ctx, input }) => {
 			await assertRoutable(ctx.svc, input.provider);
-			const created = await ctx.svc.tasks.create({
-				...input,
-				// A token's task never promotes itself: dispatch is a separate scope.
-				readyMode:
-					input.status === "backlog" || ctx.principal.kind === "token"
-						? "manual"
-						: "automatic",
-				source: "human",
-			});
+			const token = tokenAuthor(ctx.principal);
+			const created = await ctx.svc.tasks.create(
+				{
+					...input,
+					// A token's task never promotes itself: dispatch is a separate scope.
+					readyMode:
+						input.status === "backlog" || ctx.principal.kind === "token"
+							? "manual"
+							: "automatic",
+					source: "human",
+				},
+				token ? { token } : {},
+			);
 			await recordHumanAction(ctx.svc, {
 				action: "tasks.create",
 				taskId: created.id,
