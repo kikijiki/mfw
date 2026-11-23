@@ -26,13 +26,21 @@ import {
 } from "./agent-profile.ts";
 import { parseSandboxProfile, type SandboxProfile } from "./profile.ts";
 
+/** The roles an agent CLI runs in with a read-only workspace. */
+export const READ_ONLY_AGENT_ROLES = [
+	"reviewer",
+	"plan",
+	"import",
+	"brain",
+	"trigger",
+] as const;
+
 export type VerifyRole = "verifier" | "merge-verify";
-export type ReadOnlyAgentRole =
-	| "reviewer"
-	| "plan"
-	| "import"
-	| "brain"
-	| "trigger";
+export type ReadOnlyAgentRole = (typeof READ_ONLY_AGENT_ROLES)[number];
+
+export function isReadOnlyAgentRole(role: string): role is ReadOnlyAgentRole {
+	return (READ_ONLY_AGENT_ROLES as readonly string[]).includes(role);
+}
 
 /** Limits of one check: enough for a test suite, bounded against a fork bomb. */
 export const VERIFIER_LIMITS = { tasksMax: 2048, memoryMax: "8G" } as const;
@@ -135,6 +143,8 @@ export interface ReadOnlyAgentInput {
 	egressSocketDir?: string;
 	/** Brain role: the directory holding this turn's socket and token. */
 	brainSocketDir?: string;
+	/** Where the CLI's private session state lives, when it outlives the clone. */
+	fleetState?: string;
 }
 
 /** An agent that reads the project and reports through its outbox. */
@@ -155,7 +165,8 @@ export function buildReadOnlyAgentProfile(
 				cli: input.cli,
 				source: input.fleetDir,
 				writable: [...TEMPORARY_FLEET_WRITABLE[input.cli]],
-				privateState: fleetPrivateState(clone.tree, input.cli),
+				privateState:
+					input.fleetState ?? fleetPrivateState(clone.tree, input.cli),
 			},
 			...(input.brainSocketDir
 				? { brainSocket: { source: input.brainSocketDir } }
