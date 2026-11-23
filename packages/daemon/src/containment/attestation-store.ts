@@ -17,7 +17,7 @@ import { desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 
 /** Bump when the probe's items or their meaning change: older rows stop counting. */
-export const ATTESTATION_VERSION = 1;
+export const ATTESTATION_VERSION = 2;
 
 const ItemSchema = z.strictObject({
 	id: z.string().min(1),
