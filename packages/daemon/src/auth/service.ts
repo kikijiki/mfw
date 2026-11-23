@@ -91,6 +91,8 @@ const BACKOFF_BASE_MS = 1000;
 export const BACKOFF_MAX_MS = 15 * 60 * 1000;
 /** A quiet period this long forgets earlier failures. */
 const THROTTLE_RESET_MS = 24 * 60 * 60 * 1000;
+/** Global ceiling on password hashing: about ten checks a second. */
+const PASSWORD_CHECK_INTERVAL_MS = 100;
 /** How often an open stream re-checks its session (revocation is immediate). */
 const STREAM_RECHECK_MS = 15 * 1000;
 
@@ -112,14 +114,69 @@ export interface AuthServiceOptions {
 	now?: () => number;
 	/** How often an open stream re-checks its session. */
 	streamRecheckMs?: number;
+	/** Minimum spacing of password hash checks, across all sources. */
+	passwordCheckIntervalMs?: number;
+}
+
+/**
+ * Addresses to one throttle key: IPv4-mapped IPv6 to IPv4, and IPv6 to its /64
+ * (one host commonly controls a whole /64). A missing address is one shared
+ * bucket, so it cannot be used to escape the limit.
+ *
+ * TODO(C4): behind a trusted proxy every peer is the proxy. Trusted-proxy mode
+ * must pass the forwarded client address here, and only from that proxy.
+ */
+export function throttleSource(address: string | null | undefined): string {
+	const raw = address
+		?.trim()
+		.toLowerCase()
+		.replace(/^\[|\]$/g, "");
+	if (!raw) return "unknown";
+	const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(raw);
+	if (mapped?.[1]) return mapped[1];
+	if (!raw.includes(":")) return raw;
+	const [head = "", tail] = raw.split("::");
+	const left = head ? head.split(":") : [];
+	const right = tail ? tail.split(":") : [];
+	const missing = raw.includes("::") ? 8 - left.length - right.length : 0;
+	const groups = [...left, ...Array(Math.max(missing, 0)).fill("0"), ...right];
+	return `${groups
+		.slice(0, 4)
+		.map((g) => g.replace(/^0+(?=.)/, ""))
+		.join(":")}::/64`;
+}
+
+/**
+ * One password check at a time, in arrival order, at a bounded rate. It holds
+ * the global cost of hashing down without ever refusing anyone: each source
+ * has at most one entry, so a flood from one source cannot push another back
+ * by more than one turn each.
+ */
+class PasswordCheckQueue {
+	private tail: Promise<unknown> = Promise.resolve();
+	private last = 0;
+
+	constructor(private readonly intervalMs: number) {}
+
+	run<T>(check: () => Promise<T>): Promise<T> {
+		const turn = this.tail.then(async () => {
+			const wait = this.last + this.intervalMs - performance.now();
+			if (wait > 0) await Bun.sleep(wait);
+			this.last = performance.now();
+			return check();
+		});
+		this.tail = turn.catch(() => undefined);
+		return turn;
+	}
 }
 
 export class AuthService {
 	private readonly now: () => number;
 	private readonly streamRecheckMs: number;
 	private readonly listeners = new Map<string, Set<() => void>>();
-	/** Serializes throttle check-and-charge so parallel guesses cannot race it. */
-	private gate: Promise<unknown> = Promise.resolve();
+	private readonly passwordChecks: PasswordCheckQueue;
+	/** Throttle scopes with an attempt in flight: one per source at a time. */
+	private readonly inFlight = new Set<string>();
 
 	constructor(
 		private readonly db: AuthDb,
@@ -127,6 +184,9 @@ export class AuthService {
 	) {
 		this.now = opts.now ?? Date.now;
 		this.streamRecheckMs = opts.streamRecheckMs ?? STREAM_RECHECK_MS;
+		this.passwordChecks = new PasswordCheckQueue(
+			opts.passwordCheckIntervalMs ?? PASSWORD_CHECK_INTERVAL_MS,
+		);
 	}
 
 	static async open(
@@ -170,77 +230,107 @@ export class AuthService {
 					created_at = excluded.created_at, expires_at = excluded.expires_at`,
 			args: [sha(token), now, now + SETUP_TOKEN_TTL_MS],
 		});
+		// A new token is a new secret: guesses at the old one no longer count.
+		await this.db.client.execute(
+			"DELETE FROM auth_throttle WHERE scope LIKE 'setup:%'",
+		);
 		return token;
 	}
 
 	/** Spend the setup token, create the owner, and sign them in. */
-	async setup(setupToken: string, password: string): Promise<IssuedSession> {
+	async setup(
+		setupToken: string,
+		password: string,
+		source?: string,
+	): Promise<IssuedSession> {
 		if (await this.hasOwner())
 			throw new AuthRefused("already_set_up", "setup is already complete");
-		await this.charge("setup");
-		const now = this.now();
-		const row = await this.db.client.execute(
-			"SELECT token_hash, expires_at FROM setup_tokens WHERE id = 1",
-		);
-		const stored = row.rows[0];
-		const valid =
-			!!stored &&
-			Number(stored.expires_at) > now &&
-			safeEqual(sha(setupToken), String(stored.token_hash));
-		if (!valid)
-			throw new AuthRefused(
-				"invalid_token",
-				"that setup token is not valid; restart the server to print a new one",
+		const scope = `setup:${throttleSource(source)}`;
+		return this.oneAtATime(scope, async () => {
+			await this.assertNotLocked(scope);
+			const now = this.now();
+			const row = await this.db.client.execute(
+				"SELECT token_hash, expires_at FROM setup_tokens WHERE id = 1",
 			);
-		// Checked after the token, so the policy is not an oracle for strangers.
-		assertPasswordPolicy(password);
-		const hash = await Bun.password.hash(password, { algorithm: "argon2id" });
-		const id = randomUUID();
-		// One atomic step: the token is spent only if this call created the owner.
-		const [created] = await this.db.client.batch(
-			[
-				{
-					sql: `INSERT INTO principals (id, kind, display_name, password_hash, created_at, updated_at)
-						SELECT ?, 'owner', 'Owner', ?, ?, ?
-						WHERE EXISTS (SELECT 1 FROM setup_tokens WHERE id = 1 AND token_hash = ? AND expires_at > ?)
-						AND NOT EXISTS (SELECT 1 FROM principals WHERE kind = 'owner')`,
-					args: [id, hash, now, now, sha(setupToken), now],
-				},
-				{
-					sql: "DELETE FROM setup_tokens WHERE id = 1 AND token_hash = ?",
-					args: [sha(setupToken)],
-				},
-			],
-			"write",
-		);
-		if (created?.rowsAffected !== 1)
-			throw new AuthRefused("already_set_up", "setup is already complete");
-		await this.clearThrottle("setup");
-		return this.issue(id);
+			const stored = row.rows[0];
+			const valid =
+				!!stored &&
+				Number(stored.expires_at) > now &&
+				safeEqual(sha(setupToken), String(stored.token_hash));
+			if (!valid) {
+				await this.recordFailure(scope);
+				throw new AuthRefused(
+					"invalid_token",
+					"that setup token is not valid; run `mfw auth setup-token` for a new one",
+				);
+			}
+			// Checked after the token, so the policy is not an oracle for strangers.
+			assertPasswordPolicy(password);
+			const hash = await Bun.password.hash(password, { algorithm: "argon2id" });
+			const id = randomUUID();
+			// One atomic step: the token is spent only if this call created the owner.
+			const [created] = await this.db.client.batch(
+				[
+					{
+						sql: `INSERT INTO principals (id, kind, display_name, password_hash, created_at, updated_at)
+							SELECT ?, 'owner', 'Owner', ?, ?, ?
+							WHERE EXISTS (SELECT 1 FROM setup_tokens WHERE id = 1 AND token_hash = ? AND expires_at > ?)
+							AND NOT EXISTS (SELECT 1 FROM principals WHERE kind = 'owner')`,
+						args: [id, hash, now, now, sha(setupToken), now],
+					},
+					{
+						sql: "DELETE FROM setup_tokens WHERE id = 1 AND token_hash = ?",
+						args: [sha(setupToken)],
+					},
+				],
+				"write",
+			);
+			if (created?.rowsAffected !== 1)
+				throw new AuthRefused("already_set_up", "setup is already complete");
+			await this.clearThrottle(scope);
+			return this.issue(id);
+		});
 	}
 
 	/**
 	 * Verify the password and start a NEW session. The session the browser
 	 * presented, if any, is revoked: an identifier planted before login is
-	 * never promoted (session fixation).
+	 * never promoted (session fixation). Failures count against `source` only,
+	 * so one address cannot lock out another.
 	 */
-	async login(password: string, presented?: string): Promise<IssuedSession> {
+	async login(
+		password: string,
+		presented?: string,
+		source?: string,
+	): Promise<IssuedSession> {
 		const row = await this.db.client.execute(
 			"SELECT id, password_hash FROM principals WHERE kind = 'owner' LIMIT 1",
 		);
 		const owner = row.rows[0];
 		if (!owner)
 			throw new AuthRefused("setup_required", "finish first-run setup");
-		// Charged before verifying: parallel guesses each consume an attempt.
-		await this.charge("login");
-		const ok =
-			password.length > 0 &&
-			password.length <= PASSWORD_MAX &&
-			(await Bun.password.verify(password, String(owner.password_hash)));
-		if (!ok) throw new AuthRefused("invalid_password", "wrong password");
-		await this.clearThrottle("login");
-		if (presented) await this.logout(presented);
-		return this.issue(String(owner.id));
+		const scope = `login:${throttleSource(source)}`;
+		return this.oneAtATime(scope, async () => {
+			await this.assertNotLocked(scope);
+			const ok =
+				password.length > 0 &&
+				password.length <= PASSWORD_MAX &&
+				(await this.passwordChecks.run(() =>
+					Bun.password.verify(password, String(owner.password_hash)),
+				));
+			if (!ok) {
+				await this.recordFailure(scope);
+				throw new AuthRefused("invalid_password", "wrong password");
+			}
+			await this.clearThrottle(scope);
+			if (presented) await this.logout(presented);
+			return this.issue(String(owner.id));
+		});
+	}
+
+	/** Clear every failed-attempt record. The owner's way back in (`mfw auth unlock`). */
+	async unlock(): Promise<void> {
+		await this.db.client.execute("DELETE FROM auth_throttle");
 	}
 
 	/** Revoke the session this token belongs to. Unknown tokens are a no-op. */
@@ -386,39 +476,69 @@ export class AuthService {
 		};
 	}
 
-	/** Refuse while locked, otherwise record one attempt. */
-	private charge(scope: string): Promise<void> {
-		const run = this.gate.then(() => this.chargeNow(scope));
-		this.gate = run.catch(() => undefined);
-		return run;
+	/** A source has one attempt in flight, so parallel guesses cannot race its count. */
+	private async oneAtATime<T>(
+		scope: string,
+		run: () => Promise<T>,
+	): Promise<T> {
+		if (this.inFlight.has(scope))
+			throw new AuthRefused(
+				"locked",
+				"another attempt from this address is in progress",
+				1000,
+			);
+		this.inFlight.add(scope);
+		try {
+			return await run();
+		} finally {
+			this.inFlight.delete(scope);
+		}
 	}
 
-	private async chargeNow(scope: string): Promise<void> {
-		const now = this.now();
+	private async assertNotLocked(scope: string): Promise<void> {
 		const r = await this.db.client.execute({
-			sql: "SELECT failures, locked_until, last_failure_at FROM auth_throttle WHERE scope = ?",
+			sql: "SELECT locked_until FROM auth_throttle WHERE scope = ?",
 			args: [scope],
 		});
-		const row = r.rows[0];
-		const lockedUntil = row ? Number(row.locked_until) : 0;
+		const lockedUntil = Number(r.rows[0]?.locked_until ?? 0);
+		const now = this.now();
 		if (lockedUntil > now)
 			throw new AuthRefused(
 				"locked",
-				"too many failed attempts; try again later",
+				"too many failed attempts from this address; try again later, or run `mfw auth unlock` on the server",
 				lockedUntil - now,
 			);
+	}
+
+	private async recordFailure(scope: string): Promise<void> {
+		const now = this.now();
+		const r = await this.db.client.execute({
+			sql: "SELECT failures, last_failure_at FROM auth_throttle WHERE scope = ?",
+			args: [scope],
+		});
+		const row = r.rows[0];
 		const prior =
 			row && now - Number(row.last_failure_at) < THROTTLE_RESET_MS
 				? Number(row.failures)
 				: 0;
 		const failures = prior + 1;
 		const delay = backoffMs(failures);
-		await this.db.client.execute({
-			sql: `INSERT INTO auth_throttle (scope, failures, locked_until, last_failure_at) VALUES (?, ?, ?, ?)
-				ON CONFLICT (scope) DO UPDATE SET failures = excluded.failures,
-					locked_until = excluded.locked_until, last_failure_at = excluded.last_failure_at`,
-			args: [scope, failures, delay ? now + delay : 0, now],
-		});
+		await this.db.client.batch(
+			[
+				{
+					sql: `INSERT INTO auth_throttle (scope, failures, locked_until, last_failure_at) VALUES (?, ?, ?, ?)
+						ON CONFLICT (scope) DO UPDATE SET failures = excluded.failures,
+							locked_until = excluded.locked_until, last_failure_at = excluded.last_failure_at`,
+					args: [scope, failures, delay ? now + delay : 0, now],
+				},
+				// Per-source rows must not grow without bound.
+				{
+					sql: "DELETE FROM auth_throttle WHERE last_failure_at < ? AND locked_until < ?",
+					args: [now - THROTTLE_RESET_MS, now],
+				},
+			],
+			"write",
+		);
 	}
 
 	private async clearThrottle(scope: string): Promise<void> {

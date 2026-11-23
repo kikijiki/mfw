@@ -12,6 +12,7 @@ import {
 	SESSION_ABSOLUTE_MS,
 	SESSION_IDLE_MS,
 	SETUP_TOKEN_TTL_MS,
+	throttleSource,
 } from "../src/auth/service.ts";
 
 const PASSWORD = "correct horse battery";
@@ -20,6 +21,9 @@ let dir: string;
 let path: string;
 let clock: number;
 let auth: AuthService;
+
+const loginFrom = (password: string, source: string) =>
+	auth.login(password, undefined, source);
 
 const code = async (p: Promise<unknown>) => {
 	try {
@@ -40,7 +44,10 @@ beforeEach(async () => {
 	dir = mkdtempSync(join(tmpdir(), "mfw-auth-"));
 	path = join(dir, "auth.db");
 	clock = 1_000_000_000;
-	auth = await AuthService.open(path, { now: () => clock });
+	auth = await AuthService.open(path, {
+		now: () => clock,
+		passwordCheckIntervalMs: 0,
+	});
 });
 
 afterEach(() => {
@@ -188,12 +195,9 @@ describe("brute force", () => {
 		const results = await Promise.all(
 			Array.from({ length: 20 }, () => code(auth.login("wrong password!"))),
 		);
-		expect(results.filter((r) => r === "invalid_password")).toHaveLength(
-			FREE_ATTEMPTS,
-		);
-		expect(results.filter((r) => r === "locked")).toHaveLength(
-			20 - FREE_ATTEMPTS,
-		);
+		// One attempt per source at a time: the rest never reach the hash.
+		expect(results.filter((r) => r === "invalid_password")).toHaveLength(1);
+		expect(results.filter((r) => r === "locked")).toHaveLength(19);
 	});
 
 	test("the lock survives a restart", async () => {
@@ -210,6 +214,82 @@ describe("brute force", () => {
 		for (let i = 0; i < FREE_ATTEMPTS; i++)
 			expect(await code(auth.setup("guess", PASSWORD))).toBe("invalid_token");
 		expect(await code(auth.setup("guess", PASSWORD))).toBe("locked");
+	});
+});
+
+describe("an attacker cannot lock the owner out (reviewer B2)", () => {
+	const login = loginFrom;
+
+	test("days of slow guesses from one source never block another", async () => {
+		await owner();
+		let ownerOk = 0;
+		let ownerTries = 0;
+		for (let i = 0; i < 2 * 24 * 4; i++) {
+			await code(login("wrong password!", "10.0.0.66"));
+			clock += 5 * 60 * 1000;
+			// The owner tries every few hours, always mid-lock for the attacker.
+			if (i % 8 === 0) {
+				ownerTries++;
+				if ((await code(login(PASSWORD, "10.0.0.1"))) === "ok") ownerOk++;
+			}
+			clock += 10 * 60 * 1000;
+		}
+		expect(ownerTries).toBeGreaterThan(10);
+		expect(ownerOk).toBe(ownerTries);
+	}, 30_000);
+
+	test("a source locks only itself", async () => {
+		await owner();
+		for (let i = 0; i < FREE_ATTEMPTS; i++)
+			await code(login("wrong password!", "10.0.0.66"));
+		expect(await code(login(PASSWORD, "10.0.0.66"))).toBe("locked");
+		expect(await code(login(PASSWORD, "10.0.0.1"))).toBe("ok");
+	});
+
+	test("a flood from one source still lets a correct password through", async () => {
+		await owner();
+		const flood = Array.from({ length: 30 }, () =>
+			code(login("wrong password!", "10.0.0.66")),
+		);
+		const mine = code(login(PASSWORD, "10.0.0.1"));
+		expect(await mine).toBe("ok");
+		await Promise.all(flood);
+	});
+
+	test("a new setup token clears the setup throttle", async () => {
+		await auth.beginFirstRun();
+		for (let i = 0; i < FREE_ATTEMPTS; i++)
+			await code(auth.setup("guess", PASSWORD, "10.0.0.66"));
+		const fresh = (await auth.beginFirstRun()) as string;
+		expect(await code(auth.setup(fresh, PASSWORD, "10.0.0.66"))).toBe("ok");
+	});
+
+	test("setup guesses from one source do not block another", async () => {
+		const token = (await auth.beginFirstRun()) as string;
+		for (let i = 0; i < FREE_ATTEMPTS + 2; i++)
+			await code(auth.setup("guess", PASSWORD, "10.0.0.66"));
+		expect(await code(auth.setup(token, PASSWORD, "10.0.0.1"))).toBe("ok");
+	});
+
+	test("unlock clears every throttle", async () => {
+		await owner();
+		for (let i = 0; i < FREE_ATTEMPTS; i++)
+			await code(login("wrong password!", "127.0.0.1"));
+		expect(await code(login(PASSWORD, "127.0.0.1"))).toBe("locked");
+		await auth.unlock();
+		expect(await code(login(PASSWORD, "127.0.0.1"))).toBe("ok");
+	});
+
+	test("addresses normalise to one source", () => {
+		expect(throttleSource("::ffff:10.0.0.5")).toBe("10.0.0.5");
+		expect(throttleSource("2001:db8:1:2:3:4:5:6")).toBe(
+			throttleSource("2001:db8:1:2:ffff:ffff:ffff:ffff"),
+		);
+		expect(throttleSource("2001:db8:1:2::1")).not.toBe(
+			throttleSource("2001:db8:1:3::1"),
+		);
+		expect(throttleSource(undefined)).toBe("unknown");
+		expect(throttleSource("")).toBe("unknown");
 	});
 });
 

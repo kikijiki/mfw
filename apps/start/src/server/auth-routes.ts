@@ -65,6 +65,16 @@ async function readJson(req: Request): Promise<Record<string, unknown> | null> {
 	}
 }
 
+/**
+ * The socket peer, as the server adapter reports it. Forwarded headers are
+ * deliberately ignored: any client can send them.
+ * TODO(C4): honour the forwarded address only from the configured trusted proxy.
+ */
+export function peerAddress(req: Request): string | undefined {
+	const ip = (req as Request & { ip?: unknown }).ip;
+	return typeof ip === "string" ? ip : undefined;
+}
+
 const badRequest = () =>
 	jsonResponse(400, { error: "bad_request", message: "malformed request" });
 
@@ -102,13 +112,18 @@ export async function handleAuthAction(
 			return badRequest();
 		const body = await readJson(req);
 		if (!body || typeof body.password !== "string") return badRequest();
+		const peer = peerAddress(req);
 		try {
 			let issued: Awaited<ReturnType<AuthService["login"]>>;
 			if (action === "setup") {
 				if (typeof body.token !== "string") return badRequest();
-				issued = await auth.setup(body.token.trim(), body.password);
+				issued = await auth.setup(body.token.trim(), body.password, peer);
 			} else {
-				issued = await auth.login(body.password, guarded.token ?? undefined);
+				issued = await auth.login(
+					body.password,
+					guarded.token ?? undefined,
+					peer,
+				);
 			}
 			return jsonResponse(
 				200,

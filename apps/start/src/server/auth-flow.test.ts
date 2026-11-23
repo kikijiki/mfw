@@ -7,7 +7,11 @@ import type { Orchestrator } from "@mfw/daemon/services";
 import { safeNext } from "../lib/auth-paths";
 import { announceFirstRun } from "./auth-boot";
 import { guardRequest, REQUEST_KEY_HEADER, sessionCookie } from "./auth-guard";
-import { AUTH_INTENT_HEADER, handleAuthAction } from "./auth-routes";
+import {
+	AUTH_INTENT_HEADER,
+	handleAuthAction,
+	peerAddress,
+} from "./auth-routes";
 import { serveTrpc } from "./trpc-handler";
 
 const PASSWORD = "correct horse battery";
@@ -237,6 +241,17 @@ describe("authenticated SSE", () => {
 		expect(auth.watchedStreams).toBe(1);
 		await reader.cancel();
 		expect(auth.watchedStreams).toBe(0);
+	});
+});
+
+describe("the throttle source (reviewer B2)", () => {
+	test("is the socket peer, never a forwarded header", () => {
+		const req = new Request(`${ORIGIN}/api/auth/login`, {
+			headers: { "x-forwarded-for": "203.0.113.9", "x-real-ip": "203.0.113.9" },
+		});
+		expect(peerAddress(req)).toBeUndefined();
+		Object.defineProperty(req, "ip", { value: "10.0.0.7" });
+		expect(peerAddress(req)).toBe("10.0.0.7");
 	});
 });
 

@@ -38,6 +38,7 @@ function deps(over: Partial<Deps> = {}) {
 	const err: string[] = [];
 	const ran: { argv: string[]; cwd?: string }[] = [];
 	const mcp: string[][] = [];
+	const auth: string[][] = [];
 	const d: Deps = {
 		env: { PATH: "" },
 		selfDir: "/nonexistent",
@@ -54,10 +55,22 @@ function deps(over: Partial<Deps> = {}) {
 		runMcp: async (args) => {
 			mcp.push(args);
 		},
+		runAuth: async (args) => {
+			auth.push(args);
+			return 0;
+		},
 		...over,
 	};
-	return { d, out, err, ran, mcp };
+	return { d, out, err, ran, mcp, auth };
 }
+
+describe("mfw auth", () => {
+	test("hands its arguments to the auth command", async () => {
+		const h = deps();
+		expect(await dispatch(["auth", "unlock"], h.d)).toBe(0);
+		expect(h.auth).toEqual([["unlock"]]);
+	});
+});
 
 describe("mfw board", () => {
 	test("execs mfw-board next to the dispatcher, args passed through", async () => {
