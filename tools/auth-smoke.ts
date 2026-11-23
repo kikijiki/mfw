@@ -1026,6 +1026,28 @@ async function trustedProxy(): Promise<void> {
 			hidden.status,
 		);
 
+		// Review F1: tailnet nodes normally share a /64.
+		for (let i = 0; i < 5; i++)
+			await authPost(
+				port,
+				"login",
+				{ password: "wrong password!" },
+				viaProxy("fd7a:115c:a1e0::aaaa"),
+				PROXY_PEER,
+			);
+		const tailnetPeer = await authPost(
+			port,
+			"login",
+			{ password: PASSWORD },
+			viaProxy("fd7a:115c:a1e0::bbbb"),
+			PROXY_PEER,
+		);
+		check(
+			"proxy: one tailnet IPv6 device does not lock out another",
+			tailnetPeer.status === 200,
+			tailnetPeer.status,
+		);
+
 		let evaluated = 0;
 		for (let i = 0; i < 9; i++) {
 			const r = await authPost(

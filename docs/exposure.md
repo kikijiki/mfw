@@ -113,5 +113,8 @@ not change your Serve configuration itself. Then, in a browser:
       `document.cookie = "__Secure-mfw_session=AAAA; Secure; Path=/mfw/api; Max-Age=3600"`.
       mfw stays signed in.
 - [ ] That sibling port's `localStorage` does not contain the mfw key.
-- [ ] Failed sign-ins from one device do not lock out a second device.
+- [ ] Failed sign-ins from one device do not lock out a second device, tested
+      over both IPv4 and IPv6. Tailnet addresses (`fd7a:115c:a1e0::/48`) are
+      limited per address. Other IPv6 clients are limited per /64, so devices
+      sharing a /64 outside that range share a limit.
 - [ ] `tailscale serve --https=<spare-port> off` removes the mapping afterwards.

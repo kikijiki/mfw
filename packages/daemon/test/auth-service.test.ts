@@ -290,6 +290,16 @@ describe("an attacker cannot lock the owner out (reviewer B2)", () => {
 		expect(throttleSource("2001:db8:1:2::1")).not.toBe(
 			throttleSource("2001:db8:1:3::1"),
 		);
+		// Tailnet nodes share a /64, so each is its own source (review F1).
+		expect(throttleSource("fd7a:115c:a1e0::aaaa")).not.toBe(
+			throttleSource("fd7a:115c:a1e0::bbbb"),
+		);
+		expect(throttleSource("FD7A:115C:A1E0:0::AAAA")).toBe(
+			throttleSource("fd7a:115c:a1e0::aaaa"),
+		);
+		expect(throttleSource("fd7a:115c:a1e1::aaaa")).toBe(
+			throttleSource("fd7a:115c:a1e1::bbbb"),
+		);
 		expect(throttleSource(undefined)).toBe("unknown");
 		expect(throttleSource("")).toBe("unknown");
 	});

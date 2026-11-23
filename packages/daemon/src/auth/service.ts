@@ -191,7 +191,7 @@ const isProxied = (source: AuthSource | undefined) =>
  * the lock. Agents therefore share the owner's bucket until their network
  * namespace lands (E7b); `mfw auth unlock` is the owner's way back in.
  * IPv4-mapped IPv6 becomes IPv4, and IPv6 its /64 (one host commonly controls a
- * whole /64). A missing or unparseable address is one shared bucket. Behind a
+ * whole /64), except Tailscale's range, which is keyed by full address. A missing or unparseable address is one shared bucket. Behind a
  * trusted proxy this receives the forwarded client (see `AuthSource`).
  */
 export function throttleSource(address: string | null | undefined): string {
@@ -225,6 +225,10 @@ export function throttleSource(address: string | null | undefined): string {
 		if (first === 127) return LOOPBACK_SOURCE;
 		return `${first}.${g6 & 255}.${g7 >> 8}.${g7 & 255}`;
 	}
+	// Tailscale allocates every node from this /48, so nodes normally share a
+	// /64 and one must not be able to lock out the owner's other devices.
+	if (g0 === 0xfd7a && g1 === 0x115c && g2 === 0xa1e0)
+		return g.map((n) => n.toString(16)).join(":");
 	return `${g
 		.slice(0, 4)
 		.map((n) => n.toString(16))
