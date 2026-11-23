@@ -1,6 +1,7 @@
 import type { ProjectDb } from "@mfw/db/client";
 import { decisions, runs } from "@mfw/db/schema";
 import { and, desc, eq, inArray, isNotNull, max } from "drizzle-orm";
+import { guardBrainRows } from "./claims-evidence.ts";
 
 /**
  * Read models the UI folds from the brain's rows (U3). Nothing here writes or
@@ -112,7 +113,7 @@ export async function brainIntents(
 			at: d.ts,
 		});
 	}
-	return out;
+	return guardBrainRows(db, out, "rationale");
 }
 
 /** What the rail, presence bar and project header need of a project's brain. */

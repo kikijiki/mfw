@@ -12,6 +12,7 @@ import {
 } from "@mfw/db/schema";
 import { asc, eq, inArray, or, sql } from "drizzle-orm";
 import { actionStateOf, type BrainActionState } from "./brain-view.ts";
+import { guardDecisionRows } from "./claims-evidence.ts";
 
 /**
  * A task's Story (v0): everything that happened to one task, folded from the
@@ -303,11 +304,14 @@ export async function taskStory(
 			),
 		)
 		.orderBy(asc(events.seq));
-	const decisionRows = await db
-		.select()
-		.from(decisions)
-		.where(eq(decisions.taskId, taskId))
-		.orderBy(asc(decisions.ts), asc(decisions.id));
+	const decisionRows = await guardDecisionRows(
+		db,
+		await db
+			.select()
+			.from(decisions)
+			.where(eq(decisions.taskId, taskId))
+			.orderBy(asc(decisions.ts), asc(decisions.id)),
+	);
 	const verdictRows = await db
 		.select()
 		.from(reviewVerdicts)

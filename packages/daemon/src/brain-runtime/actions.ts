@@ -23,6 +23,7 @@ import {
 import { spendTotals } from "@mfw/db/spend";
 import { and, asc, desc, eq, ne, sql } from "drizzle-orm";
 import { z } from "zod";
+import { guardWithRecords } from "../claims-evidence.ts";
 import { recordHumanAction } from "../human-actions.ts";
 import { finishHumanOverride, recordHumanOverride } from "../human-override.ts";
 import { TaskUnmergedError } from "../lifecycle.ts";
@@ -637,6 +638,26 @@ export class BrainActionService {
 				: tool === "note"
 					? String(args.text ?? "")
 					: String(args.rationale ?? "");
+		// `input` keeps the brain's words as written; `reason` is what gets shown.
+		const guarded = await guardWithRecords(
+			this.deps.handle.db,
+			tool === "set_plan" ? text : text.slice(0, 4000),
+			{
+				author: "brain",
+				subject: subject.taskId
+					? { kind: "task", id: subject.taskId }
+					: subject.runId
+						? { kind: "run", id: subject.runId }
+						: null,
+			},
+		);
+		if (guarded.changed) {
+			output.claimGuard = {
+				unbacked: guarded.findings
+					.filter((f) => f.outcome === "annotated")
+					.map((f) => f.word),
+			};
+		}
 
 		const events: StoredEvent[] = [];
 		let decisionId = 0;
@@ -654,7 +675,7 @@ export class BrainActionService {
 						status: "ok",
 						action: tool,
 						// A plan is the brain's memory: kept whole.
-						reason: tool === "set_plan" ? text : text.slice(0, 4000),
+						reason: guarded.text,
 						input: args,
 						output,
 						durationMs: 0,
