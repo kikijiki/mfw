@@ -6,6 +6,7 @@ import {
 } from "node:crypto";
 import { renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { isCommonPassword } from "./common-passwords.ts";
 import { type AuthDb, openAuthDb } from "./store.ts";
 
 /**
@@ -664,6 +665,11 @@ export function assertPasswordPolicy(password: string): void {
 		throw new AuthRefused(
 			"weak_password",
 			`use a password of ${PASSWORD_MIN} to ${PASSWORD_MAX} characters`,
+		);
+	if (isCommonPassword(password))
+		throw new AuthRefused(
+			"weak_password",
+			"that password is too common or repetitive; choose another",
 		);
 }
 

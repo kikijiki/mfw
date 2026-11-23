@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
 	AuthRefused,
 	AuthService,
+	assertPasswordPolicy,
 	BACKOFF_MAX_MS,
 	backoffMs,
 	FREE_ATTEMPTS,
@@ -348,6 +349,33 @@ describe("evicting a stolen session (reviewer M4)", () => {
 		await auth.revokeAll();
 		expect(await auth.authenticate(a.token)).toBeNull();
 		expect(await auth.authenticate(b.token)).toBeNull();
+	});
+});
+
+describe("setup retries and the password policy (reviewer m4, m5)", () => {
+	test("weak-password retries with a valid token are not throttled", async () => {
+		const token = (await auth.beginFirstRun()) as string;
+		for (let i = 0; i < FREE_ATTEMPTS + 3; i++)
+			expect(await code(auth.setup(token, "short"))).toBe("weak_password");
+		expect(await code(auth.setup(token, PASSWORD))).toBe("ok");
+	});
+
+	for (const bad of [
+		"password1234",
+		"PASSWORD1234",
+		"123456789012",
+		"qwertyuiop123",
+		"correcthorsebatterystaple",
+		"Correct Horse Battery Staple",
+		"aaaaaaaaaaaaaaaa",
+		"abababababababab",
+	])
+		test(`refuses the common password ${bad}`, () => {
+			expect(() => assertPasswordPolicy(bad)).toThrow();
+		});
+
+	test("accepts a long uncommon passphrase", () => {
+		expect(() => assertPasswordPolicy(PASSWORD)).not.toThrow();
 	});
 });
 
