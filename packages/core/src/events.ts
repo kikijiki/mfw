@@ -469,6 +469,18 @@ export const EventSchema = z.discriminatedUnion("type", [
 		}),
 	}),
 	z.object({
+		// The host-side egress proxy stopped a run at its upload budget.
+		type: z.literal("run.egress_budget_exceeded"),
+		runId: z.string(),
+		taskId: z.string().optional(),
+		payload: z.object({
+			provenance: z.literal("host-observed"),
+			scope: z.enum(["destination", "total"]),
+			destination: z.string(),
+			limitBytes: z.number().int().nonnegative(),
+		}),
+	}),
+	z.object({
 		// A run's worktree or branch was saved to a `wip/` branch before being
 		// discarded (by a human discard, or a close with `discard`).
 		type: z.literal("run.wip_archived"),
@@ -633,6 +645,21 @@ export const EventSchema = z.discriminatedUnion("type", [
 		payload: z.object({ incidentId: z.string() }),
 	}),
 	z.object({ type: z.literal("main.green"), payload: z.object({}) }),
+	/**
+	 * A deployment or health probe the host itself performed: the only record
+	 * that can back "deployed" or "healthy" (`claims.ts`). Never written from
+	 * anything an agent reports.
+	 */
+	z.object({
+		type: z.literal("deployment.probed"),
+		payload: z.object({
+			target: z.string().min(1),
+			probe: z.enum(["deploy", "health"]),
+			ok: z.boolean(),
+			sha: z.string().optional(),
+			detail: z.string().optional(),
+		}),
+	}),
 	/**
 	 * A regression survived `ESCALATE_AFTER_SWEEPS` sweeps. Fires once, on the
 	 * sweep that first crosses the threshold: self-repair is no longer admitted
@@ -847,7 +874,14 @@ export const EventSchema = z.discriminatedUnion("type", [
 		payload: z.object({
 			actionId: z.string(),
 			tool: z.string(),
-			status: z.enum(["accepted", "applied", "rejected", "failed", "proposed"]),
+			status: z.enum([
+				"accepted",
+				"applied",
+				"rejected",
+				"failed",
+				"proposed",
+				"held",
+			]),
 			decisionId: z.number().int().optional(),
 			sessionId: z.string().optional(),
 			/** Set when the executor, not the validator, failed the action. */

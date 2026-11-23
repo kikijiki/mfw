@@ -3,6 +3,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { TipSpan } from "~/components/ui/tooltip";
 import { AppLink } from "../../components/AppLink";
+import { AuthImage } from "../../components/AuthImage";
+import { downloadOnClick } from "../../lib/auth-client";
 import { isAdrId, md, remarkTaskIds, TASK_HREF } from "../../lib/markdown";
 import { href } from "../../routes";
 import { DiagramPre, textOf } from "./DiagramPre";
@@ -124,8 +126,14 @@ export function DocMarkdown({
 										resolved.sourceId,
 										resolved.key,
 									)}
-									target="_blank"
-									rel="noopener noreferrer"
+									onClick={downloadOnClick(
+										docAssetUrl(
+											DOC_ASSET_BASE(),
+											project,
+											resolved.sourceId,
+											resolved.key,
+										),
+									)}
 								>
 									{children}
 								</a>
@@ -151,7 +159,7 @@ export function DocMarkdown({
 					}
 				},
 				img: ({ src, alt }) => (
-					<img
+					<AuthImage
 						src={
 							typeof src === "string"
 								? resolveImageSrc(src, link, (sourceId, key) =>

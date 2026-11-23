@@ -97,7 +97,7 @@ export async function rebaseQuarantineInScratch(
 				"commit.gpgsign=false",
 				...a,
 			],
-			{ cwd, env: host.env(), timeoutMs: GIT_TIMEOUT_MS },
+			{ cwd, env: host.env(), timeoutMs: GIT_TIMEOUT_MS, hostGitChecked: true },
 		);
 
 	await mkdir(scratchRoot, { recursive: true, mode: 0o700 });

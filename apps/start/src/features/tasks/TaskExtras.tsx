@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Paperclip, Trash2, TriangleAlert } from "lucide-react";
 import { useRef, useState } from "react";
-
+import { AuthImage } from "~/components/AuthImage";
 import { Button } from "~/components/ui/button";
 import { TipA } from "~/components/ui/tooltip";
+import { downloadOnClick } from "~/lib/auth-client";
 import { ErrorState } from "../../components/ErrorState";
 import { LoadingRows } from "../../components/Loading";
 import { MarkdownField } from "../../components/MarkdownField";
@@ -214,7 +215,7 @@ export function AttachmentsPanel({
 							{list.data.map((file) => (
 								<li key={file.name} className="flex min-w-0 items-center gap-2">
 									{isImageAttachment(file.name) ? (
-										<img
+										<AuthImage
 											src={attachmentUrl(project, taskId, file.name)}
 											alt=""
 											className="size-10 shrink-0 rounded object-cover"
@@ -224,8 +225,10 @@ export function AttachmentsPanel({
 									)}
 									<TipA
 										href={attachmentUrl(project, taskId, file.name)}
-										target="_blank"
-										rel="noreferrer"
+										onClick={downloadOnClick(
+											attachmentUrl(project, taskId, file.name),
+											file.name,
+										)}
 										className="min-w-0 flex-1 truncate underline"
 										tip={file.name}
 										clipped

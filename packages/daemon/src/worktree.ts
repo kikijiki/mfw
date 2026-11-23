@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
 	access,
 	copyFile,
+	lstat,
 	mkdir,
 	mkdtemp,
 	readFile,
@@ -11,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { readProtectedBoardPaths } from "./board-layout.ts";
+import { readRegularFile } from "./containment/safe-file.ts";
 import { git, gitOk } from "./git.ts";
 import type {
 	OwnedRunWorkspace,
@@ -38,6 +40,9 @@ const OWNER_BASE_SHA = "mfw.owner-base-sha";
  * worktrees are auto-removed; dirty ones are preserved for review (Factory
  * `droid exec -w` semantics).
  */
+/** Matches what finalize will ingest of a report. */
+const REPORT_IDENTITY_MAX_BYTES = 4 * 1024 * 1024;
+
 export class WorktreeManager {
 	/** `<repoRoot>/worktrees` */
 	readonly dir: string;
@@ -229,10 +234,14 @@ export class WorktreeManager {
 		path: string,
 	): Promise<WorktreeReportIdentity | null> {
 		try {
-			const content = await readFile(path);
+			// The agent owns this path. A link, FIFO or oversized file has no
+			// identity (null), so the worktree is preserved instead of read or hung on.
+			if (!(await lstat(path)).isFile()) return null;
+			const read = await readRegularFile(path, REPORT_IDENTITY_MAX_BYTES);
+			if (!read || read.size > REPORT_IDENTITY_MAX_BYTES) return null;
 			return {
 				state: "present",
-				sha256: createHash("sha256").update(content).digest("hex"),
+				sha256: createHash("sha256").update(read.buffer).digest("hex"),
 			};
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -436,6 +445,10 @@ export class WorktreeManager {
 			if (tree === (await gitOk(["rev-parse", "HEAD^{tree}"], path))) {
 				return head;
 			}
+			// Dated to the parent, not the wall clock: the same tree on the same
+			// HEAD must give the same SHA so a repeat archive is idempotent even
+			// when it lands a second later.
+			const stamp = await gitOk(["show", "-s", "--format=%cI", "HEAD"], path);
 			return await gitOk(
 				[
 					"-c",
@@ -450,6 +463,7 @@ export class WorktreeManager {
 					`mfw wip: run ${name.runId}${name.taskId ? ` (${name.taskId})` : ""}`,
 				],
 				path,
+				{ env: { GIT_AUTHOR_DATE: stamp, GIT_COMMITTER_DATE: stamp } },
 			);
 		} finally {
 			await rm(tmp, { recursive: true, force: true });

@@ -521,15 +521,30 @@ await Bun.sleep(750);
 			"run",
 			"events.jsonl",
 		);
-		for (let attempt = 0; attempt < 100; attempt++) {
-			if (
-				(await readFile(remoteEvents, "utf8").catch(() => "")).includes(canary)
-			) {
-				break;
-			}
+		const remoteRaw = join(
+			f.root,
+			"remote-machine",
+			f.account.ref,
+			"run",
+			"raw.log",
+		);
+		// observe() mirrors whatever exists remotely at that moment, so wait for
+		// both remote files (written asynchronously by the driver and by the
+		// runtime's redacting log pump) to hold their evidence before mirroring.
+		const deadline = Date.now() + 15_000;
+		const fileHas = async (path: string, needle: string) =>
+			(await readFile(path, "utf8").catch(() => "")).includes(needle);
+		while (
+			Date.now() < deadline &&
+			!(
+				(await fileHas(remoteEvents, canary)) &&
+				(await fileHas(remoteRaw, "[REDACTED]"))
+			)
+		) {
 			await Bun.sleep(10);
 		}
 		expect(await readFile(remoteEvents, "utf8")).toContain(canary);
+		expect(await readFile(remoteRaw, "utf8")).toContain("[REDACTED]");
 		expect((await f.target.observe(ref)).state).toBe("running");
 		const raw = await readFile(join(f.runDir, "raw.log"), "utf8");
 		const events = await readFile(join(f.runDir, "events.jsonl"), "utf8");

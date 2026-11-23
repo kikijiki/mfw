@@ -1,8 +1,7 @@
-import { appRouter } from "@mfw/api";
 import { createFileRoute } from "@tanstack/react-router";
-import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
+import { guard, serverAuth } from "~/server/auth-guard";
 import { getOrchestrator } from "~/server/orchestrator";
-import { checkRequest } from "~/server/request-guard";
+import { serveTrpc } from "~/server/trpc-handler";
 
 /**
  * The tRPC mount. `endpoint` must carry the build-time base path (tRPC strips
@@ -10,20 +9,12 @@ import { checkRequest } from "~/server/request-guard";
  */
 const endpoint = `${import.meta.env.BASE_URL}api/trpc`.replace(/\/{2,}/g, "/");
 
-const handler = async (req: Request) => {
-	const refused = checkRequest(req);
-	if (refused) return refused;
-	const orchestrator = await getOrchestrator();
-	return fetchRequestHandler({
+const handler = async (req: Request) =>
+	serveTrpc(req, await guard(req, { api: true }), {
+		auth: await serverAuth(),
 		endpoint,
-		router: appRouter,
-		req,
-		createContext: () => ({ orchestrator }),
-		onError({ error, path }) {
-			console.error(`[mfw] tRPC error on '${path}':`, error.message);
-		},
+		orchestrator: getOrchestrator,
 	});
-};
 
 export const Route = createFileRoute("/api/trpc/$")({
 	server: {

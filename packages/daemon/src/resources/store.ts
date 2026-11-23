@@ -33,6 +33,7 @@ import {
 	RESOURCE_CLEANUP_SCHEMA,
 	RESOURCE_INCIDENT_SCHEMA,
 	RESOURCE_PROBE_SCHEMA,
+	RESOURCE_PROVIDER_REPORT_SCHEMA,
 	RESOURCE_SCHEMA,
 	RESOURCE_SCHEMA_VERSION,
 } from "./schema.ts";
@@ -1961,7 +1962,7 @@ export class ResourceStore {
 	): Promise<number> {
 		const row = await one(
 			this.client,
-			`SELECT COALESCE(SUM(amount), 0) AS total FROM rp_ledger
+			`SELECT TOTAL(amount) AS total FROM rp_ledger
 			 WHERE pool_id=? AND dimension=? AND state IN ('reserved','settled','estimated')
 			   AND at_ms>=? AND at_ms<?`,
 			[poolId, dimension, startMs, endMs],
@@ -2724,6 +2725,43 @@ export class ResourceStore {
 		});
 	}
 
+	// Provider reports
+
+	/**
+	 * Records one agent report and returns the projects that reported this
+	 * account inside the window, this one included. Older rows are dropped.
+	 */
+	async recordProviderReport(input: {
+		key: string;
+		project: string;
+		windowMs: number;
+		maxPerKey: number;
+	}): Promise<string[]> {
+		return this.withWrite(async (tx) => {
+			const now = this.now();
+			// A clock that moved back must not let a future row confirm anything.
+			await tx.execute({
+				sql: "DELETE FROM rp_provider_reports WHERE hold_key=? AND (at_ms<? OR at_ms>?)",
+				args: [input.key, now - input.windowMs, now],
+			});
+			await tx.execute({
+				sql: "INSERT INTO rp_provider_reports(hold_key,project,at_ms) VALUES(?,?,?)",
+				args: [input.key, input.project, now],
+			});
+			await tx.execute({
+				sql: `DELETE FROM rp_provider_reports WHERE hold_key=? AND id NOT IN (
+				        SELECT id FROM rp_provider_reports WHERE hold_key=? ORDER BY id DESC LIMIT ?)`,
+				args: [input.key, input.key, input.maxPerKey],
+			});
+			const rows = await all(
+				tx,
+				"SELECT DISTINCT project FROM rp_provider_reports WHERE hold_key=?",
+				[input.key],
+			);
+			return rows.map((row) => str(row.project, "report project"));
+		});
+	}
+
 	// Incidents
 
 	/**
@@ -2970,6 +3008,7 @@ export async function openResourceStore(
 						await tx.executeMultiple(RESOURCE_CLEANUP_SCHEMA);
 						await tx.executeMultiple(RESOURCE_INCIDENT_SCHEMA);
 						await tx.executeMultiple(RESOURCE_PROBE_SCHEMA);
+						await tx.executeMultiple(RESOURCE_PROVIDER_REPORT_SCHEMA);
 						await tx.execute({
 							sql: "UPDATE rp_schema SET version=? WHERE singleton=1",
 							args: [RESOURCE_SCHEMA_VERSION],
@@ -3021,6 +3060,19 @@ export async function openResourceStore(
 							"UPDATE rp_schema SET version=4 WHERE singleton=1",
 						);
 						version = 4;
+					}
+					if (version === 4) {
+						const reports = await one(
+							tx,
+							"SELECT name FROM sqlite_master WHERE type='table' AND name='rp_provider_reports'",
+						);
+						if (!reports) {
+							await tx.executeMultiple(RESOURCE_PROVIDER_REPORT_SCHEMA);
+						}
+						await tx.execute(
+							"UPDATE rp_schema SET version=5 WHERE singleton=1",
+						);
+						version = 5;
 					}
 					if (version !== RESOURCE_SCHEMA_VERSION) {
 						throw new ResourceError(

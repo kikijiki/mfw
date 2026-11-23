@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentHost } from "../src/agent-host.ts";
+import { ensureRunDirLayout } from "../src/containment/run-dir.ts";
 import { SecretEnvironment } from "../src/execution-environment.ts";
 import { runProc } from "../src/proc.ts";
 import {
@@ -98,7 +99,7 @@ process.exit(0);
 			agentArgv: ["true"],
 			env: {},
 			steer: false,
-			approvalMode: "autonomous",
+			approvalMode: "interactive",
 			isolation: { mode: "bwrap", hidePaths: [] },
 		});
 		await procs.get("mfw_g1")?.exited;
@@ -114,6 +115,7 @@ describe("G2: another run cannot reach or poison the secret FIFO", () => {
 	async function launchPair(attackerBody: string) {
 		const { base, mk } = await work("mfw-g2-");
 		const aRun = await mk("a-run");
+		const aBox = ensureRunDirLayout(aRun).outbox;
 		const aCwd = await mk("a-wt");
 		const vRun = await mk("v-run");
 		const vCwd = await mk("v-wt");
@@ -126,10 +128,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const root = ${JSON.stringify(root)};
 const controlRoot = ${JSON.stringify(controlRootPath())};
-const out = ${JSON.stringify(join(aRun, "loot"))};
-const armed = ${JSON.stringify(join(aRun, "attacker-armed"))};
-const done = ${JSON.stringify(join(aRun, "victim-launched"))};
-const hostFound = ${JSON.stringify(join(aRun, "host-found"))};
+const out = ${JSON.stringify(join(aBox, "loot"))};
+const armed = ${JSON.stringify(join(aBox, "attacker-armed"))};
+const done = ${JSON.stringify(join(aBox, "victim-launched"))};
+const hostFound = ${JSON.stringify(join(aBox, "host-found"))};
 const t0 = Date.now();
 fs.writeFileSync(armed, "1");
 (async () => {
@@ -166,7 +168,7 @@ fs.writeFileSync(armed, "1");
 		await writeFile(victim, "process.exit(0);");
 		// The victim starts only once the attacker is polling, so the attacker
 		// is always there to see the secret directory appear.
-		const armed = join(aRun, "attacker-armed");
+		const armed = join(aBox, "attacker-armed");
 		const { runner, procs } = runShTmux({
 			mfw_vic: async () => {
 				for (let i = 0; i < 1_000 && !(await exists(armed)); i++)
@@ -198,7 +200,7 @@ fs.writeFileSync(armed, "1");
 						if (!st) continue;
 						evidence.hostSawDir = found;
 						evidence.hostSawFifo = st.isFIFO();
-						await writeFile(join(aRun, "host-found"), found);
+						await writeFile(join(aBox, "host-found"), found);
 					}
 				}
 				if (evidence.hostSawDir !== null) return;
@@ -217,7 +219,7 @@ fs.writeFileSync(armed, "1");
 			projectRoot: base,
 			agentArgv: ["true"],
 			steer: false,
-			approvalMode: "autonomous" as const,
+			approvalMode: "interactive" as const,
 			isolation: { mode: "bwrap" as const, hidePaths: [] },
 		};
 		await host.launch({
@@ -247,18 +249,18 @@ fs.writeFileSync(armed, "1");
 		await launched;
 		settled = true;
 		await sawControl;
-		await writeFile(join(aRun, "victim-launched"), "1");
+		await writeFile(join(aBox, "victim-launched"), "1");
 		await Promise.all([...procs.values()].map((p) => p.exited));
 		// The attack must have run: an attacker that never targeted the secret
 		// directory would "fail" to steal anything for the wrong reason.
 		expect(evidence.hostSawDir).not.toBeNull();
 		expect(evidence.hostSawFifo).toBe(true);
 		expect(evidence.writerGotFifo).toBe(true);
-		expect(await exists(join(aRun, "loot.attempted"))).toBe(true);
-		expect((await readFile(join(aRun, "loot.attempted"), "utf8")).trim()).toBe(
+		expect(await exists(join(aBox, "loot.attempted"))).toBe(true);
+		expect((await readFile(join(aBox, "loot.attempted"), "utf8")).trim()).toBe(
 			evidence.hostSawDir as string,
 		);
-		return { aRun, loot: join(aRun, "loot") };
+		return { aRun: aBox, loot: join(aBox, "loot") };
 	}
 
 	test("a concurrent run cannot read the secret", async () => {
@@ -308,7 +310,7 @@ let killed = "survived";
 try { process.kill(${victim.pid}, "SIGKILL"); killed = "signalled"; } catch (e) { killed = String(e.code); }
 let nix = "absent";
 try { nix = fs.readdirSync("/nix/var/nix/daemon-socket").join(",") || "empty"; } catch {}
-fs.writeFileSync(${JSON.stringify(join(runDir, "g7"))}, killed + "|" + nix);
+fs.writeFileSync(${JSON.stringify(join(runDir, "outbox", "g7"))}, killed + "|" + nix);
 process.exit(0);
 `,
 			);
@@ -323,13 +325,13 @@ process.exit(0);
 				agentArgv: ["true"],
 				env: {},
 				steer: false,
-				approvalMode: "autonomous",
+				approvalMode: "interactive",
 				isolation: { mode: "bwrap", hidePaths: [] },
 			});
 			await procs.get("mfw_g7")?.exited;
-			const [killed, nix] = (await readFile(join(runDir, "g7"), "utf8")).split(
-				"|",
-			);
+			const [killed, nix] = (
+				await readFile(join(runDir, "outbox", "g7"), "utf8")
+			).split("|");
 			expect(killed).toBe("ESRCH");
 			expect(["absent", "empty"]).toContain(nix as string);
 			expect(victim.killed).toBe(false);
@@ -415,7 +417,7 @@ describe("G3: agent-writable startup files do not run on the host", () => {
 			agentArgv: ["true"],
 			env: {},
 			steer: false,
-			approvalMode: "autonomous",
+			approvalMode: "interactive",
 			isolation: { mode: "bwrap", hidePaths: [] },
 		});
 		const command = calls.find((c) => c[0] === "new-session")?.at(-1) as string;

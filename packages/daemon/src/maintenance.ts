@@ -14,9 +14,10 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { ProjectDbHandle } from "@mfw/db/client";
 import { appendEvent, type EventBus } from "@mfw/db/eventlog";
-import { engineKv, events as eventRows, runs } from "@mfw/db/schema";
+import { engineKv, events as eventRows } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
-import { git } from "./git.ts";
+import { runEventsPath } from "./containment/run-dir.ts";
+import { git, gitComplete } from "./git.ts";
 import type { Logger } from "./log.ts";
 import { runProc } from "./proc.ts";
 import { loadReopenPolicies, reopenDefinitionHash } from "./reopen-policy.ts";
@@ -1417,15 +1418,13 @@ export class Maintenance {
 			if (run.transcriptSummary === null) {
 				try {
 					const summary = await summarizeTranscript(
-						join(dir, "events.jsonl"),
+						runEventsPath(dir),
 						this.deps.now?.() ?? Date.now(),
 					);
-					await this.deps.handle.db
-						.update(runs)
-						.set({
-							transcriptSummary: summary as unknown as Record<string, unknown>,
-						})
-						.where(eq(runs.id, run.id));
+					await this.deps.registry.recordTranscriptSummary(
+						run.id,
+						summary as unknown as Record<string, unknown>,
+					);
 				} catch (e) {
 					this.deps.log.warn(
 						{ err: e, runId: run.id },
@@ -1511,7 +1510,12 @@ export class Maintenance {
 
 			// Never erase work: preserve a dirty tree or a branch whose tip has not landed. GC is not a finalizer.
 			const localChanges = await wm.hasLocalChanges({ path }).catch(() => true);
-			const branch = await git(["symbolic-ref", "--short", "HEAD"], path);
+			// A clone's HEAD is agent-written; only a linked worktree's is asked.
+			const onBranch =
+				wm.kind === "clone" ||
+				(await git(["symbolic-ref", "--short", "HEAD"], path).then(
+					(b) => b.exitCode === 0 && b.stdout.trim() === owned.branch,
+				));
 			const integrated = await git(
 				[
 					"merge-base",
@@ -1521,12 +1525,7 @@ export class Maintenance {
 				],
 				this.deps.projectRoot,
 			);
-			if (
-				localChanges ||
-				branch.exitCode !== 0 ||
-				branch.stdout.trim() !== owned.branch ||
-				integrated.exitCode !== 0
-			) {
+			if (localChanges || !onBranch || integrated.exitCode !== 0) {
 				this.deps.log.warn(
 					{ path, branch: owned.branch },
 					"preserving MFW worktree because clean integrated state is not proven",
@@ -1577,8 +1576,14 @@ export class Maintenance {
 			root,
 		);
 		if (refs.exitCode !== 0 || !refs.stdout) return 0;
+		// A cut list could leave a checked-out branch looking free to delete.
+		const worktrees = await gitComplete(
+			["worktree", "list", "--porcelain"],
+			root,
+		).catch(() => null);
+		if (worktrees === null) return 0;
 		const checkedOut = new Set(
-			(await git(["worktree", "list", "--porcelain"], root)).stdout
+			worktrees
 				.split("\n")
 				.filter((line) => line.startsWith("branch "))
 				.map((line) => line.slice("branch ".length)),

@@ -43,6 +43,7 @@ import {
 	parseSandboxProfile,
 	type SandboxProfile,
 } from "./profile.ts";
+import { runDirLayout, runStateRoot } from "./run-dir.ts";
 import {
 	DISABLE_USERNS_BWRAP_ARGS,
 	generateSeccompProgram,
@@ -60,6 +61,8 @@ export const SANDBOX_PATHS = {
 	caches: "/cache",
 	fleet: "/fleet",
 	egress: "/run/mfw/egress",
+	runControl: "/mfw-run/control",
+	runOutbox: "/mfw-run/outbox",
 } as const;
 
 const FLEET_ENV = { claude: "CLAUDE_CONFIG_DIR", codex: "CODEX_HOME" } as const;
@@ -88,6 +91,8 @@ export interface CompileHost {
 	/** The real home and `$MFW_HOME`: never bound, whole or through an ancestor. */
 	home: string;
 	mfwHome: string;
+	/** Project state directories holding a DB: never bound, whole or through an ancestor. */
+	projectDbDirs?: readonly string[];
 	/** Host directories that profile sources must sit strictly inside. */
 	allowedRoots: readonly string[];
 	/** `realpath`, or null when the path does not exist. */
@@ -125,6 +130,8 @@ export interface CompiledSandbox {
 	bwrapArgs: Buffer;
 	/** Sources to open at launch and pass on exactly these child descriptors. */
 	pinnedBinds: PinnedBind[];
+	/** The run dir whose layout the launcher must verify before pinning. */
+	runDirRoot?: string;
 	/** The environment set inside the sandbox, for the audit trail. */
 	env: Record<string, string>;
 	cwd: string;
@@ -169,6 +176,15 @@ function profileSources(profile: SandboxProfile): SourceBind[] {
 			out.push({ label: "gitDir", source: fs.workspace.gitDir, writable });
 		}
 	}
+	if (fs?.runDir) {
+		const layout = runDirLayout(fs.runDir.source);
+		out.push({ label: "run control", source: layout.control, writable: false });
+		out.push({
+			label: "run outbox",
+			source: layout.outbox,
+			writable: fs.runDir.outbox === "rw",
+		});
+	}
 	for (const c of fs?.caches ?? []) {
 		out.push({
 			label: `cache ${c.name}`,
@@ -177,11 +193,19 @@ function profileSources(profile: SandboxProfile): SourceBind[] {
 		});
 	}
 	if (fs?.fleetConfig) {
+		const privateState = fs.fleetConfig.privateState;
 		out.push({
 			label: "fleet config",
 			source: fs.fleetConfig.source,
-			writable: fs.fleetConfig.writable.length > 0,
+			writable: !privateState && fs.fleetConfig.writable.length > 0,
 		});
+		if (privateState && fs.fleetConfig.writable.length > 0) {
+			out.push({
+				label: "fleet private state",
+				source: privateState,
+				writable: true,
+			});
+		}
 	}
 	if (profile.network?.mode === "proxy") {
 		out.push({
@@ -234,13 +258,54 @@ function checkHost(host: CompileHost): CompileRefusal | null {
 }
 
 /** The protected locations, both as given and with symlinks resolved. */
-function protectedRoots(host: CompileHost): string[] {
-	const out = new Set([host.home, host.mfwHome]);
-	for (const p of [host.home, host.mfwHome]) {
+function protectedRoots(host: CompileHost, profile: SandboxProfile): string[] {
+	const runDir = profile.filesystem?.runDir?.source;
+	const state = runDir ? runStateRoot(runDir) : null;
+	const roots = [
+		host.home,
+		host.mfwHome,
+		...(host.projectDbDirs ?? []),
+		...(state ? [state] : []),
+	];
+	const out = new Set(roots);
+	for (const p of roots) {
 		const real = host.realpath(p);
 		if (real) out.add(real);
 	}
 	return [...out];
+}
+
+/**
+ * The run root stays out of every sandbox: nothing may be bound at, above or
+ * inside it except its own `control/` and `outbox/`. A bind of the root or an
+ * ancestor would let the sandbox rename either directory, or reach a sibling
+ * run, and a bind inside it would expose host-only files.
+ */
+function checkRunDir(
+	profile: SandboxProfile,
+	host: CompileHost,
+): CompileRefusal | null {
+	const root = profile.filesystem?.runDir?.source;
+	if (!root) return null;
+	if (host.realpath(root) !== root) {
+		return refuse(
+			"path_not_canonical",
+			`run dir ${root} is missing or reached through a symlink`,
+			"create it and pass its real path",
+		);
+	}
+	for (const s of profileSources(profile)) {
+		// By label: another bind aimed at the same directory is still refused.
+		if (s.label === "run control" || s.label === "run outbox") continue;
+		if (overlaps(s.source, root)) {
+			return refuse(
+				"bind_overlap",
+				`${s.label} ${s.source} overlaps the run dir ${root}`,
+				"bind only the run's control and outbox",
+			);
+		}
+	}
+	return null;
 }
 
 /**
@@ -280,7 +345,7 @@ function checkSources(
 	deny: readonly string[],
 ): CompileRefusal | null {
 	const sources = profileSources(profile);
-	const guarded = protectedRoots(host);
+	const guarded = protectedRoots(host, profile);
 
 	for (const root of host.allowedRoots) {
 		if (host.realpath(root) !== root) {
@@ -352,20 +417,24 @@ function checkSources(
 	const fleet = profile.filesystem?.fleetConfig;
 	if (fleet) {
 		for (const rel of fleet.writable) {
-			const full = joinUnder(fleet.source, rel);
-			if (full === null) {
-				return refuse(
-					"path_denied",
-					`fleet directory ${rel} leaves ${fleet.source}`,
-					"name a directory inside the fleet config",
-				);
-			}
-			if (host.realpath(full) !== full) {
-				return refuse(
-					"path_not_canonical",
-					`fleet directory ${full} is missing or reached through a symlink`,
-					"create it as a real directory",
-				);
+			// The shared directory is the mount point, the private one the source.
+			for (const root of [fleet.source, fleet.privateState]) {
+				if (!root) continue;
+				const full = joinUnder(root, rel);
+				if (full === null) {
+					return refuse(
+						"path_denied",
+						`fleet directory ${rel} leaves ${root}`,
+						"name a directory inside the fleet config",
+					);
+				}
+				if (host.realpath(full) !== full) {
+					return refuse(
+						"path_not_canonical",
+						`fleet directory ${full} is missing or reached through a symlink`,
+						"create it as a real directory",
+					);
+				}
 			}
 		}
 	}
@@ -393,6 +462,7 @@ function declaredToolchain(
 	if (declared.length === 0) {
 		return { binds: [], resolved: [], unresolved: [], pathDirs: [] };
 	}
+	// Masks always travel with the binds they hide part of.
 	const resolved = declared.flatMap((name) =>
 		plan.resolved.filter((b) => b.name === name),
 	);
@@ -401,6 +471,7 @@ function declaredToolchain(
 		resolved,
 		unresolved: [],
 		pathDirs: [...new Set(resolved.map((b) => posix.dirname(b.path)))],
+		...(plan.masks ? { masks: plan.masks } : {}),
 	};
 }
 
@@ -432,7 +503,7 @@ function checkToolchain(
 			"discover the toolchain from the profile's binary list",
 		);
 	}
-	const guarded = protectedRoots(host);
+	const guarded = protectedRoots(host, profile);
 	// Toolchain roots legitimately sit inside the real home, never inside MFW_HOME.
 	const homes = new Set([host.home, host.realpath(host.home)]);
 	const mounted = new Set(
@@ -502,6 +573,10 @@ function buildEnv(
 		env[FLEET_ENV[fs.fleetConfig.cli]] =
 			`${SANDBOX_PATHS.fleet}/${fs.fleetConfig.cli}`;
 	}
+	if (fs?.runDir) {
+		env.MFW_RUN_CONTROL = SANDBOX_PATHS.runControl;
+		env.MFW_RUN_OUTBOX = SANDBOX_PATHS.runOutbox;
+	}
 	if (profile.network?.mode === "proxy") Object.assign(env, egressClientEnv());
 	// The schema rejects reserved names; the spread order is a second guard.
 	return { ...(profile.process?.env ?? {}), ...env };
@@ -570,6 +645,17 @@ function buildMounts(
 			);
 		}
 	}
+	if (fs?.runDir) {
+		// The mount points sit on the root tmpfs, which is remounted read-only.
+		const layout = runDirLayout(fs.runDir.source);
+		mount("run control", "ro", layout.control, SANDBOX_PATHS.runControl);
+		mount(
+			"run outbox",
+			fs.runDir.outbox,
+			layout.outbox,
+			SANDBOX_PATHS.runOutbox,
+		);
+	}
 	for (const c of fs?.caches ?? []) {
 		mount(
 			`cache ${c.name}`,
@@ -588,7 +674,10 @@ function buildMounts(
 					`fleet directory ${rel}`,
 					true,
 					// checkSources refused any path that leaves the source.
-					joinUnder(fs.fleetConfig.source, rel) as string,
+					joinUnder(
+						fs.fleetConfig.privateState ?? fs.fleetConfig.source,
+						rel,
+					) as string,
 					joinUnder(dest, rel) as string,
 				),
 			);
@@ -641,7 +730,9 @@ export function compileBwrap(
 	const deny = resolveDeny(profile, host);
 	if (!Array.isArray(deny)) return deny;
 	const refusal =
-		checkSources(profile, host, deny) ?? checkToolchain(profile, host, deny);
+		checkSources(profile, host, deny) ??
+		checkRunDir(profile, host) ??
+		checkToolchain(profile, host, deny);
 	if (refusal) return refusal;
 
 	let seccomp: Buffer;
@@ -728,6 +819,9 @@ export function compileBwrap(
 		seccomp,
 		bwrapArgs: Buffer.from(options.map((o) => `${o}\0`).join("")),
 		pinnedBinds,
+		...(profile.filesystem?.runDir
+			? { runDirRoot: profile.filesystem.runDir.source }
+			: {}),
 		env,
 		cwd,
 	};

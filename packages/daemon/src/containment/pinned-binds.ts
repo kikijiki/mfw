@@ -10,7 +10,13 @@
  * read back and must equal the declared one. That catches a swapped parent.
  */
 
-import { closeSync, constants, openSync, readlinkSync } from "node:fs";
+import {
+	closeSync,
+	constants,
+	fstatSync,
+	openSync,
+	readlinkSync,
+} from "node:fs";
 
 /** Linux `O_PATH`; node does not export it. */
 const O_PATH = 0o10000000;
@@ -29,6 +35,37 @@ export interface PinnedBind {
 	dest: string;
 	writable: boolean;
 	label: string;
+}
+
+/** Which directory a pin really is: a path can be replaced, an inode cannot. */
+export interface PinIdentity {
+	dest: string;
+	dev: string;
+	ino: string;
+}
+
+/** The identity of each open pin, read from its descriptor. */
+export function pinIdentities(
+	binds: readonly PinnedBind[],
+	parentFds: readonly number[],
+): PinIdentity[] {
+	return binds.map((bind, i) => {
+		const st = fstatSync(parentFds[i] as number, { bigint: true });
+		return { dest: bind.dest, dev: String(st.dev), ino: String(st.ino) };
+	});
+}
+
+export function samePins(
+	a: readonly PinIdentity[],
+	b: readonly PinIdentity[],
+): boolean {
+	return (
+		a.length === b.length &&
+		a.every(
+			(p, i) =>
+				p.dest === b[i]?.dest && p.dev === b[i]?.dev && p.ino === b[i]?.ino,
+		)
+	);
 }
 
 export class PinnedBindError extends Error {

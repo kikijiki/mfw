@@ -1,0 +1,19 @@
+import { join } from "node:path";
+import { plugin } from "bun";
+
+/** Points a bridge at the caged launcher. Loaded only by the conformance tests. */
+const caged = join(import.meta.dir, "caged-launcher.ts");
+plugin({
+	name: "caged-launcher",
+	setup(build) {
+		build.onLoad({ filter: /agent-launch-argv\.ts$/ }, async (args) => {
+			const text = await Bun.file(args.path).text();
+			const target = 'join(import.meta.dir, "agent-launch-main.ts")';
+			if (!text.includes(target)) throw new Error("launcher path moved");
+			return {
+				loader: "ts",
+				contents: text.replace(target, JSON.stringify(caged)),
+			};
+		});
+	},
+});

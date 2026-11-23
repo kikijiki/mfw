@@ -158,7 +158,7 @@ class Seeder {
 	): Promise<string> {
 		const r = await runProc(
 			[this.gitBin, ...this.host.configArgs({ allowFile: true }), ...args],
-			{ cwd, env: this.host.env(), timeoutMs },
+			{ cwd, env: this.host.env(), timeoutMs, hostGitChecked: true },
 		);
 		if (r.exitCode !== 0) {
 			throw new SeedError(

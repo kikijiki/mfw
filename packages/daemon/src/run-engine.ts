@@ -48,6 +48,7 @@ import {
 } from "./routing.ts";
 import { RunEventTail } from "./run-event-tail.ts";
 import type { RunRegistry, RunRow } from "./run-registry.ts";
+import { runWorkspaceKind } from "./run-workspace/factory.ts";
 import type { BwrapIsolation } from "./sandbox.ts";
 import {
 	runHoldsClaim,
@@ -680,7 +681,10 @@ export class RunEngine {
 		const run = await this.deps.registry.get(runId);
 		if (run) {
 			if (run.state === "starting") {
-				await this.deps.registry.recordExit(runId, { outcome: "start_failed" });
+				await this.deps.registry.recordExit(runId, {
+					outcome: "start_failed",
+					evidence: { provenance: "host-observed", source: "finalize" },
+				});
 			}
 		}
 		const task = await this.deps.tasks.get(taskId);
@@ -1114,7 +1118,10 @@ export class RunEngine {
 				} catch (error) {
 					errors.push(error);
 				}
-				await this.deps.registry.recordExit(run.id, { outcome: "interrupted" });
+				await this.deps.registry.recordExit(run.id, {
+					outcome: "interrupted",
+					evidence: { provenance: "host-observed", source: "finalize" },
+				});
 			}
 			try {
 				const result = await this.finalizeExecutionTarget(run.id);
@@ -1186,10 +1193,29 @@ export class RunEngine {
 		return this.launchPreparedRun(prepared);
 	}
 
+	/**
+	 * Only task and repair runs have a sandbox profile. Every other kind would
+	 * get the interim sandbox, which binds the real home read-write, so it may
+	 * not act without a human until its role profile exists.
+	 */
+	assertKindMayRun(kind: string): void {
+		if (!this.deps.isolation) return;
+		if ((this.deps.defaults.approvalMode ?? "autonomous") !== "autonomous") {
+			return;
+		}
+		if (kind === "task" || kind === "repair") return;
+		throw new DispatchPreflightError(
+			"sandbox_role_unavailable",
+			[kind],
+			`autonomous ${kind} runs are refused until their sandbox profile exists`,
+		);
+	}
+
 	private async prepareRun(
 		spec: RunLaunchSpec,
 		targetResolution: ResolvedExecutionTarget,
 	): Promise<PreparedTaskRun> {
+		this.assertKindMayRun(spec.kind);
 		const target = this.requireTarget(targetResolution.kind);
 		const requestedShape = {
 			...targetResolution.requestedShape,
@@ -1354,6 +1380,7 @@ export class RunEngine {
 				.catch(() => {});
 			await this.deps.registry.recordExit(spec.runId, {
 				outcome: "start_failed",
+				evidence: { provenance: "host-observed", source: "finalize" },
 			});
 			throw e;
 		}
@@ -1422,6 +1449,14 @@ export class RunEngine {
 				secretEnvironment?.names() ?? [],
 				workloadSecrets?.binding ?? null,
 			);
+			await this.deps.registry.recordWorkspaceKind(
+				run.id,
+				runWorkspaceKind(this.deps.projectRoot, run),
+			);
+			// Before the launch: a crash after it must still find the marker.
+			if (target.kind === "local" && this.deps.isolation) {
+				await this.deps.registry.markRunDirSplit(run.id);
+			}
 			await target.launch({
 				owner,
 				runDir: ref.runDir,
@@ -1448,6 +1483,8 @@ export class RunEngine {
 					steer: invocation.declaredCapabilities.steer,
 					approvalMode: this.deps.defaults.approvalMode ?? "autonomous",
 					isolation: this.deps.isolation,
+					runKind: run.kind,
+					providerId: provider.id,
 					secretEnvironment,
 				},
 			});
@@ -1479,6 +1516,7 @@ export class RunEngine {
 				if (observation.state === "absent") {
 					await this.deps.registry.recordExit(run.id, {
 						outcome: "start_failed",
+						evidence: { provenance: "host-observed", source: "finalize" },
 					});
 				} else {
 					await this.deps.registry.transition(run.id, "ended", {
@@ -1530,7 +1568,10 @@ export class RunEngine {
 					detail: { code: "launch_failed" },
 				})
 				.catch(() => {});
-			await this.deps.registry.recordExit(run.id, { outcome: "start_failed" });
+			await this.deps.registry.recordExit(run.id, {
+				outcome: "start_failed",
+				evidence: { provenance: "host-observed", source: "finalize" },
+			});
 			throw e;
 		}
 	}

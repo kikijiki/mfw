@@ -20,7 +20,8 @@ import { join, resolve } from "node:path";
  * itself is injected (`setHandler`): `@mfw/api` depends on this package, so
  * the app wires its tRPC handler in at startup.
  *
- * The UI's TCP listener is unchanged and stays open until auth v1 (C1).
+ * The UI's TCP listener requires an owner session (auth v1), so this socket
+ * is the brain's only working route to the API.
  */
 
 export const BRAIN_TURN_HEADER = "x-mfw-brain-turn";
@@ -46,7 +47,10 @@ export interface BrainSocketAccess {
 	tokenFile: string;
 }
 
-export type BrainSocketHandler = (req: Request) => Response | Promise<Response>;
+export type BrainSocketHandler = (
+	req: Request,
+	binding: BrainTurnBinding,
+) => Response | Promise<Response>;
 
 /** Linux `sun_path` holds 108 bytes including the NUL. */
 const MAX_SOCKET_PATH = 100;
@@ -188,6 +192,9 @@ export class BrainSocket {
 		const denied = procedures.find((p) => !BRAIN_PROCEDURES.has(p));
 		if (denied)
 			return json(403, `'${denied}' is not available to a brain turn`);
+		// One call per request: the router enforces the binding on its parsed input.
+		if (url.searchParams.has("batch") || procedures.length !== 1)
+			return json(400, "batches are not accepted on the brain socket");
 
 		const claimed = req.headers.get(BRAIN_TURN_HEADER);
 		if (claimed !== null && claimed !== binding.runId)
@@ -216,13 +223,15 @@ export class BrainSocket {
 				headers,
 				...(body !== undefined ? { body } : {}),
 			}),
+			{ ...binding },
 		);
 	}
 }
 
 /**
- * Every call's input must name the token's project and turn. tRPC batches are
- * `{"0": {json: input}, ...}`; a single call is `{json: input}`.
+ * An early refusal for a call that names the wrong project or turn. It reads
+ * the raw JSON, so it is NOT the enforcement: the transformer can still change
+ * values. `brainTurnBound` in `@mfw/api` checks the parsed input.
  */
 function inputMismatch(
 	raw: string | null,
@@ -237,23 +246,15 @@ function inputMismatch(
 	}
 	if (!parsed || typeof parsed !== "object")
 		return { status: 400, message: "tRPC input is not an object" };
-	const entries =
-		"json" in parsed
-			? [parsed as { json?: unknown }]
-			: Object.values(parsed as Record<string, { json?: unknown }>);
-	if (entries.length === 0)
-		return { status: 400, message: "tRPC input is empty" };
-	for (const e of entries) {
-		const input = e && typeof e === "object" ? e.json : undefined;
-		if (!input || typeof input !== "object")
-			return { status: 400, message: "tRPC input is malformed" };
-		const { project, turnRunId } = input as Record<string, unknown>;
-		if (project !== binding.project || turnRunId !== binding.runId)
-			return {
-				status: 403,
-				message: "the token was not issued for that project and turn",
-			};
-	}
+	const input = (parsed as { json?: unknown }).json;
+	if (!input || typeof input !== "object")
+		return { status: 400, message: "tRPC input is malformed" };
+	const { project, turnRunId } = input as Record<string, unknown>;
+	if (project !== binding.project || turnRunId !== binding.runId)
+		return {
+			status: 403,
+			message: "the token was not issued for that project and turn",
+		};
 	return null;
 }
 

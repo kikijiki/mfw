@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
-import { access, readFile } from "node:fs/promises";
+import { access, lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { normalizeOwnsPattern, validateOwnsPattern } from "@mfw/board";
-import { filesOutsideOwns } from "@mfw/board-core";
 import type { BackgroundJob } from "@mfw/core/activity";
 import type { SettleClass } from "@mfw/core/events";
 import type { TaskStatus } from "@mfw/core/types";
@@ -25,6 +24,8 @@ import {
 	AUTH_HOLD_REASON,
 	isAuthFailure,
 } from "../auth-failure.ts";
+import { runDirLayout } from "../containment/run-dir.ts";
+import { readRegularFile } from "../containment/safe-file.ts";
 import { git } from "../git.ts";
 import {
 	type CleanupResult,
@@ -35,6 +36,7 @@ import {
 import type { Logger } from "../log.ts";
 import { updateInfraState } from "../maintenance.ts";
 import type { NotificationType } from "../notify.ts";
+import { MAX_REPORTED_HOLD_MS } from "../provider-holds.ts";
 import { detectRateLimit } from "../rate-limit.ts";
 import type {
 	ReviewFailureCause,
@@ -44,15 +46,23 @@ import type {
 } from "../review-verdict.ts";
 import { parseRoutingRecord } from "../routing.ts";
 import { RunEventTail } from "../run-event-tail.ts";
+import {
+	exitFactSource,
+	exitProvenance,
+	readExitEvidence,
+	readOutboxExitClaim,
+} from "../run-exit-evidence.ts";
 import type { BeginStepResult, RunRegistry, RunRow } from "../run-registry.ts";
 import {
-	createRunWorkspace,
 	createVerifierClones,
+	workspaceForRun,
 } from "../run-workspace/factory.ts";
 import type { WorktreeReportIdentity } from "../run-workspace/run-workspace.ts";
 import {
+	asScopeSample,
 	changedFiles,
 	changedFilesInRef,
+	finishScope,
 	SCOPE_KILL_REASONS,
 	type ScopePolicy,
 } from "../scope-watchdog.ts";
@@ -113,6 +123,7 @@ const KILL_REASONS: ReadonlySet<string> = new Set([
 	"watchdog-wall",
 	"watchdog-turns",
 	"watchdog-timebox",
+	"watchdog-output",
 	...SCOPE_KILL_REASONS,
 ]);
 
@@ -247,10 +258,17 @@ export interface StepRunnerDeps {
 	 * the legacy project-wide `dispatch_hold`.
 	 */
 	providerHolds?: {
-		hold(
+		/** The agent's claim: clamped, and scoped until another project confirms it. */
+		report(
 			key: string,
-			hold: { until: number; reason: string; runId?: string; project?: string },
-		): Promise<unknown>;
+			report: {
+				project: string;
+				until: number;
+				reason: string;
+				runId?: string;
+				confirmedUntil?: number;
+			},
+		): Promise<{ scope: "project" | "machine"; key: string; until: number }>;
 	};
 	/** Project name recorded on a provider hold (which project hit the limit). */
 	projectName?: string;
@@ -295,6 +313,10 @@ interface ScopeCheckResult {
 	files: number;
 	outside: number;
 	outsideFiles: string[];
+	/** The listing did not fit: `outside` is at least 1 and the run goes to review. */
+	truncated?: boolean;
+	/** The live watchdog could not sample the run: likewise sent to review. */
+	unsampled?: boolean;
 }
 
 /** `archive_wip`: where a scope-killed run's work was saved (null = nothing beyond base). */
@@ -614,6 +636,28 @@ function foldReportIdentity(
 // StepRunner
 // ---------------------------------------------------------------------------
 
+/** Past this a report is not parsed: its bytes are the agent's to inflate. */
+const MAX_REPORT_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Read a report from a path the agent controls: null when it is absent or not
+ * a regular file. A symlink must not pull a host file into the journal and the
+ * stored facts, and a FIFO must not hang finalize.
+ */
+async function readAgentReport(path: string): Promise<Buffer | null> {
+	let st: Awaited<ReturnType<typeof lstat>>;
+	try {
+		st = await lstat(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw error;
+	}
+	if (!st.isFile()) return null;
+	const read = await readRegularFile(path, MAX_REPORT_BYTES);
+	if (!read) throw new Error(`could not read the report at ${path}`);
+	return read.buffer;
+}
+
 export class StepRunner {
 	private readonly deps: StepRunnerDeps;
 	private readonly log: Logger;
@@ -876,16 +920,21 @@ export class StepRunner {
 		} catch {
 			return false;
 		}
+		const workspace = workspaceForRun(this.deps.projectRoot, run);
 		// Same ownership-aware policy as maintenance. MFW_REPORT.json is exempt
 		// only while it matches the identity recorded by ingest_report.
-		if (
-			await createRunWorkspace(this.deps.projectRoot).hasLocalChanges(
-				{ path: wt },
-				{ reportIdentity },
-			)
-		)
+		if (await workspace.hasLocalChanges({ path: wt }, { reportIdentity }))
 			return true;
 		if (!run.baseSha) return false;
+		if (workspace.kind === "clone") {
+			// A clone's own HEAD is agent-written: read the imported ref instead.
+			const imported = await workspace.fetchResult({
+				path: wt,
+				branch: run.branch ?? "",
+				baseSha: run.baseSha,
+			});
+			return imported.sha !== null && imported.sha !== run.baseSha;
+		}
 		const head = await git(["rev-parse", "HEAD"], wt);
 		if (head.exitCode !== 0)
 			throw new Error(
@@ -1122,9 +1171,10 @@ export class StepRunner {
 			}
 		}
 
-		const exit = await this.deps.host.readExit(
-			this.deps.registry.runDir(run.id),
-		);
+		const runDir = this.deps.registry.runDir(run.id);
+		// The verdict reads only this. `outbox/exit` is recorded below as a claim.
+		const exitEvidence = await readExitEvidence(this.deps.host, runDir);
+		const exit = exitEvidence.exit;
 		// A login problem ends the run non-zero with the CLI's own message at the
 		// tail. It rides the rate-limit path (hold, requeue without a repair
 		// attempt) but holds for the owner instead of a reset time.
@@ -1162,7 +1212,13 @@ export class StepRunner {
 				? { killReason: killReason as KillReason }
 				: {}),
 			outcome,
+			evidence: {
+				provenance: exitProvenance(exitEvidence.source, run.runDirLayout),
+				source: exitFactSource(exitEvidence.source),
+			},
 		});
+		const claim = await readOutboxExitClaim(runDir);
+		if (claim) await this.deps.registry.recordAgentExitClaim(run.id, claim);
 		await this.deps.registry.transition(run.id, "finalizing");
 		const background = await this.labelActivity(run, null);
 		return {
@@ -1222,9 +1278,15 @@ export class StepRunner {
 			| ClassifyResult
 			| undefined;
 		const auth = classify?.auth === true;
-		const until = auth
-			? Date.now() + AUTH_HOLD_MS
-			: (classify?.resetsAt ?? Date.now() + HOLD_FALLBACK_MS);
+		const now = Date.now();
+		const reported = auth
+			? now + AUTH_HOLD_MS
+			: (classify?.resetsAt ?? now + HOLD_FALLBACK_MS);
+		// What the agent says is never trusted for how long everything waits.
+		const until =
+			Number.isFinite(reported) && reported > now
+				? Math.min(reported, now + MAX_REPORTED_HOLD_MS)
+				: now + HOLD_FALLBACK_MS;
 		const value = {
 			until,
 			reason: auth ? AUTH_HOLD_REASON : `rate-limited run ${built.run.id}`,
@@ -1234,12 +1296,14 @@ export class StepRunner {
 				parseRoutingRecord(built.run.routing)?.holdKey ??
 				built.run.providerId ??
 				"unknown";
-			await this.deps.providerHolds.hold(key, {
+			const placed = await this.deps.providerHolds.report(key, {
 				...value,
 				runId: built.run.id,
-				...(this.deps.projectName ? { project: this.deps.projectName } : {}),
+				project: this.deps.projectName ?? "(unnamed)",
+				// Two projects agreeing on a login failure earns the full owner hold.
+				...(auth ? { confirmedUntil: now + AUTH_HOLD_MS } : {}),
 			});
-			return { ...value, key };
+			return { ...value, ...placed, key };
 		}
 		await this.deps.handle.db
 			.insert(engineKv)
@@ -1266,21 +1330,20 @@ export class StepRunner {
 			: null;
 		const candidates = [
 			worktreeReportPath,
+			join(
+				runDirLayout(this.deps.registry.runDir(built.run.id)).outbox,
+				"MFW_REPORT.json",
+			),
 			join(this.deps.registry.runDir(built.run.id), "MFW_REPORT.json"),
 		].filter((p): p is string => p !== null);
 
 		let report: Record<string, unknown> | null = null;
 		let worktreeReport: WorktreeReportIdentity = { state: "absent" };
 		for (const path of candidates) {
-			let content: Buffer;
-			try {
-				content = await readFile(path);
-			} catch (error) {
-				if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-				// A transient/permission failure is not "no report"; fail the step so
-				// cleanup never erases bytes we could not read.
-				throw error;
-			}
+			// A transient/permission failure throws: it is not "no report", and
+			// cleanup must never erase bytes we could not read.
+			const content = await readAgentReport(path);
+			if (content === null) continue;
 			if (path === worktreeReportPath) {
 				worktreeReport = {
 					state: "present",
@@ -1297,6 +1360,7 @@ export class StepRunner {
 				// Corrupt: journaled as no usable report (bytes were observed, unlike a read failure).
 			}
 		}
+		if (report) await this.deps.registry.recordReportFact(built.run.id, report);
 		const question = foldReport({ report })?.question ?? null;
 		if (question) await this.labelActivity(built.run, question);
 		return { report, worktreeReport };
@@ -1328,11 +1392,12 @@ export class StepRunner {
 		};
 		// A clone's tree is agent-writable: the checks run in a disposable
 		// host-owned clone of the imported tip, never in the run's workspace.
-		const clones = createVerifierClones(this.deps.projectRoot);
+		const clones = createVerifierClones(this.deps.projectRoot, run);
 		let candidate: string | null = null;
 		if (clones) {
-			const imported = await createRunWorkspace(
+			const imported = await workspaceForRun(
 				this.deps.projectRoot,
+				run,
 			).fetchResult({
 				path: run.worktreePath,
 				branch: run.branch ?? "",
@@ -1859,7 +1924,7 @@ export class StepRunner {
 		// A clone's work reaches the primary only through the host's verified
 		// import; the merge queue reads that quarantine ref. Nothing to merge
 		// is a failed step, not an empty merge.
-		const workspace = createRunWorkspace(this.deps.projectRoot);
+		const workspace = workspaceForRun(this.deps.projectRoot, run);
 		if (workspace.kind === "clone") {
 			const imported = await workspace.fetchResult({
 				path: run.worktreePath ?? workspace.paths(run.id).workPath,
@@ -1867,7 +1932,9 @@ export class StepRunner {
 				baseSha: run.baseSha ?? "",
 			});
 			if (!imported.sha) {
-				throw new Error("enqueue_merge: the run's result was not imported");
+				throw new Error(
+					`enqueue_merge: the run's result was not imported${imported.failure ? ` (${imported.failure})` : ""}`,
+				);
 			}
 		}
 		// Mark `merging` BEFORE the job is visible: otherwise the worker could
@@ -1936,7 +2003,7 @@ export class StepRunner {
 	private async archiveWip(built: Built): Promise<ArchiveWipResult> {
 		const { run } = built;
 		if (!run.branch || !run.baseSha) return { ref: null, sha: null };
-		const archive = await createRunWorkspace(this.deps.projectRoot).archive(
+		const archive = await workspaceForRun(this.deps.projectRoot, run).archive(
 			{
 				// No worktree: archiveWip saves the branch tip instead.
 				path: run.worktreePath ?? join(this.deps.projectRoot, ".mfw", "none"),
@@ -1970,9 +2037,12 @@ export class StepRunner {
 	private async scopeCheck(built: Built): Promise<ScopeCheckResult> {
 		const { run, task } = built;
 		const owns = task?.owns ?? [];
-		let files: string[] = [];
+		let listed: { files: string[]; truncated: boolean } = {
+			files: [],
+			truncated: false,
+		};
 		const wt = run.worktreePath;
-		const workspace = createRunWorkspace(this.deps.projectRoot);
+		const workspace = workspaceForRun(this.deps.projectRoot, run);
 		const present =
 			wt !== null &&
 			(await access(wt).then(
@@ -1987,37 +2057,24 @@ export class StepRunner {
 				baseSha: run.baseSha,
 			});
 			if (imported.sha) {
-				files = (
-					await changedFilesInRef(
-						this.deps.projectRoot,
-						run.baseSha,
-						imported.ref,
-					)
-				).files;
+				listed = await changedFilesInRef(
+					this.deps.projectRoot,
+					run.baseSha,
+					imported.ref,
+				);
 			}
 		} else if (present && wt && run.baseSha) {
-			files = (await changedFiles(wt, run.baseSha)).files;
+			listed = await changedFiles(wt, run.baseSha);
 		} else if (run.branch && run.baseSha) {
-			const diff = await git(
-				[
-					"diff",
-					"--name-only",
-					"--no-renames",
-					"-z",
-					`${run.baseSha}..${run.branch}`,
-				],
+			listed = await changedFilesInRef(
 				this.deps.projectRoot,
+				run.baseSha,
+				run.branch,
 			);
-			if (diff.exitCode !== 0)
-				throw new Error(`could not list the run's changes: ${diff.stderr}`);
-			files = diff.stdout.split("\0").filter(Boolean);
 		}
-		const outside = filesOutsideOwns(owns, files);
-		return {
-			files: files.length,
-			outside: outside.length,
-			outsideFiles: outside.slice(0, 20),
-		};
+		return finishScope(owns, listed, {
+			unsampled: asScopeSample(run.scopeSample)?.unsampled === true,
+		});
 	}
 
 	private async clearStall(built: Built): Promise<unknown> {
@@ -2077,7 +2134,7 @@ export class StepRunner {
 				reason: "durable worktree ownership is incomplete",
 			};
 		}
-		await createRunWorkspace(this.deps.projectRoot).remove(
+		await workspaceForRun(this.deps.projectRoot, run).remove(
 			{ path: wt, branch: run.branch, baseSha: run.baseSha },
 			{ force, reportIdentity },
 		);

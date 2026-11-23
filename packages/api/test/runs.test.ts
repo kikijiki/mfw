@@ -56,6 +56,11 @@ function project(name: string, rows: unknown[], lookups: string[][] = []) {
 		registry: {
 			list: async () => runRows,
 			get: async (id: string) => runRows.find((run) => run.id === id) ?? null,
+			provenance: async () => ({
+				exit: { observed: null, agentSays: null, disagree: false },
+				reportStatus: null,
+				facts: [],
+			}),
 		},
 		tasks: {
 			get: async () => {
@@ -331,7 +336,10 @@ describe("refusals carry their fix over the wire", () => {
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({ json: { project: "demo", runId: "01RUN" } }),
 			}),
-			createContext: () => ({ orchestrator }),
+			createContext: () => ({
+				orchestrator,
+				principal: { kind: "internal" as const, id: "internal" as const },
+			}),
 		});
 		const body = (await res.json()) as {
 			error: { json: { data: { code: string; fix: unknown } } };

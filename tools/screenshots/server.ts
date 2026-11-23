@@ -5,8 +5,9 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { closeSync, openSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
+import { join } from "node:path";
 
 export async function freePort(): Promise<number> {
 	return new Promise((resolve, reject) => {
@@ -90,11 +91,14 @@ export async function startDevServer(opts: {
 			);
 		}
 		try {
-			const res = await fetch(`${base}/api/trpc/system.projects`, {
+			const res = await fetch(`${base}/api/health`, {
 				signal: AbortSignal.timeout(5_000),
 			});
 			if (res.ok) {
 				await res.json();
+				const mfwHome = opts.env.MFW_HOME;
+				if (!mfwHome) throw new Error("a screenshot server needs MFW_HOME");
+				await signIn(base, mfwHome);
 				return { base, pid, stop };
 			}
 		} catch {
@@ -118,6 +122,59 @@ function tail(file: string, lines = 25): string {
 
 export class TrpcError extends Error {}
 
+/** The owner password of the throwaway `MFW_HOME` a screenshot run creates. */
+export const SCREENSHOT_PASSWORD = "screenshot-run-throwaway";
+
+const sessions = new Map<string, { cookie: string; key: string }>();
+
+/**
+ * Sign in to a throwaway server: first-run setup with the token from its
+ * private file, or a plain login when an earlier server of this run already did it.
+ */
+async function signIn(base: string, mfwHome: string): Promise<void> {
+	const state = (await (await fetch(`${base}/api/auth/state`)).json()) as {
+		state: string;
+	};
+	let action = "login";
+	let body: Record<string, string> = { password: SCREENSHOT_PASSWORD };
+	if (state.state === "setup") {
+		// The server writes the token to a private file and never logs it.
+		const tokenFile = join(mfwHome, "setup-token");
+		let token: string | undefined;
+		for (let i = 0; i < 50 && !token; i++) {
+			if (existsSync(tokenFile))
+				token = readFileSync(tokenFile, "utf8").trim() || undefined;
+			if (!token) await Bun.sleep(100);
+		}
+		if (!token) throw new Error("the dev server wrote no setup token");
+		action = "setup";
+		body = { token, password: SCREENSHOT_PASSWORD };
+	}
+	const res = await fetch(`${base}/api/auth/${action}`, {
+		method: "POST",
+		headers: { "content-type": "application/json", "x-mfw-auth": "1" },
+		body: JSON.stringify(body),
+	});
+	if (!res.ok) throw new Error(`sign-in failed: HTTP ${res.status}`);
+	const { requestKey } = (await res.json()) as { requestKey: string };
+	// The session's cookie: the other Set-Cookie headers delete shadow cookies.
+	const live = res.headers.getSetCookie().find((c) => !c.includes("Max-Age=0"));
+	const cookie = (live ?? "").split(";")[0] as string;
+	sessions.set(base, { cookie, key: requestKey });
+}
+
+/** An expression that signs the browser in; evaluate it on a same-origin page. */
+export function browserSignInScript(base: string): string {
+	return `fetch(${JSON.stringify(`${base}/api/auth/login`)}, {
+		method: "POST",
+		headers: { "content-type": "application/json", "x-mfw-auth": "1" },
+		body: ${JSON.stringify(JSON.stringify({ password: SCREENSHOT_PASSWORD }))},
+	}).then(async (r) => {
+		if (r.ok) localStorage.setItem("mfw:auth:request-key", (await r.json()).requestKey);
+		return r.status;
+	})`;
+}
+
 /** One tRPC call over HTTP with the SuperJSON envelope (`{json}`), as the web client sends it. */
 export async function trpc<T = unknown>(
 	base: string,
@@ -126,15 +183,20 @@ export async function trpc<T = unknown>(
 	kind: "query" | "mutation" = "mutation",
 ): Promise<T> {
 	const url = `${base}/api/trpc/${path}`;
+	const session = sessions.get(base);
+	const auth: Record<string, string> = session
+		? { cookie: session.cookie, "x-mfw-key": session.key }
+		: {};
 	const res =
 		kind === "mutation"
 			? await fetch(url, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...auth },
 					body: JSON.stringify({ json: input }),
 				})
 			: await fetch(
 					`${url}?input=${encodeURIComponent(JSON.stringify({ json: input }))}`,
+					{ headers: auth },
 				);
 	const body = (await res.json()) as {
 		result?: { data?: { json?: T } };

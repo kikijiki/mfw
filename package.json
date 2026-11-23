@@ -16,6 +16,7 @@
 		"fix": "bunx biome check --write .",
 		"screenshots": "bun run tools/screenshots.ts",
 		"test": "bun run tools/root-test.ts",
+		"smoke:auth": "bun run tools/auth-smoke.ts",
 		"dev": "bun run --cwd apps/start dev",
 		"build": "bun run --cwd apps/start build",
 		"deploy:mfw": "bun run packages/daemon/src/deploy-mfw.ts",

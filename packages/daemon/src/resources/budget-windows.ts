@@ -1,7 +1,17 @@
 import { createHash } from "node:crypto";
 import type { ProjectDbHandle } from "@mfw/db/client";
+import { REPORTED_SPEND_SOURCES } from "@mfw/db/provenance";
 import { spendLedger } from "@mfw/db/schema";
-import { and, eq, gte, like, lt } from "drizzle-orm";
+import {
+	and,
+	eq,
+	gte,
+	inArray,
+	like,
+	lt,
+	notInArray,
+	type SQL,
+} from "drizzle-orm";
 import type { Dimension } from "../../../plugin-api/src/resource.ts";
 import type { ResourceStore } from "./store.ts";
 
@@ -9,6 +19,19 @@ const DIMENSION = "spend";
 /** Token counts are stored in thousands, so a month of tokens stays exact. */
 const TOKENS_PER_UNIT = 1_000;
 const UNIT_SECONDS = { m: 60, h: 3_600, d: 86_400 } as const;
+/**
+ * The largest amount the ledger stores exactly. A larger host figure saturates
+ * here, so it exhausts the budget instead of failing the evaluation that
+ * would have enforced it.
+ */
+const MAX_AMOUNT = Math.floor(Number.MAX_SAFE_INTEGER / 1_000_000);
+
+function storable(amount: number): number {
+	return Math.max(0, Math.min(amount, MAX_AMOUNT));
+}
+
+/** `host` is what enforcement reads; `reported` is what agents claim. */
+export type SpendBasis = "host" | "reported";
 
 export interface BudgetWindowRef {
 	id: string;
@@ -78,8 +101,9 @@ export class BudgetWindows {
 		poolId: string,
 		budget: BudgetWindowRef,
 	): Promise<void> {
-		const limit =
-			budget.unit === "tokens" ? budget.limit / TOKENS_PER_UNIT : budget.limit;
+		const limit = storable(
+			budget.unit === "tokens" ? budget.limit / TOKENS_PER_UNIT : budget.limit,
+		);
 		const signature = `${limit}`;
 		if (this.defined.get(poolId) === signature) return;
 		await this.store.definePool({
@@ -100,6 +124,52 @@ export class BudgetWindows {
 		this.defined.set(poolId, signature);
 	}
 
+	private rowsOf(
+		budget: BudgetWindowRef,
+		bounds: { start: number; end: number },
+		basis: SpendBasis,
+	): SQL | undefined {
+		return and(
+			gte(spendLedger.ts, new Date(bounds.start)),
+			lt(spendLedger.ts, new Date(bounds.end)),
+			budget.kind === "brain"
+				? eq(spendLedger.kind, "brain")
+				: budget.key.endsWith("*")
+					? like(spendLedger.accountKey, `${budget.key.slice(0, -1)}%`)
+					: eq(spendLedger.accountKey, budget.key),
+			budget.unit === "slot_hours"
+				? eq(spendLedger.source, "host_slot_time")
+				: undefined,
+			basis === "host"
+				? notInArray(spendLedger.source, [...REPORTED_SPEND_SOURCES])
+				: inArray(spendLedger.source, [...REPORTED_SPEND_SOURCES]),
+		);
+	}
+
+	/**
+	 * What runs say about themselves, for display. It is sandbox-reported, so
+	 * it is read from the project ledgers and never enters the core's windows.
+	 */
+	private async reportedTotal(
+		budget: BudgetWindowRef,
+		bounds: { start: number; end: number },
+		handles: readonly ProjectDbHandle[],
+	): Promise<number> {
+		let total = 0;
+		for (const handle of handles) {
+			const rows = await handle.db
+				.select({
+					usd: spendLedger.usd,
+					tokensIn: spendLedger.tokensIn,
+					tokensOut: spendLedger.tokensOut,
+				})
+				.from(spendLedger)
+				.where(this.rowsOf(budget, bounds, "reported"));
+			for (const row of rows) total += amountOf(budget.unit, row);
+		}
+		return budget.unit === "tokens" ? total * TOKENS_PER_UNIT : total;
+	}
+
 	private async copyRows(
 		poolId: string,
 		budget: BudgetWindowRef,
@@ -117,23 +187,10 @@ export class BudgetWindows {
 				tokensOut: spendLedger.tokensOut,
 			})
 			.from(spendLedger)
-			.where(
-				and(
-					gte(spendLedger.ts, new Date(bounds.start)),
-					lt(spendLedger.ts, new Date(bounds.end)),
-					budget.kind === "brain"
-						? eq(spendLedger.kind, "brain")
-						: budget.key.endsWith("*")
-							? like(spendLedger.accountKey, `${budget.key.slice(0, -1)}%`)
-							: eq(spendLedger.accountKey, budget.key),
-					budget.unit === "slot_hours"
-						? eq(spendLedger.source, "host_slot_time")
-						: undefined,
-				),
-			);
+			.where(this.rowsOf(budget, bounds, "host"));
 		const charges = rows.map((row) => ({
 			entryKey: `spend:${poolId}:${row.id}`,
-			amount: amountOf(budget.unit, row),
+			amount: storable(amountOf(budget.unit, row)),
 			atMs: row.ts.getTime(),
 		}));
 		const memo = `${poolId}\0${ledgerIndex}\0${bounds.start}`;
@@ -156,7 +213,11 @@ export class BudgetWindows {
 		bounds: { start: number; end: number },
 		handles: readonly ProjectDbHandle[],
 		project: string,
+		basis: SpendBasis = "host",
 	): Promise<number> {
+		if (basis === "reported") {
+			return this.reportedTotal(budget, bounds, handles);
+		}
 		const poolId = this.poolIdOf(budget, project);
 		await this.ensurePool(poolId, budget);
 		for (const [index, handle] of handles.entries()) {

@@ -8,7 +8,8 @@
  * is killed, so a syscall number can never be read against the wrong table),
  * the x32 ABI is killed (its numbers carry bit 30 and would otherwise slip
  * past every `jeq`), the listed syscalls return `EPERM` (`clone3` returns `ENOSYS`, and `clone`/`unshare`
- * with `CLONE_NEWUSER` return `EPERM`), and everything else
+ * with `CLONE_NEWUSER` return `EPERM`, `socket` and `socketpair` outside the
+ * allowed address families return `EAFNOSUPPORT`), and everything else
  * is allowed. x86_64 only; generation is refused elsewhere.
  *
  * Everything here is pure except `writeSeccompFile`, so the encoding and
@@ -108,6 +109,41 @@ export const DENIED_ARG_MASKS: Readonly<Record<string, ArgMaskRule>> = {
 	unshare_newuser: { nr: 272, arg: 0, mask: CLONE_NEWUSER },
 };
 
+/**
+ * The only address families a sandbox may open. A network namespace does not
+ * isolate every family: `AF_VSOCK` reaches a hypervisor or host listener
+ * without touching the proxy. `AF_NETLINK` stays because libc and libuv list
+ * interfaces through it, and inside the netns it sees only loopback.
+ */
+export const ALLOWED_SOCKET_FAMILIES: Readonly<Record<string, number>> = {
+	AF_UNIX: 1,
+	AF_INET: 2,
+	AF_INET6: 10,
+	AF_NETLINK: 16,
+};
+
+/** Syscalls whose first argument is an address family. */
+export const FAMILY_FILTERED_SYSCALLS: Readonly<Record<string, number>> = {
+	socket: 41,
+	socketpair: 53,
+};
+
+/**
+ * Families the probe must see refused: the ones that reach past a netns or
+ * expose a large kernel surface.
+ */
+export const PROBED_DENIED_FAMILIES: readonly number[] = [
+	40, // AF_VSOCK
+	17, // AF_PACKET
+	38, // AF_ALG
+	15, // AF_KEY
+	21, // AF_RDS
+	29, // AF_CAN
+	30, // AF_TIPC
+	31, // AF_BLUETOOTH
+	44, // AF_XDP
+];
+
 // Classic BPF opcodes (linux/filter.h).
 const BPF_LD_W_ABS = 0x20; // BPF_LD | BPF_W | BPF_ABS
 const BPF_JMP_JEQ_K = 0x15; // BPF_JMP | BPF_JEQ | BPF_K
@@ -127,6 +163,8 @@ export const EPERM = 1;
 export const SECCOMP_RET_ERRNO_EPERM = 0x00050000 | EPERM;
 export const ENOSYS = 38;
 export const SECCOMP_RET_ERRNO_ENOSYS = 0x00050000 | ENOSYS;
+export const EAFNOSUPPORT = 97;
+export const SECCOMP_RET_ERRNO_EAFNOSUPPORT = 0x00050000 | EAFNOSUPPORT;
 
 export interface SockFilter {
 	code: number;
@@ -161,6 +199,8 @@ export interface DenyExtras {
 	enosys?: readonly number[];
 	/** Argument-mask rules answered with EPERM. */
 	argMasks?: readonly ArgMaskRule[];
+	/** Syscalls limited to {@link ALLOWED_SOCKET_FAMILIES}. */
+	familyFiltered?: readonly number[];
 }
 
 const OFFSET_ARGS = 16; // seccomp_data.args[0], low word (little endian)
@@ -168,8 +208,9 @@ const OFFSET_ARGS = 16; // seccomp_data.args[0], low word (little endian)
 /**
  * The instruction list for the denylist, before encoding. Layout: the arch
  * and x32 prologue, one `jeq` per plain rule, a 4-instruction block per
- * argument-mask rule (`jeq nr`, load arg, `jset mask`, reload nr), then the
- * ALLOW, EPERM and ENOSYS returns. With `denied` given and no `extras`, only
+ * argument-mask rule (`jeq nr`, load arg, `jset mask`, reload nr), a block per
+ * family-filtered syscall (`jeq nr`, load arg 0, one `jeq` per family, reload
+ * nr), then the ALLOW, EPERM, ENOSYS and EAFNOSUPPORT returns. With `denied` given and no `extras`, only
  * that list is denied (used by tests); with neither, the full policy.
  */
 export function buildDenyProgram(
@@ -185,6 +226,14 @@ export function buildDenyProgram(
 		.sort((a, b) => a - b);
 	const masks =
 		extras?.argMasks ?? (full ? Object.values(DENIED_ARG_MASKS) : []);
+	const filtered = [
+		...new Set(
+			extras?.familyFiltered ??
+				(full ? Object.values(FAMILY_FILTERED_SYSCALLS) : []),
+		),
+	].sort((a, b) => a - b);
+	const families = Object.values(ALLOWED_SOCKET_FAMILIES);
+	const familyBlock = 3 + families.length;
 	const prog: SockFilter[] = [
 		insn(BPF_LD_W_ABS, 0, 0, OFFSET_ARCH),
 		insn(BPF_JMP_JEQ_K, 1, 0, AUDIT_ARCH_X86_64), // match: skip the kill
@@ -194,9 +243,15 @@ export function buildDenyProgram(
 		insn(BPF_RET_K, 0, 0, SECCOMP_RET_KILL_PROCESS),
 	];
 	const start = prog.length;
-	const allowAt = start + nrs.length + enosys.length + masks.length * 4;
+	const allowAt =
+		start +
+		nrs.length +
+		enosys.length +
+		masks.length * 4 +
+		filtered.length * familyBlock;
 	const epermAt = allowAt + 1;
 	const enosysAt = allowAt + 2;
+	const eafnosupportAt = allowAt + 3;
 	const jump = (from: number, to: number): number => {
 		const off = to - (from + 1);
 		if (off > 255) throw new Error("seccomp program too large for u8 jumps");
@@ -212,9 +267,22 @@ export function buildDenyProgram(
 		prog.push(insn(BPF_JMP_JSET_K, jump(prog.length, epermAt), 0, m.mask));
 		prog.push(insn(BPF_LD_W_ABS, 0, 0, OFFSET_NR));
 	}
+	for (const nr of filtered) {
+		const reloadAt = prog.length + familyBlock - 1;
+		prog.push(insn(BPF_JMP_JEQ_K, 0, familyBlock - 1, nr)); // other: skip
+		prog.push(insn(BPF_LD_W_ABS, 0, 0, OFFSET_ARGS));
+		families.forEach((family, i) => {
+			const at = prog.length;
+			// The last family's miss is the refusal.
+			const miss = i === families.length - 1 ? jump(at, eafnosupportAt) : 0;
+			prog.push(insn(BPF_JMP_JEQ_K, jump(at, reloadAt), miss, family));
+		});
+		prog.push(insn(BPF_LD_W_ABS, 0, 0, OFFSET_NR));
+	}
 	prog.push(insn(BPF_RET_K, 0, 0, SECCOMP_RET_ALLOW));
 	prog.push(insn(BPF_RET_K, 0, 0, SECCOMP_RET_ERRNO_EPERM));
 	prog.push(insn(BPF_RET_K, 0, 0, SECCOMP_RET_ERRNO_ENOSYS));
+	prog.push(insn(BPF_RET_K, 0, 0, SECCOMP_RET_ERRNO_EAFNOSUPPORT));
 	return prog;
 }
 

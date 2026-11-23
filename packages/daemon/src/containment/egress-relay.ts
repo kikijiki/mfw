@@ -5,11 +5,17 @@
  * dumb byte pipe. It has no policy: the proxy is the only gate, and the netns
  * is what makes every client that skips the relay fail closed.
  *
- * It uses only `node:net`, so it runs under Bun inside the sandbox with no
+ * It uses only node builtins, so it runs under Bun inside the sandbox with no
  * socat. It can run as a library (`startEgressRelay`) or as a script:
- * `bun egress-relay.ts --socket <path> [--port 3128] [--host 127.0.0.1]`.
+ * `bun egress-relay.ts --socket <path> [--port 3128] [--host 127.0.0.1] [-- <command...>]`.
+ *
+ * With a command, the relay starts it once listening, passes signals on and
+ * exits with its status. If the relay cannot listen the command never starts.
+ * The launcher copies this file into the run's read-only control directory, so
+ * it must stay self-contained.
  */
 
+import { spawn } from "node:child_process";
 import net from "node:net";
 
 export const RELAY_HOST = "127.0.0.1";
@@ -33,6 +39,11 @@ export interface EgressRelay {
 	/** Stop listening and destroy every pipe. */
 	close(): Promise<void>;
 }
+
+const REAP_EVERY_MS = 250;
+
+/** Checks with the proxy gone and no queued byte moving, before giving up. */
+const REAP_STALLED_TICKS = 2;
 
 /** Start the relay. Resolves once it is listening. */
 export async function startEgressRelay(
@@ -69,7 +80,40 @@ export async function startEgressRelay(
 		// client sends before the upstream is up is lost.
 		client.pipe(upstream);
 		upstream.pipe(client);
+		peers.push({ client, upstream, drop, written: 0, stalled: 0 });
 	});
+
+	// A proxy that ends a tunnel shows up here only as `end`. With bytes still
+	// queued for it nothing else ever fires (Bun emits no `close` on a socket
+	// blocked in a write), so the agent's upload would hang.
+	const peers: {
+		client: net.Socket;
+		upstream: net.Socket;
+		drop(): void;
+		written: number;
+		stalled: number;
+	}[] = [];
+	const reaper = setInterval(() => {
+		for (let i = peers.length - 1; i >= 0; i--) {
+			const p = peers[i] as (typeof peers)[number];
+			if (!pairs.has(p.client)) {
+				peers.splice(i, 1);
+				continue;
+			}
+			const u = p.upstream;
+			const stuck =
+				u.readyState === "writeOnly" &&
+				u.writableLength > 0 &&
+				u.bytesWritten === p.written;
+			p.written = u.bytesWritten;
+			p.stalled = stuck ? p.stalled + 1 : 0;
+			if (p.stalled >= REAP_STALLED_TICKS) {
+				p.drop();
+				peers.splice(i, 1);
+			}
+		}
+	}, REAP_EVERY_MS);
+	reaper.unref();
 
 	await new Promise<void>((resolve, reject) => {
 		const onError = (err: Error): void => reject(err);
@@ -89,6 +133,7 @@ export async function startEgressRelay(
 			return pairs.size / 2;
 		},
 		async close() {
+			clearInterval(reaper);
 			for (const s of pairs) s.destroy();
 			pairs.clear();
 			await new Promise<void>((r) => server.close(() => r()));
@@ -127,17 +172,64 @@ export function parseRelayArgs(argv: readonly string[]): EgressRelayOptions {
 	};
 }
 
+/** Split the relay's own arguments from the command after `--`. */
+export function splitRelayCommand(argv: readonly string[]): {
+	relay: string[];
+	command: string[];
+} {
+	const at = argv.indexOf("--");
+	return at < 0
+		? { relay: [...argv], command: [] }
+		: { relay: argv.slice(0, at), command: argv.slice(at + 1) };
+}
+
+/** Exit status of a command the relay could not run, as a shell reports it. */
+const COMMAND_NOT_RUN = 127;
+/** The sandbox's refusal status: the relay never came up. */
+const RELAY_REFUSED = 78;
+
+function runCommand(command: readonly string[]): void {
+	const child = spawn(command[0] as string, command.slice(1), {
+		stdio: "inherit",
+	});
+	for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
+		process.on(signal, () => child.kill(signal));
+	}
+	child.on("error", (err) => {
+		console.error(`egress-relay: ${err.message}`);
+		process.exit(COMMAND_NOT_RUN);
+	});
+	child.on("exit", (code, signal) => {
+		process.exit(code ?? (signal ? 128 + signalNumber(signal) : 1));
+	});
+}
+
+function signalNumber(signal: NodeJS.Signals): number {
+	return (
+		{ SIGHUP: 1, SIGINT: 2, SIGKILL: 9, SIGTERM: 15 }[signal as string] ?? 0
+	);
+}
+
 if (import.meta.main) {
+	const { relay: relayArgs, command } = splitRelayCommand(
+		process.argv.slice(2),
+	);
 	try {
-		const relay = await startEgressRelay(parseRelayArgs(process.argv.slice(2)));
-		console.log(`egress-relay listening on ${relay.host}:${relay.port}`);
+		const relay = await startEgressRelay(parseRelayArgs(relayArgs));
+		if (command.length > 0) {
+			runCommand(command);
+		} else {
+			console.log(`egress-relay listening on ${relay.host}:${relay.port}`);
+		}
 		const stop = (): void => {
 			void relay.close().then(() => process.exit(0));
 		};
-		process.on("SIGTERM", stop);
-		process.on("SIGINT", stop);
+		if (command.length === 0) {
+			process.on("SIGTERM", stop);
+			process.on("SIGINT", stop);
+		}
 	} catch (err) {
 		console.error(`egress-relay: ${(err as Error).message}`);
-		process.exit(1);
+		process.exit(command.length > 0 ? RELAY_REFUSED : 1);
 	}
 }

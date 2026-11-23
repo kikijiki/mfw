@@ -19,7 +19,7 @@ import {
 	X32_SYSCALL_BIT,
 } from "../src/containment/seccomp.ts";
 
-type Verdict = "allow" | "eperm" | "enosys" | "kill";
+type Verdict = "allow" | "eperm" | "enosys" | "eafnosupport" | "kill";
 
 /** A tiny classic-BPF interpreter over the subset the generator emits. */
 function run(prog: SockFilter[], arch: number, nr: number, arg0 = 0): Verdict {
@@ -45,6 +45,7 @@ function run(prog: SockFilter[], arch: number, nr: number, arg0 = 0): Verdict {
 				if (i.k === SECCOMP_RET_ALLOW) return "allow";
 				if (i.k === SECCOMP_RET_ERRNO_EPERM) return "eperm";
 				if (i.k === SECCOMP_RET_ERRNO_ENOSYS) return "enosys";
+				if (i.k === 0x00050000 + 97) return "eafnosupport";
 				if (i.k === SECCOMP_RET_KILL_PROCESS) return "kill";
 				throw new Error(`unexpected return ${i.k.toString(16)}`);
 			default:
@@ -68,10 +69,34 @@ describe("seccomp program", () => {
 	});
 
 	test("denies exactly the listed syscalls and allows every other number", () => {
-		for (let nr = 0; nr < 1024; nr++)
-			expect(run(prog, AUDIT_ARCH_X86_64, nr)).toBe(
+		for (let nr = 0; nr < 1024; nr++) {
+			// `socket` and `socketpair` are judged by family: AF_UNIX passes.
+			const arg0 = nr === 41 || nr === 53 ? 1 : 0;
+			expect(run(prog, AUDIT_ARCH_X86_64, nr, arg0)).toBe(
 				denied.has(nr) ? "eperm" : enosys.has(nr) ? "enosys" : "allow",
 			);
+		}
+	});
+
+	test.each([
+		["socket", 41],
+		["socketpair", 53],
+	])("%s is allowed only for the listed address families", (_name, nr) => {
+		for (const family of [1, 2, 10, 16]) {
+			expect(run(prog, AUDIT_ARCH_X86_64, nr, family)).toBe("allow");
+		}
+		for (let family = 0; family < 64; family++) {
+			if ([1, 2, 10, 16].includes(family)) continue;
+			expect([family, run(prog, AUDIT_ARCH_X86_64, nr, family)]).toEqual([
+				family,
+				"eafnosupport",
+			]);
+		}
+		expect(run(prog, AUDIT_ARCH_X86_64, nr, 40)).toBe("eafnosupport"); // AF_VSOCK
+	});
+
+	test("the family filter leaves other syscalls' first argument alone", () => {
+		expect(run(prog, AUDIT_ARCH_X86_64, 42, 40)).toBe("allow"); // connect(fd 40)
 	});
 
 	test("X12: process inspection, mount, handle and module calls are EPERM", () => {
@@ -147,7 +172,8 @@ describe("seccomp program", () => {
 	});
 
 	test("each rule's match target is exactly the EPERM return (no off-by-one)", () => {
-		const eperm = prog.length - 2;
+		const eperm = prog.length - 3;
+		expect(prog[eperm + 2]?.k).toBe(0x00050000 + 97); // EAFNOSUPPORT
 		expect(prog[eperm + 1]?.k).toBe(SECCOMP_RET_ERRNO_ENOSYS);
 		expect(prog[eperm]?.k).toBe(SECCOMP_RET_ERRNO_EPERM);
 		expect(prog[eperm - 1]?.k).toBe(SECCOMP_RET_ALLOW);

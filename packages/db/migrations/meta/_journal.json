@@ -138,8 +138,43 @@
     {
       "idx": 19,
       "version": "6",
-      "when": 1795409024757,
-      "tag": "0022_drop_resource_slots",
+      "when": 1795407474529,
+      "tag": "0020_sandbox_attestations",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1795407475529,
+      "tag": "0021_run_provenance",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1795418932366,
+      "tag": "0022_run_workspace_kind",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1795423369795,
+      "tag": "0023_run_egress",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1795427821844,
+      "tag": "0024_run_result_import",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1795431421844,
+      "tag": "0025_drop_resource_slots",
       "breakpoints": true
     }
   ]

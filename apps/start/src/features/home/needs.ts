@@ -56,7 +56,12 @@ export function needTarget(item: InboxItem): string {
 		case "main_red":
 			return taskId ? href.task(project, taskId) : href.board(project);
 		case "brain_stuck":
+		case "brain_breaker":
 			return href.flow(project, { node: nodeRef.brain() });
+		case "brain_decision":
+			return taskId
+				? href.task(project, taskId)
+				: href.flow(project, { node: nodeRef.brain() });
 		case "brain_notice":
 			// What it blocks, when it names a task; else the brain's own decisions.
 			return taskId
@@ -65,6 +70,8 @@ export function needTarget(item: InboxItem): string {
 		case "sweep_infra":
 		case "followups":
 			return href.board(project);
+		case "egress_budget":
+			return runId ? href.run(project, runId) : href.projectSettings(project);
 		case "budget":
 		case "auth_hold":
 			return href.projectSettings(project);
@@ -95,6 +102,18 @@ export function groupByAttention<T extends Pick<InboxItem, "attention">>(
 		attention,
 		items: items.filter((i) => i.attention === attention),
 	})).filter((g) => g.items.length > 0);
+}
+
+/** `act` rows split into what is shown and what the budget holds, in release order. */
+export function splitHeldBack<
+	T extends Pick<InboxItem, "heldBack" | "heldRank">,
+>(items: readonly T[]): { shown: T[]; held: T[] } {
+	return {
+		shown: items.filter((i) => !i.heldBack),
+		held: items
+			.filter((i) => i.heldBack)
+			.sort((a, b) => (a.heldRank ?? 0) - (b.heldRank ?? 0)),
+	};
 }
 
 /** Where a headline number leads (every number links to its list). */

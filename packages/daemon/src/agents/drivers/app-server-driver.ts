@@ -1,7 +1,11 @@
 /** Shared mfw.app-server/v1 run driver. Provider bridges own vendor protocols. */
 import { appendFileSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { FileSink } from "bun";
+import {
+	agentSpawnCwd,
+	refuseBridgedRunWithoutRequest,
+} from "../../containment/agent-launch-argv.ts";
+import { driverRunPaths, isHostBridged } from "../../containment/run-dir.ts";
 import {
 	type ApprovalDecision,
 	type AppServerEnvelope,
@@ -9,6 +13,7 @@ import {
 	type AppServerResponse,
 	parseAppServerEnvelope,
 } from "../app-server-protocol.ts";
+import { limitAgentEvent, stripTerminalControls } from "../event-limits.ts";
 import { AgentEventSchema } from "../events.ts";
 
 const runDir = process.argv[2];
@@ -17,7 +22,9 @@ if (!runDir) {
 	process.exit(2);
 }
 
-const cfg = JSON.parse(readFileSync(join(runDir, "driver.json"), "utf8")) as {
+refuseBridgedRunWithoutRequest(isHostBridged(runDir));
+const paths = driverRunPaths(runDir);
+const cfg = JSON.parse(readFileSync(paths.config, "utf8")) as {
 	bridgeArgv: string[];
 	providerArgv: string[];
 	cwd: string;
@@ -30,8 +37,8 @@ const cfg = JSON.parse(readFileSync(join(runDir, "driver.json"), "utf8")) as {
 	/** The pause between a finished turn and the next queued one (default 1500). */
 	steerGraceMs?: number;
 };
-const eventsPath = join(runDir, "events.jsonl");
-const controlsPath = join(runDir, "control.jsonl");
+const eventsPath = paths.events;
+const controlsPath = paths.controls;
 let seq = 0;
 let terminal = false;
 let fatal = false;
@@ -39,7 +46,7 @@ let lastResultText: string | undefined;
 
 function emit(payload: Record<string, unknown>): void {
 	const candidate = { ts: new Date().toISOString(), seq: seq++, ...payload };
-	const parsed = AgentEventSchema.safeParse(candidate);
+	const parsed = AgentEventSchema.safeParse(limitAgentEvent(candidate));
 	if (!parsed.success) {
 		process.stderr.write(
 			`app-server driver: invalid event ${String(payload.type ?? "unknown")}\n`,
@@ -49,8 +56,9 @@ function emit(payload: Record<string, unknown>): void {
 	appendFileSync(eventsPath, `${JSON.stringify(parsed.data)}\n`);
 }
 
+// A bridged run's `cwd` is the sandbox path; the bridge itself stays on the host.
 const child = Bun.spawn([...cfg.bridgeArgv, ...cfg.providerArgv], {
-	cwd: cfg.cwd,
+	cwd: agentSpawnCwd(cfg.cwd),
 	env: { ...process.env, ...(cfg.env ?? {}) },
 	stdin: "pipe",
 	stdout: "pipe",
@@ -174,7 +182,7 @@ void readLines(
 );
 void readLines(
 	child.stderr,
-	(line) => process.stderr.write(`${line}\n`),
+	(line) => process.stderr.write(`${stripTerminalControls(line)}\n`),
 	false,
 );
 

@@ -1,5 +1,9 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import {
+	agentSpawnArgv,
+	agentSpawnCwd,
+} from "../../containment/agent-launch-argv.ts";
+import {
 	type AppServerRequest,
 	capText,
 	isRecord,
@@ -177,9 +181,12 @@ function startTurn(text: string, effort: string | undefined) {
 		argv.push("-c", `model_reasoning_effort=${JSON.stringify(effort)}`);
 	// `-` reads the prompt from stdin, so it never appears in argv.
 	argv.push("-");
-	const command = argv[0] ?? "codex";
-	proc = spawn(command, argv.slice(1), {
-		cwd,
+	const [command, ...args] = agentSpawnArgv([
+		argv[0] ?? "codex",
+		...argv.slice(1),
+	]);
+	proc = spawn(command as string, args, {
+		cwd: agentSpawnCwd(cwd),
 		stdio: ["pipe", "pipe", "pipe"],
 	});
 	proc.stdin.end(text);

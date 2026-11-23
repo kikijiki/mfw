@@ -38,6 +38,7 @@ import {
 	groupByAttention,
 	needTarget,
 	oldestFirst,
+	splitHeldBack,
 } from "./needs";
 import { useNeedActions } from "./useNeedActions";
 
@@ -65,6 +66,9 @@ const KIND_ICON: Record<InboxKind, LucideIcon> = {
 	auth_hold: ShieldAlert,
 	brain_stuck: BrainCircuit,
 	brain_notice: BrainCircuit,
+	brain_decision: ShieldAlert,
+	brain_breaker: ShieldAlert,
+	egress_budget: ShieldAlert,
 };
 
 const SEVERITY_RANK: Record<InboxSeverity, number> = {
@@ -101,6 +105,8 @@ export type InlineKind =
 	| "merge"
 	| "review"
 	| "brain"
+	| "decision"
+	| "breaker"
 	| "open";
 
 export function inlineKind(kind: InboxKind): InlineKind {
@@ -109,6 +115,8 @@ export function inlineKind(kind: InboxKind): InlineKind {
 	if (kind === "merge_parked") return "merge";
 	if (kind === "review") return "review";
 	if (kind === "brain_notice") return "brain";
+	if (kind === "brain_decision") return "decision";
+	if (kind === "brain_breaker") return "breaker";
 	return "open";
 }
 
@@ -184,7 +192,28 @@ export function NeedsQueue({
 				const list = (
 					<ul className="flex flex-col gap-2">{g.items.map(row)}</ul>
 				);
-				if (g.attention === "act") return <div key="act">{list}</div>;
+				if (g.attention === "act") {
+					const { shown, held } = splitHeldBack(g.items);
+					return (
+						<div key="act" className="flex flex-col gap-2">
+							<ul className="flex flex-col gap-2">{shown.map(row)}</ul>
+							{held.length > 0 ? (
+								<details data-held-back className="flex flex-col gap-2">
+									<summary
+										className="mfw-focus cursor-pointer"
+										style={{
+											color: "var(--mfw-fg-faint)",
+											fontSize: "var(--mfw-text-xs)",
+										}}
+									>
+										{held.length} held back
+									</summary>
+									<ul className="flex flex-col gap-2">{held.map(row)}</ul>
+								</details>
+							) : null}
+						</div>
+					);
+				}
 				return (
 					<details
 						key={g.attention}
@@ -279,14 +308,17 @@ function NeedRow({
 				>
 					<RelativeTime value={item.ts} />
 				</span>
-				<Button
-					size="icon-sm"
-					variant="ghost"
-					aria-label={`Dismiss: ${item.title}`}
-					onClick={() => actions.dismiss(item)}
-				>
-					<X aria-hidden />
-				</Button>
+				{/* A held decision or an open breaker clears only by being answered. */}
+				{inline === "decision" || inline === "breaker" ? null : (
+					<Button
+						size="icon-sm"
+						variant="ghost"
+						aria-label={`Dismiss: ${item.title}`}
+						onClick={() => actions.dismiss(item)}
+					>
+						<X aria-hidden />
+					</Button>
+				)}
 			</div>
 
 			{item.detail ? (
@@ -409,6 +441,40 @@ function NeedRow({
 						<AppLink to={target} onClick={onNavigate}>
 							Open in the brain
 						</AppLink>
+					</Button>
+				</div>
+			) : null}
+
+			{inline === "decision" && item.requestId ? (
+				<div className="flex flex-wrap items-center gap-2">
+					<Button
+						size="sm"
+						variant="outline"
+						disabled={actions.resolving}
+						onClick={() => actions.resolveDecision(item, true)}
+					>
+						Approve
+					</Button>
+					<Button
+						size="sm"
+						variant="ghost"
+						disabled={actions.resolving}
+						onClick={() => actions.resolveDecision(item, false)}
+					>
+						Decline
+					</Button>
+				</div>
+			) : null}
+
+			{inline === "breaker" ? (
+				<div className="flex flex-wrap items-center gap-2">
+					<Button
+						size="sm"
+						variant="outline"
+						disabled={actions.resolving}
+						onClick={() => actions.resetBreaker(item)}
+					>
+						Reset the breaker
 					</Button>
 				</div>
 			) : null}

@@ -106,7 +106,7 @@ describe("budget usage in core windows", () => {
 				{
 					kind: "agent",
 					accountKey: "runpod:main",
-					source: "run_usage",
+					source: "runpod_billing",
 					runId: "run-a",
 					usd,
 					ts: new Date(DAY + 1_000),
@@ -141,6 +141,36 @@ describe("budget usage in core windows", () => {
 				"alpha",
 			),
 		).toBe(tokens + 99);
+	});
+
+	test("an absurd host figure exhausts the budget instead of failing it", async () => {
+		await recordSpend(alpha.db, {
+			kind: "resource",
+			accountKey: "runpod:main",
+			source: "runpod_billing",
+			usd: 1e18,
+			ts: new Date(DAY + 1_000),
+		});
+		expect(
+			await windows.measure(budget(), bounds, [alpha], "alpha"),
+		).toBeGreaterThan(100);
+	});
+
+	test("reported spend is shown but never enters the core's ledger", async () => {
+		await recordSpend(alpha.db, {
+			kind: "agent",
+			accountKey: "runpod:main",
+			source: "run_usage",
+			runId: "forged",
+			usd: 1e18,
+			tokensIn: 1e15,
+			ts: new Date(DAY + 1_000),
+		});
+		expect(await windows.measure(budget(), bounds, [alpha], "alpha")).toBe(0);
+		expect(
+			await windows.measure(budget(), bounds, [alpha], "alpha", "reported"),
+		).toBe(1e18);
+		expect(await store.ledger()).toEqual([]);
 	});
 
 	test("the same budget in two projects counts separately", async () => {

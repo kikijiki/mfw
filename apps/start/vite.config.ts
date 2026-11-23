@@ -27,8 +27,10 @@ export default defineConfig({
 		 */
 		nitro({
 			baseURL: base,
-			// Runs at server startup (dev and production); boots the orchestrator eagerly.
-			plugins: ["./src/server/boot.ts"],
+			// Run at server startup (dev and production): open the auth store and
+			// print a first-run setup token, then boot the orchestrator eagerly.
+			plugins: ["./src/server/auth-boot.ts", "./src/server/boot.ts"],
+			errorHandler: "./src/server/error-handler.ts",
 		}),
 		tanstackStart(),
 		viteReact(),

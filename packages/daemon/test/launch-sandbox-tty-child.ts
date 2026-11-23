@@ -40,7 +40,11 @@ if (mode === "control") {
 	result.code = await child.exited;
 } else if (mode === "refuse") {
 	try {
-		const child = launchSandbox(compiled, { scope: "none", stdin: 0 });
+		const child = launchSandbox(compiled, {
+			approvalMode: "interactive",
+			scope: "none",
+			stdin: 0,
+		});
 		result.code = await child.exited;
 		result.refused = null;
 	} catch (err) {
@@ -50,7 +54,10 @@ if (mode === "control") {
 } else {
 	// Deliberately not close-on-exec: this is the descriptor that must not cross.
 	result.extraFd = openSync(keyPath, "r+");
-	const child = launchSandbox(compiled, { scope: "none" });
+	const child = launchSandbox(compiled, {
+		approvalMode: "interactive",
+		scope: "none",
+	});
 	result.code = await child.exited;
 }
 

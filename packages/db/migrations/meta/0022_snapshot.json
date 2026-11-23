@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "a7b10a74-baaa-40f7-9ba9-57f2c6798c40",
-  "prevId": "c16e64de-54b8-4875-9286-06dae3b52719",
+  "id": "540949ab-92dc-4e08-9539-82a3a84f85bd",
+  "prevId": "27860aea-d865-4b7a-8342-4584609c2fbc",
   "tables": {
     "brain_actions": {
       "name": "brain_actions",
@@ -1219,6 +1219,87 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "resource_slots": {
+      "name": "resource_slots",
+      "columns": {
+        "resource_id": {
+          "name": "resource_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "slot": {
+          "name": "slot",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "locked_at": {
+          "name": "locked_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "ix_slots_run": {
+          "name": "ix_slots_run",
+          "columns": [
+            "run_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "resource_slots_resource_id_resources_id_fk": {
+          "name": "resource_slots_resource_id_resources_id_fk",
+          "tableFrom": "resource_slots",
+          "tableTo": "resources",
+          "columnsFrom": [
+            "resource_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "resource_slots_run_id_runs_id_fk": {
+          "name": "resource_slots_run_id_runs_id_fk",
+          "tableFrom": "resource_slots",
+          "tableTo": "runs",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "resource_slots_resource_id_slot_pk": {
+          "columns": [
+            "resource_id",
+            "slot"
+          ],
+          "name": "resource_slots_resource_id_slot_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "resources": {
       "name": "resources",
       "columns": {
@@ -1496,6 +1577,83 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
+    },
+    "run_facts": {
+      "name": "run_facts",
+      "columns": {
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "fact": {
+          "name": "fact",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "provenance": {
+          "name": "provenance",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "value": {
+          "name": "value",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "first_observed_at": {
+          "name": "first_observed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "observed_at": {
+          "name": "observed_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "run_facts_run_id_fact_provenance_pk": {
+          "columns": [
+            "run_id",
+            "fact",
+            "provenance"
+          ],
+          "name": "run_facts_run_id_fact_provenance_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "ck_run_facts_provenance": {
+          "name": "ck_run_facts_provenance",
+          "value": "provenance IN ('host-observed', 'sandbox-reported')"
+        },
+        "ck_run_facts_pair": {
+          "name": "ck_run_facts_pair",
+          "value": "(fact IN ('exit', 'outcome') AND provenance IN ('host-observed', 'sandbox-reported')) OR (fact IN ('scope') AND provenance IN ('host-observed')) OR (fact IN ('agent_exit_claim', 'report', 'usage', 'usage_live', 'activity', 'capabilities', 'native_session', 'subagents', 'transcript_summary') AND provenance IN ('sandbox-reported'))"
+        }
+      }
     },
     "run_groups": {
       "name": "run_groups",
@@ -2439,6 +2597,20 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
+        },
+        "run_dir_layout": {
+          "name": "run_dir_layout",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "workspace_kind": {
+          "name": "workspace_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
         }
       },
       "indexes": {
@@ -2483,6 +2655,140 @@
           "name": "ix_runs_group",
           "columns": [
             "group_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "sandbox_attestation_uses": {
+      "name": "sandbox_attestation_uses",
+      "columns": {
+        "attestation_id": {
+          "name": "attestation_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "used_at": {
+          "name": "used_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "sandbox_attestations": {
+      "name": "sandbox_attestations",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "profile_hash": {
+          "name": "profile_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "options_hash": {
+          "name": "options_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "seccomp_hash": {
+          "name": "seccomp_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "bwrap_version": {
+          "name": "bwrap_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "scope": {
+          "name": "scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "items": {
+          "name": "items",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "pins": {
+          "name": "pins",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "ix_sandbox_attestations_run": {
+          "name": "ix_sandbox_attestations_run",
+          "columns": [
+            "run_id",
+            "created_at"
           ],
           "isUnique": false
         }

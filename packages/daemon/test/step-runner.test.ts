@@ -7,6 +7,7 @@ import {
 	mkdtemp,
 	readFile,
 	rm,
+	symlink,
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -19,6 +20,7 @@ import { engineKv, runSteps, runs } from "@mfw/db/schema";
 import { and, eq } from "drizzle-orm";
 import { AgentHost } from "../src/agent-host.ts";
 import { ClarifyService } from "../src/clarify.ts";
+import { ensureRunDirLayout } from "../src/containment/run-dir.ts";
 import type { RunKind } from "../src/finalize/machine.ts";
 import {
 	type BrainPort,
@@ -28,6 +30,7 @@ import {
 import { git } from "../src/git.ts";
 import type { LeftoverProcess } from "../src/leftover-processes.ts";
 import { silentLogger } from "../src/log.ts";
+import { runProvenanceView } from "../src/run-provenance-view.ts";
 import { RunRegistry, type RunRow } from "../src/run-registry.ts";
 import { TaskService } from "../src/task-service.ts";
 import { WorktreeManager } from "../src/worktree.ts";
@@ -587,13 +590,14 @@ describe("StepRunner v2: finalization end to end", () => {
 		await env.cleanup();
 	});
 
-	test("a rate-limited run holds only its own route's provider account, machine-wide", async () => {
+	test("a rate-limited run reports only its own route's provider account", async () => {
 		const env = await makeEnv();
 		const holds: { key: string; until: number; project?: string }[] = [];
 		const runner = env.makeRunner({
 			providerHolds: {
-				hold: async (key, hold) => {
+				report: async (key, hold) => {
 					holds.push({ key, until: hold.until, project: hold.project });
+					return { scope: "project", key, until: hold.until };
 				},
 			},
 			projectName: "demo",
@@ -636,11 +640,24 @@ describe("StepRunner v2: finalization end to end", () => {
 
 	test("an auth failure holds the run's provider for the owner, with no retry and no attempt consumed", async () => {
 		const env = await makeEnv();
-		const holds: { key: string; until: number; reason: string }[] = [];
+		const holds: {
+			key: string;
+			until: number;
+			reason: string;
+			confirmedUntil?: number;
+		}[] = [];
 		const runner = env.makeRunner({
 			providerHolds: {
-				hold: async (key, hold) => {
-					holds.push({ key, until: hold.until, reason: hold.reason });
+				report: async (key, hold) => {
+					holds.push({
+						key,
+						until: hold.until,
+						reason: hold.reason,
+						...(hold.confirmedUntil !== undefined
+							? { confirmedUntil: hold.confirmedUntil }
+							: {}),
+					});
+					return { scope: "project", key, until: hold.until };
 				},
 			},
 			projectName: "demo",
@@ -666,8 +683,9 @@ describe("StepRunner v2: finalization end to end", () => {
 		await runner.finalize(run.id);
 		expect(holds).toHaveLength(1);
 		expect(holds[0]).toMatchObject({ key: "codex-cli", reason: "auth" });
-		// Held for a day, not for a reset time or the 15-minute fallback.
-		expect(holds[0]?.until).toBeGreaterThan(before + 23 * 3_600_000);
+		// The agent's word alone holds briefly; a day needs a second project.
+		expect(holds[0]?.until).toBeLessThanOrEqual(Date.now() + 3_600_000);
+		expect(holds[0]?.confirmedUntil).toBeGreaterThan(before + 23 * 3_600_000);
 		const task = await env.tasks.get(taskId);
 		expect(task?.status).toBe("ready");
 		expect(task?.attemptCount).toBe(0);
@@ -680,8 +698,9 @@ describe("StepRunner v2: finalization end to end", () => {
 		const holds: string[] = [];
 		const runner = env.makeRunner({
 			providerHolds: {
-				hold: async (key) => {
+				report: async (key, hold) => {
 					holds.push(key);
+					return { scope: "project", key, until: hold.until };
 				},
 			},
 			projectName: "demo",
@@ -2476,6 +2495,152 @@ describe("StepRunner: review verdicts", () => {
 			["parses the input", true],
 			["handles errors", false],
 		]);
+		await env.cleanup();
+	});
+});
+
+describe("provenance: a forged outbox never renders as host-observed", () => {
+	/** A run the host launched split, ended with `hostExit`, and an agent's forgeries. */
+	async function forgedRun(env: Env, name: string, hostExit: string) {
+		const wt = await addWorktree(env.root, name);
+		await commitIn(wt.path, `${name}.txt`, "work\n");
+		const runId = ulid();
+		const taskId = await claimedTask(env, runId, { title: name });
+		const run = await seedRun(env, { kind: "task", runId, taskId, wt });
+		const dir = env.registry.runDir(run.id);
+		const { control, outbox } = ensureRunDirLayout(dir);
+		await env.registry.markRunDirSplit(run.id);
+		await writeFile(join(control, "driver.json"), "{}");
+		await writeFile(join(control, "exit"), hostExit);
+		await writeFile(join(outbox, "exit"), "exit:0");
+		const fake = JSON.stringify({ status: "success", summary: "all done" });
+		await writeFile(join(outbox, "MFW_REPORT.json"), fake);
+		await writeFile(join(wt.path, "MFW_REPORT.json"), fake);
+		return { run, taskId, control, outbox };
+	}
+
+	test("the host's non-zero exit wins the verdict and both facts are kept", async () => {
+		const env = await makeEnv({ mergeChecks: null });
+		const { run, taskId } = await forgedRun(env, "forged", "exit:3");
+
+		await env.runner.finalize(run.id);
+
+		const row = await env.registry.get(run.id);
+		expect(row?.exitCode).toBe(3);
+		expect(row?.state).toBe("failed");
+		expect(env.merges).toEqual([]);
+		expect((await env.tasks.get(taskId))?.status).not.toBe("done");
+
+		const view = await runProvenanceView(env.handle.db, run.id);
+		expect(view.exit).toEqual({
+			observed: { kind: "exit", code: 3 },
+			agentSays: { kind: "exit", code: 0 },
+			disagree: true,
+		});
+		expect(view.reportStatus).toBe("success");
+		expect(view.facts).toContainEqual({
+			fact: "report",
+			provenance: "sandbox-reported",
+		});
+		await env.cleanup();
+	});
+
+	test("positive control: the same run with a clean host exit is not failed", async () => {
+		const env = await makeEnv({ mergeChecks: null });
+		const { run } = await forgedRun(env, "honest", "exit:0");
+		await env.runner.finalize(run.id);
+		const row = await env.registry.get(run.id);
+		expect(row?.exitCode).toBe(0);
+		expect(row?.state).not.toBe("failed");
+		const view = await runProvenanceView(env.handle.db, run.id);
+		expect(view.exit.observed).toEqual({ kind: "exit", code: 0 });
+		expect(view.exit.disagree).toBe(false);
+		await env.cleanup();
+	});
+
+	test("a control/exit planted in a flat run dir earns no host-observed tag", async () => {
+		const env = await makeEnv({ mergeChecks: null });
+		const wt = await addWorktree(env.root, "planted");
+		const runId = ulid();
+		const taskId = await claimedTask(env, runId, { title: "planted" });
+		const run = await seedRun(env, { kind: "task", runId, taskId, wt });
+		// No markRunDirSplit: this is what an agent in an older run could build.
+		const { control } = ensureRunDirLayout(env.registry.runDir(run.id));
+		await writeFile(join(control, "driver.json"), "{}");
+		await writeFile(join(control, "exit"), "exit:0");
+
+		await env.runner.finalize(run.id);
+
+		const view = await runProvenanceView(env.handle.db, run.id);
+		expect(view.exit.observed).toBeNull();
+		expect(view.exit.agentSays).toEqual({ kind: "exit", code: 0 });
+		await env.cleanup();
+	});
+
+	test("a report symlinked to a host file is not ingested", async () => {
+		const env = await makeEnv({ mergeChecks: null });
+		const { run, outbox } = await forgedRun(env, "linked", "exit:3");
+		const wtReport = join(run.worktreePath as string, "MFW_REPORT.json");
+		const secret = join(env.root, "host-secret.json");
+		await writeFile(secret, JSON.stringify({ status: "HOSTSECRET" }));
+		for (const path of [wtReport, join(outbox, "MFW_REPORT.json")]) {
+			await rm(path);
+			await symlink(secret, path);
+		}
+		await env.runner.finalize(run.id);
+		const view = await runProvenanceView(env.handle.db, run.id);
+		expect(view.reportStatus).toBeNull();
+		const steps = await env.registry.steps(run.id);
+		expect(JSON.stringify(steps)).not.toContain("HOSTSECRET");
+		await env.cleanup();
+	});
+
+	test("a FIFO as the report does not hang finalize", async () => {
+		const env = await makeEnv({ mergeChecks: null });
+		const { run, outbox } = await forgedRun(env, "fifo", "exit:3");
+		const wtReport = join(run.worktreePath as string, "MFW_REPORT.json");
+		for (const path of [wtReport, join(outbox, "MFW_REPORT.json")]) {
+			await rm(path);
+			Bun.spawnSync(["mkfifo", path]);
+		}
+		await env.runner.finalize(run.id);
+		expect((await env.registry.get(run.id))?.state).toBe("failed");
+		await env.cleanup();
+	}, 20_000);
+
+	test("a crash after classify keeps the host's exit through the restart", async () => {
+		const env = await makeEnv({ mergeChecks: null });
+		const { run, control } = await forgedRun(env, "crash", "exit:3");
+		const crashing = env.makeRunner({
+			leftovers: {
+				find: async () => {
+					throw new Error("crash after classify");
+				},
+				stop: async () => ({
+					stopped: [],
+					killed: [],
+					absent: [],
+					live: [],
+					unknown: [],
+				}),
+			},
+		});
+		await crashing.finalize(run.id).catch(() => {});
+		expect((await journal(env, run.id))[0]).toBe("classify");
+		const before = await runProvenanceView(env.handle.db, run.id);
+		expect(before.exit.observed).toEqual({ kind: "exit", code: 3 });
+
+		// Even a changed file cannot rewrite what was already observed.
+		await writeFile(join(control, "exit"), "exit:0");
+		await env.registry.clearStaleFinalizeOwners("next-boot");
+		await env.makeRunner().finalize(run.id);
+
+		const row = await env.registry.get(run.id);
+		expect(row?.exitCode).toBe(3);
+		expect(row?.state).toBe("failed");
+		const after = await runProvenanceView(env.handle.db, run.id);
+		expect(after.exit.observed).toEqual({ kind: "exit", code: 3 });
+		expect(after.exit.agentSays).toEqual({ kind: "exit", code: 0 });
 		await env.cleanup();
 	});
 });

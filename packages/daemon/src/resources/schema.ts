@@ -2,7 +2,7 @@
  * The resource core's tables inside host.db, with their own schema version:
  * a store refuses to open a version it does not know.
  */
-export const RESOURCE_SCHEMA_VERSION = 4;
+export const RESOURCE_SCHEMA_VERSION = 5;
 
 /**
  * Cleanup records: written before a machine is provisioned and closed only
@@ -104,6 +104,17 @@ CREATE TABLE rp_probe_samples (
   occupants_json TEXT NOT NULL DEFAULT '[]',
   warnings_json TEXT NOT NULL DEFAULT '[]'
 );
+`;
+
+/** Recent agent reports per provider account, for two-project confirmation. */
+export const RESOURCE_PROVIDER_REPORT_SCHEMA = `
+CREATE TABLE rp_provider_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  hold_key TEXT NOT NULL,
+  project TEXT NOT NULL,
+  at_ms INTEGER NOT NULL
+);
+CREATE INDEX ix_rp_provider_reports_key ON rp_provider_reports(hold_key, at_ms);
 `;
 
 export const RESOURCE_SCHEMA = `

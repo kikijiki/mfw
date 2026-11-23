@@ -1,6 +1,8 @@
 import type { ProjectDbHandle } from "@mfw/db/client";
 import { events } from "@mfw/db/schema";
 import { and, eq, gte, sql } from "drizzle-orm";
+import type { ReviewDebt } from "./act-budget.ts";
+import type { ClaimClass } from "./claims.ts";
 import type { InboxItem } from "./inbox.ts";
 import { startOfLocalDay } from "./project-summary.ts";
 
@@ -18,9 +20,11 @@ export type HeadlineLink = "landed" | "needs_you" | "main" | "budgets";
 
 export interface HeadlinePart {
 	/** Stable key, so a test and the UI can find a part. */
-	key: "landed" | "needs_you" | "main" | "spend";
+	key: "landed" | "needs_you" | "main" | "spend" | "held_back" | "review_debt";
 	text: string;
 	link: HeadlineLink;
+	/** Who vouches for this part. */
+	claimClass: ClaimClass;
 }
 
 export interface Headline {
@@ -33,6 +37,14 @@ export interface Headline {
 	needsYou: number;
 	/** `null` when no spend budget is configured: shown as nothing, never 0%. */
 	spendFraction: number | null;
+	/** Of `needsYou`, how many the machine's `act` budget holds back. */
+	heldBack?: number;
+	reviewDebt?: ReviewDebt;
+}
+
+export interface HeadlineAttention {
+	heldBack: number;
+	debt: ReviewDebt;
 }
 
 export interface HeadlineInputs {
@@ -44,6 +56,14 @@ export interface HeadlineInputs {
 		unit: "usd" | "tokens" | "slot_hours";
 		fraction: number;
 	}[];
+	/** This project's share of the act budget; absent reads as nothing held. */
+	attention?: HeadlineAttention;
+}
+
+/** "3h", "2d": the age of the oldest debt item. */
+function shortAge(ms: number): string {
+	const hours = Math.floor(ms / 3_600_000);
+	return hours < 48 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
 }
 
 /**
@@ -65,15 +85,55 @@ export function buildHeadline(input: HeadlineInputs): Headline {
 	const spendFraction = spendFractionOf(input.budgets);
 
 	const parts: HeadlinePart[] = [
-		{ key: "landed", text: `Landed ${input.landedToday}`, link: "landed" },
-		{ key: "needs_you", text: `needs you ${needsYou}`, link: "needs_you" },
-		{ key: "main", text: mainRed ? "main red" : "main green", link: "main" },
+		{
+			key: "landed",
+			text: `Landed ${input.landedToday}`,
+			link: "landed",
+			claimClass: "host-observed",
+		},
+		{
+			key: "needs_you",
+			text: `needs you ${needsYou}`,
+			link: "needs_you",
+			claimClass: "inference",
+		},
+		{
+			key: "main",
+			text: mainRed ? "main red" : "main green",
+			link: "main",
+			// "green" is only the absence of a red record, not a passing sweep.
+			claimClass: mainRed ? "host-observed" : "inference",
+		},
 	];
 	if (spendFraction !== null) {
 		parts.push({
 			key: "spend",
 			text: `spend ${Math.round(spendFraction * 100)}%`,
 			link: "budgets",
+			// The ledger adds up the usage agents reported.
+			claimClass: "agent-reported",
+		});
+	}
+	const heldBack = input.attention?.heldBack ?? 0;
+	const reviewDebt = input.attention?.debt ?? { count: 0, oldestAgeMs: null };
+	if (heldBack > 0) {
+		parts.push({
+			key: "held_back",
+			text: `${heldBack} held back`,
+			link: "needs_you",
+			claimClass: "inference",
+		});
+	}
+	if (reviewDebt.count > 0) {
+		const age =
+			reviewDebt.oldestAgeMs === null
+				? ""
+				: `, oldest ${shortAge(reviewDebt.oldestAgeMs)}`;
+		parts.push({
+			key: "review_debt",
+			text: `review debt ${reviewDebt.count}${age}`,
+			link: "needs_you",
+			claimClass: "inference",
 		});
 	}
 	// "Landed 7, needs you 1; main green; spend 62%"
@@ -88,6 +148,8 @@ export function buildHeadline(input: HeadlineInputs): Headline {
 		landedToday: input.landedToday,
 		needsYou,
 		spendFraction,
+		heldBack,
+		reviewDebt,
 	};
 }
 
@@ -104,6 +166,7 @@ export interface HeadlineSource {
 export async function collectHeadline(
 	src: HeadlineSource,
 	now = Date.now(),
+	attention?: HeadlineAttention,
 ): Promise<Headline> {
 	const [inbox, budgets, landed] = await Promise.all([
 		src.inbox.list().catch(() => []),
@@ -115,6 +178,7 @@ export async function collectHeadline(
 		landedToday: landed,
 		inboxItems: inbox,
 		budgets,
+		...(attention ? { attention } : {}),
 	});
 }
 

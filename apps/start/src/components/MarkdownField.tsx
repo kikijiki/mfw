@@ -3,10 +3,12 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { DiagramPre } from "../features/docs/DiagramPre";
 import { attachmentUrl } from "../features/tasks/attachments";
+import { downloadOnClick } from "../lib/auth-client";
 import { isAdrId, md, remarkTaskIds, TASK_HREF } from "../lib/markdown";
 import { useGo } from "../lib/nav";
 import { useTRPC } from "../lib/trpc";
 import { href } from "../routes";
+import { AuthImage } from "./AuthImage";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { Textarea } from "./ui/textarea";
 
@@ -91,10 +93,16 @@ export function MarkdownField(props: {
 										/>
 									);
 								}
-								return <md.a href={resolve(linkHref)} {...rest} />;
+								return (
+									<md.a
+										href={resolve(linkHref)}
+										onClick={downloadOnClick(resolve(linkHref))}
+										{...rest}
+									/>
+								);
 							},
 							img: ({ src, alt }) => (
-								<img
+								<AuthImage
 									src={typeof src === "string" ? resolve(src) : undefined}
 									alt={alt ?? ""}
 									className="my-2 max-h-96 max-w-full"

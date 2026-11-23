@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { runEventsPath } from "@mfw/daemon/containment/run-dir";
 import { type FlowNode, flowTree, subNode } from "@mfw/daemon/flow";
 import { parseSubRef, runSubagentsOf } from "@mfw/daemon/run-subagents";
 import { STORY_KINDS, taskStory } from "@mfw/daemon/story";
@@ -114,7 +114,7 @@ export const nodeRouter = createTRPCRouter({
 				...(input.before ? { before: input.before } : {}),
 				...(input.filter?.kinds ? { kinds: input.filter.kinds } : {}),
 				transcriptAvailable: (runId) =>
-					existsSync(join(svc.registry.runDir(runId), "events.jsonl")),
+					existsSync(runEventsPath(svc.registry.runDir(runId))),
 			});
 		}),
 });

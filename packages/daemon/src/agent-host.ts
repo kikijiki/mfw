@@ -8,11 +8,40 @@ import {
 	mkdtemp,
 	open,
 	readdir,
+	realpath,
 	rm,
 	writeFile,
 } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
+import type { AgentLaunchRequest } from "./containment/agent-launch.ts";
+import {
+	AGENT_BRIDGED_ENV,
+	AGENT_LAUNCH_ENV,
+	HOST_BUN_FLAGS,
+} from "./containment/agent-launch-argv.ts";
+import {
+	DEV_SHELL_REFUSAL,
+	needsDevShell,
+} from "./containment/agent-preflight.ts";
+import { withoutAutonomyFlags } from "./containment/agent-profile.ts";
+import { SANDBOX_PATHS } from "./containment/compile-bwrap.ts";
+import {
+	harnessAllowlist,
+	harnessEgressEnv,
+	usesApiKeyAuth,
+} from "./containment/egress-allowlists.ts";
+import {
+	EgressCapacityError,
+	PROXY_MAX_OPEN_FILES,
+	prepareRunEgress,
+} from "./containment/egress-run.ts";
+import {
+	driverRunPaths,
+	ensureRunDirLayout,
+	HOST_BRIDGE_MARKER,
+	runHostFilesDir,
+} from "./containment/run-dir.ts";
 import { readSmallRegularFile } from "./containment/safe-file.ts";
 import {
 	assertDisjointEnvironmentNames,
@@ -20,6 +49,8 @@ import {
 } from "./execution-environment.ts";
 import type { Logger } from "./log.ts";
 import { runProc } from "./proc.ts";
+import type { ExitEvidence, ExitSource } from "./run-exit-evidence.ts";
+import { writeWipLaunchRequest } from "./run-workspace/wip-snapshot.ts";
 import {
 	type BwrapIsolation,
 	bwrapAvailable,
@@ -38,14 +69,26 @@ import {
  * AgentHost v2: tmux mechanics only, no domain logic. Rows/state live in
  * RunRegistry; completion handling in the Supervisor. Run dir contract:
  *
- *   meta.json     written once by RunRegistry, never mutated
- *   events.jsonl  normalized AgentEvents, single writer: the driver process
- *   raw.log       verbatim pane output, tmux pipe-pane target
- *   exit          "exit:<code>" (run.sh) | "killed:<reason>" (kill, compare-and-skip)
- *   steer.jsonl   daemon appends (O_APPEND), driver reads
- *   control.jsonl daemon appends typed controls, shared app-server driver reads
- *   driver.json   invocation config for the driver
- *   run.sh        session wrapper (go-signal gate; writes `exit`)
+ *   meta.json             written once by RunRegistry, never mutated
+ *   raw.log               verbatim pane output, tmux pipe-pane target
+ *   control/              host-written, read-only in the sandbox
+ *     exit                "exit:<code>" (run.sh) | "killed:<reason>" (kill, compare-and-skip)
+ *     steer.jsonl         daemon appends (O_APPEND), driver reads
+ *     control.jsonl       daemon appends typed controls, app-server driver reads
+ *     driver.json         invocation config for the driver
+ *   outbox/               the only run path the sandbox can write: agent claims
+ *     events.jsonl        normalized AgentEvents, written by the driver
+ *
+ * Only a sandboxed launch is split. An unsandboxed run (`isolation` unset) and
+ * a run launched before the split keep these files flat in the run dir.
+ * `run.sh` (the session wrapper) lives in the host-only control root.
+ *
+ * Task and repair runs use the host bridge (design "Bridge on the host"): the
+ * driver and bridge stay on the host, outside the workspace, and start the
+ * agent through `containment/agent-launch.ts`. Their `events.jsonl` and
+ * `raw.log` stay in the host-only run root, and no agent byte reaches the tmux
+ * pane. Other run kinds keep the interim sandbox around the driver until their
+ * role profiles exist.
  */
 
 /** POSIX single-quote for safe embedding in a generated shell script. */
@@ -128,6 +171,8 @@ export interface AgentHostOptions {
 	};
 	/** Where secret FIFOs are made; defaults to the host-only control directory. Must be private and is masked inside every sandbox. */
 	secretCarrierRoot?: string;
+	/** The host-only control directory. Defaults to the per-user one; tests use a private one. */
+	controlRoot?: string;
 	/** Bound for run.sh to open and acknowledge the FIFO reader. */
 	secretHandoffTimeoutMs?: number;
 	/** Injectable only so failure tests can model EOF and truncated pipe writes. */
@@ -167,11 +212,70 @@ export interface LaunchSpec {
 	approvalMode?: "autonomous" | "interactive";
 	/** Isolate the driver from the daemon home (trigger arming store, credentials.json). Fail closed: without `bwrap` on `PATH` the launch throws `SandboxUnavailableError`. */
 	isolation?: BwrapIsolation;
+	/** `task` and `repair` runs get the host bridge; other kinds are P7. */
+	runKind?: string;
+	/** Names the fleet config of a host-bridged run. */
+	providerId?: string;
+}
+
+/** What differs in a run whose driver stays on the host. */
+interface HostBridge {
+	/** The run's proxy, started by `run.sh` before the driver. */
+	egress: { configPath: string; socketPath: string };
+	requestPath: string;
+	cwd: string;
+	agentArgv: string[];
+	bridgeArgv: string[];
+	providerArgv: string[];
+	env: Record<string, string>;
+}
+
+const EGRESS_PROXY_MAIN = join(
+	import.meta.dir,
+	"containment",
+	"egress-proxy-main.ts",
+);
+
+/** 0.05 s each: how long `run.sh` waits for the proxy socket. */
+const EGRESS_START_POLLS = 400;
+/** 0.05 s each: past the proxy's hard exit deadline. */
+const EGRESS_STOP_POLLS = 80;
+
+const FLEET_CLI: Readonly<Record<string, "claude" | "codex">> = {
+	"claude-cli": "claude",
+	"codex-cli": "codex",
+};
+
+const exists = (path: string) =>
+	lstat(path).then(
+		() => true,
+		() => false,
+	);
+
+/** Task and repair runs in a sandbox: the driver stays on the host. */
+function usesHostBridge(spec: LaunchSpec): boolean {
+	return (
+		spec.isolation !== undefined &&
+		(spec.runKind === "task" || spec.runKind === "repair")
+	);
+}
+
+/** A machine at its proxy cap refuses the launch like any missing sandbox. */
+function refuseOverEgressCapacity<T>(prepare: () => T): T {
+	try {
+		return prepare();
+	} catch (err) {
+		if (err instanceof EgressCapacityError) {
+			throw new SandboxUnavailableError(err.message);
+		}
+		throw err;
+	}
 }
 
 export class AgentHost {
 	private readonly runTmux: AgentTmuxRunner;
 	private readonly carrierRootOverride: string | null;
+	private readonly controlRootOverride: string | null;
 	private readonly secretHandoffTimeoutMs: number;
 	private readonly secretHandoffWriter: AgentSecretHandoffWriter;
 	private readonly sandbox: NonNullable<AgentHostOptions["sandbox"]>;
@@ -180,6 +284,7 @@ export class AgentHost {
 		this.runTmux = opts.tmuxRunner ?? tmux;
 		this.sandbox = opts.sandbox ?? { bwrapAvailable, wrapWithBwrap };
 		this.carrierRootOverride = opts.secretCarrierRoot ?? null;
+		this.controlRootOverride = opts.controlRoot ?? null;
 		this.secretHandoffTimeoutMs = opts.secretHandoffTimeoutMs ?? 5_000;
 		this.secretHandoffWriter =
 			opts.secretHandoffWriter ??
@@ -202,7 +307,7 @@ export class AgentHost {
 	 */
 	private async controlRoot(): Promise<string> {
 		const uid = process.getuid?.() ?? 0;
-		const root = controlRootPath(uid);
+		const root = this.controlRootOverride ?? controlRootPath(uid);
 		await mkdir(root, { recursive: true, mode: 0o700 });
 		const st = await lstat(root);
 		if (
@@ -232,16 +337,30 @@ export class AgentHost {
 				"autonomous runs require a bwrap sandbox (agentIsolation is none)",
 			);
 		}
+		// Only the host bridge is a real profile. The interim sandbox binds the
+		// real home read-write, so nothing autonomous may start in it.
+		if (
+			(spec.approvalMode ?? "autonomous") === "autonomous" &&
+			!usesHostBridge(spec)
+		) {
+			throw new SandboxUnavailableError(
+				`autonomous ${spec.runKind ?? "unnamed"} runs have no sandbox profile yet: set approvalMode to interactive`,
+			);
+		}
 		const dir = spec.runDir;
+		// No sandbox means no boundary to split along.
+		const hostFiles = spec.isolation ? ensureRunDirLayout(dir).control : dir;
 		const control = await this.controlRoot();
 		const scriptPath = join(control, `run-${spec.runId}.sh`);
 		const rawLog = join(dir, "raw.log");
-		const exitPath = join(dir, "exit");
+		const exitPath = join(hostFiles, "exit");
 		// The authoritative exit record: host-only, never the agent-writable run dir (security review X9).
 		const exitRecord = join(control, `exit-${spec.runId}`);
 		await this.pruneControl(control);
 		// A stale record from an earlier run that reused this id must not read as this run's exit.
 		await rm(exitRecord, { force: true });
+		// Likewise a `control/exit` left in a run dir that was flat, and writable, before.
+		if (spec.isolation) await rm(exitPath, { force: true });
 
 		const publicEnvironment = spec.env ?? {};
 		const secretEnvironment =
@@ -249,20 +368,27 @@ export class AgentHost {
 		assertDisjointEnvironmentNames(publicEnvironment, secretEnvironment);
 		if (
 			SECRET_HANDOFF_SENTINEL in publicEnvironment ||
-			secretEnvironment.names().includes(SECRET_HANDOFF_SENTINEL)
+			secretEnvironment.names().includes(SECRET_HANDOFF_SENTINEL) ||
+			[AGENT_LAUNCH_ENV, AGENT_BRIDGED_ENV].some(
+				(name) =>
+					name in publicEnvironment || secretEnvironment.names().includes(name),
+			)
 		) {
 			throw new Error("launch environment uses a reserved internal name");
 		}
+		const bridge = usesHostBridge(spec)
+			? await this.prepareHostBridge(spec, control, secretEnvironment)
+			: null;
 
 		await writeFileAtomic(
-			join(dir, "driver.json"),
+			join(hostFiles, "driver.json"),
 			JSON.stringify(
 				{
-					argv: spec.agentArgv,
-					bridgeArgv: spec.bridgeArgv ?? spec.agentArgv,
-					providerArgv: spec.providerArgv ?? [],
-					cwd: spec.cwd,
-					env: publicEnvironment,
+					argv: bridge?.agentArgv ?? spec.agentArgv,
+					bridgeArgv: bridge?.bridgeArgv ?? spec.bridgeArgv ?? spec.agentArgv,
+					providerArgv: bridge?.providerArgv ?? spec.providerArgv ?? [],
+					cwd: bridge?.cwd ?? spec.cwd,
+					env: bridge?.env ?? publicEnvironment,
 					model: spec.model,
 					reasoningEffort: spec.reasoningEffort ?? "medium",
 					initialMessage: spec.initialMessage ?? "",
@@ -276,15 +402,18 @@ export class AgentHost {
 				2,
 			),
 		);
-		await writeFile(join(dir, "steer.jsonl"), "", { flag: "a" });
-		await writeFile(join(dir, "control.jsonl"), "", { flag: "a" });
+		await writeFile(join(hostFiles, "steer.jsonl"), "", { flag: "a" });
+		await writeFile(join(hostFiles, "control.jsonl"), "", { flag: "a" });
 		await writeFile(rawLog, "", { flag: "a" });
+		if (bridge) {
+			await writeFile(join(hostFiles, HOST_BRIDGE_MARKER), "1\n", {
+				mode: 0o600,
+			});
+		}
 
-		// .envrc trust gate: load direnv only if the worktree's .envrc is byte-identical
-		// to the primary checkout's, closing the prompt-injection → direnv-allow → RCE chain.
+		// Evaluated only inside the interim sandbox. The host never evaluates a
+		// project's `.envrc` or direnv, and a host-bridged run has no dev shell yet.
 		const rootEnvrc = join(spec.projectRoot, ".envrc");
-		// Trust is recorded in a throwaway data dir, never in the real HOME (security
-		// review X14), and the gate runs in the pinned bash that evaluates `export bash`.
 		const envrcGate = [
 			`if [ -f .envrc ] && command -v direnv >/dev/null 2>&1 && cmp -s .envrc ${q(rootEnvrc)}; then`,
 			'  _mfw_dx=$(mktemp -d 2>/dev/null) || _mfw_dx=""',
@@ -305,8 +434,13 @@ export class AgentHost {
 		// everything inherited.
 		// The runtime is the host's pinned bun when one is trusted; otherwise the sandbox `PATH` finds it (trusted entries come first).
 		const bunBin = pinnedTool("bun") ?? "bun";
-		let driverCmd = `${q(bunBin)} run ${q(spec.driverScript)} ${q(dir)}`;
-		if (spec.isolation) {
+		let driverCmd = bridge
+			? // The driver is host code next to agent-written files: bun must not read
+				// any config or `.env` from around it. Its output goes to the log file
+				// and never to the pane, so no agent byte reaches a terminal.
+				`export ${AGENT_BRIDGED_ENV}=1 ${AGENT_LAUNCH_ENV}=${q(bridge.requestPath)}\n${[bunBin, ...HOST_BUN_FLAGS, "run", spec.driverScript, dir].map(q).join(" ")} >> ${q(rawLog)} 2>&1`
+			: `${q(bunBin)} run ${q(spec.driverScript)} ${q(dir)}`;
+		if (spec.isolation && !bridge) {
 			if (!(await this.sandbox.bwrapAvailable())) {
 				throw new SandboxUnavailableError(
 					"isolation requested but `bwrap` is not on PATH",
@@ -338,6 +472,7 @@ export class AgentHost {
 							...(spec.providerArgv ?? []),
 						].filter((a) => a.startsWith("/")),
 					].filter(underPrivateTmp),
+					splitRunDir: true,
 				},
 			);
 		}
@@ -377,6 +512,9 @@ export class AgentHost {
 					"unset -f secret_handoff_failed",
 				]
 			: [];
+		const egressStart = bridge
+			? this.egressStartLines(bridge.egress, bunBin)
+			: [];
 		const script = [
 			"#!/usr/bin/env bash",
 			// One brace group: bash parses it whole before running anything, so text
@@ -402,11 +540,26 @@ export class AgentHost {
 					]
 				: [`export PATH=${q(process.env.PATH ?? "/usr/bin:/bin")}`]),
 			"IFS= read -r _ 2>/dev/null  # wait for go signal",
-			`cd ${q(spec.cwd)} || { mfw_record_exit 'exit:1'; exit 1; }`,
-			...(spec.isolation ? [] : [envrcGate]),
+			`cd ${q(bridge ? dir : spec.cwd)} || { mfw_record_exit 'exit:1'; exit 1; }`,
+			// Before the secret gate, so the proxy never inherits a secret.
+			...egressStart,
 			...secretGate,
-			driverCmd,
+			bridge ? `${driverCmd} 8>&-` : driverCmd,
 			"rc=$?",
+			// Closing the pipe stops the proxy, and its final counters land before the
+			// exit does. Bounded: a stuck proxy must never hold up the run's exit record.
+			// Nothing is signalled here. The proxy has its own hard deadline, and the
+			// recovery sweep removes one that outlives it.
+			...(bridge
+				? [
+						"exec 8>&-",
+						"mfw_egress_wait=0",
+						`while [ -n "$mfw_egress_ticks" ] && [ "$(mfw_proc_ticks "$mfw_egress_pid")" = "$mfw_egress_ticks" ] && [ "$mfw_egress_wait" -lt ${EGRESS_STOP_POLLS} ]; do`,
+						"  mfw_egress_wait=$((mfw_egress_wait + 1))",
+						"  sleep 0.05",
+						"done",
+					]
+				: []),
 			'mfw_record_exit "exit:$rc"',
 			'exit "$rc"',
 			"}",
@@ -425,7 +578,7 @@ export class AgentHost {
 			"-y",
 			"50",
 			"-c",
-			spec.cwd,
+			bridge ? dir : spec.cwd,
 			"-e",
 			"TERM=dumb",
 		];
@@ -454,16 +607,20 @@ export class AgentHost {
 			throw new Error(`tmux new-session failed: ${r.stderr || r.stdout}`);
 		}
 
-		const piped = await this.runTmux([
-			"pipe-pane",
-			"-o",
-			"-t",
-			name,
-			`cat >> ${q(rawLog)}`,
-		]);
-		if (piped.exitCode !== 0) {
-			await this.abortLaunch(name, secretHandoff);
-			throw new Error(`tmux pipe-pane failed: ${piped.stderr || piped.stdout}`);
+		if (!bridge) {
+			const piped = await this.runTmux([
+				"pipe-pane",
+				"-o",
+				"-t",
+				name,
+				`cat >> ${q(rawLog)}`,
+			]);
+			if (piped.exitCode !== 0) {
+				await this.abortLaunch(name, secretHandoff);
+				throw new Error(
+					`tmux pipe-pane failed: ${piped.stderr || piped.stdout}`,
+				);
+			}
 		}
 		const go = await this.runTmux(["send-keys", "-t", name, "", "Enter"]);
 		if (go.exitCode !== 0) {
@@ -486,6 +643,164 @@ export class AgentHost {
 				throw new Error("driver secret handoff failed before consumption");
 			}
 		}
+	}
+
+	/**
+	 * Start the run's proxy on a pipe from this script, and wait for its socket.
+	 * The proxy gets an empty environment. If it never listens the run ends with
+	 * the sandbox's refusal status and no agent starts.
+	 */
+	private egressStartLines(
+		egress: HostBridge["egress"],
+		bunBin: string,
+	): string[] {
+		const env = pinnedTool("env");
+		if (!env) {
+			throw new SandboxUnavailableError("env is not on a trusted PATH");
+		}
+		const proxy = [
+			env,
+			"-i",
+			bunBin,
+			...HOST_BUN_FLAGS,
+			"run",
+			EGRESS_PROXY_MAIN,
+			egress.configPath,
+		]
+			.map(q)
+			.join(" ");
+		return [
+			// Field 22 of /proc/<pid>/stat, empty for a zombie or a missing process.
+			// With the pid it identifies one process, so a reused pid never matches.
+			"mfw_proc_ticks() {",
+			"  local line fields",
+			'  { IFS= read -r line < "/proc/$1/stat"; } 2>/dev/null || return 1',
+			`  fields=$\{line##*) }`,
+			"  set -f",
+			"  set -- $fields",
+			"  set +f",
+			'  [ "$1" != Z ] || return 1',
+			`  printf '%s' "$\{20}"`,
+			"}",
+			// No memory or task limit: `ulimit -v` breaks bun, and a host without a
+			// user manager has no scope to give it. See docs/egress.md.
+			`exec 8> >(ulimit -n ${PROXY_MAX_OPEN_FILES}; exec ${proxy} >/dev/null 2>&1)`,
+			"mfw_egress_pid=$!",
+			'mfw_egress_ticks=$(mfw_proc_ticks "$mfw_egress_pid")',
+			"mfw_egress_wait=0",
+			`until [ -S ${q(egress.socketPath)} ]; do`,
+			"  mfw_egress_wait=$((mfw_egress_wait + 1))",
+			`  if [ "$mfw_egress_wait" -gt ${EGRESS_START_POLLS} ] || [ -z "$mfw_egress_ticks" ] || [ "$(mfw_proc_ticks "$mfw_egress_pid")" != "$mfw_egress_ticks" ]; then`,
+			"    exec 8>&-",
+			"    mfw_record_exit 'exit:78'",
+			"    exit 78",
+			"  fi",
+			"  sleep 0.05",
+			"done",
+		];
+	}
+
+	/**
+	 * The launch request and driver settings of a host-bridged run. Everything
+	 * the agent sees uses sandbox paths, and an interactive run never carries an
+	 * autonomous flag. Refuses rather than falling back to the interim sandbox.
+	 */
+	private async prepareHostBridge(
+		spec: LaunchSpec,
+		control: string,
+		secretEnvironment: SecretEnvironment,
+	): Promise<HostBridge> {
+		const mfwHome = spec.isolation?.mfwHome;
+		const cli = FLEET_CLI[spec.providerId ?? ""];
+		if (!mfwHome || !cli) {
+			throw new SandboxUnavailableError(
+				`provider ${spec.providerId ?? "(none)"} has no sandbox profile yet: task and repair runs support claude-cli and codex-cli`,
+			);
+		}
+		const runDir = await realpath(spec.runDir);
+		const stateDir = dirname(dirname(runDir));
+		if (basename(dirname(runDir)) !== "runs") {
+			throw new SandboxUnavailableError(
+				`run dir ${runDir} is not in a project's runs directory`,
+			);
+		}
+		if (needsDevShell(spec.projectRoot) || needsDevShell(spec.cwd)) {
+			throw new SandboxUnavailableError(DEV_SHELL_REFUSAL);
+		}
+		if (!(await exists(join(stateDir, "mfw.db")))) {
+			throw new SandboxUnavailableError(
+				`no project database in ${stateDir}, so the launch cannot be attested`,
+			);
+		}
+		const approvalMode = spec.approvalMode ?? "autonomous";
+		const forMode = (argv: string[]) =>
+			approvalMode === "autonomous" ? argv : withoutAutonomyFlags(argv);
+		const agentArgv = forMode(spec.agentArgv);
+		const providerArgv = forMode(spec.providerArgv ?? spec.agentArgv);
+		const egressOptions = {
+			telemetry: spec.isolation?.egressTelemetry === true,
+		};
+		const env = {
+			...(spec.env ?? {}),
+			...harnessEgressEnv(cli, egressOptions),
+		};
+		if ("MFW_REPORT_PATH" in env) {
+			env.MFW_REPORT_PATH = `${SANDBOX_PATHS.workspace}/MFW_REPORT.json`;
+		}
+		const egressHome = await realpath(mfwHome);
+		const egress = refuseOverEgressCapacity(() =>
+			prepareRunEgress({
+				mfwHome: egressHome,
+				runDir,
+				runId: spec.runId,
+				allow: harnessAllowlist(cli, {
+					...egressOptions,
+					apiKeyAuth: usesApiKeyAuth(cli, [
+						...Object.keys(spec.env ?? {}),
+						...secretEnvironment.names(),
+					]),
+				}),
+				...(spec.isolation?.egressUploadBudget
+					? { uploadBudget: spec.isolation.egressUploadBudget }
+					: {}),
+			}),
+		);
+		const request: AgentLaunchRequest = {
+			version: 1,
+			runId: spec.runId,
+			role: spec.runKind as "task" | "repair",
+			approvalMode,
+			cli,
+			tree: await realpath(spec.cwd),
+			runDir,
+			projectRoot: await realpath(spec.projectRoot),
+			stateDir,
+			mfwHome: await realpath(mfwHome),
+			env,
+			secretNames: secretEnvironment.names(),
+			egressSocketDir: egress.socketDir,
+		};
+		writeWipLaunchRequest(request);
+		const requestPath = join(control, `agent-launch-${spec.runId}.json`);
+		await rm(requestPath, { force: true });
+		await writeFile(requestPath, JSON.stringify(request), {
+			mode: 0o600,
+			flag: "wx",
+		});
+		const bun = pinnedTool("bun") ?? process.execPath;
+		const bridgeArgv = spec.bridgeArgv ?? agentArgv;
+		return {
+			egress: { configPath: egress.configPath, socketPath: egress.socketPath },
+			requestPath,
+			cwd: SANDBOX_PATHS.workspace,
+			agentArgv,
+			bridgeArgv:
+				bridgeArgv[0] === "bun"
+					? [bun, ...HOST_BUN_FLAGS, ...bridgeArgv.slice(1)]
+					: bridgeArgv,
+			providerArgv,
+			env,
+		};
 	}
 
 	private async prepareSecretHandoff(
@@ -594,13 +909,13 @@ export class AgentHost {
 			}
 		};
 		await create(join(await this.controlRoot(), `exit-${runId}`));
-		await create(join(runDir, "exit"));
+		await create(join(runHostFilesDir(runDir), "exit"));
 	}
 
 	/** Append one steering message (O_APPEND, no read-modify-write races). */
 	async appendSteer(runDir: string, message: string): Promise<void> {
 		await appendFile(
-			join(runDir, "steer.jsonl"),
+			driverRunPaths(runDir).steer,
 			`${JSON.stringify(message)}\n`,
 		);
 	}
@@ -618,7 +933,7 @@ export class AgentHost {
 			  },
 	): Promise<void> {
 		await appendFile(
-			join(runDir, "control.jsonl"),
+			driverRunPaths(runDir).controls,
 			`${JSON.stringify(control)}\n`,
 		);
 	}
@@ -631,35 +946,51 @@ export class AgentHost {
 	 * back to the run dir, read without following links or blocking.
 	 */
 	async readExit(runDir: string): Promise<RunExit> {
+		return (await this.readExitEvidence(runDir)).exit;
+	}
+
+	/** The recorded exit and which record it came from (`run-exit-evidence.ts`). */
+	async readExitEvidence(runDir: string): Promise<ExitEvidence> {
 		const runId = basename(runDir);
 		const control = await this.controlRoot();
 		const authoritative = await readSmallRegularFile(
 			join(control, `exit-${runId}`),
 		);
 		let s: string | null;
+		let source: ExitSource;
 		if (authoritative !== null) {
 			s = authoritative;
+			source = "host-exit-record";
 			// The run script (host-only, no secrets) is done with.
 			await rm(join(control, `run-${runId}.sh`), { force: true }).catch(
 				() => {},
 			);
+			await rm(join(control, `agent-launch-${runId}.json`), {
+				force: true,
+			}).catch(() => {});
 		} else if (
 			await lstat(join(control, `run-${runId}.sh`)).then(
 				() => true,
 				() => false,
 			)
 		) {
-			return { kind: "running" };
+			return { exit: { kind: "running" }, source: null };
 		} else {
-			s = await readSmallRegularFile(join(runDir, "exit"));
+			// A split run's copy is host-written; the flat path of an older or remote
+			// run is all there is for it. `exitProvenance` decides what each is worth.
+			const hostFiles = runHostFilesDir(runDir);
+			source = hostFiles === runDir ? "flat-exit" : "control-exit";
+			s = await readSmallRegularFile(join(hostFiles, "exit"));
 		}
-		if (s === null) return { kind: "running" }; // no exit recorded (yet)
+		if (s === null) return { exit: { kind: "running" }, source: null }; // no exit recorded (yet)
 		s = s.trim();
 		const exit = /^exit:(\d+)$/.exec(s);
-		if (exit) return { kind: "exit", code: Number(exit[1]) };
+		if (exit) return { exit: { kind: "exit", code: Number(exit[1]) }, source };
 		const killed = /^killed:(.+)$/.exec(s);
-		if (killed) return { kind: "killed", reason: killed[1] as string };
-		return { kind: "running" };
+		if (killed) {
+			return { exit: { kind: "killed", reason: killed[1] as string }, source };
+		}
+		return { exit: { kind: "running" }, source: null };
 	}
 
 	/** Old run scripts and exit records of long-finished runs; the control dir is not a log. */
@@ -667,7 +998,8 @@ export class AgentHost {
 		const cutoff = Date.now() - 3 * 24 * 3600_000;
 		try {
 			for (const name of await readdir(control)) {
-				if (!/^(run-.*\.sh|exit-.*)$/.test(name)) continue;
+				if (!/^(run-.*\.sh|exit-.*|agent-launch-.*\.json)$/.test(name))
+					continue;
 				const p = join(control, name);
 				const st = await lstat(p).catch(() => null);
 				if (st && st.mtimeMs < cutoff) await rm(p, { force: true });

@@ -10,6 +10,8 @@ import type { ProjectDbHandle, ProjectDbTx } from "@mfw/db/client";
 import { appendEvent, type EventBus, type StoredEvent } from "@mfw/db/eventlog";
 import { ulid } from "@mfw/db/ids";
 import { CHAIN_RELATIONS, relationOf } from "@mfw/db/lineage-backfill";
+import type { FactProvenance, RunFactSource } from "@mfw/db/provenance";
+import { type ExitFactValue, recordRunFact } from "@mfw/db/run-facts";
 import {
 	type KillReason,
 	type RunGroupKind,
@@ -43,8 +45,14 @@ import {
 } from "drizzle-orm";
 import type { SubagentFold } from "./agents/activity.ts";
 import { isBrainTurnRun } from "./brain-runtime/turn-run.ts";
+import { runEventsPath } from "./containment/run-dir.ts";
 import { readRegularFile } from "./containment/safe-file.ts";
+import {
+	type RunProvenanceView,
+	runProvenanceView,
+} from "./run-provenance-view.ts";
 import { writeRunSubagents } from "./run-subagents.ts";
+import type { ResultImportEvent } from "./run-workspace/clone-impl.ts";
 
 /**
  * The DB row is authoritative for run state; the run dir is a debugging
@@ -191,6 +199,15 @@ export interface RunListFilter {
 	taskId?: string;
 }
 
+/**
+ * Where a transition's exit and outcome came from. Omitted means the host
+ * cannot vouch for them, so they are stored as sandbox-reported.
+ */
+export interface FactEvidence {
+	provenance: FactProvenance;
+	source: RunFactSource;
+}
+
 /** Fields a transition may set alongside the state change. */
 export type TransitionPatch = Partial<
 	Pick<
@@ -210,6 +227,8 @@ export type TransitionPatch = Partial<
 > & {
 	/** Guard: the update only applies if the row is currently in this state. */
 	from?: RunState;
+	/** Where the exit and outcome in this patch came from. */
+	evidence?: FactEvidence;
 };
 
 export interface BeginStepResult {
@@ -229,6 +248,59 @@ export interface RunRegistryDeps {
 	handle: ProjectDbHandle;
 	bus: EventBus;
 	runsDir: string;
+}
+
+/** The L1 facts a transition carries, tagged, in the transition's own tx. */
+async function recordTransitionFacts(
+	tx: ProjectDbTx,
+	runId: string,
+	fields: Omit<TransitionPatch, "from" | "evidence">,
+	evidence: FactEvidence | undefined,
+): Promise<void> {
+	const provenance = evidence?.provenance ?? "sandbox-reported";
+	const source = evidence?.source ?? "finalize";
+	const exit =
+		fields.exitCode !== undefined && fields.exitCode !== null
+			? { kind: "exit" as const, code: fields.exitCode }
+			: fields.killReason
+				? { kind: "killed" as const, reason: fields.killReason }
+				: null;
+	if (exit) {
+		await recordRunFact(tx, {
+			runId,
+			fact: "exit",
+			provenance,
+			value: exit,
+			source,
+		});
+	}
+	if (fields.outcome) {
+		await recordRunFact(tx, {
+			runId,
+			fact: "outcome",
+			provenance,
+			value: fields.outcome,
+			source,
+		});
+	}
+	if (fields.usage) {
+		await recordRunFact(tx, {
+			runId,
+			fact: "usage",
+			provenance: "sandbox-reported",
+			value: fields.usage,
+			source: "transcript",
+		});
+	}
+	if (fields.capabilities) {
+		await recordRunFact(tx, {
+			runId,
+			fact: "capabilities",
+			provenance: "sandbox-reported",
+			value: fields.capabilities,
+			source: "driver-hello",
+		});
+	}
 }
 
 export class RunRegistry {
@@ -566,7 +638,7 @@ export class RunRegistry {
 		to: RunState,
 		patch: TransitionPatch = {},
 	): Promise<RunRow | null> {
-		const { from, ...fields } = patch;
+		const { from, evidence, ...fields } = patch;
 		return this.withEvents(async (tx, events) => {
 			const [prev] = await tx.select().from(runs).where(eq(runs.id, runId));
 			if (!prev) return null;
@@ -577,6 +649,7 @@ export class RunRegistry {
 				.where(eq(runs.id, runId))
 				.returning();
 			if (!row) return null;
+			await recordTransitionFacts(tx, runId, fields, evidence);
 			// The ledger is written in the same tx as the usage it mirrors, so a
 			// run's spend can never be on the row and missing from the ledger.
 			if (fields.usage) {
@@ -815,10 +888,117 @@ export class RunRegistry {
 		runId: string,
 		caps: RunCapabilitiesInput,
 	): Promise<void> {
+		const capabilities = normalizeRunCapabilities(caps);
+		await this.handle.withTx(async (tx) => {
+			await tx.update(runs).set({ capabilities }).where(eq(runs.id, runId));
+			await recordRunFact(tx, {
+				runId,
+				fact: "capabilities",
+				provenance: "sandbox-reported",
+				value: capabilities,
+				source: "driver-hello",
+			});
+		});
+	}
+
+	/**
+	 * Mark the run as launched with `control/` and `outbox/`, before the launch.
+	 * The only thing that lets `control/exit` count as the host's own record.
+	 */
+	async markRunDirSplit(runId: string): Promise<void> {
 		await this.handle.db
 			.update(runs)
-			.set({ capabilities: normalizeRunCapabilities(caps) })
+			.set({ runDirLayout: "split" })
 			.where(eq(runs.id, runId));
+	}
+
+	/**
+	 * Record what the run's workspace is, once. Later code routes on this and
+	 * never on the project's current `runWorkspace`.
+	 */
+	async recordWorkspaceKind(
+		runId: string,
+		kind: "worktree" | "clone",
+	): Promise<void> {
+		await this.handle.db
+			.update(runs)
+			.set({ workspaceKind: kind })
+			.where(and(eq(runs.id, runId), isNull(runs.workspaceKind)));
+	}
+
+	/** What the agent left at `outbox/exit`. Stored as a claim, never read for a verdict. */
+	async recordAgentExitClaim(
+		runId: string,
+		claim: ExitFactValue,
+	): Promise<void> {
+		await recordRunFact(this.handle.db, {
+			runId,
+			fact: "agent_exit_claim",
+			provenance: "sandbox-reported",
+			value: claim,
+			source: "outbox-exit",
+		});
+	}
+
+	/** The host's import of a clone result, and apart from it the helper's claim. */
+	async recordResultImport(
+		runId: string,
+		event: ResultImportEvent,
+	): Promise<void> {
+		const { claim, ...observed } =
+			event.outcome === "imported" ? event : { ...event, claim: undefined };
+		await recordRunFact(this.handle.db, {
+			runId,
+			fact: "result_import",
+			provenance: "host-observed",
+			value: observed,
+			source: "host-git-import",
+		});
+		if (claim) {
+			await recordRunFact(this.handle.db, {
+				runId,
+				fact: "wip_claim",
+				provenance: "sandbox-reported",
+				value: claim,
+				source: "outbox-wip-ack",
+			});
+		}
+	}
+
+	/** Who vouches for this run's facts, for the run views. */
+	provenance(runId: string): Promise<RunProvenanceView> {
+		return runProvenanceView(this.handle.db, runId);
+	}
+
+	/** The agent's MFW_REPORT, as a claim. */
+	async recordReportFact(runId: string, report: unknown): Promise<void> {
+		await recordRunFact(this.handle.db, {
+			runId,
+			fact: "report",
+			provenance: "sandbox-reported",
+			value: report,
+			source: "report-file",
+		});
+	}
+
+	/** Keep what remains of a pruned transcript; folded from the agent's own events. */
+	async recordTranscriptSummary(
+		runId: string,
+		summary: Record<string, unknown>,
+	): Promise<void> {
+		await this.handle.withTx(async (tx) => {
+			await tx
+				.update(runs)
+				.set({ transcriptSummary: summary })
+				.where(eq(runs.id, runId));
+			await recordRunFact(tx, {
+				runId,
+				fact: "transcript_summary",
+				provenance: "sandbox-reported",
+				value: summary,
+				source: "transcript",
+			});
+		});
 	}
 
 	/**
@@ -846,6 +1026,13 @@ export class RunRegistry {
 					activityDetail: detail as unknown as Record<string, unknown>,
 				})
 				.where(eq(runs.id, runId));
+			await recordRunFact(tx, {
+				runId,
+				fact: "activity",
+				provenance: "sandbox-reported",
+				value: { activity, detail },
+				source: "transcript",
+			});
 			if (from === activity) return { changed: false, from };
 			events.push(
 				await appendEvent(tx, {
@@ -896,6 +1083,13 @@ export class RunRegistry {
 				.update(runs)
 				.set({ scopeSample: sample })
 				.where(eq(runs.id, runId));
+			await recordRunFact(tx, {
+				runId,
+				fact: "scope",
+				provenance: "host-observed",
+				value: sample,
+				source: "scope-watchdog",
+			});
 			if (from === sample.level) return { changed: false };
 			events.push(
 				await appendEvent(tx, {
@@ -943,6 +1137,13 @@ export class RunRegistry {
 					},
 				})
 				.where(eq(runs.id, runId));
+			await recordRunFact(tx, {
+				runId,
+				fact: "usage_live",
+				provenance: "sandbox-reported",
+				value: sample,
+				source: "transcript",
+			});
 			events.push(
 				await appendEvent(tx, {
 					type: "run.usage_sampled",
@@ -971,6 +1172,13 @@ export class RunRegistry {
 	): Promise<void> {
 		await this.withEvents(async (tx, events) => {
 			const event = await writeRunSubagents(tx, runId, subs);
+			await recordRunFact(tx, {
+				runId,
+				fact: "subagents",
+				provenance: "sandbox-reported",
+				value: { count: subs.length },
+				source: "transcript",
+			});
 			if (event) events.push(event);
 		});
 	}
@@ -986,20 +1194,30 @@ export class RunRegistry {
 		nativeSessionId: string,
 	): Promise<boolean> {
 		if (!nativeSessionId) return false;
-		const rows = await this.handle.db
-			.update(runs)
-			.set({ nativeSessionId })
-			.where(
-				and(
-					eq(runs.id, runId),
-					or(
-						isNull(runs.nativeSessionId),
-						ne(runs.nativeSessionId, nativeSessionId),
+		return this.handle.withTx(async (tx) => {
+			const rows = await tx
+				.update(runs)
+				.set({ nativeSessionId })
+				.where(
+					and(
+						eq(runs.id, runId),
+						or(
+							isNull(runs.nativeSessionId),
+							ne(runs.nativeSessionId, nativeSessionId),
+						),
 					),
-				),
-			)
-			.returning({ id: runs.id });
-		return rows.length > 0;
+				)
+				.returning({ id: runs.id });
+			if (rows.length === 0) return false;
+			await recordRunFact(tx, {
+				runId,
+				fact: "native_session",
+				provenance: "sandbox-reported",
+				value: { nativeSessionId },
+				source: "transcript",
+			});
+			return true;
+		});
 	}
 
 	/** The run's process is gone: state → "ended" plus the exit facts. */
@@ -1009,9 +1227,11 @@ export class RunRegistry {
 			exitCode?: number | null;
 			killReason?: KillReason;
 			outcome: RunOutcome;
+			evidence?: FactEvidence;
 		},
 	): Promise<RunRow | null> {
 		return this.transition(runId, "ended", {
+			...(exit.evidence ? { evidence: exit.evidence } : {}),
 			exitCode: exit.exitCode ?? null,
 			killReason: exit.killReason ?? null,
 			outcome: exit.outcome,
@@ -1045,8 +1265,9 @@ export class RunRegistry {
 	): Promise<{ chunk: string; size: number; complete: boolean }> {
 		// Resolve the id through the run table before it becomes a path segment.
 		if (!(await this.get(runId))) throw new Error(`unknown run ${runId}`);
-		const path = join(this.runDir(runId), file);
-		// The run dir is agent-writable: never follow a link out of it, never block on a
+		const dir = this.runDir(runId);
+		const path = file === "events.jsonl" ? runEventsPath(dir) : join(dir, file);
+		// The outbox is agent-writable: never follow a link out of it, never block on a
 		// FIFO, and only read a regular file (security review X9).
 		const read = await readRegularFile(path, 1024 * 1024, offset);
 		if (!read) return { chunk: "", size: 0, complete: true };

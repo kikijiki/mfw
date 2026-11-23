@@ -168,7 +168,7 @@ describe("scope watchdog on fetched refs", () => {
 		expect(files.files).toEqual(["a.txt", "sub/n.txt"]);
 	});
 
-	test("cloneScopeFiles diffs the newest imported work, and gives no sample when nothing was imported", async () => {
+	test("cloneScopeFiles diffs the imported work, and gives no sample when nothing was imported", async () => {
 		const t = await setup();
 		await writeFile(join(t.primary, "x.txt"), "x\n");
 		await git(["add", "-A"], t.primary);
@@ -179,7 +179,6 @@ describe("scope watchdog on fetched refs", () => {
 				ack: { id: "i", ok: true },
 				imported: { tip, wip: [] as string[] },
 			}),
-			newestWorkOf: async () => tip,
 		};
 		const got = await cloneScopeFiles(ok, t.primary, "/w/tree", t.base);
 		expect(got.files).toEqual(["x.txt"]);
@@ -190,7 +189,6 @@ describe("scope watchdog on fetched refs", () => {
 						ack: { id: "i", ok: true },
 						imported: null,
 					}),
-					newestWorkOf: async () => tip,
 				},
 				t.primary,
 				"/w/tree",

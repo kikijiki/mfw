@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AppRouter } from "@mfw/api";
+import type { ChatThreadView } from "@mfw/daemon/brain-runtime/chat";
+import { DIRECTION_MAX_CHARS } from "@mfw/daemon/brain-runtime/directions";
 import type { Headline } from "@mfw/daemon/headlines";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createTRPCClient } from "@trpc/client";
@@ -11,7 +13,14 @@ import { ToastProvider } from "../../lib/toast";
 import { TRPCProvider } from "../../lib/trpc";
 import { LeadPage } from "./LeadPage";
 import {
+	answerBadges,
 	brainParagraph,
+	CHAT_CHARS,
+	chatRows,
+	citationLink,
+	DIRECTION_CHARS,
+	directionBadge,
+	directionsOpen,
 	drillLinks,
 	headlineFor,
 	intentSentence,
@@ -23,10 +32,25 @@ const headline: Headline = {
 	project: "mfw",
 	text: "Landed 7, needs you 1; main green; spend 62%",
 	parts: [
-		{ key: "landed", text: "Landed 7", link: "landed" },
-		{ key: "needs_you", text: "needs you 1", link: "needs_you" },
-		{ key: "main", text: "main green", link: "main" },
-		{ key: "spend", text: "spend 62%", link: "budgets" },
+		{
+			key: "landed",
+			text: "Landed 7",
+			link: "landed",
+			claimClass: "host-observed",
+		},
+		{
+			key: "needs_you",
+			text: "needs you 1",
+			link: "needs_you",
+			claimClass: "inference",
+		},
+		{ key: "main", text: "main green", link: "main", claimClass: "inference" },
+		{
+			key: "spend",
+			text: "spend 62%",
+			link: "budgets",
+			claimClass: "agent-reported",
+		},
 	],
 	landedToday: 7,
 	needsYou: 1,
@@ -88,7 +112,153 @@ describe("lead rules", () => {
 	});
 });
 
-function render(seed: { headlines?: Headline[]; plan?: string }): string {
+describe("direction rules", () => {
+	test("the box's limit is the server's", () => {
+		expect(DIRECTION_CHARS).toBe(DIRECTION_MAX_CHARS);
+	});
+
+	test("each status reads plainly, and an unreceived one is not drafting", () => {
+		expect(directionBadge("drafting", false).label).toBe(
+			"waiting for the brain",
+		);
+		expect(directionBadge("drafting", true).label).toBe("drafting");
+		expect(directionBadge("held", true).tone).toBe("warn");
+		expect(directionBadge("no_draft", true).label).toBe("no draft");
+	});
+
+	test("polling stops once every direction is settled", () => {
+		expect(directionsOpen([{ status: "done" }, { status: "no_draft" }])).toBe(
+			false,
+		);
+		expect(directionsOpen([{ status: "held" }])).toBe(true);
+		expect(directionsOpen(undefined)).toBe(false);
+	});
+});
+
+const question = (id: string, text: string) =>
+	({ id, kind: "question", at: 1, text }) as const;
+const answer = (over: Record<string, unknown> = {}) =>
+	({
+		id: "a1",
+		kind: "answer",
+		at: 2,
+		questionId: "q1",
+		text: "One run is live.",
+		source: "records",
+		citations: [{ kind: "run", id: "01RUNABCDEF" }],
+		grounded: true,
+		provenance: ["host"],
+		...over,
+	}) as ChatThreadView["entries"][number];
+
+describe("chat rules", () => {
+	test("the box's limit is the server's", () => {
+		expect(CHAT_CHARS).toBe(DIRECTION_MAX_CHARS);
+	});
+
+	test("entries pair into rows, and an open question has no answer", () => {
+		const rows = chatRows([
+			question("q1", "what is running"),
+			answer({ offer: "x" }),
+			{ id: "d1", kind: "direction", at: 3, answerId: "a1", directionId: "D" },
+			question("q2", "and now"),
+		]);
+		expect(rows.map((r) => r.id)).toEqual(["q1", "q2"]);
+		expect(rows[0]?.directionGiven).toBe(true);
+		expect(rows[1]?.answer).toBeNull();
+	});
+
+	test("every citation kind leads somewhere, with its id encoded", () => {
+		expect(citationLink("mfw", { kind: "task", id: "MFW-1" }).to).toContain(
+			"/p/mfw/board",
+		);
+		expect(citationLink("mfw", { kind: "run", id: "01R" }).to).toBe(
+			"/p/mfw/n/run:01R",
+		);
+		expect(citationLink("mfw", { kind: "decision", id: "7" }).to).toBe(
+			"/p/mfw/n/decision:7",
+		);
+		expect(citationLink("mfw", { kind: "view", id: "needs_you" }).to).toBe(
+			"/p/mfw#needs-you",
+		);
+		expect(
+			citationLink("mfw", { kind: "run", id: "a/../b?x" }).to,
+		).not.toContain("/../");
+	});
+
+	test("an answer says what it is", () => {
+		const label = (o: Record<string, unknown>) =>
+			answerBadges(answer(o) as never).map((b) => b.label);
+		expect(label({})).toEqual(["from records"]);
+		expect(label({ source: "brain", grounded: false })).toEqual([
+			"brain's words",
+			"unverified: no record",
+		]);
+		expect(
+			label({ source: "brain", provenance: ["owner", "agent"] }),
+		).toContain("drew on agent text");
+	});
+});
+
+describe("the chat panel", () => {
+	test("is separate from the direction box", () => {
+		const html = render({});
+		expect(html).toContain('aria-label="Ask the brain"');
+		expect(html).toContain('aria-label="Give direction"');
+	});
+
+	test("renders an answer with its label and citation", () => {
+		const html = render({
+			chat: [question("q1", "what is running"), answer()],
+		});
+		expect(html).toContain("One run is live.");
+		expect(html).toContain("from records");
+		expect(html).toContain("/p/mfw/n/run:01RUNABCDEF");
+		expect(html).not.toContain("Give as direction");
+	});
+
+	test("escapes markup from any source", () => {
+		const html = render({
+			chat: [
+				question("q1", "<img src=x onerror=alert(1)>"),
+				answer({ text: "<script>alert(2)</script>" }),
+			],
+		});
+		expect(html).not.toContain("<script>alert");
+		expect(html).not.toContain("<img src=x");
+		expect(html).toContain("&lt;script&gt;");
+	});
+
+	test("offers a direction only when the answer carries one", () => {
+		const offered = render({
+			chat: [question("q1", "stop it"), answer({ offer: "stop it" })],
+		});
+		expect(offered).toContain("Give as direction");
+		const given = render({
+			chat: [
+				question("q1", "stop it"),
+				answer({ offer: "stop it" }),
+				{ id: "d", kind: "direction", at: 3, answerId: "a1", directionId: "D" },
+			],
+		});
+		expect(given).not.toContain("Give as direction");
+		expect(given).toContain("given as a direction");
+	});
+
+	test("shows an open question as being answered", () => {
+		expect(render({ chat: [question("q1", "still there")] })).toContain(
+			"answering…",
+		);
+	});
+});
+
+function render(seed: {
+	headlines?: Headline[];
+	plan?: string;
+	directions?: unknown[];
+	brainEnabled?: boolean;
+	chat?: ChatThreadView["entries"];
+}): string {
 	const queryClient = new QueryClient();
 	const client = createTRPCClient<AppRouter>({ links: [] });
 	const trpc = createTRPCOptionsProxy<AppRouter>({ client, queryClient });
@@ -103,8 +273,22 @@ function render(seed: { headlines?: Headline[]; plan?: string }): string {
 	);
 	queryClient.setQueryData(trpc.runs.active.queryKey(), [] as never);
 	queryClient.setQueryData(trpc.brain.states.queryKey(), [
-		{ project, enabled: true, state: "idle", failures: 0, error: null },
+		{
+			project,
+			enabled: seed.brainEnabled ?? true,
+			state: "idle",
+			failures: 0,
+			error: null,
+		},
 	] as never);
+	queryClient.setQueryData(
+		trpc.brain.directions.queryKey({ project }),
+		(seed.directions ?? []) as never,
+	);
+	queryClient.setQueryData(trpc.brain.chatThread.queryKey({ project }), {
+		entries: seed.chat ?? [],
+		pending: 0,
+	} as never);
 	queryClient.setQueryData(
 		trpc.brain.decisions.queryKey({ project, kind: "plan", limit: 1 }),
 		(seed.plan ? [{ reason: seed.plan }] : []) as never,
@@ -147,6 +331,41 @@ describe("LeadPage", () => {
 		expect(html.indexOf("Landed 7")).toBeLessThan(
 			html.indexOf("Ship the importer first."),
 		);
+	});
+
+	test("the direction box is one text field and no form fields", () => {
+		const html = render({});
+		expect(html).toContain('aria-label="Give direction"');
+		expect(html.match(/<textarea/g)).toHaveLength(1);
+		expect(html).toContain(`maxLength="${DIRECTION_CHARS}"`);
+	});
+
+	test("the box is disabled while the brain is off", () => {
+		const html = render({ brainEnabled: false });
+		expect(html).toMatch(/<textarea[^>]*disabled/);
+	});
+
+	test("a direction's text renders as inert text", () => {
+		const evil = "<img src=x onerror=alert(1)><script>alert(2)</script>";
+		const html = render({
+			directions: [
+				{
+					id: "D1",
+					text: evil,
+					at: 1_800_000_000_000,
+					status: "held",
+					received: true,
+					taskIds: ["MFW-9"],
+					heldActionIds: ["A1"],
+				},
+			],
+		});
+		expect(html).not.toContain("<img src=x");
+		expect(html).not.toContain("<script>alert");
+		expect(html).toContain("&lt;img src=x");
+		expect(html).toContain("held for you");
+		expect(html).toContain("/p/mfw#needs-you");
+		expect(html).toContain("MFW-9");
 	});
 
 	test("drill-down links and the needs section are present", () => {

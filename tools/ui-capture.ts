@@ -9,6 +9,8 @@
  *       [--projects dummy-todo,dummy-notes,dummy-plan] [--sizes 1920x1080,...]
  *       [--only substring] [--docs adr/MFW-ADR-1,docs/intro.md] [--firefox /path/to/firefox]
  *
+ * The app requires a session: set MFW_CAPTURE_PASSWORD to the owner password.
+ *
  * Output: DIR/<viewport>/<screen>.png plus DIR/report.json and a printed
  * summary of console errors / failed requests. It is read-only against the
  * daemon: it navigates and opens dialogs, it never submits anything.
@@ -263,6 +265,30 @@ async function clickText(
 }
 
 await probeConsole();
+
+// Sign in through the page, so the browser holds the HttpOnly session cookie.
+const capturePassword = process.env.MFW_CAPTURE_PASSWORD;
+if (!capturePassword) {
+	console.error(
+		"MFW_CAPTURE_PASSWORD is not set: every screen needs a session",
+	);
+	process.exit(2);
+}
+await goto("/login");
+const signInStatus =
+	await evalJs<number>(`fetch(${JSON.stringify(`${BASE}/api/auth/login`)}, {
+	method: "POST",
+	headers: { "content-type": "application/json", "x-mfw-auth": "1" },
+	body: ${JSON.stringify(JSON.stringify({ password: capturePassword }))},
+}).then(async (r) => {
+	if (r.ok) localStorage.setItem("mfw:auth:request-key", (await r.json()).requestKey);
+	return r.status;
+})`);
+if (signInStatus !== 200) {
+	console.error(`sign-in failed: HTTP ${signInStatus}`);
+	process.exit(2);
+}
+issues = [];
 
 const report: Record<
 	string,

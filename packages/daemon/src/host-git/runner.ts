@@ -19,9 +19,12 @@
  * The only operation meant to touch a clone is a fetch run from a host-owned
  * repository; see `fetch.ts`.
  */
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
-import { type ProcResult, runProc } from "../proc.ts";
+import { lstatSync, readFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { type ProcResult, runProc, runProcRecords } from "../proc.ts";
+import { isUnder, resolveReal } from "./paths.ts";
+
+export { isUnder, resolveReal };
 
 export type HostGitErrorCode =
 	| "path_under_workspace"
@@ -338,35 +341,12 @@ export const DEFAULT_MAX_CPU_SECONDS = 120;
 /** Env vars inherited from the daemon. Everything else is dropped. */
 const INHERITED_ENV = ["PATH", "LANG", "LC_ALL", "TMPDIR", "TZ"];
 
-/** realpath that tolerates a missing tail: resolve the nearest existing ancestor. */
-export function resolveReal(p: string): string {
-	const abs = resolve(p);
-	const tail: string[] = [];
-	let cur = abs;
-	for (;;) {
-		try {
-			return join(realpathSync(cur), ...tail.reverse());
-		} catch {
-			const parent = dirname(cur);
-			if (parent === cur) return abs;
-			tail.push(basename(cur));
-			cur = parent;
-		}
-	}
-}
-
 function readSmallFile(p: string): string | undefined {
 	try {
 		return readFileSync(p, "utf8").slice(0, 64 * 1024);
 	} catch {
 		return undefined;
 	}
-}
-
-export function isUnder(path: string, root: string): boolean {
-	const p = resolveReal(path);
-	const r = resolveReal(root);
-	return p === r || p.startsWith(r.endsWith(sep) ? r : r + sep);
 }
 
 /** A url or path that git could parse as an option, or that is not an absolute local path. */
@@ -706,41 +686,84 @@ export class HostGit {
 		}
 	}
 
-	async run(args: string[], opts: HostGitRunOpts): Promise<HostGitResult> {
-		this.check(args, opts);
+	private commandFor(args: string[], opts: HostGitRunOpts): string[] {
 		const prefix: string[] = [];
 		if (opts.repo) prefix.push(`--git-dir=${this.resolveGitDir(opts.repo)}`);
-		const raw = await runProc(
-			[
-				// Resource limits first, then exec git: a failed ulimit never runs git unbounded.
-				"/bin/sh",
-				"-c",
-				'ulimit -v "$1" && ulimit -t "$2" || exit 125; shift 2; exec "$@"',
-				"mfw-host-git",
-				String(this.maxMemoryKiB),
-				String(this.maxCpuSeconds),
-				this.gitBin,
-				...this.configArgs({
-					allowFile: opts.allowFile === true,
-					...(opts.allowProtocol ? { allowProtocol: opts.allowProtocol } : {}),
-				}),
-				...prefix,
-				...args,
-			],
+		return [
+			// Resource limits first, then exec git: a failed ulimit never runs git unbounded.
+			"/bin/sh",
+			"-c",
+			'ulimit -v "$1" && ulimit -t "$2" || exit 125; shift 2; exec "$@"',
+			"mfw-host-git",
+			String(this.maxMemoryKiB),
+			String(this.maxCpuSeconds),
+			this.gitBin,
+			...this.configArgs({
+				allowFile: opts.allowFile === true,
+				...(opts.allowProtocol ? { allowProtocol: opts.allowProtocol } : {}),
+			}),
+			...prefix,
+			...args,
+		];
+	}
+
+	private commandEnv(opts: HostGitRunOpts): NodeJS.ProcessEnv {
+		return {
+			...this.env(
+				opts.allowProtocol ? { allowProtocol: opts.allowProtocol } : {},
+			),
+			// Never discover a repo above cwd (a parent `.git` symlinked into a clone).
+			GIT_CEILING_DIRECTORIES: dirname(resolve(opts.cwd)),
+		};
+	}
+
+	/**
+	 * Read a `-z` listing in full, record by record. A listing over the limits
+	 * is a `validation` refusal: a partial one must never back a decision.
+	 */
+	async records(
+		args: string[],
+		opts: HostGitRunOpts,
+		limits: { maxRecords: number; maxRecordBytes?: number },
+		onRecord: (record: string) => void,
+	): Promise<void> {
+		this.check(args, opts);
+		const r = await runProcRecords(
+			this.commandFor(args, opts),
 			{
 				cwd: opts.cwd,
-				...(opts.input !== undefined ? { input: opts.input } : {}),
-				// Never discover a repo above cwd (a parent `.git` symlinked into a clone).
-				env: {
-					...this.env(
-						opts.allowProtocol ? { allowProtocol: opts.allowProtocol } : {},
-					),
-					GIT_CEILING_DIRECTORIES: dirname(resolve(opts.cwd)),
-				},
+				env: this.commandEnv(opts),
 				timeoutMs: opts.timeoutMs ?? 120_000,
-				...(opts.maxOutputBytes ? { maxOutputBytes: opts.maxOutputBytes } : {}),
+				hostGitChecked: true,
+				maxRecords: limits.maxRecords,
+				maxRecordBytes: limits.maxRecordBytes ?? 64 * 1024,
 			},
+			onRecord,
 		);
+		if (r.overflow) {
+			throw new HostGitError(
+				"validation",
+				`git ${args[0]} listed more than the ${limits.maxRecords} records a result may have`,
+			);
+		}
+		if (r.exitCode !== 0) {
+			throw new HostGitError(
+				"fetch_failed",
+				`git ${args[0]} failed (${r.exitCode ?? r.signalCode}): ${r.stderr.slice(-300)}`,
+			);
+		}
+	}
+
+	async run(args: string[], opts: HostGitRunOpts): Promise<HostGitResult> {
+		this.check(args, opts);
+		const raw = await runProc(this.commandFor(args, opts), {
+			cwd: opts.cwd,
+			...(opts.input !== undefined ? { input: opts.input } : {}),
+			env: this.commandEnv(opts),
+			timeoutMs: opts.timeoutMs ?? 120_000,
+			...(opts.maxOutputBytes ? { maxOutputBytes: opts.maxOutputBytes } : {}),
+			hostGitChecked: true,
+		});
 		return {
 			exitCode: raw.exitCode ?? -1,
 			stdout: raw.stdout.trim(),
@@ -756,6 +779,13 @@ export class HostGit {
 			throw new HostGitError(
 				"fetch_failed",
 				`git ${args.slice(0, 2).join(" ")} failed (${r.exitCode}): ${r.stderr || r.stdout}`,
+			);
+		}
+		// The output is tail-kept: a cut answer must not back a decision.
+		if (r.raw.truncated) {
+			throw new HostGitError(
+				"validation",
+				`git ${args.slice(0, 2).join(" ")} produced more output than the cap`,
 			);
 		}
 		return r.stdout;

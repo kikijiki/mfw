@@ -140,7 +140,7 @@ export interface Orchestrator {
 	/** Provider API keys, presence-only (the store itself is process-global,
 	 *  not per project: `~/.local/share/mfw/credentials.json`, chmod 600). */
 	providers: ProviderSettings;
-	/** Machine-wide per-provider rate-limit holds (`$MFW_HOME/provider-holds.json`). */
+	/** Machine-wide per-provider rate-limit holds, as pool holds in the core. */
 	providerHolds: ProviderHoldStore;
 	/** The one machine-wide provider-truth service; never project-scoped. */
 	runpod: RunPodAccountService;

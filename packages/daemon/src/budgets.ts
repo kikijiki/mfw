@@ -11,7 +11,7 @@ import {
 } from "./config.ts";
 import type { Logger } from "./log.ts";
 import type { ProviderHoldStore } from "./provider-holds.ts";
-import type { BudgetWindows } from "./resources/budget-windows.ts";
+import type { BudgetWindows, SpendBasis } from "./resources/budget-windows.ts";
 import type { RunRegistry } from "./run-registry.ts";
 
 /**
@@ -120,7 +120,10 @@ export interface ResolvedBudget {
 }
 
 export interface BudgetStatus extends ResolvedBudget {
+	/** Host-observed use: the only figure that can warn, hold or stop. */
 	used: number;
+	/** What runs reported about themselves in this window. Display only. */
+	reported: { value: number; provenance: "sandbox-reported" };
 	fraction: number;
 	windowStart: number;
 	windowResetsAt: number;
@@ -442,6 +445,10 @@ export class BudgetService {
 			out.push({
 				...b,
 				used,
+				reported: {
+					value: await this.measure(b, w, "reported"),
+					provenance: "sandbox-reported",
+				},
 				fraction: b.limit > 0 ? used / b.limit : 0,
 				windowStart: w.start,
 				windowResetsAt: w.end,
@@ -713,12 +720,16 @@ export class BudgetService {
 	// ledger
 	// ------------------------------------------------------------------
 
-	private async measure(b: ResolvedBudget, w: WindowBounds): Promise<number> {
+	private async measure(
+		b: ResolvedBudget,
+		w: WindowBounds,
+		basis: SpendBasis = "host",
+	): Promise<number> {
 		const handles =
 			b.scope === "machine"
 				? (this.deps.ledgers?.() ?? [this.deps.handle])
 				: [this.deps.handle];
-		return this.deps.windows.measure(b, w, handles, this.deps.project);
+		return this.deps.windows.measure(b, w, handles, this.deps.project, basis);
 	}
 
 	// ------------------------------------------------------------------

@@ -25,6 +25,8 @@ import {
 	inferenceForProvider,
 } from "./brain.ts";
 import { brainSocketFor } from "./brain-runtime/brain-socket.ts";
+import { chatInferenceFor } from "./brain-runtime/chat.ts";
+import { ChatBudget, chatBudgetPath } from "./brain-runtime/chat-budget.ts";
 import { BrainRuntime, resolveBrainConfig } from "./brain-runtime/runtime.ts";
 import { BudgetService } from "./budgets.ts";
 import { ClarifyService, continuationTerminalError } from "./clarify.ts";
@@ -40,6 +42,9 @@ import {
 	normalizeRoot,
 	PROJECT_DEFAULTS,
 } from "./config.ts";
+import { agentSandboxRefusal } from "./containment/agent-preflight.ts";
+import { runDirLayout } from "./containment/run-dir.ts";
+import { assertRunDead } from "./containment/run-liveness.ts";
 import { CredentialStore, WorkloadSecretGrantStore } from "./credentials.ts";
 import { ensureBoardConfig } from "./default-board-config.ts";
 import { readMemAvailable } from "./dispatch-preflight.ts";
@@ -53,7 +58,7 @@ import { type CriticResult, StepRunner } from "./finalize/step-runner.ts";
 import { git } from "./git.ts";
 import { GlobalDispatch } from "./global-dispatch.ts";
 import { Health } from "./health.ts";
-import { quarantineRef } from "./host-git/fetch.ts";
+import { quarantineRef, sweepIncomingRefs } from "./host-git/fetch.ts";
 import type { HostObservationServiceOptions } from "./host-observation-service.ts";
 import {
 	createProductionHostProbeRuntime,
@@ -136,6 +141,7 @@ import {
 	rebaseCloneOptions,
 } from "./run-workspace/factory.ts";
 import { rebaseQuarantineInScratch } from "./run-workspace/rebase-clone.ts";
+import { sandboxFinalSnapshot } from "./run-workspace/wip-snapshot.ts";
 import {
 	RunPodAccountService,
 	type RunPodProviderClient,
@@ -147,8 +153,8 @@ import type {
 	RunPodPlacementRequest,
 	RunPodProjectPolicy,
 } from "./runpod-policy.ts";
-import { autonomySandboxRefusal } from "./sandbox.ts";
 import { Scheduler } from "./scheduler.ts";
+import { branchChangedFiles } from "./scope-watchdog.ts";
 import type { Orchestrator, ProjectServices } from "./services.ts";
 import { SessionService } from "./session.ts";
 import {
@@ -253,6 +259,13 @@ export interface ProjectConfig {
 	pushRemote?: string;
 	/** Filesystem-isolate agent runs via `bwrap`. Defaults and fallback: see `config.ts`. */
 	agentIsolation?: "none" | "bwrap";
+	/** Let sandboxed runs reach their CLI's telemetry hosts; see `config.ts`. */
+	agentEgressTelemetry?: boolean;
+	/** Per-run upload limits through the egress proxy; see `config.ts`. */
+	agentEgressUploadBudget?: {
+		perDestinationBytes?: number;
+		totalBytes?: number;
+	};
 	/** Where run files live; see `config.ts`. Defaults to `worktree`. */
 	runWorkspace?: "worktree" | "clone";
 	/** Failed expansion runs a draft tolerates before the bounded retry releases
@@ -574,23 +587,38 @@ export async function attachProject(
 		runsDir: join(mfwDir, "runs"),
 	});
 	const host = new AgentHost(plog);
-	configureRunWorkspace(
-		root,
-		(cfg.runWorkspace ?? DEFAULTS.runWorkspace) === "clone"
-			? {
-					kind: "clone",
-					clone: {
-						workspaceRoot: join(opts.mfwHome, "workspaces"),
-						// Only a session tmux positively reports gone counts as dead.
-						assertProcessesDead: async (runId) => {
-							if ((await host.sessionLiveness(runId)) !== false) {
-								throw new Error(`run ${runId} is not confirmed stopped`);
-							}
-						},
-					},
+	configureRunWorkspace(root, {
+		kind: cfg.runWorkspace ?? DEFAULTS.runWorkspace,
+		// Kept for a worktree project too: a clone run that outlives a change of
+		// this setting must still be handled as the clone it is.
+		clone: {
+			workspaceRoot: join(opts.mfwHome, "workspaces"),
+			runDirOf: (runId) => registry.runDir(runId),
+			controlPath: (runId) =>
+				join(runDirLayout(registry.runDir(runId)).control, "control.jsonl"),
+			finalSnapshot: sandboxFinalSnapshot({
+				runDirOf: (runId) => registry.runDir(runId),
+			}),
+			onResultImport: async (runId, event) => {
+				try {
+					await registry.recordResultImport(runId, event);
+				} catch (err) {
+					plog.warn({ err, runId }, "could not record the result import");
 				}
-			: { kind: "worktree" },
-	);
+			},
+			// The session must be gone and the launcher and sandbox have exited.
+			assertProcessesDead: (runId) =>
+				assertRunDead({
+					runId,
+					runDir: registry.runDir(runId),
+					sessionLiveness: () => host.sessionLiveness(runId),
+				}),
+		},
+	});
+	// Nothing imports yet: whatever is under `incoming` was left by a crash.
+	await sweepIncomingRefs(root).catch((err) => {
+		plog.warn({ err }, "could not sweep leftover incoming refs");
+	});
 	const adapters = new AdapterRegistry();
 	const notifier = makeNotifier(cfg.notify, plog);
 	// Built before mergeQueue/maintenance/stepRunner, which raise sessions.
@@ -720,7 +748,7 @@ export async function attachProject(
 	let maintenance!: Maintenance;
 	let supervisor!: Supervisor;
 
-	const verifierClones = createVerifierClones(root);
+	const verifierClones = createVerifierClones(root, { workspaceKind: "clone" });
 	// A crashed daemon may have left verification clones and their pins behind.
 	await verifierClones?.sweep().catch((e) => {
 		plog.warn({ err: e }, "verifier clone sweep failed");
@@ -749,10 +777,11 @@ export async function attachProject(
 			if (!run?.worktreePath || !run.baseSha)
 				return { passed: false, detail: "run worktree is gone" };
 			const opts = { checkPrefix: cfg.checkPrefix, envPolicy: cfg.envPolicy };
+			const runClones = createVerifierClones(root, run);
 			const result = await verification.foreground(() =>
-				verifierClones
+				runClones
 					? verifyInClone(
-							verifierClones,
+							runClones,
 							quarantineRef(job.runId),
 							job.runId,
 							dod,
@@ -781,31 +810,30 @@ export async function attachProject(
 			: {}),
 		// Clone projects verify the merge commit itself, in a disposable clone,
 		// before the ref moves. Worktree projects keep today's behaviour.
-		...(verifierClones
-			? {
-					verifyMerge: async (
-						job: MergeJobView,
-						mergeSha: string,
-					): Promise<MergeVerdict> => {
-						const task = job.taskId ? await tasks.get(job.taskId) : null;
-						const dod = tasks.effectiveDod(task?.dod ?? null);
-						if (!dod) return { passed: true };
-						const run = await registry.get(job.runId);
-						if (!run?.baseSha) return { passed: true };
-						const result = await verification.foreground(() =>
-							verifyInClone(
-								verifierClones,
-								mergeSha,
-								`merge-${job.runId}`,
-								dod,
-								run.baseSha as string,
-								{ checkPrefix: cfg.checkPrefix, envPolicy: cfg.envPolicy },
-							),
-						);
-						return verdictOf(result);
-					},
-				}
-			: {}),
+		verifyMerge: async (
+			job: MergeJobView,
+			mergeSha: string,
+		): Promise<MergeVerdict> => {
+			const task = job.taskId ? await tasks.get(job.taskId) : null;
+			const dod = tasks.effectiveDod(task?.dod ?? null);
+			if (!dod) return { passed: true };
+			const run = await registry.get(job.runId);
+			if (!run?.baseSha) return { passed: true };
+			// Follows the run: a worktree run keeps today's behaviour.
+			const runClones = createVerifierClones(root, run);
+			if (!runClones) return { passed: true };
+			const result = await verification.foreground(() =>
+				verifyInClone(
+					runClones,
+					mergeSha,
+					`merge-${job.runId}`,
+					dod,
+					run.baseSha as string,
+					{ checkPrefix: cfg.checkPrefix, envPolicy: cfg.envPolicy },
+				),
+			);
+			return verdictOf(result);
+		},
 		onMerged: async (job) => {
 			const mergedRun = await registry.get(job.runId);
 			if (job.taskId && mergedRun?.kind !== "repair") {
@@ -1025,7 +1053,7 @@ export async function attachProject(
 		projectName: cfg.name,
 		integrationBranch,
 		routing: () => liveRouting,
-		providerHolds,
+		providerHolds: providerHolds.forProject(cfg.name),
 		budgetHold: (task): ReturnType<BudgetService["holdFor"]> =>
 			budgets.holdFor(task),
 		outcomePriors: async () => {
@@ -1044,14 +1072,21 @@ export async function attachProject(
 			memoryFloorBytes:
 				BigInt(cfg.minFreeMemoryMb ?? DEFAULTS.minFreeMemoryMb) * 1024n * 1024n,
 			memAvailableBytes: readMemAvailable,
-			// Autonomy is refused without a bwrap sandbox that passes the minimal probe.
+			// Autonomy is refused without the sandbox a real launch would get.
 			sandbox: () =>
-				autonomySandboxRefusal({
+				agentSandboxRefusal({
 					approvalMode: cfg.approvalMode ?? DEFAULTS.approvalMode,
 					isolation:
 						(cfg.agentIsolation ?? DEFAULTS.agentIsolation) === "bwrap"
-							? { mode: "bwrap", hidePaths: [opts.mfwHome] }
+							? {
+									mode: "bwrap",
+									hidePaths: [opts.mfwHome],
+									mfwHome: opts.mfwHome,
+								}
 							: undefined,
+					runWorkspace: cfg.runWorkspace ?? DEFAULTS.runWorkspace,
+					projectRoot: root,
+					mfwHome: opts.mfwHome,
 				}),
 		},
 		globalPaused: opts.globalPaused,
@@ -1065,7 +1100,17 @@ export async function attachProject(
 		// Hide the daemon's home (trigger arming store, credentials.json).
 		isolation:
 			(cfg.agentIsolation ?? DEFAULTS.agentIsolation) === "bwrap"
-				? { mode: "bwrap", hidePaths: [opts.mfwHome] }
+				? {
+						mode: "bwrap",
+						hidePaths: [opts.mfwHome],
+						mfwHome: opts.mfwHome,
+						...(cfg.agentEgressTelemetry === true
+							? { egressTelemetry: true }
+							: {}),
+						...(cfg.agentEgressUploadBudget
+							? { egressUploadBudget: cfg.agentEgressUploadBudget }
+							: {}),
+					}
 				: undefined,
 	});
 	const admission = new ProjectDispatchAdmission(
@@ -1232,6 +1277,11 @@ export async function attachProject(
 		projectName: cfg.name,
 		bootId,
 		config: () => resolveBrainConfig(liveBrainConfig),
+		chat: {
+			inference: chatInferenceFor,
+			budget: new ChatBudget(chatBudgetPath(opts.mfwHome)),
+			inbox: () => inbox.list(),
+		},
 		exec: {
 			projectRoot: root,
 			integrationBranch,
@@ -1333,6 +1383,12 @@ export async function attachProject(
 				budgets.holdFor(task),
 			checkBudget: (input): ReturnType<BudgetService["checkBrainLimit"]> =>
 				budgets.checkBrainLimit(input),
+			// The same listing as the finalize scope check: from the host's repo,
+			// never from the run's agent-writable worktree.
+			changedFiles: async (run) => {
+				if (!run.branch || !run.baseSha) return null;
+				return branchChangedFiles(root, run.baseSha, run.branch);
+			},
 			routeHeld: async (task, pick) => {
 				const held = (await engine.routeTask(task, pick ? { brain: pick } : {}))
 					.held;
@@ -1362,6 +1418,8 @@ export async function attachProject(
 		eventTail: engine.eventTail,
 		// The tmux socket is machine-wide: a run another project owns is no orphan.
 		ownedElsewhere: opts.ownedElsewhere,
+		egressHome: opts.mfwHome,
+		egressEvents: bus,
 		notify: (kind, detail) =>
 			notifier.notify(kind, { project: cfg.name, ...detail }),
 		log: plog,
@@ -1468,7 +1526,12 @@ export async function attachProject(
 		budgets,
 		authHolds: async () =>
 			Object.entries(await providerHolds.active())
-				.filter(([, h]) => h.reason === AUTH_HOLD_REASON)
+				.filter(
+					([key, h]) =>
+						h.reason === AUTH_HOLD_REASON &&
+						(!key.includes("#project:") ||
+							key.endsWith(`#project:${cfg.name}`)),
+				)
 				.map(([key, h]) => ({ key, since: h.since ?? 0, until: h.until })),
 		isolationIssue: () => {
 			const detail = isolationConfigProblem({
@@ -2482,6 +2545,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 			// What a crash left half done in the brain's outbox: adopt the spawns
 			// whose runs exist, replay the other effects.
 			await svc.brainRuntime.executor.recover();
+			await svc.brainRuntime.chat.recover();
 			await svc.brain.reconcileOrphans();
 			await svc.mergeQueue.resetInFlight();
 		} catch (e) {
@@ -2515,6 +2579,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 		};
 		await attempt(() => svc.scheduler.stop());
 		await attempt(() => svc.supervisor.stop());
+		await attempt(() => svc.brainRuntime.chat.stop());
 		if (mode === "detach") {
 			// Detach must not leave provider spend behind. Ambiguous cleanup stays in the global journal for retry.
 			await attempt(() => svc.engine.drainExecutionTargets("project_detach"));

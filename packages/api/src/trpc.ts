@@ -1,3 +1,4 @@
+import type { Principal } from "@mfw/daemon/auth/service";
 import type { Orchestrator, ProjectServices } from "@mfw/daemon/services";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
@@ -11,6 +12,8 @@ import { ZodError, z } from "zod";
 
 export interface Context {
 	orchestrator: Orchestrator;
+	/** Who is calling. Null means unauthenticated, and every procedure refuses it. */
+	principal: Principal | null;
 }
 
 function refusalFix(
@@ -134,7 +137,29 @@ const mapErrors = t.middleware(async ({ next }) => {
 
 export const createTRPCRouter = t.router;
 export const createCallerFactory = t.createCallerFactory;
-export const publicProcedure = t.procedure.use(mapErrors);
+
+const BRAIN_PATHS: ReadonlySet<string> = new Set(["brain.read", "brain.act"]);
+
+/**
+ * The second lock behind the HTTP guard: a call with no principal fails here
+ * even if a route forgot its guard. Every procedure derives from this one, so
+ * despite the historical name nothing on the router is anonymous.
+ */
+const requirePrincipal = t.middleware(({ ctx, path, next }) => {
+	if (!ctx.principal)
+		throw new TRPCError({
+			code: "UNAUTHORIZED",
+			message: "sign in to use the mfw API",
+		});
+	if (ctx.principal.kind === "brain" && !BRAIN_PATHS.has(path))
+		throw new TRPCError({
+			code: "FORBIDDEN",
+			message: `'${path}' is not available to a brain turn`,
+		});
+	return next({ ctx: { ...ctx, principal: ctx.principal } });
+});
+
+export const publicProcedure = t.procedure.use(requirePrincipal).use(mapErrors);
 
 /** Input shared by every project-scoped procedure. */
 export const projectInput = z.object({ project: z.string().min(1) });
@@ -143,6 +168,14 @@ export const projectInput = z.object({ project: z.string().min(1) });
 export const projectProcedure = publicProcedure
 	.input(projectInput)
 	.use(({ ctx, input, next }) => {
+		if (
+			ctx.principal.kind === "brain" &&
+			ctx.principal.project !== input.project
+		)
+			throw new TRPCError({
+				code: "FORBIDDEN",
+				message: "the token was not issued for that project and turn",
+			});
 		let svc: ProjectServices;
 		try {
 			svc = ctx.orchestrator.get(input.project);
@@ -155,3 +188,21 @@ export const projectProcedure = publicProcedure
 		}
 		return next({ ctx: { ...ctx, svc } });
 	});
+
+/**
+ * A brain token is good for one project and turn. This runs on the PARSED
+ * input, after the transformer, so nothing in the raw body can differ from
+ * what the procedure then receives. Owner calls are unaffected.
+ */
+export const brainTurnBound = t.middleware(({ ctx, input, next }) => {
+	const p = ctx.principal;
+	if (p?.kind === "brain") {
+		const i = input as { project?: unknown; turnRunId?: unknown };
+		if (i.project !== p.project || i.turnRunId !== p.runId)
+			throw new TRPCError({
+				code: "FORBIDDEN",
+				message: "the token was not issued for that project and turn",
+			});
+	}
+	return next();
+});

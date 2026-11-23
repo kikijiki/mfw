@@ -24,7 +24,9 @@ export type PreflightCode =
 	/** The sandbox exists but the minimal probe failed (`containment/minimal-probe.ts`). */
 	| "sandbox_probe_failed"
 	/** Autonomy on a target whose sandbox is not attested; waitingFor = [target kind]. */
-	| "remote_autonomy_unsupported";
+	| "remote_autonomy_unsupported"
+	/** This run kind has no sandbox profile yet, so it cannot run autonomously. */
+	| "sandbox_role_unavailable";
 
 export class DispatchPreflightError extends Error {
 	readonly fix: RefusalFix;

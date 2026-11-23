@@ -1,6 +1,8 @@
 import type { Headline, HeadlineLink } from "@mfw/daemon/headlines";
 
 import { humanizeToken } from "../../lib/format";
+import { nodeRef } from "../../lib/nodeRef";
+import type { RouterOutputs } from "../../lib/trpc";
 import { href } from "../../routes";
 
 /**
@@ -82,6 +84,169 @@ export function intentSentence(
 		proposed,
 		more: Math.max(0, (intents?.length ?? 0) - 1),
 	};
+}
+
+/** The server's limit (`DIRECTION_MAX_CHARS`); a test keeps them equal. */
+export const DIRECTION_CHARS = 500;
+
+export type DirectionState =
+	| "drafting"
+	| "drafted"
+	| "held"
+	| "done"
+	| "no_draft";
+
+/** How a direction's status reads on Lead. */
+export function directionBadge(
+	status: DirectionState,
+	received: boolean,
+): { label: string; tone: "neutral" | "accent" | "ok" | "warn" } {
+	switch (status) {
+		case "drafting":
+			return received
+				? { label: "drafting", tone: "accent" }
+				: { label: "waiting for the brain", tone: "neutral" };
+		case "drafted":
+			return { label: "drafted", tone: "accent" };
+		case "held":
+			return { label: "held for you", tone: "warn" };
+		case "done":
+			return { label: "done", tone: "ok" };
+		case "no_draft":
+			return { label: "no draft", tone: "neutral" };
+	}
+}
+
+/** Poll only while something can still change on its own. */
+export function directionsOpen(
+	list: readonly { status: DirectionState }[] | undefined,
+): boolean {
+	return (list ?? []).some(
+		(d) => d.status !== "done" && d.status !== "no_draft",
+	);
+}
+
+/** The server's limit on a question; a test keeps them equal. */
+export const CHAT_CHARS = 500;
+
+type ChatEntryView = RouterOutputs["brain"]["chatThread"]["entries"][number];
+export type ChatAnswerView = Extract<ChatEntryView, { kind: "answer" }>;
+export type ChatCitationView = ChatAnswerView["citations"][number];
+
+export interface ChatRow {
+	id: string;
+	question: string;
+	answer: ChatAnswerView | null;
+	directionGiven: boolean;
+}
+
+/** The append-only entries as question-and-answer rows, oldest first. */
+export function chatRows(
+	entries: readonly ChatEntryView[] | undefined,
+): ChatRow[] {
+	const list = entries ?? [];
+	const answers = new Map<string, ChatAnswerView>();
+	const given = new Set<string>();
+	for (const e of list) {
+		if (e.kind === "answer") answers.set(e.questionId, e);
+		if (e.kind === "direction") given.add(e.answerId);
+	}
+	return list.flatMap((e) => {
+		if (e.kind !== "question") return [];
+		const answer = answers.get(e.id) ?? null;
+		return [
+			{
+				id: e.id,
+				question: e.text,
+				answer,
+				directionGiven: answer ? given.has(answer.id) : false,
+			},
+		];
+	});
+}
+
+/** Where a citation leads. Ids go through the route builders, which encode them. */
+export function citationLink(
+	project: string,
+	c: ChatCitationView,
+): { to: string; label: string } {
+	switch (c.kind) {
+		case "task":
+			return {
+				to: href.board(project, { node: nodeRef.task(c.id) }),
+				label: c.id,
+			};
+		case "run":
+			return {
+				to: href.node(project, nodeRef.run(c.id)),
+				label: `run ${c.id.slice(-6)}`,
+			};
+		case "decision":
+			return {
+				to: href.node(project, nodeRef.decision(Number(c.id))),
+				label: `decision ${c.id}`,
+			};
+		case "view":
+			switch (c.id) {
+				case "capacity":
+					return { to: href.fleet(), label: "capacity" };
+				case "needs_you":
+					return {
+						to: `${href.project(project)}#needs-you`,
+						label: "needs you",
+					};
+				case "decisions":
+					return {
+						to: href.flow(project, { node: nodeRef.brain() }),
+						label: "decisions",
+					};
+				default:
+					return { to: href.flow(project), label: c.id };
+			}
+	}
+}
+
+/** What kind of answer this is, so the brain's words never read as a record. */
+export function answerBadges(a: ChatAnswerView): {
+	label: string;
+	tone: "neutral" | "accent" | "ok" | "warn";
+	title: string;
+}[] {
+	const out: ReturnType<typeof answerBadges> = [
+		a.source === "brain"
+			? {
+					label: "brain's words",
+					tone: "accent",
+					title: "The brain's own interpretation, not a host-observed fact",
+				}
+			: {
+					label: "from records",
+					tone: "neutral",
+					title: "Read straight from the database, with no model involved",
+				},
+	];
+	if (!a.grounded) {
+		out.push({
+			label: "unverified: no record",
+			tone: "warn",
+			title: "No record backs this answer",
+		});
+	}
+	if (a.unbackedClaims) {
+		out.push({
+			label: `${a.unbackedClaims} unbacked claim${a.unbackedClaims === 1 ? "" : "s"}`,
+			tone: "warn",
+			title: "Marked in the text: no host record backs these words",
+		});
+	}
+	if (a.provenance.includes("agent") || a.provenance.includes("external")) {
+		out.push({
+			label: "drew on agent text",
+			tone: "warn",
+			title: "This answer read text written by agents or outside sources",
+		});
+	}
+	return out;
 }
 
 export interface DrillLink {

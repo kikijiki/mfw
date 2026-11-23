@@ -510,6 +510,22 @@ describe("archiveWip and discard save work before it is destroyed", () => {
 		expect(again).toEqual({ ...archive, created: false } as never);
 	});
 
+	test("archiving the same unchanged worktree again is idempotent across a clock tick", async () => {
+		const root = await repo();
+		const mgr = new WorktreeManager(root);
+		const wt = await mgr.create("run-tick");
+		await writeFile(join(wt.path, "src/a.ts"), "edit\n");
+		const name = { taskId: "MFW-8", runId: "run-tick" };
+		const first = await mgr.archiveWip(wt, name);
+		// The snapshot commit must not carry the wall clock: git dates commits to
+		// the second, so an archive of the same state a second later used to mint
+		// a different SHA and a `-2` ref. Wait out a real second boundary.
+		await Bun.sleep(1_100);
+		const second = await mgr.archiveWip(wt, name);
+		expect(first?.created).toBe(true);
+		expect(second).toEqual({ ...first, created: false } as never);
+	});
+
 	test("an untouched worktree has nothing to archive", async () => {
 		const root = await repo();
 		const mgr = new WorktreeManager(root);

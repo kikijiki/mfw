@@ -11,8 +11,28 @@ import type { ProviderHold } from "./routing.ts";
  *
  * Keys are `routing.holdKeyOf(harness, endpoint)`. Each key is one pool, so a
  * hold parks exactly the work that needs that account. An unreadable hold
- * throws: it never reads as "no hold".
+ * throws: it never reads as "no hold". The project-level `dispatch_hold`
+ * (manual quiet periods, trigger `hold_dispatch`) still holds every provider
+ * of that one project.
+ *
+ * A rate-limit or login message from a run is sandbox-reported: an agent can
+ * forge it. {@link ProviderHoldStore.report} therefore holds only the reporting
+ * project, for a short time, and becomes machine-wide only when a second
+ * project reports the same account within a few minutes.
  */
+
+/** The longest a hold taken from an agent's own report can last unconfirmed. */
+export const MAX_REPORTED_HOLD_MS = 60 * 60_000;
+/** Used when a report names no usable reset time. */
+const REPORTED_HOLD_FALLBACK_MS = 15 * 60_000;
+/** How close together two projects' reports must be to confirm each other. */
+export const REPORT_CONFIRM_WINDOW_MS = 15 * 60_000;
+const MAX_REPORTS_PER_KEY = 32;
+
+/** The hold of one account in one project. Never read as a machine-wide key. */
+export function projectHoldKey(key: string, project: string): string {
+	return `${key}#project:${project}`;
+}
 
 const HoldDetailSchema = z.object({
 	key: z.string(),
@@ -110,40 +130,112 @@ export class ProviderHoldStore {
 		};
 	}
 
-	/** Hold `key` until `until`, keeping the furthest existing `until`. */
+	private async place(
+		key: string,
+		hold: { until: number; reason: string; runId?: string; project?: string },
+	): Promise<StoredProviderHold> {
+		const current = (await this.read()).get(key);
+		if (current && current.until >= hold.until) return this.public(current);
+		const poolId = providerPoolId(key);
+		await this.store.definePool({
+			id: poolId,
+			title: key,
+			dimensions: [{ kind: "meter", name: "usage" }],
+		});
+		const kind = hold.reason === "budget" ? "budget" : "rate_limit";
+		if (current && current.kind !== kind) {
+			await this.store.clearHold(poolId, current.kind, "core");
+		}
+		const since = current?.since ?? this.now();
+		await this.store.placeHold({
+			poolId,
+			reason: kind,
+			actor: "core",
+			until: hold.until,
+			detail: JSON.stringify({
+				key,
+				reason: hold.reason,
+				since,
+				...(hold.runId ? { runId: hold.runId } : {}),
+				...(hold.project ? { project: hold.project } : {}),
+			}),
+		});
+		return this.public({ ...hold, since });
+	}
+
+	/**
+	 * Hold `key` machine-wide until `until`, keeping the furthest existing
+	 * `until`. For host-observed facts only; an agent's claim goes to `report`.
+	 */
 	hold(
 		key: string,
 		hold: { until: number; reason: string; runId?: string; project?: string },
 	): Promise<StoredProviderHold> {
+		return this.serialized(() => this.place(key, hold));
+	}
+
+	/**
+	 * Record an agent's rate-limit or login report. The hold is clamped and
+	 * covers the reporting project, unless another project reported the same
+	 * account recently. `confirmedUntil` applies only to that confirmed case.
+	 */
+	report(
+		key: string,
+		report: {
+			project: string;
+			until: number;
+			reason: string;
+			runId?: string;
+			confirmedUntil?: number;
+		},
+	): Promise<{ scope: "project" | "machine"; key: string; until: number }> {
 		return this.serialized(async () => {
-			const current = (await this.read()).get(key);
-			if (current && current.until >= hold.until) return this.public(current);
-			const poolId = providerPoolId(key);
-			await this.store.definePool({
-				id: poolId,
-				title: key,
-				dimensions: [{ kind: "meter", name: "usage" }],
+			const now = this.now();
+			const projects = await this.store.recordProviderReport({
+				key,
+				project: report.project,
+				windowMs: REPORT_CONFIRM_WINDOW_MS,
+				maxPerKey: MAX_REPORTS_PER_KEY,
 			});
-			const kind = hold.reason === "budget" ? "budget" : "rate_limit";
-			if (current && current.kind !== kind) {
-				await this.store.clearHold(poolId, current.kind, "core");
-			}
-			const since = current?.since ?? this.now();
-			await this.store.placeHold({
-				poolId,
-				reason: kind,
-				actor: "core",
-				until: hold.until,
-				detail: JSON.stringify({
-					key,
-					reason: hold.reason,
-					since,
-					...(hold.runId ? { runId: hold.runId } : {}),
-					...(hold.project ? { project: hold.project } : {}),
-				}),
+			const confirmed = projects.length >= 2;
+			const usable = Number.isFinite(report.until) && report.until > now;
+			const clamped = usable
+				? Math.min(report.until, now + MAX_REPORTED_HOLD_MS)
+				: now + REPORTED_HOLD_FALLBACK_MS;
+			const until = confirmed ? (report.confirmedUntil ?? clamped) : clamped;
+			const holdKey = confirmed ? key : projectHoldKey(key, report.project);
+			const next = await this.place(holdKey, {
+				until,
+				reason: report.reason,
+				project: report.project,
+				...(report.runId ? { runId: report.runId } : {}),
 			});
-			return this.public({ ...hold, since });
+			return {
+				scope: confirmed ? "machine" : "project",
+				key: holdKey,
+				until: next.until,
+			};
 		});
+	}
+
+	/** The routing view of one project: machine holds plus its own. */
+	forProject(project: string): {
+		snapshot(): Promise<(key: string) => ProviderHold | null>;
+	} {
+		return {
+			snapshot: async () => {
+				const holds = await this.active();
+				return (key) => {
+					const candidates = [
+						holds[key],
+						holds[projectHoldKey(key, project)],
+					].filter((h): h is StoredProviderHold => h !== undefined);
+					if (candidates.length === 0) return null;
+					const h = candidates.reduce((a, b) => (b.until > a.until ? b : a));
+					return { until: h.until, reason: h.reason };
+				};
+			},
+		};
 	}
 
 	clear(key: string): Promise<void> {

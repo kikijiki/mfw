@@ -211,7 +211,10 @@ export async function verifyHostAmd(
 	process.env.MFW_HOME = temporaryHome;
 	const timeoutMs = options.timeoutSeconds * 1_000;
 	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), timeoutMs);
+	const timeout = setTimeout(
+		() => controller.abort(new DOMException("deadline", "TimeoutError")),
+		timeoutMs,
+	);
 	try {
 		const runtime = createProductionHostProbeRuntime();
 		const kernelBootId = await readKernelBootId();

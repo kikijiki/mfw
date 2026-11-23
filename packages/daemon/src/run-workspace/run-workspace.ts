@@ -54,6 +54,8 @@ export interface RunWorkspaceResult {
 	ref: string;
 	/** Its tip, or null when the branch no longer exists. */
 	sha: string | null;
+	/** Why a clone's result was refused (a failure class). The clone is kept. */
+	failure?: string;
 }
 
 export interface RunWorkspace {

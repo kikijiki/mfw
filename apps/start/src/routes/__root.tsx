@@ -79,6 +79,9 @@ function Shell() {
 	const go = useGo();
 	useDarkClassSync();
 
+	// The login page stands alone: the shell's queries all need a session.
+	if (pathname === "/login" || pathname === `${BASE}/login`) return <Outlet />;
+
 	return (
 		<AppShell project={params.project} activePath={pathname} navigate={go}>
 			<Outlet />

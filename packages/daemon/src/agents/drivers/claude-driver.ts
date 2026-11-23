@@ -11,8 +11,14 @@
  * stdin so the agent completes one-shot.
  */
 import { appendFileSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { FileSink } from "bun";
+import {
+	agentSpawnArgv,
+	agentSpawnCwd,
+	refuseBridgedRunWithoutRequest,
+} from "../../containment/agent-launch-argv.ts";
+import { driverRunPaths, isHostBridged } from "../../containment/run-dir.ts";
+import { limitAgentEvent, stripTerminalControls } from "../event-limits.ts";
 import { isAllowedStatus } from "../rate-limit-claude.ts";
 
 const runDir = process.argv[2];
@@ -21,7 +27,9 @@ if (!runDir) {
 	process.exit(2);
 }
 
-const cfg = JSON.parse(readFileSync(join(runDir, "driver.json"), "utf8")) as {
+refuseBridgedRunWithoutRequest(isHostBridged(runDir));
+const paths = driverRunPaths(runDir);
+const cfg = JSON.parse(readFileSync(paths.config, "utf8")) as {
 	argv: string[];
 	cwd: string;
 	env?: Record<string, string>;
@@ -31,14 +39,14 @@ const cfg = JSON.parse(readFileSync(join(runDir, "driver.json"), "utf8")) as {
 	/** How long to wait after a result for a late steer before closing (default 1500). */
 	steerGraceMs?: number;
 };
-const steerPath = join(runDir, "steer.jsonl");
-const eventsPath = join(runDir, "events.jsonl");
+const steerPath = paths.steer;
+const eventsPath = paths.events;
 
 let seq = 0;
 function emit(event: Record<string, unknown>): void {
 	appendFileSync(
 		eventsPath,
-		`${JSON.stringify({ ts: new Date().toISOString(), seq: seq++, ...event })}\n`,
+		`${JSON.stringify(limitAgentEvent({ ts: new Date().toISOString(), seq: seq++, ...event }))}\n`,
 	);
 }
 
@@ -56,8 +64,8 @@ emit({
 	capabilities: { steer: cfg.steer !== false },
 });
 
-const proc = Bun.spawn(cfg.argv, {
-	cwd: cfg.cwd,
+const proc = Bun.spawn(agentSpawnArgv(cfg.argv), {
+	cwd: agentSpawnCwd(cfg.cwd),
 	env: { ...process.env, ...(cfg.env ?? {}) },
 	stdin: "pipe",
 	stdout: "pipe",
@@ -238,7 +246,17 @@ function num(v: unknown): number | undefined {
 
 // stderr → our stderr (→ pane → raw.log)
 void (async () => {
-	for await (const b of proc.stderr) process.stderr.write(b);
+	const decoder = new TextDecoder();
+	let pending = "";
+	for await (const b of proc.stderr) {
+		pending += decoder.decode(b, { stream: true });
+		const end = pending.lastIndexOf("\n") + 1;
+		if (end > 0) {
+			process.stderr.write(stripTerminalControls(pending.slice(0, end)));
+			pending = pending.slice(end);
+		}
+	}
+	if (pending) process.stderr.write(stripTerminalControls(pending));
 })();
 
 send(cfg.initialMessage);
@@ -246,10 +264,11 @@ send(cfg.initialMessage);
 const dec = new TextDecoder();
 let buf = "";
 for await (const bytes of proc.stdout) {
-	process.stdout.write(bytes); // raw passthrough → pane → raw.log
 	buf += dec.decode(bytes, { stream: true });
 	let nl = buf.indexOf("\n");
 	while (nl >= 0) {
+		// Whole lines, so an escape sequence split across reads is still removed.
+		process.stdout.write(`${stripTerminalControls(buf.slice(0, nl))}\n`);
 		const line = buf.slice(0, nl).trim();
 		buf = buf.slice(nl + 1);
 		if (line.startsWith("{")) {
@@ -262,6 +281,8 @@ for await (const bytes of proc.stdout) {
 		nl = buf.indexOf("\n");
 	}
 }
+
+if (buf) process.stdout.write(stripTerminalControls(buf));
 
 const code = await proc.exited;
 emit({

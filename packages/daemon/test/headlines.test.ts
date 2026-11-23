@@ -38,6 +38,7 @@ describe("attention classes", () => {
 		"verify_infra",
 		"admission",
 		"draft_failed",
+		"egress_budget",
 		"ownership_conflict",
 		"followups",
 		"needs_answer",
@@ -47,6 +48,8 @@ describe("attention classes", () => {
 		"auth_hold",
 		"brain_stuck",
 		"brain_notice",
+		"brain_decision",
+		"brain_breaker",
 	];
 	const SEVERITIES: InboxSeverity[] = ["critical", "attention", "info"];
 
@@ -202,5 +205,45 @@ describe("countLanded", () => {
 			handle.close?.();
 			await rm(root, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("headline: act budget and review debt", () => {
+	const base = {
+		project: "p",
+		landedToday: 1,
+		inboxItems: [act, act, act],
+		budgets: [],
+	};
+
+	test("says nothing when nothing is held and there is no debt", () => {
+		const h = buildHeadline({
+			...base,
+			attention: { heldBack: 0, debt: { count: 0, oldestAgeMs: null } },
+		});
+		expect(h.text).toBe("Landed 1, needs you 3; main green");
+	});
+
+	test("held items stay in needs-you and are named beside it", () => {
+		const h = buildHeadline({
+			...base,
+			attention: {
+				heldBack: 2,
+				debt: { count: 4, oldestAgeMs: 3 * 86_400_000 },
+			},
+		});
+		expect(h.needsYou).toBe(3);
+		expect(h.text).toBe(
+			"Landed 1, needs you 3; main green; 2 held back; review debt 4, oldest 3d",
+		);
+		expect(h.parts.find((p) => p.key === "held_back")?.link).toBe("needs_you");
+	});
+
+	test("debt with no dated item shows no age", () => {
+		const h = buildHeadline({
+			...base,
+			attention: { heldBack: 0, debt: { count: 1, oldestAgeMs: null } },
+		});
+		expect(h.text).toEndWith("review debt 1");
 	});
 });

@@ -12,6 +12,7 @@ import {
 	type BrainConfig,
 	type BrainLauncher,
 	BrainRuntime,
+	type BrainRuntimeDeps,
 	resolveBrainConfig,
 } from "../../src/brain-runtime/runtime.ts";
 import {
@@ -48,6 +49,10 @@ export async function brainUnit(
 		dispatchBlock?: { reason: string | null };
 		/** Give turns the unix socket (and no TCP url) instead of the TCP stub. */
 		socket?: BrainSocket;
+		/** What `select_winner` sees a run changed; null = cannot be listed. */
+		changedFiles?: (runId: string) => string[] | null;
+		/** Chat's fake model, budget and inbox. */
+		chat?: BrainRuntimeDeps["chat"];
 	} = {},
 ) {
 	const root = await mkdtemp(join(tmpdir(), "mfw-test-brain-unit-"));
@@ -258,8 +263,11 @@ export async function brainUnit(
 		projectName: "unit",
 		bootId: "boot-1",
 		config: () => config,
+		...(opts.chat ? { chat: opts.chat } : {}),
 		world: {
 			maxConcurrent: () => opts.maxConcurrent ?? 2,
+			changedFiles: async (run) =>
+				opts.changedFiles ? opts.changedFiles(run.id) : [],
 			...(opts.dispatchBlock
 				? {
 						dispatchPaused: async () =>

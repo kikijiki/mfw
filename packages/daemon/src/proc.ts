@@ -6,6 +6,8 @@
  * whole process group gets SIGTERM, then SIGKILL 5 s later.
  */
 
+import { assertLegacyGitAllowed } from "./host-git/legacy-guard.ts";
+
 export interface ProcOpts {
 	cwd?: string;
 	env?: NodeJS.ProcessEnv;
@@ -15,6 +17,11 @@ export interface ProcOpts {
 	/** DEFAULT 4 MiB per stream, tail-kept (head dropped, marker inserted). */
 	maxOutputBytes?: number;
 	signal?: AbortSignal;
+	/**
+	 * This git command already runs under HostGit's ownership checks, config and
+	 * env. Everything else is refused in a run workspace (`legacy-guard.ts`).
+	 */
+	hostGitChecked?: true;
 }
 
 export interface ProcResult {
@@ -109,6 +116,7 @@ export async function runProc(
 		);
 	}
 	if (argv.length === 0) throw new Error("runProc: empty argv");
+	if (!opts.hostGitChecked) assertLegacyGitAllowed(argv, opts.cwd, opts.env);
 
 	// detached ⇒ the child setsid()s and leads its own process group, so a
 	// negative-pid kill reaps everything it spawned.
@@ -184,5 +192,117 @@ export async function runProc(
 		timedOut,
 		truncated: out.truncated || err.truncated,
 		signalCode: proc.signalCode,
+	};
+}
+
+export interface ProcRecordsOpts {
+	cwd?: string;
+	env?: NodeJS.ProcessEnv;
+	timeoutMs?: number;
+	/** See `ProcOpts.hostGitChecked`. */
+	hostGitChecked?: true;
+	/** Stop and report `overflow` past this many NUL-terminated records. */
+	maxRecords: number;
+	/** Stop and report `overflow` on a longer record. */
+	maxRecordBytes: number;
+}
+
+export interface ProcRecordsResult {
+	exitCode: number | null;
+	signalCode: NodeJS.Signals | null;
+	timedOut: boolean;
+	/** A limit was hit: the listing is incomplete and must not back a decision. */
+	overflow: boolean;
+	stderr: string;
+}
+
+/**
+ * Read a command's NUL-separated output record by record. Unlike `runProc` it
+ * never keeps a tail: memory is bounded by one record, and a listing that does
+ * not fit is reported as `overflow` with the process killed.
+ */
+export async function runProcRecords(
+	argv: string[],
+	opts: ProcRecordsOpts,
+	onRecord: (record: string) => void,
+): Promise<ProcRecordsResult> {
+	if (!opts.hostGitChecked) assertLegacyGitAllowed(argv, opts.cwd, opts.env);
+	const proc = Bun.spawn(argv, {
+		cwd: opts.cwd,
+		env: opts.env as Record<string, string | undefined> | undefined,
+		detached: true,
+		stdin: "ignore",
+		stdout: "pipe",
+		stderr: "pipe",
+	});
+	const killGroup = () => {
+		try {
+			process.kill(-proc.pid, "SIGKILL");
+		} catch {
+			// already gone
+		}
+	};
+	let timedOut = false;
+	const timer = setTimeout(() => {
+		timedOut = true;
+		killGroup();
+	}, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+	const err = new TailBuffer(64 * 1024);
+	const decoder = new TextDecoder();
+	let overflow = false;
+	let count = 0;
+	let pending: Uint8Array[] = [];
+	let pendingBytes = 0;
+	const reader = proc.stdout.getReader();
+	try {
+		const stderrDone = drain(proc.stderr, err);
+		reading: for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			let start = 0;
+			while (start < value.length) {
+				const end = value.indexOf(0, start);
+				const stop = end === -1 ? value.length : end;
+				pendingBytes += stop - start;
+				if (pendingBytes > opts.maxRecordBytes) {
+					overflow = true;
+					break reading;
+				}
+				pending.push(value.slice(start, stop));
+				if (end === -1) break;
+				if (++count > opts.maxRecords) {
+					overflow = true;
+					break reading;
+				}
+				const joined = new Uint8Array(pendingBytes);
+				let at = 0;
+				for (const part of pending) {
+					joined.set(part, at);
+					at += part.length;
+				}
+				pending = [];
+				pendingBytes = 0;
+				onRecord(decoder.decode(joined));
+				start = end + 1;
+			}
+		}
+		if (overflow) killGroup();
+		await Promise.all([stderrDone, proc.exited]);
+	} catch (e) {
+		killGroup();
+		await proc.exited;
+		throw e;
+	} finally {
+		clearTimeout(timer);
+		reader.releaseLock();
+	}
+	// Output that ended without a terminator is a cut listing.
+	if (pendingBytes > 0) overflow = true;
+	return {
+		exitCode: proc.exitCode,
+		signalCode: proc.signalCode,
+		timedOut,
+		overflow,
+		stderr: err.toString(),
 	};
 }

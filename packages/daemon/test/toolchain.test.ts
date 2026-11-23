@@ -44,18 +44,36 @@ async function link(root: string, path: string, target: string) {
 	await symlink(target, abs);
 }
 
+const GIT = `${"a".repeat(32)}-git-2.5`;
+const PY = `${"b".repeat(32)}-python3-3.14`;
+const BASH = `${"c".repeat(32)}-bash-5.3`;
+const CURL = `${"d".repeat(32)}-curl-8.23`;
+const INTERACTIVE = `${"f".repeat(32)}-bash-interactive-5.3`;
+
 const paths = (p: { binds: { path: string }[] }) => p.binds.map((b) => b.path);
 
 describe("toolchain discovery", () => {
-	test("NixOS: store binaries bind /nix/store whole, via the profile symlink", async () => {
+	test("NixOS: binds the closure and hides undeclared executables", async () => {
 		const root = await fixture();
-		await exe(root, "nix/store/aaa-git-2.5/bin/git");
+		await exe(
+			root,
+			`nix/store/${GIT}/bin/git`,
+			`\x7fELF /nix/store/${PY}/bin/python3`,
+		);
+		await exe(root, `nix/store/${PY}/bin/python3`);
+		await exe(root, `nix/store/${BASH}/bin/bash`);
+		await exe(root, `nix/store/${CURL}/bin/curl`);
 		await link(
 			root,
 			"run/current-system/sw/bin/git",
-			"/nix/store/aaa-git-2.5/bin/git",
+			`/nix/store/${GIT}/bin/git`,
 		);
-		await link(root, "bin/sh", "/nix/store/bbb-bash/bin/bash");
+		await link(
+			root,
+			"run/current-system/sw/bin/curl",
+			`/nix/store/${CURL}/bin/curl`,
+		);
+		await link(root, "bin/sh", `/nix/store/${BASH}/bin/bash`);
 		await mkdir(join(root, "etc/static/ssl"), { recursive: true });
 		await writeFile(join(root, "etc/passwd"), "");
 		await writeFile(join(root, "etc/group"), "");
@@ -67,13 +85,138 @@ describe("toolchain discovery", () => {
 			root,
 		});
 		expect(plan.unresolved).toEqual([]);
-		expect(plan.resolved[0]?.realPath).toBe("/nix/store/aaa-git-2.5/bin/git");
-		expect(paths(plan)).toContain("/nix/store");
-		expect(paths(plan)).toContain("/run/current-system");
+		expect(plan.closureMethod).toBe("reference-scan");
+		expect(plan.resolved[0]?.path).toBe(`/nix/store/${GIT}/bin/git`);
+		expect(paths(plan)).not.toContain("/nix/store");
+		expect(paths(plan)).not.toContain("/run/current-system");
+		expect(paths(plan)).toContain(`/nix/store/${GIT}`);
+		expect(paths(plan)).toContain(`/nix/store/${BASH}`);
+		// In git's closure, but nobody declared it.
+		expect(paths(plan)).toContain(`/nix/store/${PY}`);
+		expect(plan.masks).toEqual([`/nix/store/${PY}/bin`]);
+		// Not in the closure at all.
+		expect(paths(plan)).not.toContain(`/nix/store/${CURL}`);
 		expect(paths(plan)).toContain("/etc/passwd");
 		expect(paths(plan)).toContain("/etc/static");
 		expect(paths(plan)).toContain("/etc/ssl");
-		expect(plan.pathDirs).toEqual(["/run/current-system/sw/bin"]);
+		expect(plan.pathDirs).toEqual([`/nix/store/${GIT}/bin`]);
+		const args = toolchainBwrapArgs(plan);
+		expect(args.indexOf("--tmpfs")).toBeGreaterThan(
+			args.lastIndexOf("--ro-bind"),
+		);
+		expect(args).toContain("--remount-ro");
+	});
+
+	test("NixOS: a wrapper's interpreter stays executable", async () => {
+		const root = await fixture();
+		await exe(
+			root,
+			`nix/store/${GIT}/bin/tool`,
+			`#!/nix/store/${PY}/bin/python3\n`,
+		);
+		await exe(root, `nix/store/${PY}/bin/python3`);
+		const plan = discoverToolchain({
+			home: "/users/u",
+			binaries: ["tool"],
+			path: `/nix/store/${GIT}/bin`,
+			root,
+		});
+		expect(plan.unresolved).toEqual([]);
+		expect(plan.masks ?? []).toEqual([]);
+	});
+
+	test("a file in HOME cannot widen the closure by naming store paths", async () => {
+		const root = await fixture();
+		const home = "/users/u";
+		await exe(root, `nix/store/${GIT}/bin/git`);
+		await exe(root, `nix/store/${PY}/bin/python3`);
+		await exe(root, `nix/store/${CURL}/bin/curl`);
+		await exe(
+			root,
+			`${home}/.local/bin/claude`,
+			`#!/nix/store/${PY}/bin/python3\nexec /nix/store/${CURL}/bin/curl\n`,
+		);
+		const plan = discoverToolchain({
+			home,
+			binaries: ["git", "claude"],
+			path: `/nix/store/${GIT}/bin:${home}/.local/bin`,
+			root,
+		});
+		expect(plan.resolved.map((b) => b.name).sort()).toEqual(["claude", "git"]);
+		expect(paths(plan)).not.toContain(`/nix/store/${PY}`);
+		expect(paths(plan)).not.toContain(`/nix/store/${CURL}`);
+	});
+
+	test("declared store roots are bound as data, with their executables hidden", async () => {
+		const root = await fixture();
+		const home = "/users/u";
+		await exe(root, `nix/store/${PY}/bin/python3`);
+		await exe(root, `${home}/.local/bin/tool`);
+		const plan = discoverToolchain({
+			home,
+			binaries: ["tool"],
+			path: `${home}/.local/bin`,
+			root,
+			storeRoots: [`/nix/store/${PY}/bin/python3`, "/etc/not-in-the-store"],
+		});
+		expect(paths(plan)).toContain(`/nix/store/${PY}`);
+		expect(plan.masks).toEqual([`/nix/store/${PY}/bin`]);
+	});
+
+	test("NixOS: a shell in the closure stays executable once a shell is declared", async () => {
+		const root = await fixture();
+		await exe(
+			root,
+			`nix/store/${GIT}/bin/git`,
+			`\x7fELF /nix/store/${BASH}/bin/bash /nix/store/${PY}/bin/python3`,
+		);
+		await exe(root, `nix/store/${BASH}/bin/bash`);
+		await exe(root, `nix/store/${PY}/bin/python3`);
+		await exe(root, `nix/store/${INTERACTIVE}/bin/sh`);
+		const declared = discoverToolchain({
+			home: "/users/u",
+			binaries: ["git", "sh"],
+			path: `/nix/store/${GIT}/bin:/nix/store/${INTERACTIVE}/bin`,
+			root,
+		});
+		expect(declared.masks).toEqual([`/nix/store/${PY}/bin`]);
+		const none = discoverToolchain({
+			home: "/users/u",
+			binaries: ["git"],
+			path: `/nix/store/${GIT}/bin`,
+			root,
+		});
+		expect(none.masks).toContain(`/nix/store/${BASH}/bin`);
+	});
+
+	test("NixOS: refuses when the closure cannot be computed", async () => {
+		const root = await fixture();
+		await exe(root, `nix/store/${GIT}/bin/git`);
+		const plan = discoverToolchain({
+			home: "/users/u",
+			binaries: ["git"],
+			path: `/nix/store/${GIT}/bin`,
+			root,
+			closure: () => {
+				throw new Error("no nix");
+			},
+		});
+		expect(plan.resolved).toEqual([]);
+		expect(plan.unresolved[0]?.reason).toContain("closure cannot be computed");
+		expect(paths(plan).some((p) => p.startsWith("/nix/store"))).toBe(false);
+	});
+
+	test("NixOS: a dangling reference refuses instead of a partial closure", async () => {
+		const root = await fixture();
+		await exe(root, `nix/store/${GIT}/bin/git`, `/nix/store/${PY}/bin/python3`);
+		const plan = discoverToolchain({
+			home: "/users/u",
+			binaries: ["git"],
+			path: `/nix/store/${GIT}/bin`,
+			root,
+		});
+		expect(plan.resolved).toEqual([]);
+		expect(plan.unresolved[0]?.name).toBe("git");
 	});
 
 	test("Debian: system roots and the alternatives links, no nix, no HOME", async () => {
