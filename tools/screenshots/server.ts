@@ -90,11 +90,12 @@ export async function startDevServer(opts: {
 			);
 		}
 		try {
-			const res = await fetch(`${base}/api/trpc/system.projects`, {
+			const res = await fetch(`${base}/api/health`, {
 				signal: AbortSignal.timeout(5_000),
 			});
 			if (res.ok) {
 				await res.json();
+				await signIn(base, opts.logFile);
 				return { base, pid, stop };
 			}
 		} catch {
@@ -118,6 +119,53 @@ function tail(file: string, lines = 25): string {
 
 export class TrpcError extends Error {}
 
+/** The owner password of the throwaway `MFW_HOME` a screenshot run creates. */
+export const SCREENSHOT_PASSWORD = "screenshot-run-throwaway";
+
+const sessions = new Map<string, { cookie: string; csrf: string }>();
+
+/**
+ * Sign in to a throwaway server: first-run setup with the token it printed to
+ * its log, or a plain login when an earlier server of this run already did it.
+ */
+async function signIn(base: string, logFile: string): Promise<void> {
+	const state = (await (await fetch(`${base}/api/auth/state`)).json()) as {
+		state: string;
+	};
+	let action = "login";
+	let body: Record<string, string> = { password: SCREENSHOT_PASSWORD };
+	if (state.state === "setup") {
+		let token: string | undefined;
+		for (let i = 0; i < 50 && !token; i++) {
+			token = [
+				...readFileSync(logFile, "utf8").matchAll(/setup token: (\S+)/g),
+			].at(-1)?.[1];
+			if (!token) await Bun.sleep(100);
+		}
+		if (!token) throw new Error("the dev server printed no setup token");
+		action = "setup";
+		body = { token, password: SCREENSHOT_PASSWORD };
+	}
+	const res = await fetch(`${base}/api/auth/${action}`, {
+		method: "POST",
+		headers: { "content-type": "application/json", "x-mfw-auth": "1" },
+		body: JSON.stringify(body),
+	});
+	if (!res.ok) throw new Error(`sign-in failed: HTTP ${res.status}`);
+	const { csrfToken } = (await res.json()) as { csrfToken: string };
+	const cookie = (res.headers.get("set-cookie") ?? "").split(";")[0] as string;
+	sessions.set(base, { cookie, csrf: csrfToken });
+}
+
+/** An expression that signs the browser in; evaluate it on a same-origin page. */
+export function browserSignInScript(base: string): string {
+	return `fetch(${JSON.stringify(`${base}/api/auth/login`)}, {
+		method: "POST",
+		headers: { "content-type": "application/json", "x-mfw-auth": "1" },
+		body: ${JSON.stringify(JSON.stringify({ password: SCREENSHOT_PASSWORD }))},
+	}).then((r) => r.status)`;
+}
+
 /** One tRPC call over HTTP with the SuperJSON envelope (`{json}`), as the web client sends it. */
 export async function trpc<T = unknown>(
 	base: string,
@@ -126,15 +174,20 @@ export async function trpc<T = unknown>(
 	kind: "query" | "mutation" = "mutation",
 ): Promise<T> {
 	const url = `${base}/api/trpc/${path}`;
+	const session = sessions.get(base);
+	const auth: Record<string, string> = session
+		? { cookie: session.cookie, "x-mfw-csrf": session.csrf }
+		: {};
 	const res =
 		kind === "mutation"
 			? await fetch(url, {
 					method: "POST",
-					headers: { "content-type": "application/json" },
+					headers: { "content-type": "application/json", ...auth },
 					body: JSON.stringify({ json: input }),
 				})
 			: await fetch(
 					`${url}?input=${encodeURIComponent(JSON.stringify({ json: input }))}`,
+					{ headers: auth },
 				);
 	const body = (await res.json()) as {
 		result?: { data?: { json?: T } };
