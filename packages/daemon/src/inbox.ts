@@ -101,6 +101,10 @@ export interface InboxItem {
 	/** `approval_pending`: the pending tool approval the answer resolves. */
 	requestId?: string;
 	ts: number;
+	/** Over the machine's `act` budget (`act-budget.ts`): listed and answerable, shown folded. */
+	heldBack?: boolean;
+	/** Release position among held items; 0 comes back first. */
+	heldRank?: number;
 }
 
 export type InboxAnswer =

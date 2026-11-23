@@ -374,8 +374,34 @@ export function isolationConfigProblem(p: {
 	return null;
 }
 
+/**
+ * The machine-level `act` budget (`act-budget.ts`). Every key is optional; an
+ * absent one takes `DEFAULT_ACT_BUDGET`. Read on each inbox request.
+ */
+export const actBudgetSchema = z.object({
+	/** Non-critical `act` items in front of the owner at once. Default 5. */
+	maxVisible: z.number().int().positive().optional(),
+	/** The floor review debt can tighten `maxVisible` to. Default 2. */
+	minVisible: z.number().int().positive().optional(),
+	/** New items shown per rolling window, over all projects. Default 20. */
+	perWindow: z.number().int().positive().optional(),
+	/** The rolling window. Default 24 hours. */
+	windowMs: z.number().int().positive().optional(),
+	/** The most of the limit one project takes while another waits (0..1]. Default 0.6. */
+	projectShare: z.number().gt(0).lte(1).optional(),
+	/** How long an open item waits before it counts as review debt. Default 4 hours. */
+	debtGraceMs: z.number().int().nonnegative().optional(),
+	/** Each this many debt items take one slot off the limit. Default 5. */
+	debtStep: z.number().int().positive().optional(),
+	/** Debt older than this takes one more slot. Default 72 hours. */
+	debtStaleMs: z.number().int().positive().optional(),
+});
+export type StoredActBudget = z.infer<typeof actBudgetSchema>;
+
 const configSchema = z.object({
 	projects: z.array(projectSchema).default([]),
+	/** Machine-wide limit on what the fleet puts in front of the owner. */
+	actBudget: actBudgetSchema.optional(),
 	supervisorIntervalMs: z.number().int().positive().optional(),
 	schedulerIntervalMs: z.number().int().positive().optional(),
 	/**
