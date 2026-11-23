@@ -71,6 +71,8 @@ export function needTarget(item: InboxItem): string {
 		case "sweep_infra":
 		case "followups":
 			return href.board(project);
+		case "egress_budget":
+			return runId ? href.run(project, runId) : href.projectSettings(project);
 		case "budget":
 		case "auth_hold":
 			return href.projectSettings(project);

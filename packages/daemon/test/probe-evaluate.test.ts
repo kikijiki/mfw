@@ -58,6 +58,10 @@ const expectation = (
 		{ name: "bpf", expect: 1, provable: true },
 		{ name: "clone3", expect: 38, provable: true },
 	],
+	socketFamilies: [
+		{ family: 40, expect: 97 },
+		{ family: 1, expect: 22 },
+	],
 	scope: "systemd",
 	limits: { tasksMax: 256, memoryMaxBytes: 1024 ** 3 },
 	sweepTolerated: [],
@@ -92,6 +96,10 @@ const good = (): ProbeObservations => ({
 	syscalls: [
 		{ name: "bpf", errno: 1 },
 		{ name: "clone3", errno: 38 },
+	],
+	socketFamilies: [
+		{ family: 40, errno: 97 },
+		{ family: 1, errno: 22 },
 	],
 	usernsErrno: 1,
 	mounts: [
@@ -278,6 +286,40 @@ const NEGATIVES: Negative[] = [
 		name: "the syscall control failed",
 		weaken: (o) => {
 			o.syscallControl = false;
+		},
+	},
+	{
+		item: "socket_families",
+		name: "a denied family reached the kernel",
+		weaken: (o) => {
+			o.socketFamilies = [
+				{ family: 40, errno: 22 },
+				{ family: 1, errno: 22 },
+			];
+		},
+	},
+	{
+		item: "socket_families",
+		name: "an allowed family was blocked, so the control proves nothing",
+		weaken: (o) => {
+			o.socketFamilies = [
+				{ family: 40, errno: 97 },
+				{ family: 1, errno: 97 },
+			];
+		},
+	},
+	{
+		item: "socket_families",
+		name: "a planned family was not tried",
+		weaken: (o) => {
+			o.socketFamilies = [{ family: 1, errno: 22 }];
+		},
+	},
+	{
+		item: "socket_families",
+		name: "nothing was tried",
+		weaken: (o) => {
+			o.socketFamilies = [];
 		},
 	},
 	{

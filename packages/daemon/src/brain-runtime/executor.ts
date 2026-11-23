@@ -20,7 +20,7 @@ import type { Logger } from "../log.ts";
 import { AdmissionHeldError } from "../project-dispatch-admission.ts";
 import { GlobalStopError, type GroupRunSpec } from "../run-engine.ts";
 import type { RunRegistry, RunRow } from "../run-registry.ts";
-import { createRunWorkspace } from "../run-workspace/factory.ts";
+import { workspaceForRun } from "../run-workspace/factory.ts";
 import type { TaskService } from "../task-service.ts";
 import { TaskOwnershipHeldError } from "../tasks/index.ts";
 import type { VerificationPlan } from "../tasks/types.ts";
@@ -1377,7 +1377,7 @@ export class BrainActionExecutor {
 	/** Save a loser's work to `wip/<task>-<run>`, then drop its worktree and keep its branch. */
 	private async archiveLoser(run: RunRow): Promise<boolean> {
 		if (!run.worktreePath || !run.branch || !run.baseSha) return false;
-		const wt = createRunWorkspace(this.deps.projectRoot);
+		const wt = workspaceForRun(this.deps.projectRoot, run);
 		const handle = {
 			path: run.worktreePath,
 			branch: run.branch,

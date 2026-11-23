@@ -193,11 +193,19 @@ function profileSources(profile: SandboxProfile): SourceBind[] {
 		});
 	}
 	if (fs?.fleetConfig) {
+		const privateState = fs.fleetConfig.privateState;
 		out.push({
 			label: "fleet config",
 			source: fs.fleetConfig.source,
-			writable: fs.fleetConfig.writable.length > 0,
+			writable: !privateState && fs.fleetConfig.writable.length > 0,
 		});
+		if (privateState && fs.fleetConfig.writable.length > 0) {
+			out.push({
+				label: "fleet private state",
+				source: privateState,
+				writable: true,
+			});
+		}
 	}
 	if (profile.network?.mode === "proxy") {
 		out.push({
@@ -409,20 +417,24 @@ function checkSources(
 	const fleet = profile.filesystem?.fleetConfig;
 	if (fleet) {
 		for (const rel of fleet.writable) {
-			const full = joinUnder(fleet.source, rel);
-			if (full === null) {
-				return refuse(
-					"path_denied",
-					`fleet directory ${rel} leaves ${fleet.source}`,
-					"name a directory inside the fleet config",
-				);
-			}
-			if (host.realpath(full) !== full) {
-				return refuse(
-					"path_not_canonical",
-					`fleet directory ${full} is missing or reached through a symlink`,
-					"create it as a real directory",
-				);
+			// The shared directory is the mount point, the private one the source.
+			for (const root of [fleet.source, fleet.privateState]) {
+				if (!root) continue;
+				const full = joinUnder(root, rel);
+				if (full === null) {
+					return refuse(
+						"path_denied",
+						`fleet directory ${rel} leaves ${root}`,
+						"name a directory inside the fleet config",
+					);
+				}
+				if (host.realpath(full) !== full) {
+					return refuse(
+						"path_not_canonical",
+						`fleet directory ${full} is missing or reached through a symlink`,
+						"create it as a real directory",
+					);
+				}
 			}
 		}
 	}
@@ -450,6 +462,7 @@ function declaredToolchain(
 	if (declared.length === 0) {
 		return { binds: [], resolved: [], unresolved: [], pathDirs: [] };
 	}
+	// Masks always travel with the binds they hide part of.
 	const resolved = declared.flatMap((name) =>
 		plan.resolved.filter((b) => b.name === name),
 	);
@@ -458,6 +471,7 @@ function declaredToolchain(
 		resolved,
 		unresolved: [],
 		pathDirs: [...new Set(resolved.map((b) => posix.dirname(b.path)))],
+		...(plan.masks ? { masks: plan.masks } : {}),
 	};
 }
 
@@ -660,7 +674,10 @@ function buildMounts(
 					`fleet directory ${rel}`,
 					true,
 					// checkSources refused any path that leaves the source.
-					joinUnder(fs.fleetConfig.source, rel) as string,
+					joinUnder(
+						fs.fleetConfig.privateState ?? fs.fleetConfig.source,
+						rel,
+					) as string,
 					joinUnder(dest, rel) as string,
 				),
 			);

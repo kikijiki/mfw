@@ -84,6 +84,7 @@ const NOT_FACTS = [
 	"groupId",
 	"role",
 	"runDirLayout",
+	"workspaceKind",
 ];
 
 const REPO = resolve(import.meta.dir, "../../..");

@@ -61,6 +61,8 @@ export interface ProbeSpec {
 	fleetWritable: string[];
 	egressDir: string;
 	syscalls: ProbeSyscall[];
+	/** Address families to try with `socket()`. */
+	socketFamilies: number[];
 	/** Trees the sweep does not enter. */
 	sweepSkip: string[];
 	maxEntries: number;
@@ -513,6 +515,15 @@ export async function probeChildMain(): Promise<void> {
 		errno: raw(s.nr, s.arg0).errno,
 	}));
 
+	// An invalid type: an unfiltered kernel answers EINVAL before it would
+	// autoload a protocol module, so this can never load one (AF_VSOCK).
+	const INVALID_SOCKET_TYPE = 0x40000001;
+	const socketFamilies = spec.socketFamilies.map((family) => {
+		const r = raw(41, family, INVALID_SOCKET_TYPE, 0);
+		if (r.rc >= 0) raw(3, r.rc);
+		return { family, errno: r.rc >= 0 ? 0 : r.errno };
+	});
+
 	// clone(flags, 0, 0, 0, 0); the child calls exit_group(0) without returning.
 	const STUB = [
 		0xb8, 0x38, 0, 0, 0, 0x31, 0xf6, 0x31, 0xd2, 0x45, 0x31, 0xd2, 0x45, 0x31,
@@ -559,6 +570,7 @@ export async function probeChildMain(): Promise<void> {
 		},
 		proc,
 		syscallControl: control,
+		socketFamilies,
 		syscalls,
 		usernsErrno,
 		mounts,

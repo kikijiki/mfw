@@ -108,6 +108,7 @@ process.exit(0);
 				model: "m",
 				initialMessage: "",
 				steer: false,
+				approvalMode: "interactive",
 				isolation: { mode: "bwrap", hidePaths: [] },
 			});
 			await waitExit(host, runDir);

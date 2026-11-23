@@ -110,6 +110,11 @@ const FleetConfigSection = z.strictObject({
 	source: AbsolutePath,
 	/** Directories under `source` that stay writable; everything else is read-only. */
 	writable: z.array(RelativeDir).max(64),
+	/**
+	 * Where those directories really live for this run. They are mounted over
+	 * the shared ones, so nothing a run writes reaches another run.
+	 */
+	privateState: AbsolutePath.optional(),
 });
 
 /**
@@ -163,6 +168,14 @@ const ALLOWED_ENV: ReadonlySet<string> = new Set([
 	"DISABLE_AUTOUPDATER",
 	"DO_NOT_TRACK",
 	"ENABLE_CLAUDEAI_MCP_SERVERS",
+	// The run's identity, set by the engine. MFW_REPORT_PATH is a sandbox path.
+	"MFW_RUN_ID",
+	"MFW_PROJECT",
+	"MFW_TASK_ID",
+	"MFW_RUN_KIND",
+	"MFW_REPORT_PATH",
+	// Keeps a run's transcripts and memory out of the shared `-work` slug.
+	"CLAUDE_CODE_PROJECT_DIR_NAME",
 ]);
 const GRANT_ENV = /^MFW_GRANT_[A-Z0-9][A-Z0-9_]{0,100}$/;
 

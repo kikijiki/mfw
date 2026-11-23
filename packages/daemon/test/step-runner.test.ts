@@ -590,13 +590,14 @@ describe("StepRunner v2: finalization end to end", () => {
 		await env.cleanup();
 	});
 
-	test("a rate-limited run holds only its own route's provider account, machine-wide", async () => {
+	test("a rate-limited run reports only its own route's provider account", async () => {
 		const env = await makeEnv();
 		const holds: { key: string; until: number; project?: string }[] = [];
 		const runner = env.makeRunner({
 			providerHolds: {
-				hold: async (key, hold) => {
+				report: async (key, hold) => {
 					holds.push({ key, until: hold.until, project: hold.project });
+					return { scope: "project", key, until: hold.until };
 				},
 			},
 			projectName: "demo",
@@ -639,11 +640,24 @@ describe("StepRunner v2: finalization end to end", () => {
 
 	test("an auth failure holds the run's provider for the owner, with no retry and no attempt consumed", async () => {
 		const env = await makeEnv();
-		const holds: { key: string; until: number; reason: string }[] = [];
+		const holds: {
+			key: string;
+			until: number;
+			reason: string;
+			confirmedUntil?: number;
+		}[] = [];
 		const runner = env.makeRunner({
 			providerHolds: {
-				hold: async (key, hold) => {
-					holds.push({ key, until: hold.until, reason: hold.reason });
+				report: async (key, hold) => {
+					holds.push({
+						key,
+						until: hold.until,
+						reason: hold.reason,
+						...(hold.confirmedUntil !== undefined
+							? { confirmedUntil: hold.confirmedUntil }
+							: {}),
+					});
+					return { scope: "project", key, until: hold.until };
 				},
 			},
 			projectName: "demo",
@@ -669,8 +683,9 @@ describe("StepRunner v2: finalization end to end", () => {
 		await runner.finalize(run.id);
 		expect(holds).toHaveLength(1);
 		expect(holds[0]).toMatchObject({ key: "codex-cli", reason: "auth" });
-		// Held for a day, not for a reset time or the 15-minute fallback.
-		expect(holds[0]?.until).toBeGreaterThan(before + 23 * 3_600_000);
+		// The agent's word alone holds briefly; a day needs a second project.
+		expect(holds[0]?.until).toBeLessThanOrEqual(Date.now() + 3_600_000);
+		expect(holds[0]?.confirmedUntil).toBeGreaterThan(before + 23 * 3_600_000);
 		const task = await env.tasks.get(taskId);
 		expect(task?.status).toBe("ready");
 		expect(task?.attemptCount).toBe(0);
@@ -683,8 +698,9 @@ describe("StepRunner v2: finalization end to end", () => {
 		const holds: string[] = [];
 		const runner = env.makeRunner({
 			providerHolds: {
-				hold: async (key) => {
+				report: async (key, hold) => {
 					holds.push(key);
+					return { scope: "project", key, until: hold.until };
 				},
 			},
 			projectName: "demo",

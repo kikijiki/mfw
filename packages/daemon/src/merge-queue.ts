@@ -5,7 +5,7 @@ import { appendEvent, type EventBus } from "@mfw/db/eventlog";
 import { engineKv, type MergeJobState, mergeJobs, runs } from "@mfw/db/schema";
 import { and, asc, eq, inArray, lt } from "drizzle-orm";
 import { readProtectedBoardPaths } from "./board-layout.ts";
-import { git as plainGit } from "./git.ts";
+import { gitComplete as plainGitComplete, git as plainGit } from "./git.ts";
 import { quarantineRef } from "./host-git/fetch.ts";
 import { hardenedPush } from "./host-git/push.ts";
 import type { Logger } from "./log.ts";
@@ -19,6 +19,12 @@ import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
  */
 const git: typeof plainGit = (args, cwd, opts) =>
 	plainGit(
+		["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args],
+		cwd,
+		opts,
+	);
+const gitComplete: typeof plainGitComplete = (args, cwd, opts) =>
+	plainGitComplete(
 		["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args],
 		cwd,
 		opts,
@@ -501,16 +507,14 @@ export class MergeQueue {
 		const dir = this.integrationDir;
 		const board = await readProtectedBoardPaths(this.deps.projectRoot);
 		const treePaths = async (ref: string): Promise<string[]> => {
-			const listed = await git(
+			// A cut listing would leave protected paths out of the restore.
+			const listed = await gitComplete(
 				["ls-tree", "-r", "-z", "--name-only", ref, "--", ".mfw", ...board],
 				dir,
-			);
-			if (listed.exitCode !== 0) {
-				throw new Error(
-					`mfw firewall could not inspect ${ref}: ${listed.stderr || listed.stdout}`,
-				);
-			}
-			return listed.stdout.split("\0").filter(Boolean);
+			).catch((e: Error) => {
+				throw new Error(`mfw firewall could not inspect ${ref}: ${e.message}`);
+			});
+			return listed.split("\0").filter(Boolean);
 		};
 		const paths = [
 			...new Set([...(await treePaths(baseSha)), ...(await treePaths("HEAD"))]),
@@ -539,16 +543,15 @@ export class MergeQueue {
 
 		// Versus HEAD (the merge commit): the board paths the merge changed.
 		// Normally empty.
-		const changed = await git(
+		const changed = await gitComplete(
 			["diff", "--cached", "--name-only", "--", ...paths],
 			dir,
-		);
-		if (changed.exitCode !== 0) {
+		).catch((e: Error) => {
 			throw new Error(
-				`board firewall could not verify staged paths: ${changed.stderr || changed.stdout}`,
+				`board firewall could not verify staged paths: ${e.message}`,
 			);
-		}
-		const reverted = changed.stdout.split("\n").filter(Boolean);
+		});
+		const reverted = changed.split("\n").filter(Boolean);
 		if (reverted.length === 0) return;
 
 		const amend = await git(

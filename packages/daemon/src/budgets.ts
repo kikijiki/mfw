@@ -1,7 +1,8 @@
 import type { ProjectDb, ProjectDbHandle, ProjectDbTx } from "@mfw/db/client";
 import { appendEvent, type EventBus } from "@mfw/db/eventlog";
+import { REPORTED_SPEND_SOURCES } from "@mfw/db/provenance";
 import { engineKv, resourceSlots, spendLedger } from "@mfw/db/schema";
-import { and, eq, gte, like, lt, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, like, lt, notInArray, sql } from "drizzle-orm";
 import {
 	type BudgetEntry,
 	budgetEntrySchema,
@@ -119,7 +120,10 @@ export interface ResolvedBudget {
 }
 
 export interface BudgetStatus extends ResolvedBudget {
+	/** Host-observed use: the only figure that can warn, hold or stop. */
 	used: number;
+	/** What runs reported about themselves in this window. Display only. */
+	reported: { value: number; provenance: "sandbox-reported" };
 	fraction: number;
 	windowStart: number;
 	windowResetsAt: number;
@@ -437,6 +441,10 @@ export class BudgetService {
 			out.push({
 				...b,
 				used,
+				reported: {
+					value: await this.measure(b, w, "reported"),
+					provenance: "sandbox-reported",
+				},
 				fraction: b.limit > 0 ? used / b.limit : 0,
 				windowStart: w.start,
 				windowResetsAt: w.end,
@@ -711,13 +719,17 @@ export class BudgetService {
 	// ledger
 	// ------------------------------------------------------------------
 
-	private async measure(b: ResolvedBudget, w: WindowBounds): Promise<number> {
+	private async measure(
+		b: ResolvedBudget,
+		w: WindowBounds,
+		basis: SpendBasis = "host",
+	): Promise<number> {
 		const handles =
 			b.scope === "machine"
 				? (this.deps.ledgers?.() ?? [this.deps.handle])
 				: [this.deps.handle];
 		let total = 0;
-		for (const h of handles) total += await measureOne(h, b, w);
+		for (const h of handles) total += await measureOne(h, b, w, basis);
 		return total;
 	}
 
@@ -791,10 +803,14 @@ function fmt(n: number, unit: BudgetUnit): string {
 	return `${Math.round(n)} tokens`;
 }
 
+/** `host` is what enforcement reads; `reported` is what agents claim. */
+type SpendBasis = "host" | "reported";
+
 async function measureOne(
 	handle: ProjectDbHandle,
 	b: ResolvedBudget,
 	w: WindowBounds,
+	basis: SpendBasis,
 ): Promise<number> {
 	const where = and(
 		gte(spendLedger.ts, new Date(w.start)),
@@ -807,6 +823,9 @@ async function measureOne(
 		b.unit === "slot_hours"
 			? eq(spendLedger.source, "host_slot_time")
 			: undefined,
+		basis === "host"
+			? notInArray(spendLedger.source, [...REPORTED_SPEND_SOURCES])
+			: inArray(spendLedger.source, [...REPORTED_SPEND_SOURCES]),
 	);
 	const col =
 		b.unit === "usd"

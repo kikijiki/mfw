@@ -53,11 +53,14 @@ import {
 	type SandboxProfile,
 } from "./profile.ts";
 import {
+	ALLOWED_SOCKET_FAMILIES,
 	DENIED_ARG_MASKS,
 	DENIED_SYSCALLS,
+	EAFNOSUPPORT,
 	ENOSYS,
 	ENOSYS_SYSCALLS,
 	EPERM,
+	PROBED_DENIED_FAMILIES,
 } from "./seccomp.ts";
 import type { ToolchainPlan } from "./toolchain.ts";
 
@@ -111,6 +114,21 @@ const NOT_PROVABLE_SYSCALLS: ReadonlySet<string> = new Set([
 	"bpf",
 	"io_uring_setup",
 ]);
+
+/** Families the filter must refuse, and the allowed ones as the control. */
+export function socketFamilyPlan(): { family: number; expect: number }[] {
+	const EINVAL = 22;
+	return [
+		...PROBED_DENIED_FAMILIES.map((family) => ({
+			family,
+			expect: EAFNOSUPPORT,
+		})),
+		...Object.values(ALLOWED_SOCKET_FAMILIES).map((family) => ({
+			family,
+			expect: EINVAL,
+		})),
+	];
+}
 
 /** Every syscall the filter must deny, with the errno it must produce. */
 export function probeSyscallPlan(): ProbeSyscall[] {
@@ -369,6 +387,7 @@ export function buildProbePlan(
 				.map((p) => p.dest),
 			egressDir: SANDBOX_PATHS.egress,
 			syscalls,
+			socketFamilies: socketFamilyPlan().map((s) => s.family),
 			// `/sys` holds no sockets and is its own failing item if it is mounted at all.
 			sweepSkip: ["/proc", "/dev", "/sys", "/nix/store"],
 			maxEntries: SWEEP_MAX_ENTRIES,
@@ -388,6 +407,7 @@ export function buildProbePlan(
 				expect: s.expect,
 				provable: s.provable,
 			})),
+			socketFamilies: socketFamilyPlan(),
 			seccompFilters: hostSeccompFilters() + 1,
 			scope: opts.scope,
 			limits: {
@@ -442,6 +462,8 @@ export interface AttestResult {
 	outcome: "pass" | "fail";
 	items: ProbeItemResult[];
 	fingerprint: SandboxFingerprint;
+	/** The directories the probe really ran against. */
+	pins: PinIdentity[];
 }
 
 export interface AttestRequest {
@@ -534,7 +556,7 @@ export async function attestSandbox(
 		pins,
 		createdAt: new Date(),
 	});
-	return { ok: true, attestationId, outcome, items, fingerprint };
+	return { ok: true, attestationId, outcome, items, fingerprint, pins };
 }
 
 function compileRefused(r: CompileRefusal): AttestRefusal {

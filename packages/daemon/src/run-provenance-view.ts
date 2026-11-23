@@ -1,5 +1,6 @@
 import type { ProjectDb } from "@mfw/db/client";
 import type { FactProvenance, RunFactKind } from "@mfw/db/provenance";
+import { type RunEgressTotals, runEgressTotals } from "@mfw/db/run-egress";
 import {
 	foldRunExit,
 	listRunFacts,
@@ -16,6 +17,8 @@ export interface RunProvenanceView {
 	facts: { fact: RunFactKind; provenance: FactProvenance }[];
 	/** Strong words the host's own records back for this run. */
 	claims?: RenderedClaim[];
+	/** What the host-side proxy saw. Absent for a run with no egress records. */
+	egress?: RunEgressTotals;
 }
 
 const REPORT_STATUS = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
@@ -26,6 +29,7 @@ export async function runProvenanceView(
 ): Promise<RunProvenanceView> {
 	const facts = await listRunFacts(db, runId);
 	const report = facts.find((f) => f.fact === "report")?.value;
+	const egress = await runEgressTotals(db, runId);
 	const status =
 		typeof report === "object" && report !== null
 			? (report as Record<string, unknown>).status
@@ -36,5 +40,6 @@ export async function runProvenanceView(
 			typeof status === "string" && REPORT_STATUS.test(status) ? status : null,
 		facts: facts.map(({ fact, provenance }) => ({ fact, provenance })),
 		claims: await hostClaimsForRun(db, runId),
+		...(egress ? { egress } : {}),
 	};
 }

@@ -313,6 +313,10 @@ export interface ExecutionDriverSpec {
 	steer: boolean;
 	approvalMode: "autonomous" | "interactive";
 	isolation?: BwrapIsolation;
+	/** Which sandbox profile applies. Task and repair runs use the host bridge. */
+	runKind?: string;
+	/** The provider id, which names the fleet config of a host-bridged run. */
+	providerId?: string;
 }
 
 export interface LaunchExecutionRequest {

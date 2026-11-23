@@ -47,6 +47,7 @@ export const PROBE_ITEMS = [
 	"net_host_reach",
 	"egress_only",
 	"seccomp_eperm",
+	"socket_families",
 	"userns_denied",
 	"caps_empty",
 	"no_new_privs",
@@ -104,6 +105,9 @@ export const ProbeObservationsSchema = z.strictObject({
 	}),
 	syscallControl: z.boolean(),
 	syscalls: z.array(z.strictObject({ name: z.string(), errno: z.number() })),
+	socketFamilies: z.array(
+		z.strictObject({ family: z.number().int(), errno: z.number().int() }),
+	),
 	usernsErrno: z.number().int(),
 	mounts: z.array(
 		z.strictObject({ mountPoint: z.string(), options: z.array(z.string()) }),
@@ -157,6 +161,8 @@ export interface ProbeExpectation {
 	/** Values that must not appear in pid 1's command line. */
 	secrets: readonly { name: string; value: string }[];
 	syscalls: readonly { name: string; expect: number; provable: boolean }[];
+	/** `socket()` with an invalid type: EAFNOSUPPORT if filtered, else EINVAL. */
+	socketFamilies: readonly { family: number; expect: number }[];
 	/** The launching process's filter count plus the one bwrap installs. */
 	seccompFilters: number;
 	scope: "systemd" | "none";
@@ -312,6 +318,27 @@ function checkSeccomp(o: ProbeObservations, e: ProbeExpectation): Verdict {
 	return wrong.length ? `not denied: ${list(wrong)}` : null;
 }
 
+/**
+ * Every planned family, exactly once, with its errno. The allowed families are
+ * the control: they prove the call reached the kernel's type check, which is
+ * what makes EAFNOSUPPORT on the others the filter's answer.
+ */
+function checkSocketFamilies(
+	o: ProbeObservations,
+	e: ProbeExpectation,
+): Verdict {
+	if (e.socketFamilies.length === 0) return "no socket families were planned";
+	const got = new Map<number, number>();
+	for (const s of o.socketFamilies) {
+		if (got.has(s.family)) return `family ${s.family} reported twice`;
+		got.set(s.family, s.errno);
+	}
+	const wrong = e.socketFamilies
+		.filter((s) => got.get(s.family) !== s.expect)
+		.map((s) => `${s.family}=${got.get(s.family) ?? "missing"}`);
+	return wrong.length ? `wrong answer for family: ${list(wrong)}` : null;
+}
+
 function checkFds(o: ProbeObservations): Verdict {
 	const byFd = new Map(o.fds.map((f) => [f.fd, f.target]));
 	for (const fd of [0, 1, 2]) {
@@ -408,6 +435,7 @@ const CHECKS: Record<
 	},
 	egress_only: checkEgress,
 	seccomp_eperm: checkSeccomp,
+	socket_families: checkSocketFamilies,
 	userns_denied: (o) =>
 		o.usernsErrno === EPERM || o.usernsErrno === ENOSPC
 			? null

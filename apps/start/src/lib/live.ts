@@ -325,6 +325,11 @@ export function applyEvent(
 			runGet(event.runId);
 			break;
 
+		case "run.egress_budget_exceeded":
+			runGet(event.runId);
+			inbox();
+			break;
+
 		case "run.usage_sampled":
 			// Only the chip's `$` reads this: patch the row, no refetch (it fires
 			// every 30 s per live run).

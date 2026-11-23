@@ -34,6 +34,30 @@ export async function gitOk(
 	return r.stdout;
 }
 
+/**
+ * `gitOk` for an answer that backs a decision: the output is tail-kept, so a
+ * listing past the cap has lost its first entries and is an error here.
+ */
+export async function gitComplete(
+	args: string[],
+	cwd: string,
+	opts: { env?: Record<string, string> } = {},
+): Promise<string> {
+	const r = await runProc([requireHostTool("git"), ...args], {
+		cwd,
+		...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
+	});
+	if (r.exitCode !== 0) {
+		throw new Error(
+			`git ${args[0]} failed (${r.exitCode ?? r.signalCode}): ${r.stderr.trim() || r.stdout.trim()}`,
+		);
+	}
+	if (r.truncated) {
+		throw new Error(`git ${args[0]} produced more output than the cap`);
+	}
+	return r.stdout.trim();
+}
+
 export async function isGitRepo(cwd: string): Promise<boolean> {
 	const r = await git(["rev-parse", "--is-inside-work-tree"], cwd);
 	return r.exitCode === 0 && r.stdout === "true";
