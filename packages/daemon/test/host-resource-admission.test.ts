@@ -11,16 +11,18 @@ import type {
 	ProbeResult,
 } from "@mfw/core/host-observation";
 import { parseAmdSmi, parseNvidiaSmi } from "../src/host-probe-parsers.ts";
+import type {
+	HostResourceBinding,
+	HostResourceDefinition,
+	ObservationHealth,
+	StoredObservation,
+} from "../src/resources/host-types.ts";
 import {
-	type HostResourceBinding,
 	HostResourceCoordinator,
-	type HostResourceDefinition,
-	type LeaseLivenessInspector,
-	type LivenessEvidence,
-	type ObservationHealth,
+	type LegacyLiveness as LeaseLivenessInspector,
+	type LegacyEvidence as LivenessEvidence,
 	openHostResourceStore,
-	type StoredObservation,
-} from "../src/host-resources/index.ts";
+} from "./support/legacy-host.ts";
 
 const fixtureRoot = join(import.meta.dir, "fixtures", "host-probes");
 const homes: string[] = [];
@@ -340,12 +342,7 @@ describe("host observation-backed admission", () => {
 			requirements: [{ resourceId: "cpu", amount: 2n }],
 		});
 		const disjoint = await waiter(coordinator, "cpu/disjoint", "disjoint");
-		const snapshot = coordinator.captureAdmissionSnapshot();
-		const held = await coordinator.tryGrant(
-			cpu.id,
-			snapshot.generation,
-			snapshot,
-		);
+		const held = await coordinator.tryGrant(cpu.id);
 		expect(held).toMatchObject({ kind: "held", reason: "observation" });
 		if (!("kind" in held)) return;
 		expect(held.diagnostics[0]).toMatchObject({
@@ -356,21 +353,14 @@ describe("host observation-backed admission", () => {
 				busyBlocked: true,
 			},
 		});
-		expect(
-			"kind" in
-				(await coordinator.tryGrant(
-					disjoint.id,
-					snapshot.generation,
-					snapshot,
-				)),
-		).toBe(false);
+		expect("kind" in (await coordinator.tryGrant(disjoint.id))).toBe(false);
 
 		now.value += 100;
 		await coordinator.store.recordObservationBatch(
 			cpuHealthAt(2n, now.value, 0.5, 2),
 			[],
 		);
-		const recoveredGeneration = (await coordinator.store.readModel())
+		const recoveredGeneration = (await coordinator.store.freshModel())
 			.generation;
 		const grant = await coordinator.tryGrant(cpu.id, recoveredGeneration);
 		expect("kind" in grant).toBe(false);
@@ -390,7 +380,7 @@ describe("host observation-backed admission", () => {
 		coordinator.close();
 	});
 
-	test("uses one pinned observation snapshot across a wave while promises remain transactional", async () => {
+	test("each grant in a wave reads current evidence, never a stale sample", async () => {
 		const now = { value: 10_000 };
 		const coordinator = await createCoordinator(now);
 		await coordinator.putDefinition(gpuDefinition("wave", "nvidia-gpu", 2n));
@@ -403,49 +393,48 @@ describe("host observation-backed admission", () => {
 		]);
 		const first = await waiter(coordinator, "wave/first", "wave");
 		const second = await waiter(coordinator, "wave/second", "wave");
-		const snapshot = coordinator.captureAdmissionSnapshot();
+		const firstGrant = await coordinator.tryGrant(first.id);
+		if ("kind" in firstGrant) throw new Error("first grant was held");
+		const firstBinding = firstGrant.allocations[0]?.bindingId as string;
+		const other = firstBinding === "wave-a" ? "wave-b" : "wave-a";
 
-		const firstGrant = await coordinator.tryGrant(
-			first.id,
-			snapshot.generation,
-			snapshot,
-		);
-		expect("kind" in firstGrant).toBe(false);
-		const secondGrant = await coordinator.tryGrant(
-			second.id,
-			snapshot.generation,
-			snapshot,
-		);
-		expect("kind" in secondGrant).toBe(false);
-		if ("kind" in firstGrant || "kind" in secondGrant) return;
-		expect(firstGrant.allocations[0]?.bindingId).not.toBe(
-			secondGrant.allocations[0]?.bindingId,
-		);
-		expect((await coordinator.store.liveLeases()).length).toBe(2);
-
-		await coordinator.putDefinition(gpuDefinition("changed", "amd-gpu", 2n));
-		for (const id of ["changed-a", "changed-b"]) {
-			await coordinator.putBinding(binding(id, "changed"));
-		}
-		await recordDevices(coordinator, "amd-gpu", 1n, now.value, [
-			{ bindingId: "changed-a", device: idleDevice("changed-a") },
-			{ bindingId: "changed-b", device: idleDevice("changed-b") },
-		]);
-		const beforePoll = await waiter(coordinator, "changed/first", "changed");
-		const afterPoll = await waiter(coordinator, "changed/second", "changed");
-		const pinned = coordinator.captureAdmissionSnapshot();
-		expect(
-			"kind" in
-				(await coordinator.tryGrant(beforePoll.id, pinned.generation, pinned)),
-		).toBe(false);
+		// Between two grants of one wave, a foreign process takes the free device.
 		now.value += 100;
-		await recordDevices(coordinator, "amd-gpu", 2n, now.value, [
-			{ bindingId: "changed-a", device: idleDevice("changed-a") },
-			{ bindingId: "changed-b", device: idleDevice("changed-b") },
+		await recordDevices(coordinator, "nvidia-gpu", 2n, now.value, [
+			{ bindingId: firstBinding, device: idleDevice(firstBinding) },
+			{
+				bindingId: other,
+				device: observedDevice(other, { pid: 777, startTimeTicks: 7n }),
+			},
 		]);
-		expect(
-			await coordinator.tryGrant(afterPoll.id, pinned.generation, pinned),
-		).toMatchObject({ kind: "held", reason: "generation" });
+		expect(await coordinator.tryGrant(second.id)).toMatchObject({
+			kind: "held",
+			reason: "observation",
+		});
+		expect((await coordinator.store.liveLeases()).length).toBe(1);
+
+		// Evidence that outlives its freshness window grants nothing either.
+		now.value += 100;
+		await recordDevices(coordinator, "nvidia-gpu", 3n, now.value, [
+			{ bindingId: firstBinding, device: idleDevice(firstBinding) },
+			{ bindingId: other, device: idleDevice(other) },
+		]);
+		now.value += 31_000;
+		expect(await coordinator.tryGrant(second.id)).toMatchObject({
+			kind: "held",
+		});
+		expect((await coordinator.store.liveLeases()).length).toBe(1);
+
+		now.value += 100;
+		await recordDevices(coordinator, "nvidia-gpu", 4n, now.value, [
+			{ bindingId: firstBinding, device: idleDevice(firstBinding) },
+			{ bindingId: other, device: idleDevice(other) },
+		]);
+		const secondGrant = await coordinator.tryGrant(second.id);
+		expect("kind" in secondGrant).toBe(false);
+		if (!("kind" in secondGrant)) {
+			expect(secondGrant.allocations[0]?.bindingId).toBe(other);
+		}
 		coordinator.close();
 	});
 
@@ -501,7 +490,7 @@ describe("host observation-backed admission", () => {
 			evidence: [{ kind: "device-memory", residentBytes: "10" }],
 		});
 		expect(() => JSON.stringify(eventDiagnostic)).not.toThrow();
-		const storedHold = (await coordinator.store.readModel()).holds.find(
+		const storedHold = (await coordinator.store.freshModel()).holds.find(
 			(item) => item.resourceId === "gpu",
 		);
 		expect(storedHold?.diagnostic.gpuOccupancy?.occupants[0]).toMatchObject({
@@ -556,7 +545,7 @@ describe("host observation-backed admission", () => {
 				}),
 			},
 		]);
-		const model = await coordinator.store.readModel();
+		const model = await coordinator.store.freshModel();
 		const incident = model.incidents.find(
 			(item) => item.kind === "gpu-occupancy-conflict",
 		);
@@ -603,7 +592,7 @@ describe("host observation-backed admission", () => {
 				}),
 			},
 		]);
-		const recovered = await coordinator.store.readModel();
+		const recovered = await coordinator.store.freshModel();
 		expect(
 			recovered.incidents.find((item) => item.kind === "gpu-occupancy-conflict")
 				?.state,
@@ -715,7 +704,7 @@ describe("host observation-backed admission", () => {
 		if (!("kind" in result)) return;
 		expect(result.diagnostics[0]?.gpuOccupancy?.gpuUtilization).toBe(0);
 		const contextKinds = (
-			await coordinator.store.readModel()
+			await coordinator.store.freshModel()
 		).occupants.flatMap((item) =>
 			item.occupants.flatMap((occupant) =>
 				occupant.evidence.flatMap((evidence) =>
@@ -757,26 +746,12 @@ describe("host observation-backed admission", () => {
 			"error/project",
 			"project-token",
 		);
-		const snapshot = coordinator.captureAdmissionSnapshot();
-		expect(
-			await coordinator.tryGrant(affected.id, snapshot.generation, snapshot),
-		).toMatchObject({ kind: "held", reason: "observation" });
-		expect(
-			"kind" in
-				(await coordinator.tryGrant(
-					disjointGpu.id,
-					snapshot.generation,
-					snapshot,
-				)),
-		).toBe(false);
-		expect(
-			"kind" in
-				(await coordinator.tryGrant(
-					projectOnly.id,
-					snapshot.generation,
-					snapshot,
-				)),
-		).toBe(false);
+		expect(await coordinator.tryGrant(affected.id)).toMatchObject({
+			kind: "held",
+			reason: "observation",
+		});
+		expect("kind" in (await coordinator.tryGrant(disjointGpu.id))).toBe(false);
+		expect("kind" in (await coordinator.tryGrant(projectOnly.id))).toBe(false);
 		coordinator.close();
 	});
 

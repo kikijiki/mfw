@@ -4,19 +4,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
 import { EventBus, type StoredEvent } from "@mfw/db/eventlog";
-import { events, resourceSlots } from "@mfw/db/schema";
+import { events } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
-import { silentLogger } from "../src/log.ts";
+import { projectClaim } from "../src/resources/claims.ts";
+import type { HostLedger } from "../src/resources/host-ledger.ts";
+import type { ResourceLease } from "../src/resources/types.ts";
 import { ResourceService } from "../src/resources.ts";
 import { RunRegistry } from "../src/run-registry.ts";
-import { Scheduler } from "../src/scheduler.ts";
 import type { TaskService } from "../src/task-service.ts";
 import { makeTasks } from "./fixtures/board.ts";
+import { openTestLedger } from "./support/host-ledger.ts";
 
 /**
- * Real DB, real scheduler, real slot rows. `forceRelease` is only meaningful
- * if it goes through the scheduler's release path, so the assertions are on
- * the emitted `resource.released` events, not just on row counts.
+ * Real DB, real resource core, real leases. `forceRelease` is only meaningful
+ * if it goes through the core's release path, so the assertions are on the
+ * emitted `resource.released` events, not just on counts.
  */
 
 interface Env {
@@ -24,7 +26,9 @@ interface Env {
 	handle: ProjectDbHandle;
 	registry: RunRegistry;
 	tasks: TaskService;
-	sched: Scheduler;
+	ledger: HostLedger;
+	leases: Map<string, ResourceLease>;
+	closeLedger: () => void;
 	resources: ResourceService;
 	seen: StoredEvent[];
 	/** A run row holding the given slots (the FK requires a real run). */
@@ -32,6 +36,22 @@ interface Env {
 }
 
 const envs: Env[] = [];
+const PROJECT = "project-a";
+
+async function grant(
+	ledger: HostLedger,
+	key: string,
+	amount = 1,
+): Promise<ResourceLease> {
+	const waiter = await ledger.coordinator.putWaiter({
+		requestKey: key,
+		projectId: PROJECT,
+		claims: [{ ...projectClaim(PROJECT, "gpu"), amount }],
+	});
+	const lease = await ledger.coordinator.tryGrant(waiter.id);
+	if ("kind" in lease) throw new Error(`held: ${lease.status}`);
+	return lease;
+}
 
 async function freshEnv(): Promise<Env> {
 	const dir = await mkdtemp(join(tmpdir(), "mfw-res-"));
@@ -41,23 +61,23 @@ async function freshEnv(): Promise<Env> {
 	bus.subscribe((e) => seen.push(e));
 	const registry = new RunRegistry({ handle, bus, runsDir: join(dir, "runs") });
 	const tasks = await makeTasks(handle, bus, dir);
-	const sched = new Scheduler({
-		handle,
-		bus,
-		tasks,
-		registry,
-		// The dispatch loop is never started here; only the slot API is used.
-		engine: {},
-		log: silentLogger(),
-		config: { maxConcurrent: 4 },
-	});
+	const opened = await openTestLedger(join(dir, "home"));
+	const ledger = opened.ledger;
+	const leases = new Map<string, ResourceLease>();
 	const env: Env = {
 		dir,
 		handle,
 		registry,
 		tasks,
-		sched,
-		resources: new ResourceService({ handle, scheduler: sched }),
+		ledger,
+		leases,
+		closeLedger: opened.close,
+		resources: new ResourceService({
+			handle,
+			bus,
+			projectId: PROJECT,
+			ledger,
+		}),
 		seen,
 		holder: async (taskTitle, slots) => {
 			const task = await tasks.create({ title: taskTitle });
@@ -68,10 +88,20 @@ async function freshEnv(): Promise<Env> {
 				model: "sonnet",
 				cwd: dir,
 			});
-			await sched.acquireSlots(
-				run.id,
-				slots.map((slot) => ({ resourceId: "gpu", slot })),
-			);
+			// Occupy earlier slots with a filler so this holder gets the numbers asked for.
+			const fillers: ResourceLease[] = [];
+			const held = await ledger.projectHolders(PROJECT, "gpu");
+			const taken = new Set(held.map((h) => h.slot));
+			for (let i = 0; i < Math.min(...slots); i++) {
+				if (!taken.has(i))
+					fillers.push(await grant(ledger, `fill-${run.id}-${i}`));
+			}
+			const lease = await grant(ledger, `hold-${run.id}`, slots.length);
+			await ledger.coordinator.activate(lease, { runId: run.id });
+			for (const filler of fillers) {
+				await ledger.coordinator.release(filler, "filler");
+			}
+			leases.set(run.id, lease);
 			return run.id;
 		},
 	};
@@ -81,6 +111,7 @@ async function freshEnv(): Promise<Env> {
 
 afterEach(async () => {
 	for (const env of envs.splice(0)) {
+		env.closeLedger();
 		env.handle.close();
 		await rm(env.dir, { recursive: true, force: true });
 	}
@@ -181,8 +212,11 @@ describe("forceRelease", () => {
 		const runId = await env.holder("first", [0]);
 		env.seen.length = 0;
 
-		expect(await env.sched.releaseSlots(runId)).toBe(1);
-		expect(released(env.seen)[0]?.payload).toMatchObject({ forced: false });
+		const lease = env.leases.get(runId) as ResourceLease;
+		expect(await env.ledger.coordinator.release(lease, "run ended")).toBe(true);
+		// The engine's release never goes through the operator's forced path.
+		expect(released(env.seen)).toEqual([]);
+		expect((await env.resources.get("gpu"))?.free).toBe(1);
 	});
 });
 
@@ -193,14 +227,13 @@ describe("unregister", () => {
 		await env.holder("first", [0, 1]);
 		env.seen.length = 0;
 
-		// The FK cascades resource_slots, so deleting without releasing first
-		// would drop live holds with no audit trail at all.
+		// Deleting without releasing first would drop live holds with no audit.
 		expect(await env.resources.unregister("gpu")).toEqual({ released: 2 });
 		expect(released(env.seen)).toHaveLength(2);
 		expect(released(env.seen).every((e) => e.payload.forced === true)).toBe(
 			true,
 		);
 		expect(await env.resources.list()).toEqual([]);
-		expect(await env.handle.db.select().from(resourceSlots)).toEqual([]);
+		expect(await env.ledger.projectHolders(PROJECT, "gpu")).toEqual([]);
 	});
 });

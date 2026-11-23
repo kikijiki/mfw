@@ -3,16 +3,16 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { boot, type ProjectConfig } from "../src/boot.ts";
 import { git } from "../src/git.ts";
-import {
-	acquireDaemonLock,
-	HostResourceCoordinator,
-	type HostResourceDefinition,
-	HostStoreError,
-	openHostResourceStore,
-} from "../src/host-resources/index.ts";
 import { silentLogger } from "../src/log.ts";
 import type { AdmissionTransition } from "../src/project-dispatch-admission.ts";
+import { acquireDaemonLock } from "../src/resources/daemon-lock.ts";
+import type { HostResourceDefinition } from "../src/resources/host-types.ts";
+import { ResourceError } from "../src/resources/types.ts";
 import { HostProcessHarness } from "./support/host-resource-process-harness.ts";
+import {
+	HostResourceCoordinator,
+	openHostResourceStore,
+} from "./support/legacy-host.ts";
 
 const FORWARD_TRANSITIONS = [
 	"resolving",
@@ -414,7 +414,7 @@ describe("restart recovery evidence and guarded overrides", () => {
 					actor: "operator",
 					reason: "stale override",
 				}),
-			).rejects.toBeInstanceOf(HostStoreError);
+			).rejects.toBeInstanceOf(ResourceError);
 			expect(
 				await coordinator.forceRelease({
 					leaseId: grant.id,

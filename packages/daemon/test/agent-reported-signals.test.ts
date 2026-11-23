@@ -7,9 +7,11 @@ import { recordSpend } from "@mfw/db/spend";
 import { AUTH_HOLD_REASON } from "../src/auth-failure.ts";
 import { BudgetService } from "../src/budgets.ts";
 import { StepRunner } from "../src/finalize/step-runner.ts";
-import { ProviderHoldStore } from "../src/provider-holds.ts";
+import type { ProviderHoldStore } from "../src/provider-holds.ts";
+import type { BudgetWindows } from "../src/resources/budget-windows.ts";
 import { CLAUDE_WEEKLY_SOURCE } from "../src/usage/claude-weekly.ts";
 import { UsageMonitor } from "../src/usage-monitor.ts";
+import { openTestBudgetStores, openTestHolds } from "./support/host-ledger.ts";
 
 /**
  * Security review P5b, M1: rate-limit, login and usage signals come from the
@@ -22,9 +24,9 @@ const HOUR = 3_600_000;
 let home: string;
 let store: ProviderHoldStore;
 
-beforeEach(() => {
+beforeEach(async () => {
 	home = mkdtempSync(join(tmpdir(), "mfw-m1-"));
-	store = ProviderHoldStore.at(home);
+	store = await openTestHolds(home);
 });
 afterEach(() => rmSync(home, { recursive: true, force: true }));
 
@@ -82,7 +84,7 @@ describe("M1: forged rate-limit and login signals", () => {
 
 	test("signals too far apart do not confirm each other", async () => {
 		let t = 1_000_000;
-		const clocked = ProviderHoldStore.at(home, () => t);
+		const clocked = await openTestHolds(home, () => t);
 		await clocked.report("claude-cli", {
 			project: "a",
 			until: t + 60_000,
@@ -151,8 +153,10 @@ describe("M1: forged rate-limit and login signals", () => {
 
 describe("M1: reported spend is display-only", () => {
 	let handle: ProjectDbHandle;
+	let windows: BudgetWindows;
 	beforeEach(async () => {
 		handle = await openProjectDb(join(home, "db"));
+		({ windows } = await openTestBudgetStores(home));
 	});
 	afterEach(() => handle.close());
 
@@ -168,6 +172,7 @@ describe("M1: reported spend is display-only", () => {
 				resources: { "runpod:x": { window: "day", limitUsd: 10 } },
 			},
 			holds: store,
+			windows,
 			registry: { list: async () => [] },
 			stopRun: async () => {},
 			ledgers: () => [handle],

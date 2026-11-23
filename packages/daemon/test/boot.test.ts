@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { createClient } from "@libsql/client";
 import { boot } from "../src/boot.ts";
 import { git } from "../src/git.ts";
-import { openHostResourceStore } from "../src/host-resources/index.ts";
 import { silentLogger } from "../src/log.ts";
+import { openResourceStore } from "../src/resources/store.ts";
 
 const paths: string[] = [];
 afterEach(async () => {
@@ -211,13 +211,13 @@ describe("machine-wide boot foundation", () => {
 			if (kind === "corrupt") {
 				await writeFile(dbPath, "not a sqlite database");
 			} else {
-				const store = await openHostResourceStore(home, {
+				const store = await openResourceStore(home, {
 					processBootId: "setup",
 					kernelBootId: "kernel",
 				});
 				store.close();
 				const client = createClient({ url: `file:${dbPath}` });
-				await client.execute("PRAGMA user_version=999");
+				await client.execute("UPDATE rp_schema SET version=999");
 				client.close();
 			}
 			await expect(

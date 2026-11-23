@@ -1032,6 +1032,18 @@ export class RunPodAccountStore {
 			lastErrorCode?: string | null;
 		},
 	): Promise<RunPodLeaseRecord> {
+		const updated = await this.writeLease(ref, patch);
+		if (patch.phase === "absent") await this.afterAbsent?.(updated);
+		return updated;
+	}
+
+	/** Told once a lease's machine is proven gone, after that commit. */
+	afterAbsent: ((lease: RunPodLeaseRecord) => Promise<void>) | null = null;
+
+	private writeLease(
+		ref: string,
+		patch: Parameters<RunPodAccountStore["updateLease"]>[1],
+	): Promise<RunPodLeaseRecord> {
 		return this.serialize(() =>
 			this.immediate(async () => {
 				const prior = await this.getLease(ref);

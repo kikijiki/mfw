@@ -8,13 +8,12 @@ import type {
 import { type HealthTrackEntry, HostHealthTracker } from "./host-health.ts";
 import type { ProbeClock, ProbeTimer } from "./host-probe-runtime.ts";
 import type { AnyHostProbeAdapter } from "./host-probes.ts";
-import type { HostResourceStore } from "./host-resources/store.ts";
+import type { Logger } from "./log.ts";
+import type { HostFacts } from "./resources/host-facts.ts";
 import type {
-	HostResourceBinding,
 	ObservationHealth,
 	StoredObservation,
-} from "./host-resources/types.ts";
-import type { Logger } from "./log.ts";
+} from "./resources/host-types.ts";
 
 export interface HostObservationServiceOptions {
 	adapters?: readonly AnyHostProbeAdapter[];
@@ -95,28 +94,6 @@ function bindingMatchesDevice(
 	);
 }
 
-function probeBindings(
-	kind: HostProbeKind,
-	bindings: readonly HostResourceBinding[],
-	definitionKinds: ReadonlyMap<string, string | null | undefined>,
-): ProbeBinding[] {
-	return bindings
-		.filter((binding) => {
-			const metadataKind = binding.metadata?.observationKind;
-			return (
-				metadataKind === kind ||
-				definitionKinds.get(binding.resourceId) === kind
-			);
-		})
-		.map((binding) => ({
-			id: binding.id,
-			deviceKey: binding.stableKey,
-			...(typeof binding.metadata?.partitionKey === "string"
-				? { partitionKey: binding.metadata.partitionKey }
-				: {}),
-		}));
-}
-
 /**
  * The one process-global polling loop. It owns no capacity, reservation, or
  * admission logic; it only captures coherent facts and persists them.
@@ -140,7 +117,7 @@ export class HostObservationService {
 	private readonly healthTracker = new HostHealthTracker();
 
 	constructor(
-		private readonly store: HostResourceStore,
+		private readonly store: HostFacts,
 		private readonly onPersisted: (meaningfulChange: boolean) => Promise<void>,
 		private readonly options: HostObservationServiceOptions = {},
 	) {
@@ -305,13 +282,6 @@ export class HostObservationService {
 
 	private async poll(): Promise<readonly HostProbeKind[]> {
 		if (this.adapters.length === 0) return [];
-		const model = await this.store.readModel();
-		const definitionKinds = new Map(
-			model.definitions.map((definition) => [
-				definition.id,
-				definition.observationKind,
-			]),
-		);
 		const controller = new AbortController();
 		this.activeAbort = controller;
 		const timeout = this.timer.set(
@@ -321,11 +291,7 @@ export class HostObservationService {
 		try {
 			const outcomes = await Promise.all(
 				this.adapters.map(async (adapter) => {
-					const bindings = probeBindings(
-						adapter.kind,
-						model.bindings,
-						definitionKinds,
-					);
+					const bindings = this.store.bindingsFor(adapter.kind);
 					try {
 						return await this.pollAdapter(adapter, bindings, controller.signal);
 					} catch (error) {

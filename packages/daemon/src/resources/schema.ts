@@ -1,9 +1,121 @@
 /**
- * The resource core's tables inside host.db. They carry their own version
- * because the existing host store refuses any `user_version` it does not know,
- * and the two must share the file until cutover.
+ * The resource core's tables inside host.db, with their own schema version:
+ * a store refuses to open a version it does not know.
  */
-export const RESOURCE_SCHEMA_VERSION = 1;
+export const RESOURCE_SCHEMA_VERSION = 5;
+
+/**
+ * Cleanup records: written before a machine is provisioned and closed only
+ * when a later inventory proves the object is gone.
+ */
+export const RESOURCE_CLEANUP_SCHEMA = `
+CREATE TABLE rp_cleanup (
+  ownership_token TEXT PRIMARY KEY,
+  lease_id TEXT NOT NULL REFERENCES rp_leases(id),
+  pool_id TEXT NOT NULL REFERENCES rp_pools(id),
+  project_id TEXT NOT NULL,
+  external_id TEXT,
+  state TEXT NOT NULL CHECK (state IN ('open','closed')),
+  teardown_attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  closed_at INTEGER
+);
+CREATE INDEX ix_rp_cleanup_open ON rp_cleanup(state, pool_id);
+CREATE INDEX ix_rp_cleanup_lease ON rp_cleanup(lease_id, state);
+
+CREATE TABLE rp_host_meta (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  host_id TEXT NOT NULL,
+  generation INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE rp_projects (
+  id TEXT PRIMARY KEY,
+  root TEXT NOT NULL,
+  display_name TEXT NOT NULL,
+  attached INTEGER NOT NULL CHECK (attached IN (0, 1)),
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL,
+  last_attached_at INTEGER NOT NULL,
+  last_detached_at INTEGER
+);
+
+CREATE TABLE rp_host_definitions (
+  id TEXT PRIMARY KEY,
+  version INTEGER NOT NULL,
+  definition_json TEXT NOT NULL
+);
+
+CREATE TABLE rp_host_bindings (
+  id TEXT PRIMARY KEY,
+  resource_id TEXT NOT NULL REFERENCES rp_host_definitions(id) ON DELETE CASCADE,
+  stable_key TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  binding_json TEXT NOT NULL
+);
+CREATE INDEX ix_rp_host_bindings_resource ON rp_host_bindings(resource_id);
+`;
+
+/**
+ * Incidents: one row per condition key, so a condition that persists across
+ * observations and restarts is one incident with one opening.
+ */
+export const RESOURCE_INCIDENT_SCHEMA = `
+CREATE TABLE rp_incidents (
+  incident_key TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('ram-low-headroom','gpu-occupancy-conflict','cpu-pressure')),
+  pool_id TEXT NOT NULL REFERENCES rp_pools(id) ON DELETE CASCADE,
+  state TEXT NOT NULL CHECK (state IN ('open','resolved')),
+  opened_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  resolved_at INTEGER,
+  context_json TEXT NOT NULL
+);
+CREATE INDEX ix_rp_incidents_state ON rp_incidents(state, pool_id);
+`;
+
+/**
+ * The latest probe evidence. It survives a restart so the operator can see
+ * what was last known, and admission refuses it because its boot id is old.
+ */
+export const RESOURCE_PROBE_SCHEMA = `
+CREATE TABLE rp_probe_health (
+  kind TEXT PRIMARY KEY,
+  result TEXT NOT NULL CHECK (result IN ('ok','degraded','error','unsupported')),
+  checked_at INTEGER NOT NULL,
+  process_boot_id TEXT NOT NULL,
+  kernel_boot_id TEXT,
+  detail_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE rp_probe_samples (
+  binding_id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  sequence INTEGER NOT NULL CHECK (sequence >= 0),
+  result TEXT NOT NULL CHECK (result IN ('ok','degraded','error','unsupported')),
+  observed_at INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL CHECK (duration_ms >= 0),
+  process_boot_id TEXT NOT NULL,
+  kernel_boot_id TEXT,
+  adapter_version TEXT,
+  metrics_json TEXT NOT NULL DEFAULT '{}',
+  occupants_json TEXT NOT NULL DEFAULT '[]',
+  warnings_json TEXT NOT NULL DEFAULT '[]'
+);
+`;
+
+/** Recent agent reports per provider account, for two-project confirmation. */
+export const RESOURCE_PROVIDER_REPORT_SCHEMA = `
+CREATE TABLE rp_provider_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  hold_key TEXT NOT NULL,
+  project TEXT NOT NULL,
+  at_ms INTEGER NOT NULL
+);
+CREATE INDEX ix_rp_provider_reports_key ON rp_provider_reports(hold_key, at_ms);
+`;
 
 export const RESOURCE_SCHEMA = `
 CREATE TABLE rp_schema (
@@ -96,6 +208,8 @@ CREATE TABLE rp_leases (
   state TEXT NOT NULL CHECK (state IN ('provisional','active','uncertain','releasing','released','reclaimed','force_released')),
   fence INTEGER NOT NULL UNIQUE CHECK (fence > 0),
   run_id TEXT,
+  run_json TEXT,
+  owner_boot_id TEXT,
   granted_at INTEGER NOT NULL,
   activated_at INTEGER,
   last_renewed_at INTEGER,

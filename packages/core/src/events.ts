@@ -163,6 +163,22 @@ export type HostHoldEventDiagnostic = z.infer<
 	typeof HostHoldEventDiagnosticSchema
 >;
 
+/** What stands between a claim set and its grant (the resource core). */
+export const PoolBlockerSchema = z.object({
+	code: z.enum([
+		"unknown-pool",
+		"unknown-dimension",
+		"held",
+		"exhausted",
+		"capacity",
+		"unit-unavailable",
+		"fifo",
+	]),
+	poolId: z.string(),
+	dimension: z.string().optional(),
+	detail: z.string().optional(),
+});
+
 /** How a run's finalize ended, a closed enum the brain decides from (`run.settled`). */
 export const SETTLE_CLASSES = [
 	"verified",
@@ -326,7 +342,9 @@ export const EventSchema = z.discriminatedUnion("type", [
 			reason: z.string().optional(),
 			code: z.string().optional(),
 			snapshotGeneration: z.string().optional(),
-			diagnostics: z.array(HostHoldEventDiagnosticSchema).optional(),
+			diagnostics: z
+				.array(z.union([HostHoldEventDiagnosticSchema, PoolBlockerSchema]))
+				.optional(),
 			/** The exact remedy (daemon `refusal-fix.ts`); absent on old events. */
 			fix: z
 				.object({

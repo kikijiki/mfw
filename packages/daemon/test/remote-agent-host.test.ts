@@ -31,10 +31,6 @@ import {
 	hostProbeScript,
 	probeHost,
 } from "../src/host-registry-probe.ts";
-import {
-	HostResourceCoordinator,
-	openHostResourceStore,
-} from "../src/host-resources/index.ts";
 import { HostService } from "../src/host-service.ts";
 import { targetHostRequirements } from "../src/project-dispatch-admission.ts";
 import {
@@ -47,6 +43,7 @@ import {
 } from "../src/remote-agent-host.ts";
 import { placeRun } from "../src/routing.ts";
 import { SshTransport } from "../src/ssh-transport.ts";
+import { openTestLedger } from "./support/host-ledger.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -617,26 +614,17 @@ describe("registry SSH hosts", () => {
 			keygenPath: Bun.which("ssh-keygen") as string,
 		});
 		await registry.put({ ...registryHost(), slots: 1 });
-		const coordinator = await HostResourceCoordinator.create(
-			await openHostResourceStore(home, {
-				processBootId: "process-a",
-				kernelBootId: "kernel-a",
-			}),
-			{
-				liveness: {
-					inspect: async () => ({
-						status: "unavailable",
-						checkedAt: Date.now(),
-						kernelBootId: "kernel-a",
-					}),
-				},
-			},
-		);
+		const fixture = await openTestLedger(home, {
+			processBootId: "process-a",
+			kernelBootId: "kernel-a",
+			liveness: { inspect: async () => "unknown" },
+		});
+		const ledger = fixture.ledger;
 		try {
-			const hosts = new HostService({ registry, ledger: coordinator });
+			const hosts = new HostService({ registry, ledger });
 			await hosts.syncSlots();
 			expect(
-				coordinator
+				ledger
 					.readModel()
 					.definitions.find((d) => d.id === "remote.box-a.slots"),
 			).toMatchObject({ accounting: "slot", capacity: 1n, enabled: true });
@@ -661,38 +649,45 @@ describe("registry SSH hosts", () => {
 				}),
 			).toThrow("only valid for a non-local");
 
+			const claims = [ledger.claimFor("remote.box-a.slots")];
+			const { coordinator } = ledger;
 			const waiter = (key: string, projectId: string) =>
-				coordinator.putWaiter({ requestKey: key, projectId, requirements });
+				coordinator.putWaiter({ requestKey: key, projectId, claims });
 			const first = await waiter("p1/run-1", "p1");
 			const second = await waiter("p2/run-2", "p2");
 			const third = await waiter("p1/run-3", "p1");
-			const generation = () => coordinator.readModel().generation;
 
-			const grant = await coordinator.tryGrant(first.id, generation());
-			expect("kind" in grant).toBe(false);
+			const grant = await coordinator.tryGrant(first.id);
+			if ("kind" in grant) throw new Error("expected a grant");
+			await coordinator.activate(grant, { runId: "run-1" });
+			await ledger.refreshObservationsForDetection();
 			expect(hosts.free("box-a")).toBe(0);
 			// The youngest waiter cannot jump the queue when capacity returns.
-			expect(await coordinator.tryGrant(third.id, generation())).toMatchObject({
+			expect(await coordinator.tryGrant(third.id)).toMatchObject({
 				kind: "held",
 			});
-			expect(await coordinator.tryGrant(second.id, generation())).toMatchObject(
-				{ kind: "held", blockedBy: ["remote.box-a.slots"] },
-			);
-			if ("kind" in grant) throw new Error("unreachable");
-			await coordinator.cancelOrRelease(grant.id, grant.fence, "run ended");
+			const poolId = claims[0]?.poolId;
+			expect(await coordinator.tryGrant(second.id)).toMatchObject({
+				kind: "held",
+				blockers: [{ poolId }],
+			});
+			await coordinator.release(grant, "run ended");
+			await ledger.refreshObservationsForDetection();
 			expect(hosts.free("box-a")).toBe(1);
-			expect(await coordinator.tryGrant(third.id, generation())).toMatchObject({
+			expect(await coordinator.tryGrant(third.id)).toMatchObject({
 				kind: "held",
-				reason: "fifo",
+				blockers: [{ code: "fifo" }],
 			});
-			expect(
-				"kind" in (await coordinator.tryGrant(second.id, generation())),
-			).toBe(false);
+			const next = await coordinator.tryGrant(second.id);
+			expect("kind" in next).toBe(false);
+			if ("kind" in next) return;
+			await coordinator.activate(next, { runId: "run-2" });
+			await ledger.refreshObservationsForDetection();
 
 			// Removing a host with a run on it is refused; its slot drains after.
 			await expect(hosts.remove("box-a")).rejects.toThrow("still holds 1");
 		} finally {
-			coordinator.close();
+			fixture.close();
 		}
 	});
 
