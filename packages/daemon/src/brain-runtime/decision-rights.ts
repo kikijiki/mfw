@@ -171,29 +171,20 @@ const HOST_EXECUTED_FILES = [
 	// Development shell.
 	".envrc",
 	"flake.nix",
-	"flake.lock",
 	"shell.nix",
 	"default.nix",
 	"devenv.nix",
 	"devenv.yaml",
-	"devenv.lock",
 	".tool-versions",
 	"mise.toml",
 	".mise.toml",
-	// Package managers: install scripts, registries, resolved versions.
-	"package.json",
-	"bun.lock",
-	"bun.lockb",
+	// Package managers: registries and install behaviour.
 	"bunfig.toml",
 	".npmrc",
 	".yarnrc",
 	".yarnrc.yml",
 	".pnpmfile.cjs",
 	"pnpm-workspace.yaml",
-	"pnpm-lock.yaml",
-	"package-lock.json",
-	"npm-shrinkwrap.json",
-	"yarn.lock",
 	// Git behaviour: filters, drivers, submodule URLs, hook managers.
 	".gitattributes",
 	".gitmodules",
@@ -217,6 +208,35 @@ const HOST_EXECUTED_FILES = [
 	"azure-pipelines.yml",
 	"jenkinsfile",
 ];
+
+/**
+ * Dependency files are not ask-first by name: run checks are sandboxed and
+ * host-run triggers pin the whole tree. A landed change is a notify-after inbox
+ * item. `package.json` is the exception by content: the merge gate holds it
+ * when a field that executes something changes (`merge-gate.ts`).
+ */
+const DEPENDENCY_FILES = [
+	"package.json",
+	"bun.lock",
+	"bun.lockb",
+	"pnpm-lock.yaml",
+	"package-lock.json",
+	"npm-shrinkwrap.json",
+	"yarn.lock",
+	"flake.lock",
+	"devenv.lock",
+];
+
+const baseName = (path: string) =>
+	path.toLowerCase().split("/").filter(Boolean).at(-1) ?? "";
+
+export function isDependencyPath(path: string): boolean {
+	return DEPENDENCY_FILES.includes(baseName(path));
+}
+
+export function isPackageManifest(path: string): boolean {
+	return baseName(path) === "package.json";
+}
 
 /**
  * The default protected class (§6u.4), at any depth and in any letter case.

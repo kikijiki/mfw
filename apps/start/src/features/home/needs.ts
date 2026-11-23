@@ -55,6 +55,7 @@ export function needTarget(item: InboxItem): string {
 		case "ownership_conflict":
 		case "main_red":
 		case "push_refused":
+		case "dependency_change":
 			return taskId ? href.task(project, taskId) : href.board(project);
 		case "brain_stuck":
 		case "brain_breaker":

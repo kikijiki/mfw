@@ -3,7 +3,11 @@ import { posix } from "node:path";
 import type { ProjectDbHandle } from "@mfw/db/client";
 import { type brainActions, engineKv, mergeJobs } from "@mfw/db/schema";
 import { and, eq } from "drizzle-orm";
-import { isHostExecutedPath } from "./brain-runtime/decision-rights.ts";
+import {
+	isDependencyPath,
+	isHostExecutedPath,
+	isPackageManifest,
+} from "./brain-runtime/decision-rights.ts";
 import { git, gitComplete } from "./git.ts";
 import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
 
@@ -44,6 +48,7 @@ const SYMLINK_MODE = "120000";
 interface RawEntry {
 	oldMode: string;
 	newMode: string;
+	oldOid: string;
 	newOid: string;
 	path: string;
 }
@@ -52,14 +57,72 @@ function parseRawDiff(out: string): RawEntry[] {
 	const fields = out.split("\0");
 	const entries: RawEntry[] = [];
 	for (let i = 0; i + 1 < fields.length; i += 2) {
-		const [oldMode, newMode, , newOid] = (fields[i] ?? "")
+		const [oldMode, newMode, oldOid, newOid] = (fields[i] ?? "")
 			.replace(/^:/, "")
 			.split(" ");
 		const path = fields[i + 1];
-		if (!oldMode || !newMode || !newOid || !path) continue;
-		entries.push({ oldMode, newMode, newOid, path });
+		if (!oldMode || !newMode || !oldOid || !newOid || !path) continue;
+		entries.push({ oldMode, newMode, oldOid, newOid, path });
 	}
 	return entries;
+}
+
+/** The `package.json` fields that make an install or a command run something. */
+const MANIFEST_EXEC_FIELDS = [
+	"scripts",
+	"bin",
+	"directories",
+	"workspaces",
+	"preinstall",
+	"install",
+	"postinstall",
+	"prepare",
+	"trustedDependencies",
+] as const;
+
+/** Key order carries no meaning in a manifest. */
+function canonicalJson(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+	if (value && typeof value === "object") {
+		const record = value as Record<string, unknown>;
+		const fields = Object.keys(record)
+			.sort()
+			.map((k) => `${JSON.stringify(k)}:${canonicalJson(record[k])}`);
+		return `{${fields.join(",")}}`;
+	}
+	return JSON.stringify(value) ?? "null";
+}
+
+async function readManifest(
+	root: string,
+	oid: string,
+): Promise<Record<string, unknown>> {
+	if (/^0+$/.test(oid)) return {};
+	const parsed: unknown = JSON.parse(
+		await gitComplete(["cat-file", "blob", oid], root),
+	);
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		throw new Error("not a JSON object");
+	}
+	return parsed as Record<string, unknown>;
+}
+
+/** Whether an executing field differs. A manifest that cannot be read counts as yes. */
+async function manifestExecutionChanged(
+	root: string,
+	entry: RawEntry,
+): Promise<boolean> {
+	try {
+		const [before, after] = await Promise.all([
+			readManifest(root, entry.oldOid),
+			readManifest(root, entry.newOid),
+		]);
+		return MANIFEST_EXEC_FIELDS.some(
+			(f) => canonicalJson(before[f]) !== canonicalJson(after[f]),
+		);
+	} catch {
+		return true;
+	}
 }
 
 /** Where the tree's protected symlinks point, as repository paths. */
@@ -122,15 +185,19 @@ export async function hostExecutedChange(
 			fingerprint: `tree:${tree.stdout.trim()}`,
 		};
 	}
-	const hit = entries
-		.filter(
-			(e) =>
-				isHostExecutedPath(e.path) ||
-				e.oldMode === SYMLINK_MODE ||
-				e.newMode === SYMLINK_MODE ||
-				targets.some((t) => e.path === t || e.path.startsWith(`${t}/`)),
-		)
-		.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+	const hit: RawEntry[] = [];
+	for (const e of entries) {
+		if (
+			isHostExecutedPath(e.path) ||
+			e.oldMode === SYMLINK_MODE ||
+			e.newMode === SYMLINK_MODE ||
+			targets.some((t) => e.path === t || e.path.startsWith(`${t}/`)) ||
+			(isPackageManifest(e.path) && (await manifestExecutionChanged(root, e)))
+		) {
+			hit.push(e);
+		}
+	}
+	hit.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 	if (hit.length === 0) return null;
 	const hash = createHash("sha256");
 	for (const e of hit) hash.update(`${e.newMode} ${e.newOid} ${e.path}\0`);
@@ -138,6 +205,65 @@ export async function hostExecutedChange(
 		paths: hit.map((e) => e.path),
 		fingerprint: `sha256:${hash.digest("hex")}`,
 	};
+}
+
+/** `engine_kv` row behind the notify-after `dependency_change` inbox items. */
+export const DEPENDENCY_CHANGES_KEY = "dependency_changes";
+const MAX_DEPENDENCY_CHANGES = 20;
+
+export interface DependencyChange {
+	sha: string;
+	runId: string;
+	taskId: string | null;
+	branch: string;
+	target: string;
+	paths: string[];
+	at: number;
+}
+
+/** Dependency files in `from..to` that landed without a card. */
+export async function landedDependencyPaths(
+	root: string,
+	from: string,
+	to: string,
+	held: readonly string[],
+): Promise<string[]> {
+	const listed = await gitComplete(
+		["diff-tree", "-r", "-z", "--name-only", "--no-renames", from, to],
+		root,
+	);
+	return listed
+		.split("\0")
+		.filter((p) => p && isDependencyPath(p) && !held.includes(p))
+		.sort();
+}
+
+export function readDependencyChanges(value: unknown): DependencyChange[] {
+	const changes = (value as { changes?: unknown } | null | undefined)?.changes;
+	return Array.isArray(changes) ? (changes as DependencyChange[]) : [];
+}
+
+/** Keep the newest few, in the transaction that records the merge. */
+export async function recordDependencyChange(
+	tx: Tx,
+	change: DependencyChange,
+): Promise<void> {
+	const [row] = await tx
+		.select()
+		.from(engineKv)
+		.where(eq(engineKv.key, DEPENDENCY_CHANGES_KEY));
+	const value = {
+		changes: [...readDependencyChanges(row?.value), change].slice(
+			-MAX_DEPENDENCY_CHANGES,
+		),
+	};
+	await tx
+		.insert(engineKv)
+		.values({ key: DEPENDENCY_CHANGES_KEY, value, updatedAt: new Date() })
+		.onConflictDoUpdate({
+			target: engineKv.key,
+			set: { value, updatedAt: new Date() },
+		});
 }
 
 type Tx = Parameters<Parameters<ProjectDbHandle["withTx"]>[0]>[0];

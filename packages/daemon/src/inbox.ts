@@ -19,7 +19,11 @@ import { loadHostEvidence } from "./claims-evidence.ts";
 import { TASK_QUESTION_KIND } from "./clarify.ts";
 import { EGRESS_BREACH_KEY_PREFIX } from "./egress-ledger.ts";
 import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
-import { HOST_MERGE_TOOL } from "./merge-gate.ts";
+import {
+	DEPENDENCY_CHANGES_KEY,
+	HOST_MERGE_TOOL,
+	readDependencyChanges,
+} from "./merge-gate.ts";
 import { PUSH_REFUSED_KEY } from "./merge-queue.ts";
 import type { TaskRow, TaskService } from "./task-service.ts";
 
@@ -62,7 +66,9 @@ export type InboxKind =
 	/** The brain's act tools are paused for this project (`act-breaker.ts`). */
 	| "brain_breaker"
 	/** The egress proxy stopped a run at its upload budget: possible exfiltration. */
-	| "egress_budget";
+	| "egress_budget"
+	/** A merge changed dependency files without a card: notify-after, nothing to do. */
+	| "dependency_change";
 
 export type InboxSeverity = "critical" | "attention" | "info";
 
@@ -188,6 +194,8 @@ const SEVERITY: Record<InboxKind, InboxSeverity> = {
 	auth_hold: "critical",
 	// The brain cannot proceed on its own; dispatch continues on the fixed pipeline.
 	brain_stuck: "critical",
+	// Already landed under the decision rights; for reading.
+	dependency_change: "info",
 	// Only a person can supply what the brain asked for.
 	brain_notice: "attention",
 	// Nothing runs until the owner answers; the rest of the fleet keeps going.
@@ -919,6 +927,26 @@ export class InboxService {
 				ts: breaker.trippedAt ?? 0,
 			});
 		}
+		const [dependencyRow] = await db
+			.select()
+			.from(engineKv)
+			.where(eq(engineKv.key, DEPENDENCY_CHANGES_KEY));
+		const dependencyChanges = readDependencyChanges(dependencyRow?.value);
+		const dependencySince = Date.now() - BRAIN_NOTICE_DAYS * 86_400_000;
+		for (const c of dependencyChanges) {
+			if (c.at < dependencySince) continue;
+			out.push({
+				id: `dependency_change:${c.sha}`,
+				project,
+				kind: "dependency_change",
+				severity: SEVERITY.dependency_change,
+				title: `dependencies changed: ${c.branch}`,
+				detail: `Merged into ${c.target} (commit ${c.sha.slice(0, 12)}) without asking, because no install script or command changed: ${c.paths.join(", ")}.`,
+				...(c.taskId ? { taskId: c.taskId } : {}),
+				runId: c.runId,
+				ts: c.at,
+			});
+		}
 		const held = await db
 			.select()
 			.from(brainActions)
@@ -1145,6 +1173,7 @@ export const ATTENTION_BY_KIND: Record<InboxKind, AttentionClass> = {
 	// A run failed and was handled; read it, nothing to answer.
 	failed_run: "know",
 	followups: "know",
+	dependency_change: "know",
 	// Still retrying below `ESCALATE_AFTER_SWEEPS`; critical past it.
 	sweep_infra: "ambient",
 	verify_infra: "ambient",

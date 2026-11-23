@@ -29,6 +29,8 @@ import {
 	type HostMergeHold,
 	hostExecutedChange,
 	hostMergeApprovalKey,
+	landedDependencyPaths,
+	recordDependencyChange,
 } from "./merge-gate.ts";
 
 /**
@@ -778,11 +780,23 @@ export class MergeQueue {
 			}
 		}
 		await this.reportLandedPaths(job, baseSha, sha);
+		const dependencyPaths = await this.landedDependencies(job, baseSha, sha);
 		const stored = await this.deps.handle.withTx(async (tx) => {
 			await tx
 				.update(mergeJobs)
 				.set({ state: "merged", updatedAt: new Date() })
 				.where(eq(mergeJobs.id, job.id));
+			if (dependencyPaths.length > 0) {
+				await recordDependencyChange(tx, {
+					sha,
+					runId: job.runId,
+					taskId: job.taskId,
+					branch: job.branch,
+					target: job.targetBranch,
+					paths: dependencyPaths,
+					at: Date.now(),
+				});
+			}
 			// An approval covers one landing.
 			await tx
 				.delete(engineKv)
@@ -945,6 +959,25 @@ export class MergeQueue {
 				{ err: e, job: job.id },
 				"could not re-check armed files after a merge",
 			);
+		}
+	}
+
+	/** For the notify-after item. The merge has landed: a failure here only logs. */
+	private async landedDependencies(
+		job: MergeJobView,
+		baseSha: string,
+		sha: string,
+	): Promise<string[]> {
+		try {
+			const root = this.deps.projectRoot;
+			const held = await hostExecutedChange(root, baseSha, sha);
+			return await landedDependencyPaths(root, baseSha, sha, held?.paths ?? []);
+		} catch (e) {
+			this.deps.log.warn(
+				{ err: e, job: job.id },
+				"could not list the dependency files this merge changed",
+			);
+			return [];
 		}
 	}
 

