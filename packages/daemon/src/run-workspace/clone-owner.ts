@@ -62,6 +62,7 @@ export async function cloneAgeMs(
 	now = Date.now(),
 ): Promise<number> {
 	const made = typeof createdAt === "string" ? Date.parse(createdAt) : NaN;
-	if (Number.isFinite(made)) return now - made;
-	return now - (await stat(dir)).mtimeMs;
+	if (Number.isFinite(made)) return Math.max(0, now - made);
+	// Clamped: an mtime has sub-millisecond precision and `now` does not.
+	return Math.max(0, now - (await stat(dir)).mtimeMs);
 }

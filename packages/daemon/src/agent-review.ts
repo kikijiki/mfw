@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { lstat, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type {
 	InferenceClient,
@@ -10,7 +9,7 @@ import type {
 import { claudeEnvelopeUsage } from "./brain.ts";
 import { runOneShotAgent } from "./containment/oneshot-agent.ts";
 import { git, gitComplete } from "./git.ts";
-import { type ProcOpts, type ProcResult, runProc } from "./proc.ts";
+import type { ProcResult } from "./proc.ts";
 import { createRoleClone } from "./run-workspace/role-clone.ts";
 import { SandboxUnavailableError } from "./sandbox.ts";
 
@@ -42,24 +41,14 @@ export interface AgentReviewSubject {
 	runWorktree: string | null;
 }
 
-export type AgentRunner = (
-	argv: string[],
-	opts: ProcOpts & { cwd: string },
-) => Promise<ProcResult>;
-
 export interface AgentReviewOpts {
 	subject: AgentReviewSubject;
 	harness: "claude-cli" | "codex-cli";
 	bin?: string;
-	/** What the reviewer role needs from the host. Required unless `sandbox` is "off". */
+	/** What the reviewer role needs from the host. */
 	host?: { mfwHome: string; stateDir: string };
-	/** "auto": always the reviewer role, refusing without it; "off": never (tests). */
-	sandbox?: "auto" | "off";
-	/** Test seam: runs the reviewer process when `sandbox` is "off". */
-	run?: AgentRunner;
-	/** Test seam: the sandboxed launch. */
+	/** Test seam: the sandboxed launch. There is no unsandboxed path. */
 	launch?: typeof runOneShotAgent;
-	tmpRoot?: string;
 }
 
 const MAX_OUTPUT_BYTES = 2 * 1024 * 1024;
@@ -84,6 +73,22 @@ export async function worktreeState(path: string): Promise<string | null> {
 	return `${head.stdout.trim()}\n${status}`;
 }
 
+/** Every entry under `dir`, without following links, as one comparable string. */
+async function treeState(dir: string): Promise<string> {
+	const lines: string[] = [];
+	const walk = async (at: string): Promise<void> => {
+		const entries = await readdir(at, { withFileTypes: true });
+		for (const e of entries.sort((a, b) => (a.name < b.name ? -1 : 1))) {
+			const path = join(at, e.name);
+			const st = await lstat(path);
+			lines.push(`${path}\0${st.mode}\0${st.size}\0${st.mtimeMs}`);
+			if (e.isDirectory()) await walk(path);
+		}
+	};
+	await walk(dir);
+	return lines.join("\n");
+}
+
 export class AgentReviewInference implements InferenceClient {
 	constructor(private readonly opts: AgentReviewOpts) {}
 
@@ -96,44 +101,10 @@ export class AgentReviewInference implements InferenceClient {
 		const runBefore = subject.runWorktree
 			? await worktreeState(subject.runWorktree)
 			: null;
-		if (this.opts.sandbox !== "off") {
-			return this.completeSandboxed(prompt, opts, tip, runBefore);
-		}
-		const dir = await mkdtemp(
-			join(this.opts.tmpRoot ?? tmpdir(), "mfw-review-"),
-		);
-		await gitOut(
-			["worktree", "add", "--detach", "--quiet", dir, tip],
-			subject.projectRoot,
-		);
-		try {
-			const run = this.opts.run ?? runProc;
-			const result = await run(this.argv(prompt, opts), {
-				cwd: dir,
-				timeoutMs: opts.timeoutMs,
-				maxOutputBytes: MAX_OUTPUT_BYTES,
-				...(opts.signal ? { signal: opts.signal } : {}),
-			});
-			const reply = this.reply(result, opts);
-			const changes = [
-				...(await this.checkoutChanges(tip, dir)),
-				...(await this.subjectChanges(tip, runBefore)),
-			];
-			if (changes.length > 0) throw new ReviewerModifiedError(changes);
-			return reply;
-		} finally {
-			await git(
-				["worktree", "remove", "--force", dir],
-				subject.projectRoot,
-			).catch(() => undefined);
-			await rm(dir, { recursive: true, force: true }).catch(() => undefined);
-			await git(["worktree", "prune"], subject.projectRoot).catch(
-				() => undefined,
-			);
-		}
+		return this.completeSandboxed(prompt, opts, tip, runBefore);
 	}
 
-	/** The real path: a private clone, read-only, in the attested reviewer role. */
+	/** A private clone, read-only, in the attested reviewer role. */
 	private async completeSandboxed(
 		prompt: string,
 		opts: InferenceOpts,
@@ -149,6 +120,7 @@ export class AgentReviewInference implements InferenceClient {
 		const id = `review-${randomUUID()}`;
 		const clone = await createRoleClone(subject.projectRoot, id, tip);
 		try {
+			const treeBefore = await treeState(clone.tree);
 			const result = await (this.opts.launch ?? runOneShotAgent)({
 				role: "reviewer",
 				cli: this.opts.harness === "codex-cli" ? "codex" : "claude",
@@ -163,7 +135,11 @@ export class AgentReviewInference implements InferenceClient {
 				...(opts.signal ? { signal: opts.signal } : {}),
 			});
 			const reply = this.reply(result, opts);
+			// The mount is read-only; this catches a sandbox that failed to make it so.
 			const changes = await this.subjectChanges(tip, runBefore);
+			if ((await treeState(clone.tree)) !== treeBefore) {
+				changes.push("files changed in the review checkout");
+			}
 			if (changes.length > 0) throw new ReviewerModifiedError(changes);
 			return reply;
 		} finally {
@@ -171,27 +147,6 @@ export class AgentReviewInference implements InferenceClient {
 				() => undefined,
 			);
 		}
-	}
-
-	/** The test seam's writable checkout; the real one is mounted read-only. */
-	private async checkoutChanges(tip: string, dir: string): Promise<string[]> {
-		const changes: string[] = [];
-		const head = await git(["rev-parse", "HEAD"], dir);
-		if (head.stdout.trim() !== tip)
-			changes.push("the review checkout's HEAD moved");
-		const status = await git(
-			["status", "--porcelain=v1", "--untracked-files=all"],
-			dir,
-		);
-		if (status.exitCode !== 0 || status.stdout.trim() !== "")
-			changes.push(
-				`files changed in the review checkout: ${status.stdout
-					.trim()
-					.split("\n")
-					.slice(0, 5)
-					.join(", ")}`,
-			);
-		return changes;
 	}
 
 	/** What a reviewer must never move: the branch and the run's own worktree. */

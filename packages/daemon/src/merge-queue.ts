@@ -1,9 +1,16 @@
 import type { ProjectDbHandle } from "@mfw/db/client";
 import { appendEvent, type EventBus } from "@mfw/db/eventlog";
-import { engineKv, type MergeJobState, mergeJobs, runs } from "@mfw/db/schema";
+import { ulid } from "@mfw/db/ids";
+import {
+	brainActions,
+	engineKv,
+	type MergeJobState,
+	mergeJobs,
+	runs,
+} from "@mfw/db/schema";
 import { and, asc, eq, inArray, lt } from "drizzle-orm";
 import { readProtectedBoardPaths } from "./board-layout.ts";
-import { git, gitComplete } from "./git.ts";
+import { git } from "./git.ts";
 import { quarantineRef } from "./host-git/fetch.ts";
 import {
 	ensureLandingRepo,
@@ -16,6 +23,15 @@ import { hardenedPush } from "./host-git/push.ts";
 import { repoConfigRefusal } from "./host-git/repo-config.ts";
 import type { Logger } from "./log.ts";
 import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
+import {
+	HOST_MERGE_TOOL,
+	type HostExecutedChange,
+	type HostMergeHold,
+	hostExecutedChange,
+	hostMergeApprovalKey,
+	landedDependencyPaths,
+	recordDependencyChange,
+} from "./merge-gate.ts";
 
 /**
  * One FIFO worker per project, one in-flight job, merging into the recorded
@@ -37,6 +53,10 @@ import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
  *                        (retry) │  │ (abandon / sendToReady)
  *                                ▼  ▼
  *                            queued  abandoned
+ *
+ * A merge commit that changes host-executed files stops at `held` on an
+ * ask-first card (`merge-gate.ts`), on both the first and the rebased attempt.
+ * Approval requeues it; the retry lands only the content that was approved.
  *
  * Red-main pauses the queue: jobs stay queued instead of bouncing to review.
  * Each state change commits before the next action, so a crash resumes
@@ -258,7 +278,7 @@ export class MergeQueue {
 		const rows = await this.deps.handle.db
 			.select({ taskId: mergeJobs.taskId, state: mergeJobs.state })
 			.from(mergeJobs)
-			.where(inArray(mergeJobs.state, ["queued", ...IN_FLIGHT]));
+			.where(inArray(mergeJobs.state, ["queued", "held", ...IN_FLIGHT]));
 		return rows.filter(
 			(r): r is { taskId: string; state: MergeJobState } => r.taskId != null,
 		);
@@ -267,7 +287,9 @@ export class MergeQueue {
 	/**
 	 * Process at most one queued job to completion; callers loop until "idle".
 	 */
-	async tick(): Promise<"idle" | "paused" | "merged" | "parked" | "deferred"> {
+	async tick(): Promise<
+		"idle" | "paused" | "merged" | "parked" | "deferred" | "held"
+	> {
 		const red = await this.mainRed();
 		const repairAllowed =
 			red.red && !red.escalated && this.deps.selfRepairMainRed?.();
@@ -360,7 +382,7 @@ export class MergeQueue {
 
 	private async process(
 		job: MergeJobView,
-	): Promise<"merged" | "parked" | "deferred"> {
+	): Promise<"merged" | "parked" | "deferred" | "held"> {
 		const log = this.deps.log.child({ job: job.id, branch: job.branch });
 		let baseSha: string;
 		try {
@@ -376,6 +398,7 @@ export class MergeQueue {
 		const first = await this.tryMerge(job, baseSha);
 		if (first) {
 			const sha = await this.restoreBoard(job, baseSha, first);
+			if (!(await this.ownerAllows(job, baseSha, sha))) return "held";
 			if (!(await this.mergeCommitPasses(job, sha))) return "parked";
 			return this.finishMerged(job, baseSha, sha);
 		}
@@ -454,6 +477,7 @@ export class MergeQueue {
 		const retried = await this.tryMerge(job, baseSha);
 		if (retried) {
 			const sha = await this.restoreBoard(job, baseSha, retried);
+			if (!(await this.ownerAllows(job, baseSha, sha))) return "held";
 			if (!(await this.mergeCommitPasses(job, sha))) return "parked";
 			return this.finishMerged(job, baseSha, sha);
 		}
@@ -535,6 +559,129 @@ export class MergeQueue {
 			this.deps.projectRoot,
 		);
 		return found.exitCode === 0 ? ref : job.branch;
+	}
+
+	/**
+	 * The ask-first gate, on the host's own diff of the exact commit about to
+	 * land. True when it changes no host-executed file, or when the owner
+	 * approved this exact content; otherwise the job is held on a card.
+	 */
+	private async ownerAllows(
+		job: MergeJobView,
+		baseSha: string,
+		sha: string,
+	): Promise<boolean> {
+		const change = await hostExecutedChange(
+			this.deps.projectRoot,
+			baseSha,
+			sha,
+		);
+		if (!change) return true;
+		const [row] = await this.deps.handle.db
+			.select()
+			.from(engineKv)
+			.where(eq(engineKv.key, hostMergeApprovalKey(job.runId)));
+		const approved = row?.value as { fingerprint?: string } | undefined;
+		if (approved?.fingerprint === change.fingerprint) return true;
+		await this.holdForOwner(job, sha, change);
+		return false;
+	}
+
+	/** Park the job on a decision card, with the card and the state in one transaction. */
+	private async holdForOwner(
+		job: MergeJobView,
+		sha: string,
+		change: HostExecutedChange,
+	): Promise<void> {
+		const actionId = ulid();
+		const hostMerge: HostMergeHold = {
+			jobId: job.id,
+			runId: job.runId,
+			fingerprint: change.fingerprint,
+		};
+		const reason = `changes host-executed files: ${change.paths.slice(0, 5).join(", ")}${
+			change.paths.length > 5 ? ` and ${change.paths.length - 5} more` : ""
+		}`;
+		const stored = await this.deps.handle.withTx(async (tx) => {
+			await tx
+				.delete(engineKv)
+				.where(eq(engineKv.key, hostMergeApprovalKey(job.runId)));
+			await tx
+				.update(mergeJobs)
+				.set({ state: "held", error: reason, updatedAt: new Date() })
+				.where(eq(mergeJobs.id, job.id));
+			await tx.insert(brainActions).values({
+				id: actionId,
+				idemKey: `host_merge:${actionId}`,
+				sessionId: "merge-queue",
+				turnRunId: job.runId,
+				tool: HOST_MERGE_TOOL,
+				args: {
+					runId: job.runId,
+					...(job.taskId ? { taskId: job.taskId } : {}),
+					branch: job.branch,
+					target: job.targetBranch,
+					commit: sha,
+					paths: change.paths.slice(0, 50),
+					pathCount: change.paths.length,
+					pushes: this.push.enabled,
+				},
+				status: "held",
+				effects: {
+					rights: {
+						actionClass: "host_executed_merge",
+						cause: "default",
+						classes: this.push.enabled
+							? ["host_executed_merge", "publish_outward"]
+							: ["host_executed_merge"],
+					},
+					hostMerge,
+				},
+				createdAt: new Date(),
+			});
+			return appendEvent(tx, {
+				type: "brain.action",
+				runId: job.runId,
+				...(job.taskId ? { taskId: job.taskId } : {}),
+				payload: {
+					actionId,
+					tool: HOST_MERGE_TOOL,
+					status: "held",
+					sessionId: "merge-queue",
+				},
+			});
+		});
+		this.deps.bus.publish([stored]);
+		this.deps.log.warn(
+			{ job: job.id, runId: job.runId, paths: change.paths.slice(0, 20) },
+			"merge held for the owner: it changes host-executed files",
+		);
+	}
+
+	/**
+	 * After the owner declines: the same hand-back as an exhausted park. The
+	 * state change already committed with the answer, so a crash before this
+	 * leaves an ordinary `merge_parked` inbox item.
+	 */
+	async settleDeclinedHostMerge(actionId: string): Promise<void> {
+		const [card] = await this.deps.handle.db
+			.select({ effects: brainActions.effects })
+			.from(brainActions)
+			.where(eq(brainActions.id, actionId));
+		const hold = (card?.effects as { hostMerge?: HostMergeHold } | null)
+			?.hostMerge;
+		if (!hold) return;
+		const [row] = await this.deps.handle.db
+			.select({ state: mergeJobs.state, error: mergeJobs.error })
+			.from(mergeJobs)
+			.where(eq(mergeJobs.id, hold.jobId));
+		if (row?.state !== "parked") return;
+		const job = await this.requireParked(hold.jobId);
+		await this.deps.onParked(
+			job,
+			row.error ?? "declined by the owner",
+			"conflict",
+		);
 	}
 
 	/**
@@ -633,11 +780,27 @@ export class MergeQueue {
 			}
 		}
 		await this.reportLandedPaths(job, baseSha, sha);
+		const dependencyPaths = await this.landedDependencies(job, baseSha, sha);
 		const stored = await this.deps.handle.withTx(async (tx) => {
 			await tx
 				.update(mergeJobs)
 				.set({ state: "merged", updatedAt: new Date() })
 				.where(eq(mergeJobs.id, job.id));
+			if (dependencyPaths.length > 0) {
+				await recordDependencyChange(tx, {
+					sha,
+					runId: job.runId,
+					taskId: job.taskId,
+					branch: job.branch,
+					target: job.targetBranch,
+					paths: dependencyPaths,
+					at: Date.now(),
+				});
+			}
+			// An approval covers one landing.
+			await tx
+				.delete(engineKv)
+				.where(eq(engineKv.key, hostMergeApprovalKey(job.runId)));
 			return appendEvent(tx, {
 				type: "merge.completed",
 				taskId: job.taskId ?? undefined,
@@ -796,6 +959,25 @@ export class MergeQueue {
 				{ err: e, job: job.id },
 				"could not re-check armed files after a merge",
 			);
+		}
+	}
+
+	/** For the notify-after item. The merge has landed: a failure here only logs. */
+	private async landedDependencies(
+		job: MergeJobView,
+		baseSha: string,
+		sha: string,
+	): Promise<string[]> {
+		try {
+			const root = this.deps.projectRoot;
+			const held = await hostExecutedChange(root, baseSha, sha);
+			return await landedDependencyPaths(root, baseSha, sha, held?.paths ?? []);
+		} catch (e) {
+			this.deps.log.warn(
+				{ err: e, job: job.id },
+				"could not list the dependency files this merge changed",
+			);
+			return [];
 		}
 	}
 

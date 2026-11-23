@@ -272,7 +272,13 @@ export class Health {
 					lte(runs.startedAt, cutoff),
 				),
 			);
-		return rows.map((r) => r.id);
+		// A merge held on the owner's card is waiting for an answer, not stuck.
+		const held = await this.deps.handle.db
+			.select({ runId: mergeJobs.runId })
+			.from(mergeJobs)
+			.where(eq(mergeJobs.state, "held"));
+		const waiting = new Set(held.map((h) => h.runId));
+		return rows.map((r) => r.id).filter((id) => !waiting.has(id));
 	}
 }
 

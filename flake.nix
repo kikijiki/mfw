@@ -19,7 +19,7 @@
             sqlite
             git
             tmux        # agent runs are hosted in detached tmux sessions
-            bubblewrap  # optional: MFW-33 item 3's agentIsolation: "bwrap"
+            bubblewrap  # required: agentIsolation defaults to "bwrap"
           ];
 
           shellHook = ''

@@ -154,6 +154,7 @@ export interface BrainExecutorDeps {
 			branch: string;
 			targetBranch: string;
 		}): Promise<void>;
+		settleDeclinedHostMerge?(actionId: string): Promise<void>;
 	};
 	/** `answer_question`: answer the worker's open question and resume it. */
 	answerQuestion?: (runId: string, answer: string) => Promise<void>;
@@ -1445,6 +1446,11 @@ export class BrainActionExecutor {
 	/** Mint the ids a spawn will use; recorded on the row before any effect. */
 	static mint(): string {
 		return ulid();
+	}
+
+	/** Hand a declined host-executed merge back, as an exhausted park does. */
+	async settleDeclinedHostMerge(actionId: string): Promise<void> {
+		await this.deps.mergeQueue.settleDeclinedHostMerge?.(actionId);
 	}
 
 	/** The turn's session, for callers that only have the turn run id. */

@@ -114,9 +114,9 @@ export function resolveScript(
 	const override = process.env[envVar];
 	if (override) {
 		if (isBundledModule(moduleUrl)) {
-			throw new Error(
-				`refusing ${envVar}: the production server runs only its built host scripts. Fix: unset it`,
-			);
+			const refused = `refusing ${envVar}: the production server runs only its built host scripts. Fix: unset it`;
+			console.error(`[mfw] ${refused}`);
+			throw new Error(refused);
 		}
 		if (existsSync(override)) return override;
 		throw new Error(

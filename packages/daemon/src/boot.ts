@@ -19,11 +19,7 @@ import {
 	relocateLegacyBoard,
 } from "./board-relocate.ts";
 import { getBoardTemplate } from "./board-templates.ts";
-import {
-	BrainService,
-	type InferenceClient,
-	inferenceForProvider,
-} from "./brain.ts";
+import { BrainService, type InferenceClient } from "./brain.ts";
 import { brainSocketFor } from "./brain-runtime/brain-socket.ts";
 import { chatInferenceFor } from "./brain-runtime/chat.ts";
 import { ChatBudget, chatBudgetPath } from "./brain-runtime/chat-budget.ts";
@@ -37,18 +33,23 @@ import {
 	effectiveReview,
 	FALLBACK_MERGE_CHECKS,
 	isolationConfigProblem,
+	isolationDispatchProblem,
 	loadConfig,
 	mutateConfig,
 	normalizeRoot,
 	PROJECT_DEFAULTS,
 } from "./config.ts";
-import { agentSandboxRefusal } from "./containment/agent-preflight.ts";
+import {
+	agentSandboxRefusal,
+	needsDevShell,
+} from "./containment/agent-preflight.ts";
 import { createCheckSandbox } from "./containment/check-sandbox.ts";
 import { runDirLayout } from "./containment/run-dir.ts";
 import { assertRunDead } from "./containment/run-liveness.ts";
 import { ensureSocketRoot } from "./containment/socket-root.ts";
 import { sourceRunRefusal } from "./containment/source-run-guard.ts";
 import { CredentialStore, WorkloadSecretGrantStore } from "./credentials.ts";
+import { criticInferenceFor } from "./critic-inference.ts";
 import { ensureBoardConfig } from "./default-board-config.ts";
 import { readMemAvailable } from "./dispatch-preflight.ts";
 import { DocsService } from "./docs.ts";
@@ -87,6 +88,7 @@ import { LifetimeManager } from "./lifetime.ts";
 import { createLocalExecutionTarget } from "./local-execution-target.ts";
 import { type Logger, rootLogger } from "./log.ts";
 import { Maintenance } from "./maintenance.ts";
+import { hostExecutedChange } from "./merge-gate.ts";
 import { type MergeJobView, MergeQueue } from "./merge-queue.ts";
 import { makeNotifier, type NotifyConfig } from "./notify.ts";
 import { OpenAICompatibleInference } from "./openai-compatible-inference.ts";
@@ -704,7 +706,11 @@ export async function attachProject(
 	const brainInference = (): InferenceClient => {
 		const endpoint = liveRouting.provider.endpoint;
 		if (!endpoint)
-			return inferenceForProvider(liveRouting.provider, { cwd: root });
+			return criticInferenceFor(liveRouting.provider, {
+				projectRoot: root,
+				mfwHome: opts.mfwHome,
+				stateDir: mfwDir,
+			});
 		const grant = liveRouting.routing?.endpoints?.[endpoint.id]?.grant;
 		return new OpenAICompatibleInference({
 			baseUrl: endpoint.baseUrl,
@@ -851,7 +857,13 @@ export async function attachProject(
 			const dod = tasks.effectiveDod(task?.dod ?? null);
 			if (!dod) return { passed: true };
 			const run = await registry.get(job.runId);
-			if (!run?.baseSha) return { passed: true };
+			// As re-verify: no base commit means the checks cannot be run.
+			if (!run?.baseSha) {
+				return {
+					passed: false,
+					detail: "the run has no recorded base commit to verify against",
+				};
+			}
 			// Follows the run: a worktree run keeps today's behaviour.
 			const runClones = createVerifierClones(root, run);
 			if (!runClones) return { passed: true };
@@ -1213,7 +1225,6 @@ export async function attachProject(
 		projectRoot: root,
 		checkPrefix: cfg.checkPrefix,
 		envPolicy: cfg.envPolicy,
-		approvalMode: cfg.approvalMode ?? DEFAULTS.approvalMode,
 		verification,
 		providerHolds,
 		projectName: cfg.name,
@@ -1434,6 +1445,19 @@ export async function attachProject(
 				if (!run.branch || !run.baseSha) return null;
 				return branchChangedFiles(root, run.baseSha, run.branch);
 			},
+			hostExecutedChange: async (run) => {
+				if (!run.branch || !run.baseSha) return null;
+				const quarantine = quarantineRef(run.id);
+				const found = await git(
+					["rev-parse", "--verify", "-q", `${quarantine}^{commit}`],
+					root,
+				);
+				return hostExecutedChange(
+					root,
+					run.baseSha,
+					found.exitCode === 0 ? quarantine : run.branch,
+				);
+			},
 			routeHeld: async (task, pick) => {
 				const held = (await engine.routeTask(task, pick ? { brain: pick } : {}))
 					.held;
@@ -1559,6 +1583,13 @@ export async function attachProject(
 		admission,
 	});
 
+	const dispatchIssue = () =>
+		isolationDispatchProblem({
+			agentIsolation: cfg.agentIsolation,
+			approvalMode: cfg.approvalMode,
+			runWorkspace: cfg.runWorkspace,
+			hasDevShell: needsDevShell(root),
+		});
 	const inbox = new InboxService({
 		handle,
 		project: cfg.name,
@@ -1590,7 +1621,15 @@ export async function attachProject(
 					}
 				: null;
 		},
+		dispatchIssue,
 	});
+	const startupDispatchIssue = dispatchIssue();
+	if (startupDispatchIssue) {
+		plog.warn(
+			{ project: cfg.name },
+			`doctor: project '${cfg.name}' cannot dispatch. ${startupDispatchIssue.detail} Fix: ${startupDispatchIssue.fix}`,
+		);
+	}
 	if (
 		isolationConfigProblem({
 			agentIsolation: cfg.agentIsolation,
@@ -1635,6 +1674,7 @@ export async function attachProject(
 		ledger: opts.hostResources,
 	});
 	const settings = new SettingsService({
+		dispatchProblem: dispatchIssue,
 		mfwHome: opts.mfwHome,
 		project: cfg.name,
 		root: root,

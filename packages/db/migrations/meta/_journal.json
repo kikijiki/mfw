@@ -176,6 +176,13 @@
       "when": 1795431421844,
       "tag": "0025_drop_resource_slots",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1795431481844,
+      "tag": "0026_run_approval_mode",
+      "breakpoints": true
     }
   ]
 }

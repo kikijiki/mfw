@@ -139,8 +139,6 @@ async function makeEnv(
 			},
 		},
 		projectRoot: root,
-		// These runs are plain worktrees, the one case a check may run on the host.
-		approvalMode: "interactive",
 		log: silentLogger(),
 		config: {
 			draftExpandMaxAttempts: 3,
@@ -227,6 +225,8 @@ async function seedRun(
 		report?: unknown;
 		routing?: Record<string, unknown>;
 		providerId?: string;
+		/** The mode it launched under; null is a row from before 0026. */
+		approvalMode?: "autonomous" | "interactive" | null;
 	},
 ): Promise<RunRow> {
 	const run = await env.registry.create({
@@ -247,6 +247,10 @@ async function seedRun(
 			: {}),
 		integrationBranch: "main",
 	});
+	// These runs are plain worktrees, the one case a check may run on the host.
+	const mode =
+		spec.approvalMode === undefined ? "interactive" : spec.approvalMode;
+	if (mode) await env.registry.recordApprovalMode(run.id, mode);
 	const dir = env.registry.runDir(run.id);
 	if (spec.events !== undefined)
 		await writeFile(join(dir, "events.jsonl"), spec.events);
@@ -352,6 +356,73 @@ async function claimedTask(
 	expect(await env.tasks.tryClaim(t.id, runIdPlaceholder, 60_000)).toBe(true);
 	return t.id;
 }
+
+describe("host execution of checks follows the run's own approval mode", () => {
+	const finalizeWith = async (
+		runMode: "autonomous" | "interactive" | null,
+	): Promise<boolean> => {
+		// The runner has no project mode to consult: only the run row decides.
+		const env = await makeEnv();
+		try {
+			const canary = join(env.root, "check-ran-on-host");
+			const wt = await addWorktree(env.root, `m2-${runMode}`);
+			await commitIn(wt.path, "a.txt", "work\n");
+			const runId = ulid();
+			const taskId = await claimedTask(env, runId, {
+				title: "in flight",
+				dod: {
+					verifier: "deterministic",
+					checks: [{ run: `touch ${canary}`, expect_exit: 0 }],
+				},
+			});
+			await seedRun(env, {
+				kind: "task",
+				runId,
+				taskId,
+				wt,
+				events: doneEvent("all done"),
+				exit: "exit:0",
+				report: { summary: "did the work" },
+				approvalMode: runMode,
+			});
+			await env.runner.finalize(runId);
+			return existsSync(canary);
+		} finally {
+			await env.cleanup();
+		}
+	};
+
+	test("an autonomous run stays off the host after the project turns interactive", async () => {
+		expect(await finalizeWith("autonomous")).toBe(false);
+	});
+
+	test("a run with no recorded mode counts as autonomous", async () => {
+		expect(await finalizeWith(null)).toBe(false);
+	});
+
+	test("a run launched interactive still runs its checks", async () => {
+		expect(await finalizeWith("interactive")).toBe(true);
+	});
+});
+
+describe("recordApprovalMode", () => {
+	test("autonomous replaces interactive; interactive never replaces autonomous", async () => {
+		const env = await makeEnv();
+		try {
+			const run = await seedRun(env, { kind: "task", approvalMode: null });
+			const mode = async () => (await env.registry.get(run.id))?.approvalMode;
+			expect(await mode()).toBeNull();
+			await env.registry.recordApprovalMode(run.id, "interactive");
+			expect(await mode()).toBe("interactive");
+			await env.registry.recordApprovalMode(run.id, "autonomous");
+			expect(await mode()).toBe("autonomous");
+			await env.registry.recordApprovalMode(run.id, "interactive");
+			expect(await mode()).toBe("autonomous");
+		} finally {
+			await env.cleanup();
+		}
+	});
+});
 
 describe("StepRunner v2: finalization end to end", () => {
 	test("(a) verified task run enqueues a merge and parks the run in `merging` (T16)", async () => {
@@ -2683,7 +2754,7 @@ describe("an autonomous worktree run on the default config", () => {
 			env,
 			trees,
 			workspaces,
-			runner: env.makeRunner({ approvalMode: PROJECT_DEFAULTS.approvalMode }),
+			runner: env.runner,
 			done: async () => {
 				clearRunWorkspace(env.root);
 				await rm(workspaces, { recursive: true, force: true });
@@ -2709,6 +2780,7 @@ describe("an autonomous worktree run on the default config", () => {
 			wt,
 			events: doneEvent("done"),
 			exit: "exit:0",
+			approvalMode: PROJECT_DEFAULTS.approvalMode,
 		});
 		return { wt, run };
 	}

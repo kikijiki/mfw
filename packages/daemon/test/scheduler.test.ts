@@ -6,7 +6,7 @@ import type { Priority as TaskPriority } from "@mfw/core/types";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
 import { EventBus } from "@mfw/db/eventlog";
 import { ulid } from "@mfw/db/ids";
-import { engineKv, events } from "@mfw/db/schema";
+import { engineKv, events, mergeJobs, runs } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
 import type {
 	LaunchOutcome,
@@ -276,6 +276,38 @@ async function fixture(
 }
 
 describe("Scheduler v2: picking", () => {
+	test("a merge held for the owner does not use a concurrency slot", async () => {
+		const f = await fixture({ maxConcurrent: 1 });
+		const run = await f.registry.create({
+			kind: "task",
+			label: "held",
+			model: "sonnet",
+			cwd: "/x",
+			branch: "b",
+		});
+		await f.handle.db
+			.update(runs)
+			.set({ state: "merging" })
+			.where(eq(runs.id, run.id));
+		await f.handle.db.insert(mergeJobs).values({
+			runId: run.id,
+			branch: "b",
+			targetBranch: "main",
+			state: "queued",
+			enqueuedAt: new Date(),
+			updatedAt: new Date(),
+		});
+		const next = await f.seed({ title: "next" });
+		// An ordinary merging run does hold its slot.
+		expect((await f.sched.tick()).started).toEqual([]);
+		await f.handle.db
+			.update(mergeJobs)
+			.set({ state: "held" })
+			.where(eq(mergeJobs.runId, run.id));
+		expect((await f.sched.tick()).started).toEqual([next]);
+		await f.cleanup();
+	});
+
 	test("a ready task with no spawn action never starts", async () => {
 		const f = await fixture({ maxConcurrent: 4 });
 		const ready = await f.seed({ title: "ready but not chosen", spawn: false });

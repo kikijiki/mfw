@@ -110,8 +110,9 @@ stops that sign-out.
 
 - **Do not trust a loopback proxy while agents share host loopback.** With
   `MFW_TRUSTED_PROXIES=127.0.0.1`, every process that can connect from loopback is
-  "the proxy" and can claim any client address. Task and repair runs have no host
-  network, but the review and driver sandboxes (`bwrapCore`) still share it.
+  "the proxy" and can claim any client address. Sandboxed agent runs have no host
+  network, but an unsandboxed interactive run (`agentIsolation: "none"`) and any
+  other local process still share it.
 - **What such a process can do.** In a security review, 40 workers rotating forged
   addresses got 11 of the owner's 12 correct sign-ins refused at once, and the 12th
   took 32 seconds, until the flood stopped. Forged attempts share one failure

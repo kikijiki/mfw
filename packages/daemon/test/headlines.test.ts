@@ -51,6 +51,7 @@ describe("attention classes", () => {
 		"brain_notice",
 		"brain_decision",
 		"brain_breaker",
+		"dependency_change",
 	];
 	const SEVERITIES: InboxSeverity[] = ["critical", "attention", "info"];
 
@@ -81,6 +82,7 @@ describe("attention classes", () => {
 	test("failed runs and follow-ups are know", () => {
 		expect(attentionOf("failed_run", "info")).toBe("know");
 		expect(attentionOf("followups", "info")).toBe("know");
+		expect(attentionOf("dependency_change", "info")).toBe("know");
 	});
 });
 

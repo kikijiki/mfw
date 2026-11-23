@@ -404,6 +404,42 @@ export function isolationConfigProblem(p: {
 }
 
 /**
+ * Why the preflight will refuse every sandboxed launch of this project, with
+ * the exact fix, or null. Separate from `isolationConfigProblem`, which vets
+ * what may be written: the default config lands here, and it must stay
+ * attachable so the owner can see this and change it. Reported, never fixed
+ * for them: the default workspace is the owner's decision.
+ */
+export function isolationDispatchProblem(p: {
+	agentIsolation?: "none" | "bwrap";
+	approvalMode?: "autonomous" | "interactive";
+	runWorkspace?: "worktree" | "clone";
+	hasDevShell?: boolean;
+}): { detail: string; fix: string } | null {
+	// `none` is the other rule's case: refused if autonomous, allowed if not.
+	if (p.agentIsolation === "none") return null;
+	if ((p.runWorkspace ?? "worktree") !== "clone") {
+		return {
+			detail:
+				'agentIsolation "bwrap" with runWorkspace "worktree": sandboxed runs need a private clone, so no run of this project can start.',
+			fix: `Add "runWorkspace": "clone" to this project's entry in $MFW_HOME/config.json and restart the daemon.${
+				p.hasDevShell
+					? " This project also has an .envrc, which is refused until dev shells work in the sandbox (P8) or the file is removed."
+					: ""
+			}`,
+		};
+	}
+	if (p.hasDevShell) {
+		return {
+			detail:
+				"this project has an .envrc, and dev shells inside the sandbox are not available yet (P8), so no run of this project can start.",
+			fix: "Wait for P8, or remove the .envrc if the project works with its plain toolchain.",
+		};
+	}
+	return null;
+}
+
+/**
  * The machine-level `act` budget (`act-budget.ts`). Every key is optional; an
  * absent one takes `DEFAULT_ACT_BUDGET`. Read on each inbox request.
  */

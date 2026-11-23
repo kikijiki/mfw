@@ -145,7 +145,7 @@ export interface VerifyOptions {
 	fileInCommit?: (path: string) => Promise<boolean>;
 }
 
-/** The host-execution option for a run, from the project's approval mode. */
+/** The host-execution option for a run, from the mode recorded on that run. */
 export function worktreeHostExecution(
 	approvalMode: "autonomous" | "interactive" | undefined,
 ): Pick<VerifyOptions, "hostExecution"> {

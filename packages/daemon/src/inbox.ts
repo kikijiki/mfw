@@ -19,6 +19,11 @@ import { loadHostEvidence } from "./claims-evidence.ts";
 import { TASK_QUESTION_KIND } from "./clarify.ts";
 import { EGRESS_BREACH_KEY_PREFIX } from "./egress-ledger.ts";
 import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
+import {
+	DEPENDENCY_CHANGES_KEY,
+	HOST_MERGE_TOOL,
+	readDependencyChanges,
+} from "./merge-gate.ts";
 import { PUSH_REFUSED_KEY } from "./merge-queue.ts";
 import type { TaskRow, TaskService } from "./task-service.ts";
 
@@ -61,7 +66,9 @@ export type InboxKind =
 	/** The brain's act tools are paused for this project (`act-breaker.ts`). */
 	| "brain_breaker"
 	/** The egress proxy stopped a run at its upload budget: possible exfiltration. */
-	| "egress_budget";
+	| "egress_budget"
+	/** A merge changed dependency files without a card: notify-after, nothing to do. */
+	| "dependency_change";
 
 export type InboxSeverity = "critical" | "attention" | "info";
 
@@ -187,6 +194,8 @@ const SEVERITY: Record<InboxKind, InboxSeverity> = {
 	auth_hold: "critical",
 	// The brain cannot proceed on its own; dispatch continues on the fixed pipeline.
 	brain_stuck: "critical",
+	// Already landed under the decision rights; for reading.
+	dependency_change: "info",
 	// Only a person can supply what the brain asked for.
 	brain_notice: "attention",
 	// Nothing runs until the owner answers; the rest of the fleet keeps going.
@@ -255,6 +264,8 @@ export class InboxService {
 			};
 			/** A project-level refusal that holds every autonomous dispatch (`agentIsolation: none` without interactive approvals). */
 			isolationIssue?: () => { detail: string; fix: string } | null;
+			/** The preflight will refuse every sandboxed launch (`isolationDispatchProblem`). */
+			dispatchIssue?: () => { detail: string; fix: string } | null;
 			/** Providers held for a failed login (`ProviderHoldStore` entries with reason `auth`). */
 			authHolds?: () => Promise<
 				{ key: string; since: number; until: number }[]
@@ -335,6 +346,19 @@ export class InboxService {
 				title: "autonomous dispatch is refused for this project",
 				detail: isolation.detail,
 				fix: isolation.fix,
+				ts: 0,
+			});
+		}
+		const dispatch = this.deps.dispatchIssue?.();
+		if (dispatch) {
+			items.push({
+				id: "admission:sandbox-workspace",
+				project,
+				kind: "admission",
+				severity: "attention",
+				title: "no run of this project can start",
+				detail: dispatch.detail,
+				fix: dispatch.fix,
 				ts: 0,
 			});
 		}
@@ -903,6 +927,26 @@ export class InboxService {
 				ts: breaker.trippedAt ?? 0,
 			});
 		}
+		const [dependencyRow] = await db
+			.select()
+			.from(engineKv)
+			.where(eq(engineKv.key, DEPENDENCY_CHANGES_KEY));
+		const dependencyChanges = readDependencyChanges(dependencyRow?.value);
+		const dependencySince = Date.now() - BRAIN_NOTICE_DAYS * 86_400_000;
+		for (const c of dependencyChanges) {
+			if (c.at < dependencySince) continue;
+			out.push({
+				id: `dependency_change:${c.sha}`,
+				project,
+				kind: "dependency_change",
+				severity: SEVERITY.dependency_change,
+				title: `dependencies changed: ${c.branch}`,
+				detail: `Merged into ${c.target} (commit ${c.sha.slice(0, 12)}) without asking, because no install script or command changed: ${c.paths.join(", ")}.`,
+				...(c.taskId ? { taskId: c.taskId } : {}),
+				runId: c.runId,
+				ts: c.at,
+			});
+		}
 		const held = await db
 			.select()
 			.from(brainActions)
@@ -1038,6 +1082,7 @@ export function describeHeld(row: {
 	args: Record<string, unknown>;
 	effects: Record<string, unknown> | null;
 }): { title: string; detail: string; taskId?: string } {
+	if (row.tool === HOST_MERGE_TOOL) return describeHostMerge(row.args);
 	const {
 		rationale,
 		alternatives: _a,
@@ -1053,6 +1098,10 @@ export function describeHeld(row: {
 		rights?.cause === "taint"
 			? "The brain read untrusted text (agent output, CI, repo or web) in this session, so it may have been steered."
 			: "This class of action is reserved for you.";
+	const publishes =
+		rights?.actionClass === "host_executed_merge"
+			? " Approving also lets this merge be pushed if push after merge is on."
+			: "";
 	const json = JSON.stringify(call);
 	const args = json.length > 1200 ? `${json.slice(0, 1200)}…` : json;
 	const taskId =
@@ -1063,12 +1112,34 @@ export function describeHeld(row: {
 				: undefined;
 	return {
 		title: `decide: ${row.tool} (${what})`,
-		detail: `${why} Would run: ${args}${
+		detail: `${why}${publishes} Would run: ${args}${
 			typeof rationale === "string" && rationale
 				? ` The brain's stated reason (unverified): ${rationale.slice(0, 400)}`
 				: ""
 		}`,
 		...(taskId ? { taskId } : {}),
+	};
+}
+
+/** The card for a merge the queue stopped: what lands, and what approving does. */
+function describeHostMerge(args: Record<string, unknown>): {
+	title: string;
+	detail: string;
+	taskId?: string;
+} {
+	const paths = Array.isArray(args.paths) ? args.paths.map(String) : [];
+	const count =
+		typeof args.pathCount === "number" ? args.pathCount : paths.length;
+	const more = count > paths.length ? ` and ${count - paths.length} more` : "";
+	const commit = String(args.commit ?? "").slice(0, 12);
+	return {
+		title: `approve merge of host-executed files: ${String(args.branch)}`,
+		detail:
+			`Merging into ${String(args.target)} (commit ${commit}) changes files this machine later runs or loads: ${paths.join(", ")}${more}. ` +
+			`Nothing has landed. Approving lands exactly this content${
+				args.pushes === true ? " and pushes it to the remote" : ""
+			}; if it changes, you are asked again. Declining hands the task back.`,
+		...(typeof args.taskId === "string" ? { taskId: args.taskId } : {}),
 	};
 }
 
@@ -1102,6 +1173,7 @@ export const ATTENTION_BY_KIND: Record<InboxKind, AttentionClass> = {
 	// A run failed and was handled; read it, nothing to answer.
 	failed_run: "know",
 	followups: "know",
+	dependency_change: "know",
 	// Still retrying below `ESCALATE_AFTER_SWEEPS`; critical past it.
 	sweep_infra: "ambient",
 	verify_infra: "ambient",

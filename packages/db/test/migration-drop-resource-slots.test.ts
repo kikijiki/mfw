@@ -90,13 +90,16 @@ async function atLatestIntegration() {
 }
 
 describe("dropping resource_slots from the project database", () => {
-	test("is the last journal entry, with a later timestamp", () => {
+	test("follows its predecessor, with a later timestamp", () => {
 		const entries = journal().entries;
 		const before = entries.find((e) => e.tag === BEFORE) as Entry;
 		const drop = entries.find((e) => e.tag === DROP) as Entry;
 		expect(drop.idx).toBe(before.idx + 1);
 		expect(drop.when).toBeGreaterThan(before.when);
-		expect(entries.at(-1)?.tag).toBe(DROP);
+		// Later migrations may follow it; none may sort before it.
+		for (const e of entries.slice(drop.idx + 1)) {
+			expect(e.when).toBeGreaterThan(drop.when);
+		}
 	});
 
 	test("every journal entry is ordered, unique and has its SQL", () => {

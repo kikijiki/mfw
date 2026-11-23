@@ -70,6 +70,7 @@ const KIND_ICON: Record<InboxKind, LucideIcon> = {
 	brain_decision: ShieldAlert,
 	brain_breaker: ShieldAlert,
 	egress_budget: ShieldAlert,
+	dependency_change: FileStack,
 };
 
 const SEVERITY_RANK: Record<InboxSeverity, number> = {

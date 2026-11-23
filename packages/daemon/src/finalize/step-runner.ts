@@ -248,8 +248,6 @@ export interface StepRunnerDeps {
 	/** Wrapper command for DoD checks (e.g. a sandbox entrypoint, or the
 	 *  project's own dev-environment entrypoint). */
 	checkPrefix?: string;
-	/** Absent means autonomous: a worktree run's checks then never run on the host. */
-	approvalMode?: "autonomous" | "interactive";
 	/** What a DoD check may read from the ambient environment. See
 	 *  `verifier.ts`'s `EnvPolicy`. */
 	envPolicy?: EnvPolicy;
@@ -1402,7 +1400,9 @@ export class StepRunner {
 		// host-owned clone of the imported tip, never in the run's workspace.
 		// An autonomous worktree run is verified the same way, from its committed
 		// branch tip, because only an interactive run may execute on the host.
-		const hostExecution = worktreeHostExecution(this.deps.approvalMode);
+		// The run's own mode: the project's may have changed since it launched,
+		// and a run with none recorded counts as autonomous.
+		const hostExecution = worktreeHostExecution(run.approvalMode ?? undefined);
 		const clones =
 			createVerifierClones(this.deps.projectRoot, run) ??
 			(hostExecution.hostExecution
@@ -1442,7 +1442,7 @@ export class StepRunner {
 						run.baseSha ?? "",
 						verifyOpts,
 					)
-				: // Only an interactive worktree run may execute its checks on the host.
+				: // Only a worktree run launched interactive may execute on the host.
 					verify(run.worktreePath as string, dod, run.baseSha ?? "", {
 						...verifyOpts,
 						...hostExecution,

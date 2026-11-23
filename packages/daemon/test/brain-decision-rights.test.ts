@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { brainActions, brainTurns, decisions } from "@mfw/db/schema";
+import {
+	brainActions,
+	brainTurns,
+	decisions,
+	engineKv,
+	mergeJobs,
+} from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
 import { ActBreaker } from "../src/brain-runtime/act-breaker.ts";
 import { ACT_TOOLS } from "../src/brain-runtime/actions.ts";
@@ -7,6 +13,7 @@ import { decisionCardId } from "../src/brain-runtime/decision-rights.ts";
 import { InjectedExecutorCrash } from "../src/brain-runtime/executor.ts";
 import { recordProvenance } from "../src/brain-runtime/provenance.ts";
 import { InboxService } from "../src/inbox.ts";
+import { HOST_MERGE_TOOL, hostMergeApprovalKey } from "../src/merge-gate.ts";
 import { type BrainUnit, brainUnit } from "./support/brain-unit.ts";
 
 const why = { rationale: "the digest says so" };
@@ -228,6 +235,77 @@ describe("host-executed paths", () => {
 		await start({ changedFiles: () => null });
 		const runId = await verifiedAttempt(owner, "G1");
 		expect((await act("select_winner", { ...why, runId })).status).toBe("held");
+	});
+
+	test("approving a held winner enqueues once and binds the content", async () => {
+		await start({
+			changedFiles: () => [".envrc"],
+			hostFingerprint: "sha256:approved",
+		});
+		const runId = await verifiedAttempt(owner, "G1");
+		const out = await act("select_winner", { ...why, runId });
+		const actions = u.runtime.actions;
+		await actions.resolveHeld({ actionId: out.actionId, approve: true });
+		const again = await actions.resolveHeld({
+			actionId: out.actionId,
+			approve: true,
+		});
+		expect(again.alreadyResolved).toBe(true);
+		expect(u.effects.filter((e) => e.tool === "enqueue")).toHaveLength(1);
+		const [kv] = await u.handle.db
+			.select()
+			.from(engineKv)
+			.where(eq(engineKv.key, hostMergeApprovalKey(runId)));
+		expect((kv?.value as { fingerprint: string }).fingerprint).toBe(
+			"sha256:approved",
+		);
+	});
+
+	test("a queue-raised card requeues its job once on approval", async () => {
+		await start();
+		const runId = await verifiedAttempt(owner, "G1");
+		const [job] = await u.handle.db
+			.insert(mergeJobs)
+			.values({
+				runId,
+				taskId: owner,
+				branch: "b",
+				targetBranch: "main",
+				state: "held",
+				enqueuedAt: new Date(),
+				updatedAt: new Date(),
+			})
+			.returning({ id: mergeJobs.id });
+		await u.handle.db.insert(brainActions).values({
+			id: "card-1",
+			idemKey: "host_merge:card-1",
+			sessionId: "merge-queue",
+			turnRunId: runId,
+			tool: HOST_MERGE_TOOL,
+			args: { runId, branch: "b", target: "main", paths: [".envrc"] },
+			status: "held",
+			effects: {
+				rights: { actionClass: "host_executed_merge", cause: "default" },
+				hostMerge: { jobId: job?.id, runId, fingerprint: "sha256:x" },
+			},
+			createdAt: new Date(),
+		});
+		const actions = u.runtime.actions;
+		const first = await actions.resolveHeld({
+			actionId: "card-1",
+			approve: true,
+		});
+		expect(first.status).toBe("applied");
+		const second = await actions.resolveHeld({
+			actionId: "card-1",
+			approve: true,
+		});
+		expect(second.alreadyResolved).toBe(true);
+		const [after] = await u.handle.db
+			.select()
+			.from(mergeJobs)
+			.where(eq(mergeJobs.runId, runId));
+		expect(after?.state).toBe("queued");
 	});
 
 	test("an ordinary winner merges without asking", async () => {

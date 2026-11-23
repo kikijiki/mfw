@@ -7,16 +7,20 @@ import { EventBus } from "@mfw/db/eventlog";
 import { reviewVerdicts } from "@mfw/db/schema";
 import {
 	AgentReviewInference,
-	type AgentRunner,
 	ReviewerModifiedError,
 } from "../src/agent-review.ts";
 import { BrainService } from "../src/brain.ts";
+import type { runOneShotAgent } from "../src/containment/oneshot-agent.ts";
 import type { BrainCallCtx } from "../src/finalize/step-runner.ts";
 import { git } from "../src/git.ts";
 import { silentLogger } from "../src/log.ts";
 import type { ProcResult } from "../src/proc.ts";
 import { DEFAULT_REVIEW_POLICY } from "../src/review-verdict.ts";
 import { RunRegistry } from "../src/run-registry.ts";
+import {
+	clearRunWorkspace,
+	configureRunWorkspace,
+} from "../src/run-workspace/factory.ts";
 
 const BRANCH = "mfw/task/T-1/x";
 const LEGACY =
@@ -59,11 +63,20 @@ async function repo(): Promise<{
 	await writeFile(join(root, ".git/info/exclude"), "wt/\n.mfw/\n");
 	await writeFile(join(runWt, "a.txt"), "changed\n");
 	await git(["commit", "-qam", "work"], runWt);
+	const workspaces = await mkdtemp(join(tmpdir(), "mfw-agent-review-ws-"));
+	configureRunWorkspace(root, {
+		kind: "worktree",
+		clone: { workspaceRoot: workspaces },
+	});
 	return {
 		root,
 		runWt,
 		base,
-		cleanup: () => rm(root, { recursive: true, force: true }),
+		cleanup: async () => {
+			clearRunWorkspace(root);
+			await rm(workspaces, { recursive: true, force: true });
+			await rm(root, { recursive: true, force: true });
+		},
 	};
 }
 
@@ -80,14 +93,18 @@ function ok(stdout: string): ProcResult {
 
 /** A fake reviewer process: records its argv and cwd, then does `act`. */
 function fakeAgent(act: (cwd: string) => Promise<void> = async () => {}) {
-	const calls: { argv: string[]; cwd: string }[] = [];
-	const run: AgentRunner = async (argv, opts) => {
-		calls.push({ argv, cwd: opts.cwd });
-		await act(opts.cwd);
+	const calls: { argv: string[]; cwd: string; prompt: string }[] = [];
+	// Stands in for the sandboxed launch: the agent sees the clone as its cwd.
+	const run: typeof runOneShotAgent = async (req) => {
+		calls.push({ argv: [...req.argv], cwd: req.tree, prompt: req.prompt });
+		await act(req.tree);
 		return ok(JSON.stringify({ result: MERGE_REPLY, total_cost_usd: 0.01 }));
 	};
 	return { run, calls };
 }
+
+/** Unused by the fake launch, which is all these tests go through. */
+const HOST = { mfwHome: "/nonexistent", stateDir: "/nonexistent" };
 
 const OPTS = { model: "opus", timeoutMs: 30_000 };
 
@@ -98,8 +115,8 @@ describe("AgentReviewInference", () => {
 		const t = new AgentReviewInference({
 			subject: { projectRoot: r.root, branch: BRANCH, runWorktree: r.runWt },
 			harness: "claude-cli",
-			sandbox: "off",
-			run: agent.run,
+			host: HOST,
+			launch: agent.run,
 		});
 		const reply = await t.complete("review it", OPTS);
 		expect(reply.text).toBe(MERGE_REPLY);
@@ -123,8 +140,8 @@ describe("AgentReviewInference", () => {
 		const t = new AgentReviewInference({
 			subject: { projectRoot: r.root, branch: BRANCH, runWorktree: r.runWt },
 			harness: "claude-cli",
-			sandbox: "off",
-			run: agent.run,
+			host: HOST,
+			launch: agent.run,
 		});
 		await expect(t.complete("review it", OPTS)).rejects.toBeInstanceOf(
 			ReviewerModifiedError,
@@ -137,8 +154,8 @@ describe("AgentReviewInference", () => {
 		const touchRun = new AgentReviewInference({
 			subject: { projectRoot: r.root, branch: BRANCH, runWorktree: r.runWt },
 			harness: "claude-cli",
-			sandbox: "off",
-			run: fakeAgent(async () => {
+			host: HOST,
+			launch: fakeAgent(async () => {
 				await writeFile(join(r.runWt, "new.txt"), "stray\n");
 			}).run,
 		});
@@ -149,8 +166,8 @@ describe("AgentReviewInference", () => {
 		const moveBranch = new AgentReviewInference({
 			subject: { projectRoot: r.root, branch: BRANCH, runWorktree: null },
 			harness: "claude-cli",
-			sandbox: "off",
-			run: fakeAgent(async () => {
+			host: HOST,
+			launch: fakeAgent(async () => {
 				await git(["update-ref", `refs/heads/${BRANCH}`, r.base], r.root);
 			}).run,
 		});
@@ -211,8 +228,8 @@ describe("BrainService: agent review mode", () => {
 				new AgentReviewInference({
 					subject: { projectRoot: r.root, ...s },
 					harness: "claude-cli",
-					sandbox: "off",
-					run: agent.run,
+					host: HOST,
+					launch: agent.run,
 				}),
 		});
 		const ctx: BrainCallCtx = {
@@ -246,9 +263,8 @@ describe("BrainService: agent review mode", () => {
 			verdict: "merge",
 			reviewer: { model: "opus" },
 		});
-		expect(e.agent.calls[0]?.argv.join(" ")).toContain(
-			"VERDICT: merge|fix|reject",
-		);
+		expect(e.agent.calls[0]?.argv.join(" ")).not.toContain("VERDICT");
+		expect(e.agent.calls[0]?.prompt).toContain("VERDICT: merge|fix|reject");
 		const rows = await e.handle.db.select().from(reviewVerdicts);
 		expect(rows).toHaveLength(1);
 		expect(rows[0]).toMatchObject({ mode: "agent", verdict: "merge" });
