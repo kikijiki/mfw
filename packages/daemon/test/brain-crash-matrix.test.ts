@@ -1,6 +1,7 @@
 import "./support/tmux-test-socket.ts";
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	brainActions,
@@ -25,7 +26,10 @@ import { TEST_TMUX_SOCKET } from "./support/tmux-test-socket.ts";
  */
 
 let fx: BrainFixture | undefined;
+const notifyDirs: string[] = [];
 afterEach(async () => {
+	for (const d of notifyDirs.splice(0))
+		await rm(d, { recursive: true, force: true });
 	await fx?.cleanup();
 	fx = undefined;
 });
@@ -231,20 +235,17 @@ describe("brain crash matrix", () => {
 	}, 90_000);
 
 	test("row 10: repeated failures open the circuit: one page, no more turns, the rest keeps running, a human reset resumes", async () => {
-		const notified = "notified.log";
-		// Notifications go to a file through the project's command sink.
+		// Notifications go to a per-test file through the project's command sink.
+		const notifyDir = await mkdtemp(join(tmpdir(), "mfw-notified-"));
+		notifyDirs.push(notifyDir);
+		const notifiedLog = join(notifyDir, "notified.log");
 		fx = await brainFixture({
 			project: {
 				notify: {
-					command: `printf '%s\\n' "$MFW_NOTIFY_TYPE" >> "${join(
-						// the fixture's store dir is only known after creation
-						"/tmp",
-						notified,
-					)}"`,
+					command: `printf '%s\\n' "$MFW_NOTIFY_TYPE" >> "${notifiedLog}"`,
 				},
 			},
 		});
-		await rm(join("/tmp", notified), { force: true });
 		await fx.plan("fail", "fail", "fail");
 
 		for (let i = 0; i < 3; i++) {
@@ -260,7 +261,7 @@ describe("brain crash matrix", () => {
 		expect(s.consecutiveFailures).toBe(3);
 		expect((await fx.turns()).every((t) => t.status === "failed")).toBe(true);
 
-		const log = await readFile(join("/tmp", notified), "utf8").catch(() => "");
+		const log = await readFile(notifiedLog, "utf8").catch(() => "");
 		expect(log.split("\n").filter((l) => l === "brain_stuck")).toHaveLength(1);
 
 		// Open circuit: new events start nothing, but everything else keeps going.
@@ -277,7 +278,7 @@ describe("brain crash matrix", () => {
 		});
 		await fx.settleTurn();
 		expect((await fx.turns())[0]?.status).toBe("ok");
-		await rm(join("/tmp", notified), { force: true });
+		await rm(notifiedLog, { force: true });
 	}, 180_000);
 });
 

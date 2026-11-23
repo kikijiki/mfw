@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readlinkSync } from "node:fs";
 import {
+	lstat,
 	mkdir,
 	mkdtemp,
+	readdir,
 	readFile,
 	rm,
 	stat,
@@ -127,6 +129,7 @@ const controlRoot = ${JSON.stringify(controlRootPath())};
 const out = ${JSON.stringify(join(aRun, "loot"))};
 const armed = ${JSON.stringify(join(aRun, "attacker-armed"))};
 const done = ${JSON.stringify(join(aRun, "victim-launched"))};
+const hostFound = ${JSON.stringify(join(aRun, "host-found"))};
 const t0 = Date.now();
 fs.writeFileSync(armed, "1");
 (async () => {
@@ -143,7 +146,13 @@ fs.writeFileSync(armed, "1");
         }
       } catch {}
     }
+    // The sandbox masks the secret directory, so listing finds nothing; the
+    // host tells us the real path and we attack that exact path anyway.
+    if (!found) {
+      try { found = fs.readFileSync(hostFound, "utf8").trim() || null; } catch {}
+    }
     if (found) {
+      fs.writeFileSync(out + ".attempted", found);
       fs.writeFileSync(out + ".found", found);
       try { ${attackerBody} } catch (e) { fs.appendFileSync(out + ".err", String(e)); }
       return;
@@ -164,7 +173,46 @@ fs.writeFileSync(armed, "1");
 					await Bun.sleep(10);
 			},
 		});
-		const host = new AgentHost(undefined, { tmuxRunner: runner });
+		// Host-side positive control: the secret handoff really happened. The
+		// directory is only visible between its creation and the reader's ack, so
+		// poll for it from the host, and let the writer seam prove the FIFO.
+		const evidence = {
+			hostSawDir: null as string | null,
+			hostSawFifo: false,
+			writerGotFifo: false,
+		};
+		let settled = false;
+		const sawControl = (async () => {
+			while (!settled || evidence.hostSawDir === null) {
+				for (const dir of [tmpdir(), controlRootPath()]) {
+					let names: string[] = [];
+					try {
+						names = await readdir(dir);
+					} catch {}
+					for (const n of names) {
+						if (!n.startsWith("mfw-driver-secret-")) continue;
+						const found = join(dir, n);
+						const st = await lstat(join(found, "environment.fifo")).catch(
+							() => null,
+						);
+						if (!st) continue;
+						evidence.hostSawDir = found;
+						evidence.hostSawFifo = st.isFIFO();
+						await writeFile(join(aRun, "host-found"), found);
+					}
+				}
+				if (evidence.hostSawDir !== null) return;
+				if (settled) return;
+				await Bun.sleep(1);
+			}
+		})();
+		const host = new AgentHost(undefined, {
+			tmuxRunner: runner,
+			secretHandoffWriter: async (handle, content) => {
+				evidence.writerGotFifo = (await handle.stat()).isFIFO();
+				await handle.writeFile(content);
+			},
+		});
 		const common = {
 			projectRoot: base,
 			agentArgv: ["true"],
@@ -197,10 +245,19 @@ fs.writeFileSync(armed, "1");
 				(e) => e as Error,
 			);
 		await launched;
+		settled = true;
+		await sawControl;
 		await writeFile(join(aRun, "victim-launched"), "1");
 		await Promise.all([...procs.values()].map((p) => p.exited));
-		// The attack must have run: an attacker that never saw the secret
+		// The attack must have run: an attacker that never targeted the secret
 		// directory would "fail" to steal anything for the wrong reason.
+		expect(evidence.hostSawDir).not.toBeNull();
+		expect(evidence.hostSawFifo).toBe(true);
+		expect(evidence.writerGotFifo).toBe(true);
+		expect(await exists(join(aRun, "loot.attempted"))).toBe(true);
+		expect((await readFile(join(aRun, "loot.attempted"), "utf8")).trim()).toBe(
+			evidence.hostSawDir as string,
+		);
 		return { aRun, loot: join(aRun, "loot") };
 	}
 

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { boardCliArgv } from "./support/cli-argv.ts";
 
 const CLI = join(import.meta.dir, "../src/cli.ts");
 
@@ -43,7 +44,7 @@ async function mfwBoard(
 ) {
 	const e: Record<string, string | undefined> = { ...process.env, ...env };
 	if (!("MFW_BOARD" in env)) delete e.MFW_BOARD;
-	const p = Bun.spawn(["bun", "run", CLI, ...args], {
+	const p = Bun.spawn(boardCliArgv(CLI, args), {
 		cwd,
 		env: e,
 		stdout: "pipe",

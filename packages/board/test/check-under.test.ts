@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { boardCliArgv } from "./support/cli-argv.ts";
 
 const CLI = join(import.meta.dir, "../src/cli.ts");
 
@@ -30,7 +31,7 @@ afterEach(async () => {
 });
 
 async function mfwBoard(cwd: string, args: string[]) {
-	const p = Bun.spawn([process.execPath, "run", CLI, ...args], {
+	const p = Bun.spawn(boardCliArgv(CLI, args), {
 		cwd,
 		stdout: "pipe",
 		stderr: "pipe",

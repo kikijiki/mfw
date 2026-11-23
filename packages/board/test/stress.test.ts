@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openMfwProject } from "../src/project.ts";
+import { boardCliArgv } from "./support/cli-argv.ts";
 
 /** Load, edge-case and fuzz tests. Generous time bounds: they catch O(n^2)
  * regressions (repair once took minutes on 1,200 cards), not machine noise. */
@@ -46,7 +47,7 @@ afterEach(async () => {
 });
 
 async function mfwBoard(cwd: string, args: string[], stdin?: string) {
-	const p = Bun.spawn(["bun", "run", CLI, ...args], {
+	const p = Bun.spawn(boardCliArgv(CLI, args), {
 		cwd,
 		stdin: stdin === undefined ? "ignore" : new TextEncoder().encode(stdin),
 		stdout: "pipe",

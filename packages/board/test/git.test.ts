@@ -55,7 +55,14 @@ test("a lock that never clears still fails with git's own message", async () => 
 	await git(["init", "-q"], d);
 	await writeFile(join(d, "f.txt"), "x");
 	await writeFile(join(d, ".git", "index.lock"), "");
-	const e = await git(["add", "--", "f.txt"], d).catch((x) => x);
+	const delays: number[] = [];
+	const e = await git(["add", "--", "f.txt"], d, {
+		sleep: async (ms) => {
+			delays.push(ms);
+		},
+	}).catch((x) => x);
 	expect(e).toBeInstanceOf(GitError);
 	expect((e as GitError).stderr).toContain("index.lock");
-}, 15000);
+	// The backoff doubles from 100 ms across six retries; the test drove the clock.
+	expect(delays).toEqual([100, 200, 400, 800, 1600, 3200]);
+});

@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { LEGACY_SKILL_DIR } from "../src/commands/skill-targets.ts";
+import { boardCliArgv } from "./support/cli-argv.ts";
 
 const CLI = join(import.meta.dir, "../src/cli.ts");
 // Installed copies have the checkout placeholder filled in with the real path.
@@ -60,7 +61,7 @@ async function run(
 		PATH: s.bin,
 		...extra,
 	};
-	const p = Bun.spawn([process.execPath, "run", CLI, ...args], {
+	const p = Bun.spawn(boardCliArgv(CLI, args), {
 		cwd: s.cwd,
 		env,
 		stdout: "pipe",

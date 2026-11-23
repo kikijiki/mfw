@@ -10,6 +10,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { boardCliArgv } from "./support/cli-argv.ts";
 
 const CLI = join(import.meta.dir, "../src/cli.ts");
 
@@ -51,7 +52,7 @@ afterEach(async () => {
 async function mfwBoard(cwd: string, args: string[]) {
 	const e: Record<string, string | undefined> = { ...process.env };
 	delete e.MFW_BOARD;
-	const p = Bun.spawn(["bun", "run", CLI, ...args], {
+	const p = Bun.spawn(boardCliArgv(CLI, args), {
 		cwd,
 		env: e,
 		stdout: "pipe",
