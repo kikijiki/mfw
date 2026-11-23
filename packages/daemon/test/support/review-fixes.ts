@@ -104,6 +104,6 @@ export const baseSpec = (
 	agentArgv: ["true"],
 	env: {},
 	steer: false,
-	approvalMode: "autonomous" as const,
+	approvalMode: "interactive" as const,
 	isolation: { mode: "bwrap" as const, hidePaths: [] },
 });

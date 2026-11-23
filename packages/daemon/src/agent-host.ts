@@ -296,6 +296,16 @@ export class AgentHost {
 				"autonomous runs require a bwrap sandbox (agentIsolation is none)",
 			);
 		}
+		// Only the host bridge is a real profile. The interim sandbox binds the
+		// real home read-write, so nothing autonomous may start in it.
+		if (
+			(spec.approvalMode ?? "autonomous") === "autonomous" &&
+			!usesHostBridge(spec)
+		) {
+			throw new SandboxUnavailableError(
+				`autonomous ${spec.runKind ?? "unnamed"} runs have no sandbox profile yet: set approvalMode to interactive`,
+			);
+		}
 		const dir = spec.runDir;
 		// No sandbox means no boundary to split along.
 		const hostFiles = spec.isolation ? ensureRunDirLayout(dir).control : dir;

@@ -22,7 +22,9 @@ export type PreflightCode =
 	/** Autonomous approval without a usable bwrap sandbox (missing, or isolation is `none`). */
 	| "sandbox_unavailable"
 	/** The sandbox exists but the minimal probe failed (`containment/minimal-probe.ts`). */
-	| "sandbox_probe_failed";
+	| "sandbox_probe_failed"
+	/** This run kind has no sandbox profile yet, so it cannot run autonomously. */
+	| "sandbox_role_unavailable";
 
 export class DispatchPreflightError extends Error {
 	readonly fix: RefusalFix;

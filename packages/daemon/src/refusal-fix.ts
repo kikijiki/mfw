@@ -185,6 +185,10 @@ export const REFUSAL_FIXES: Record<RefusalCode, FixFor> = {
 		kind: "command",
 		text: `The sandbox probe failed (${waitingFor[0] ?? "no detail"}). Check that bwrap can create user namespaces on this host (AppArmor or sysctl kernel.unprivileged_userns_clone), then retry; autonomous runs stay refused until the probe passes.`,
 	}),
+	sandbox_role_unavailable: (waitingFor) => ({
+		kind: "setting",
+		text: `${waitingFor[0] ?? "This"} runs have no sandbox profile yet, so they cannot run autonomously. Set approvalMode to interactive for this project to run them with a human approving each action. Task and repair runs are not affected.`,
+	}),
 	memory_floor: (waitingFor) => ({
 		kind: "setting",
 		text: `Free memory on the host (${waitingFor.join(", ")}), or lower minFreeMemoryMb in this project's entry in $MFW_HOME/config.json (0 turns the check off).`,

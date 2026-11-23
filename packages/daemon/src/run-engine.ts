@@ -1205,10 +1205,29 @@ export class RunEngine {
 		return this.launchPreparedRun(prepared);
 	}
 
+	/**
+	 * Only task and repair runs have a sandbox profile. Every other kind would
+	 * get the interim sandbox, which binds the real home read-write, so it may
+	 * not act without a human until its role profile exists.
+	 */
+	assertKindMayRun(kind: string): void {
+		if (!this.deps.isolation) return;
+		if ((this.deps.defaults.approvalMode ?? "autonomous") !== "autonomous") {
+			return;
+		}
+		if (kind === "task" || kind === "repair") return;
+		throw new DispatchPreflightError(
+			"sandbox_role_unavailable",
+			[kind],
+			`autonomous ${kind} runs are refused until their sandbox profile exists`,
+		);
+	}
+
 	private async prepareRun(
 		spec: RunLaunchSpec,
 		targetResolution: ResolvedExecutionTarget,
 	): Promise<PreparedTaskRun> {
+		this.assertKindMayRun(spec.kind);
 		const target = this.requireTarget(targetResolution.kind);
 		const requestedShape = {
 			...targetResolution.requestedShape,
