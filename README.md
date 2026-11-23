@@ -323,4 +323,5 @@ read the run in the UI or its `events.jsonl`, not by attaching to tmux.
 
 ## License
 
-[MIT](./LICENSE)
+[MIT](./LICENSE). A build writes the licences of everything it bundles, fonts included,
+to `apps/start/.output/THIRD_PARTY_NOTICES.txt` (`tools/third-party-notices.ts`).
