@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 import type { HostSlotLedger } from "./host-service.ts";
 import { runProc } from "./proc.ts";
 
@@ -48,9 +49,23 @@ export function codexConcurrencyLimit(mode: CodexAuthMode): number | null {
 	return mode === "api-key" ? null : 1;
 }
 
-/** The directory the Codex CLI keeps its login in. */
-export function codexHomeOf(env: NodeJS.ProcessEnv): string {
-	return env.CODEX_HOME?.trim() || join(env.HOME || homedir(), ".codex");
+/** The harness manifest's Codex fleet entry: its directory name and variable. */
+function codexFleet(): { dir: string; env: string } {
+	const m = builtinHarnessRegistry().byFleetCli("codex");
+	return { dir: m.fleet.cli as string, env: m.fleet.env as string };
+}
+
+/**
+ * The directory the Codex login lives in. Sandboxed runs log in under the
+ * fleet config dir (`<mfw home>/agents/codex`, bound in as the CLI's config
+ * variable), so with an mfw home that is where the check looks, never the
+ * host user's own `~/.codex`. Without one (a bare lane) it falls back to the
+ * CLI's own rule: the variable, else `~/.codex`.
+ */
+export function codexHomeOf(env: NodeJS.ProcessEnv, mfwHome?: string): string {
+	const fleet = codexFleet();
+	if (mfwHome) return join(mfwHome, "agents", fleet.dir);
+	return env[fleet.env]?.trim() || join(env.HOME || homedir(), ".codex");
 }
 
 /** Coordinator id of the slot guarding one `CODEX_HOME` (a hash: never a path). */
@@ -61,6 +76,8 @@ export function codexSlotResourceId(codexHome: string): string {
 
 export interface CodexLaneDeps {
 	ledger: HostSlotLedger;
+	/** The mfw home: the login is read from its fleet dir, not `~/.codex`. */
+	mfwHome?: string;
 	env?: () => NodeJS.ProcessEnv;
 	/** Test seam; default spawns `<command> login status`. */
 	run?: CodexLoginRunner;
@@ -83,7 +100,7 @@ export class CodexLane {
 
 	async authMode(): Promise<CodexAuthMode> {
 		const env = this.env;
-		const home = codexHomeOf(env);
+		const home = codexHomeOf(env, this.deps.mfwHome);
 		const now = (this.deps.now ?? Date.now)();
 		const c = this.cached;
 		if (c && c.home === home && now - c.at < (this.deps.ttlMs ?? 60_000))
@@ -99,7 +116,9 @@ export class CodexLane {
 					);
 					return { exitCode: r.exitCode, stdout: r.stdout, stderr: r.stderr };
 				});
-			mode = parseCodexLoginStatus(await run({ ...env, CODEX_HOME: home }));
+			mode = parseCodexLoginStatus(
+				await run({ ...env, [codexFleet().env]: home }),
+			);
 		} catch {
 			mode = "unknown";
 		}
@@ -118,7 +137,7 @@ export class CodexLane {
 	} | null> {
 		const mode = await this.authMode();
 		if (codexConcurrencyLimit(mode) === null) return null;
-		const id = codexSlotResourceId(codexHomeOf(this.env));
+		const id = codexSlotResourceId(codexHomeOf(this.env, this.deps.mfwHome));
 		const current = this.deps.ledger
 			.readModel()
 			.definitions.find((d) => d.id === id);

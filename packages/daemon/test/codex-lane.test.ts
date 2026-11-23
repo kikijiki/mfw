@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	CodexLane,
 	type CodexLoginOutput,
@@ -39,6 +42,15 @@ describe("parseCodexLoginStatus", () => {
 });
 
 describe("codex home", () => {
+	test("a configured fleet dir wins over CODEX_HOME and ~/.codex", () => {
+		expect(codexHomeOf({ CODEX_HOME: "/other", HOME: "/h" }, "/mfw-home")).toBe(
+			"/mfw-home/agents/codex",
+		);
+		expect(codexHomeOf({ HOME: "/h" }, "/mfw-home")).toBe(
+			"/mfw-home/agents/codex",
+		);
+	});
+
 	test("CODEX_HOME wins, else ~/.codex", () => {
 		expect(codexHomeOf({ CODEX_HOME: "/fleet/codex", HOME: "/h" })).toBe(
 			"/fleet/codex",
@@ -69,6 +81,48 @@ function fakeLedger() {
 }
 
 describe("CodexLane", () => {
+	test("with a fleet dir the login is read where the runs log in, never ~/.codex", async () => {
+		const { ledger } = fakeLedger();
+		const seen: { codexHome?: string; home?: string }[] = [];
+		const lane = new CodexLane({
+			ledger,
+			mfwHome: "/mfw-home",
+			env: () => ({ HOME: "/h" }),
+			run: async (env) => {
+				seen.push({ codexHome: env.CODEX_HOME, home: env.HOME });
+				return out("Logged in using ChatGPT");
+			},
+		});
+		const req = await lane.requirement();
+		expect(seen).toEqual([{ codexHome: "/mfw-home/agents/codex", home: "/h" }]);
+		expect(req?.id).toBe(codexSlotResourceId("/mfw-home/agents/codex"));
+	});
+
+	test("a fixture home: the status command sees only the fleet dir", async () => {
+		const root = mkdtempSync(join(tmpdir(), "mfw-codex-lane-"));
+		try {
+			const fleet = join(root, "mfw", "agents", "codex");
+			mkdirSync(fleet, { recursive: true });
+			mkdirSync(join(root, "user", ".codex"), { recursive: true });
+			const bin = join(root, "codex");
+			writeFileSync(
+				bin,
+				'#!/bin/sh\nif [ -d "$CODEX_HOME" ] && [ "$CODEX_HOME" = "$EXPECT" ]; then echo "Logged in using an API key - x"; else echo "Not logged in"; exit 1; fi\n',
+				{ mode: 0o755 },
+			);
+			const { ledger } = fakeLedger();
+			const lane = new CodexLane({
+				ledger,
+				command: bin,
+				mfwHome: join(root, "mfw"),
+				env: () => ({ HOME: join(root, "user"), EXPECT: fleet }),
+			});
+			expect(await lane.authMode()).toBe("api-key");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	test("a ChatGPT login holds a one-slot resource for its CODEX_HOME", async () => {
 		const { ledger, defs } = fakeLedger();
 		const seen: (string | undefined)[] = [];

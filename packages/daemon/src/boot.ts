@@ -2453,7 +2453,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 		log: log.child({ svc: "ssh-hosts" }),
 		...(opts.sshTransport ? { transport: opts.sshTransport } : {}),
 	});
-	const codexLane = new CodexLane({ ledger: hostResources });
+	const codexLane = new CodexLane({ ledger: hostResources, mfwHome: home });
 	const openrouter = new OpenRouterAccountService({
 		client:
 			opts.openrouterClient ??
