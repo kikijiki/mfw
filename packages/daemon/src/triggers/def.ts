@@ -372,9 +372,11 @@ export function parseTriggerDef(src: DefinitionSource): TriggerDef {
 export function loadTriggerDefs(
 	dir: string,
 	log: Logger,
+	opts: { create?: boolean } = {},
 ): Promise<DefinitionLoad<TriggerDef>> {
 	return new DefinitionLoader<TriggerDef>({
 		dir,
+		...(opts.create === undefined ? {} : { create: opts.create }),
 		idRe: DEF_ID_RE,
 		kind: "trigger",
 		log,

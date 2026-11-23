@@ -2921,7 +2921,7 @@ describe("an autonomous worktree run on the default config", () => {
 			(e) => e.type === "verify.check" && e.runId === run.id,
 		) as unknown as { payload: { classification?: string; detail?: string } };
 		expect(check.payload.classification).toBe("crashed");
-		expect(check.payload.detail).toContain("until P8");
+		expect(check.payload.detail).toContain("not available in the sandbox");
 		await t.done();
 	});
 

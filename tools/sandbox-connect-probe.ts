@@ -56,7 +56,11 @@ const controlPath = "/work/control.sock";
 const readers = hostCaps.liveHostReaders();
 const bwrapPath = requireHostTool("bwrap");
 const [userns, bwrap] = await Promise.all([
-	hostCaps.detectUserns(readers),
+	hostCaps.detectUserns(readers, {
+		bwrap: bwrapPath,
+		bwrapReal: realpathSync(bwrapPath),
+		trueBin: requireHostTool("true"),
+	}),
 	hostCaps.detectBwrap(readers, bwrapPath),
 ]);
 const binaries = ["bun", "sh"];

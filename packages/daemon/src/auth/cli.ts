@@ -7,7 +7,10 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { basename, join } from "node:path";
-import { acquireDaemonLock } from "../resources/daemon-lock.ts";
+import {
+	acquireDaemonLock,
+	DaemonLockError,
+} from "../resources/daemon-lock.ts";
 import { pinnedTool } from "../sandbox.ts";
 import { AuthService, authDbPath, isAuthRefused } from "./service.ts";
 import {
@@ -159,8 +162,12 @@ async function reset(auth: AuthService, d: AuthCliDeps): Promise<number> {
 			processBootId: `auth-reset-${process.pid}`,
 			timeoutMs: 500,
 		});
-	} catch {
-		d.err("mfw auth: the server is running. Fix: stop the server, then retry.");
+	} catch (e) {
+		d.err(
+			e instanceof DaemonLockError && e.busy
+				? "mfw auth: the server is running. Fix: stop the server, then retry."
+				: `mfw auth: could not take the daemon lock, so nothing was changed: ${(e as Error).message}`,
+		);
 		return 1;
 	}
 	try {

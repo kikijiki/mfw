@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile } from "node:fs/promises";
+import { mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { splitFrontmatter } from "@mfw/core";
+import {
+	MAX_PROJECT_FILE_BYTES,
+	readProjectFile,
+} from "./containment/safe-file.ts";
 import type { Logger } from "./log.ts";
 
 /**
@@ -42,8 +46,10 @@ export interface DefinitionLoad<T> {
 }
 
 export interface DefinitionLoaderDeps<T> {
-	/** Absolute path to the definitions directory; created if absent. */
+	/** Absolute path to the definitions directory; created if absent unless `create` is false. */
 	dir: string;
+	/** False for a reader that must make no write attempt. */
+	create?: boolean;
 	/** The id grammar. */
 	idRe: RegExp;
 	/** Names this kind in log lines and quarantine reasons ("lifetime"). */
@@ -62,7 +68,7 @@ export class DefinitionLoader<T> {
 
 	async load(): Promise<DefinitionLoad<T>> {
 		const { dir, log, kind } = this.deps;
-		await mkdir(dir, { recursive: true });
+		if (this.deps.create !== false) await mkdir(dir, { recursive: true });
 		const out: DefinitionLoad<T> = { defs: [], quarantined: [] };
 		let files: string[];
 		try {
@@ -74,7 +80,13 @@ export class DefinitionLoader<T> {
 			if (!file.endsWith(".md")) continue;
 			let id: string | null = null;
 			try {
-				const raw = await readFile(join(dir, file), "utf8");
+				// A cloned repository controls this path: it may be a link or a FIFO.
+				const raw = await readProjectFile(join(dir, file));
+				if (raw === null) {
+					throw new Error(
+						`${kind} definition must be a regular file of at most ${MAX_PROJECT_FILE_BYTES} bytes`,
+					);
+				}
 				const { data, body } = splitFrontmatter(raw);
 				const fm = (data ?? {}) as Record<string, unknown>;
 				id = String(fm.id ?? file.replace(/\.md$/, ""));

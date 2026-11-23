@@ -56,3 +56,19 @@ export async function readSmallRegularFile(
 	const r = await readRegularFile(path, 4096);
 	return r ? r.buffer.toString("utf8") : null;
 }
+
+/** The most a project-controlled definition or state file may hold. */
+export const MAX_PROJECT_FILE_BYTES = 1024 * 1024;
+
+/**
+ * A small text file from a project tree, or null when it is absent, a link, a
+ * FIFO, a device, or over the limit. The size is checked before it is read.
+ */
+export async function readProjectFile(
+	path: string,
+	maxBytes = MAX_PROJECT_FILE_BYTES,
+): Promise<string | null> {
+	const r = await readRegularFile(path, maxBytes);
+	if (!r || r.size > maxBytes) return null;
+	return r.buffer.toString("utf8");
+}

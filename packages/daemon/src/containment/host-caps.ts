@@ -85,9 +85,49 @@ export interface UsernsValue {
 	appArmorRestricted: boolean;
 }
 
-/** Unprivileged user namespaces: kernel switch, Debian knob, Ubuntu AppArmor restriction. */
+/** The trusted binaries the user namespace probe runs. */
+export interface UsernsProbe {
+	/** A trusted bwrap; null means the probe cannot run. */
+	bwrap: string | null;
+	/** bwrap with symlinks resolved: AppArmor attaches to this path. */
+	bwrapReal?: string | null;
+	trueBin: string | null;
+}
+
+const APPARMOR_PROFILE = "/etc/apparmor.d/mfw-bwrap";
+
+/**
+ * A profile that lets exactly this bwrap create user namespaces and leaves the
+ * host-wide restriction on. It refuses to overwrite an existing profile.
+ */
+export function appArmorFix(bwrapPath: string | null | undefined): string {
+	if (!bwrapPath || !/^\/[A-Za-z0-9._+/-]+$/.test(bwrapPath)) {
+		return "install bubblewrap at a plain path such as /usr/bin/bwrap, then give that binary an AppArmor profile that allows userns";
+	}
+	const lines = [
+		"abi <abi/4.0>,",
+		"include <tunables/global>",
+		`profile mfw-bwrap ${bwrapPath} flags=(unconfined) {`,
+		"  userns,",
+		"}",
+	]
+		.map((l) => `'${l}'`)
+		.join(" ");
+	return `sudo test ! -e ${APPARMOR_PROFILE} && printf '%s\\n' ${lines} | sudo tee ${APPARMOR_PROFILE} >/dev/null && sudo apparmor_parser -r ${APPARMOR_PROFILE}`;
+}
+
+const HOST_WIDE =
+	"this is a host-wide change that allows user namespaces for every program, so only do it if nothing on this host relies on the restriction:";
+
+/**
+ * Whether bwrap can really create a user namespace. The kernel knobs cannot
+ * say: with the AppArmor restriction on, a scoped profile makes bwrap work
+ * while the knob still reads 1. They only explain a probe that failed. The
+ * doctor and the launch gate both decide here.
+ */
 export async function detectUserns(
 	r: HostReaders,
+	probe: UsernsProbe,
 ): Promise<Check<UsernsValue>> {
 	const max = trim(await r.readFile("/proc/sys/user/max_user_namespaces"));
 	const clone = trim(
@@ -102,12 +142,38 @@ export async function detectUserns(
 		appArmorRestricted: aa === "1",
 	};
 	const base = { severity: "required" as const, value };
+	if (!probe.bwrap || !probe.trueBin) {
+		return {
+			...base,
+			ok: false,
+			detail:
+				"could not test user namespaces: no trusted bwrap or true on PATH",
+			fix: `install bubblewrap ${BWRAP_MIN_VERSION} or newer in a root-owned directory on PATH`,
+		};
+	}
+	const result = await r.run([
+		probe.bwrap,
+		"--unshare-user",
+		"--ro-bind",
+		"/",
+		"/",
+		probe.trueBin,
+	]);
+	if (result?.code === 0) {
+		return {
+			...base,
+			ok: true,
+			detail: value.appArmorRestricted
+				? "bwrap can create user namespaces (AppArmor allows this binary)"
+				: "unprivileged user namespaces are allowed",
+		};
+	}
 	if (value.maxUserNamespaces === 0) {
 		return {
 			...base,
 			ok: false,
 			detail: "user namespaces are disabled (user.max_user_namespaces=0)",
-			fix: "sudo sysctl -w user.max_user_namespaces=63304 (persist it in /etc/sysctl.d/99-userns.conf)",
+			fix: `${HOST_WIDE} sudo sysctl -w user.max_user_namespaces=63304 (persist it in /etc/sysctl.d/99-userns.conf)`,
 		};
 	}
 	if (value.debianClone === 0) {
@@ -116,7 +182,7 @@ export async function detectUserns(
 			ok: false,
 			detail:
 				"unprivileged user namespaces are disabled (kernel.unprivileged_userns_clone=0)",
-			fix: "sudo sysctl -w kernel.unprivileged_userns_clone=1 (persist it in /etc/sysctl.d/99-userns.conf)",
+			fix: `${HOST_WIDE} sudo sysctl -w kernel.unprivileged_userns_clone=1 (persist it in /etc/sysctl.d/99-userns.conf)`,
 		};
 	}
 	if (value.appArmorRestricted) {
@@ -124,14 +190,18 @@ export async function detectUserns(
 			...base,
 			ok: false,
 			detail:
-				"AppArmor restricts unprivileged user namespaces (kernel.apparmor_restrict_unprivileged_userns=1)",
-			fix: "give bwrap an AppArmor profile that allows userns (a /etc/apparmor.d/bwrap profile with `userns,`, then sudo apparmor_parser -r it), or sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0",
+				"AppArmor stops bwrap from creating user namespaces (kernel.apparmor_restrict_unprivileged_userns=1)",
+			fix: appArmorFix(probe.bwrapReal ?? probe.bwrap),
 		};
 	}
 	return {
 		...base,
-		ok: true,
-		detail: "unprivileged user namespaces are allowed",
+		ok: false,
+		detail:
+			result === undefined
+				? "could not test user namespaces: the bwrap probe did not finish"
+				: `bwrap could not create a user namespace (exit ${result.code})`,
+		fix: "run `bwrap --unshare-user --ro-bind / / true` to see the error; a container or security policy may be blocking it",
 	};
 }
 
@@ -279,7 +349,7 @@ export async function detectSystemdUser(
 			...base,
 			ok: false,
 			detail: `cgroup controllers not delegated to the user manager: ${missing.join(" ")} (delegated: ${have})`,
-			fix: `delegate them: sudo mkdir -p /etc/systemd/system/user@.service.d && printf '[Service]\\nDelegate=cpu cpuset io memory pids\\n' | sudo tee /etc/systemd/system/user@.service.d/delegate.conf, then sudo systemctl daemon-reload and log in again (cgroup v2 is required)`,
+			fix: `delegate them (this stops if a delegate.conf already exists; merge by hand then): sudo test ! -e /etc/systemd/system/user@.service.d/delegate.conf && sudo mkdir -p /etc/systemd/system/user@.service.d && printf '[Service]\\nDelegate=cpu cpuset io memory pids\\n' | sudo tee /etc/systemd/system/user@.service.d/delegate.conf, then sudo systemctl daemon-reload and log in again (cgroup v2 is required)`,
 		};
 	}
 	return {
@@ -305,7 +375,7 @@ export async function detectLinger(r: HostReaders): Promise<Check<boolean>> {
 				value: false,
 				detail:
 					"linger is off: runs lose their limits scope if the session ends",
-				fix: `loginctl enable-linger ${r.user}`,
+				fix: `loginctl enable-linger ${/^[A-Za-z0-9._-]+$/.test(r.user) && !r.user.startsWith("-") ? r.user : "$USER"}`,
 			};
 }
 
@@ -482,11 +552,19 @@ export interface HostCapsReport {
 /** Run every detector. Pure over `r`; the doctor and preflight both call this. */
 export async function detectHostCaps(
 	r: HostReaders,
-	opts: { mfwHome: string; repoRoot: string; bwrap?: string },
+	opts: {
+		mfwHome: string;
+		repoRoot: string;
+		bwrap?: string;
+		trueBin?: string | null;
+	},
 ): Promise<HostCapsReport> {
 	const [userns, bwrap, systemd, linger, tiocsti, persistence] =
 		await Promise.all([
-			detectUserns(r),
+			detectUserns(r, {
+				bwrap: opts.bwrap ?? "bwrap",
+				trueBin: opts.trueBin === undefined ? "true" : opts.trueBin,
+			}),
 			detectBwrap(r, opts.bwrap),
 			detectSystemdUser(r),
 			detectLinger(r),

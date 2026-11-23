@@ -6,9 +6,22 @@ import type {
 import type { Orchestrator } from "@mfw/daemon/services";
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { type GuardResult, jsonResponse } from "./auth-guard";
+import { checkExposure, exposureWarnings } from "./exposure";
 
 const PROCEDURE_LIST =
 	/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*(,[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*)*$/;
+
+/**
+ * The doctor's report names host paths and install layout, so neither a browser
+ * nor a proxy may keep a copy. A batch containing it is covered as a whole.
+ */
+export function doctorResponseMeta(paths: readonly string[] | undefined): {
+	headers?: Headers;
+} {
+	return paths?.includes("system.doctor")
+		? { headers: new Headers({ "Cache-Control": "no-store" }) }
+		: {};
+}
 
 /**
  * Exactly `<endpoint>/<procedure>[,<procedure>...]`. tRPC finds the procedure
@@ -92,7 +105,12 @@ export async function serveTrpc(
 					orchestrator,
 					principal,
 					...(tokenAudit ? { tokenAudit } : {}),
+					exposurePolicy: (env) => ({
+						problem: checkExposure(env),
+						warnings: exposureWarnings(env),
+					}),
 				}),
+				responseMeta: ({ paths }) => doctorResponseMeta(paths),
 				onError({ error, path }) {
 					console.error(`[mfw] tRPC error on '${path}':`, error.message);
 				},

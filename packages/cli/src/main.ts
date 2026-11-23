@@ -11,7 +11,9 @@ import { delimiter, join, resolve } from "node:path";
 const SUBCOMMANDS = [
 	"auth",
 	"board",
+	"doctor",
 	"host",
+	"init",
 	"mcp",
 	"server",
 	"version",
@@ -38,6 +40,8 @@ export interface Deps {
 	runAuth: (args: string[]) => Promise<number>;
 	/** Runs `mfw host ...` against this install's host state. */
 	runHost: (args: string[]) => Promise<number>;
+	/** Runs the read-only `mfw doctor`, or `mfw init`. */
+	runDoctor: (command: "doctor" | "init", args: string[]) => Promise<number>;
 }
 
 export const USAGE = [
@@ -45,7 +49,9 @@ export const USAGE = [
 	"",
 	"  auth ...      owner tools: token, unlock, setup-token, sign-out-everywhere, reset",
 	"  board ...     the markdown board (runs mfw-board; no server needed)",
+	"  doctor        read-only host and install check; prints fixes, applies none",
 	"  host ...      owner tools for host state: acknowledge-legacy",
+	"  init          guided first run: doctor, setup token path, minimal project config",
 	"  mcp [--token-file <path>]   MCP server over stdio, using a scoped API token",
 	"  server        run the orchestrator + web UI in the foreground",
 	"  version       print the mfw and mfw-board versions",
@@ -105,6 +111,9 @@ export async function dispatch(argv: string[], d: Deps): Promise<number> {
 			return d.runAuth(rest);
 		case "host":
 			return d.runHost(rest);
+		case "doctor":
+		case "init":
+			return d.runDoctor(cmd, rest);
 		case "board": {
 			const exe = findBoardExecutable(d.env, d.selfDir);
 			if (exe) return d.run([exe, ...rest]);
@@ -193,6 +202,32 @@ function realDeps(): Deps {
 				out: (l) => console.log(l),
 				err: (l) => console.error(l),
 			});
+		},
+		runDoctor: async (command, args) => {
+			const [{ runDoctorCommand, runInitCommand }, { mfwHome }, policy] =
+				await Promise.all([
+					import("../../daemon/src/doctor/cli.ts"),
+					import("../../daemon/src/config.ts"),
+					import("../../../apps/start/src/server/exposure.ts"),
+				]);
+			const deps = {
+				env: process.env,
+				home: mfwHome(),
+				out: (l: string) => console.log(l),
+				err: (l: string) => console.error(l),
+				// Judged as `mfw server` would start from this shell, which defaults HOST.
+				exposure: (env: Record<string, string | undefined>) => {
+					const served =
+						env.NITRO_HOST || env.HOST ? env : { ...env, HOST: "127.0.0.1" };
+					return {
+						problem: policy.checkExposure(served),
+						warnings: policy.exposureWarnings(served),
+					};
+				},
+			};
+			return command === "doctor"
+				? runDoctorCommand(args, deps)
+				: runInitCommand(args, deps);
 		},
 		runAuth: async (args) => {
 			const [{ runAuthCommand }, { mfwHome }] = await Promise.all([

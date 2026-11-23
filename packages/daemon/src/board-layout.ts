@@ -1,6 +1,7 @@
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { type BoardConfig, writeFileAtomic } from "@mfw/board-core";
+import { readProjectFile } from "./containment/safe-file.ts";
 
 /**
  * Where the board sits relative to the repository, as far as the code that
@@ -117,9 +118,9 @@ export async function readBoardLayout(
 	repoRoot: string,
 ): Promise<BoardLayoutRecord | null> {
 	try {
-		const raw = JSON.parse(
-			await readFile(locationFile(repoRoot), "utf8"),
-		) as Record<string, unknown>;
+		const text = await readProjectFile(locationFile(repoRoot));
+		if (text === null) return null;
+		const raw = JSON.parse(text) as Record<string, unknown>;
 		if (
 			raw.version === 1 &&
 			typeof raw.layout === "string" &&
@@ -149,10 +150,11 @@ export async function readProtectedBoardPaths(
 	const record = await readBoardLayout(repoRoot);
 	if (record) return [...record.protectedPaths];
 	try {
-		const raw = JSON.parse(await readFile(locationFile(repoRoot), "utf8")) as {
-			paths?: unknown;
-		};
-		if (isStringArray(raw.paths)) return raw.paths;
+		const text = await readProjectFile(locationFile(repoRoot));
+		if (text !== null) {
+			const raw = JSON.parse(text) as { paths?: unknown };
+			if (isStringArray(raw.paths)) return raw.paths;
+		}
 	} catch {
 		// not recorded yet
 	}

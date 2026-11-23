@@ -32,6 +32,8 @@ export const LEGACY_HOST_TABLES = [
 ] as const;
 
 const ACK_TABLE = "mfw_legacy_host_ack";
+/** For the doctor, which reads this table through its own read-only handle. */
+export const LEGACY_ACK_TABLE = ACK_TABLE;
 const ACK_COMMAND = "mfw host acknowledge-legacy --yes";
 
 export type LegacyRows = Record<string, number>;
@@ -86,6 +88,10 @@ async function recordedRows(db: Db): Promise<LegacyRows | null> {
 
 const canonical = (rows: LegacyRows) =>
 	JSON.stringify(Object.entries(rows).sort(([a], [b]) => a.localeCompare(b)));
+
+/** The rule boot applies: the record must name exactly the rows present. */
+export const legacyRowsMatch = (recorded: LegacyRows, rows: LegacyRows) =>
+	canonical(recorded) === canonical(rows);
 
 /** What boot may ignore. Throws {@link LegacyHostStateRefusal} when unacknowledged. */
 export async function checkLegacyHostState(

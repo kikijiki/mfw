@@ -164,6 +164,7 @@ import type {
 	RunPodPlacementRequest,
 	RunPodProjectPolicy,
 } from "./runpod-policy.ts";
+import { addAgentWritableRoots } from "./sandbox.ts";
 import { Scheduler } from "./scheduler.ts";
 import { branchChangedFiles } from "./scope-watchdog.ts";
 import type { Orchestrator, ProjectServices } from "./services.ts";
@@ -1629,6 +1630,8 @@ export async function attachProject(
 		},
 		dispatchIssue,
 	});
+	// Agents write in the project, so a host tool is never taken from it.
+	addAgentWritableRoots([root]);
 	const startupDispatchIssue = dispatchIssue();
 	if (startupDispatchIssue) {
 		plog.warn(

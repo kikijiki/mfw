@@ -17,8 +17,8 @@ cannot afford to lose.
 | [Codex under the sandbox](#codex-under-the-sandbox) | enabled, unproven | choose Codex as the provider | inner sandbox conflict, not retested |
 | [Model endpoints and OpenRouter](#model-endpoints-and-openrouter) | opt-in | provider settings | prompts and code go to that service |
 
-`mfw doctor` does not exist yet. When it does, it should report each of these
-that is active.
+`mfw doctor` reports the host and project settings behind several of these, such
+as isolation, exposure and egress. It does not yet list every active item here.
 
 ## Remote targets (SSH and RunPod)
 

@@ -268,6 +268,8 @@ export const OWNER_ONLY_PROCEDURES: ReadonlySet<string> = new Set([
 	"system.scheduler.kick",
 	"system.scheduler.hold",
 	"system.digest",
+	// Host paths and install layout: for the owner, never a token or a brain turn.
+	"system.doctor",
 	"system.projects",
 	"system.projectDirectory",
 	"system.inspectBoardFolder",

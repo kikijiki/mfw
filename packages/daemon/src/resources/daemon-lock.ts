@@ -15,6 +15,8 @@ export class DaemonLockError extends Error {
 	constructor(
 		readonly lockPath: string,
 		message: string,
+		/** True only when another process really holds this home. */
+		readonly busy: boolean = false,
 	) {
 		super(message);
 		this.name = "DaemonLockError";
@@ -44,6 +46,7 @@ export async function acquireDaemonLock(
 		throw new DaemonLockError(
 			lockPath,
 			`this process already owns ${home}; shut the other orchestrator down first`,
+			true,
 		);
 	}
 	await mkdir(home, { recursive: true, mode: 0o700 });
@@ -64,6 +67,7 @@ export async function acquireDaemonLock(
 			error instanceof KernelLockError
 				? error.message
 				: `cannot acquire ${lockPath}: ${String(error)}`,
+			error instanceof KernelLockError && error.busy,
 		);
 	}
 	heldHomes.add(home);

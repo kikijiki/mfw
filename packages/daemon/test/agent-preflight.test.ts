@@ -98,7 +98,8 @@ describe("agentSandboxRefusal", () => {
 		writeFileSync(join(base, ".envrc"), "use flake\n");
 		const r = await agentSandboxRefusal(input(), deps().value);
 		expect(r?.detail).toContain(".envrc");
-		expect(r?.detail).toContain("P8");
+		expect(r?.detail).not.toContain("P8");
+		expect(r?.detail).toContain("dev shells");
 		expect(r?.detail).not.toContain("agentIsolation");
 		expect(r?.detail).not.toContain("none");
 	});
