@@ -6,12 +6,14 @@ import { join } from "node:path";
  * Where `mfw mcp` gets its API token, first match wins:
  *   1. `--token-file <path>`
  *   2. `MFW_TOKEN`
- *   3. `$MFW_HOME/mcp-token`, if it exists
+ *   3. `$MFW_HOME/mcp-token`, if it exists and `MFW_URL` is the local default
  *
  * There is no `--token <value>`: a command line is visible to every process on
  * the machine. A file must be a regular 0600 file of this user, not a link.
  */
 
+/** The app's default mount; see `makeClient`. */
+export const DEFAULT_MFW_URL = "http://localhost:7777/mfw/api/trpc";
 /** Matches `MCP_TOKEN_FILE` in the daemon, which this package does not depend on. */
 export const MCP_TOKEN_FILE = "mcp-token";
 const TOKEN_SHAPE = /^mfwt_[A-Za-z0-9_-]{43}$/;
@@ -65,11 +67,35 @@ function checked(token: string, source: string): string {
 	return token;
 }
 
+/**
+ * A token file: the token, then optionally `origin=<issuing origin>`. A
+ * recorded origin is binding, so a repository's MCP config that points
+ * `MFW_URL` elsewhere cannot collect a stored token.
+ */
+function tokenFromFile(contents: string, path: string, url: string): string {
+	const source = `token file ${path}`;
+	const [first = "", second, ...rest] = contents.split("\n");
+	const token = checked(first.trim(), source);
+	if (rest.length > 0)
+		throw new McpCredentialError(`${source} does not hold an mfw API token`);
+	if (second === undefined) return token;
+	const recorded = /^origin=(https?:\/\/[^\s/]+)$/.exec(second.trim())?.[1];
+	if (!recorded)
+		throw new McpCredentialError(`${source} does not hold an mfw API token`);
+	const target = new URL(url).origin;
+	if (new URL(recorded).origin !== target)
+		throw new McpCredentialError(
+			`${source} was issued for ${recorded}, not ${target}`,
+		);
+	return token;
+}
+
 /** The token to use, or null when none is configured. */
 export function resolveMcpToken(
 	args: readonly string[],
 	env: Record<string, string | undefined>,
 ): string | null {
+	const url = env.MFW_URL ?? DEFAULT_MFW_URL;
 	if (args.some((a) => a === "--token" || a.startsWith("--token=")))
 		throw new McpCredentialError(
 			"--token is not accepted: a command line is visible to other processes. Use --token-file or MFW_TOKEN.",
@@ -83,13 +109,16 @@ export function resolveMcpToken(
 		const token = readTokenFile(path);
 		if (token === null)
 			throw new McpCredentialError(`token file ${path} does not exist`);
-		return checked(token, `token file ${path}`);
+		return tokenFromFile(token, path, url);
 	}
 	if (env.MFW_TOKEN) return checked(env.MFW_TOKEN.trim(), "MFW_TOKEN");
+	// The implicit file is for the local default only. Anywhere else must be
+	// named explicitly, so it is not even read.
+	if (url !== DEFAULT_MFW_URL) return null;
 	const home = env.MFW_HOME ?? join(homedir(), ".local", "share", "mfw");
 	const path = join(home, MCP_TOKEN_FILE);
 	const token = readTokenFile(path);
-	return token === null ? null : checked(token, `token file ${path}`);
+	return token === null ? null : tokenFromFile(token, path, url);
 }
 
 /** A bearer token must not cross a network in the clear. */

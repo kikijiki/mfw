@@ -20,7 +20,9 @@ function ownerClient() {
 		const token = resolveMcpToken(args, process.env);
 		if (!token)
 			console.error(
-				"mfw mcp: no API token, so the server will refuse calls. Create one on the host: mfw auth token create --name mcp --scope board:read --write-file",
+				process.env.MFW_URL
+					? "mfw mcp: no API token for this MFW_URL, so the server will refuse calls. The stored token is used only for the local default; pass --token-file or MFW_TOKEN."
+					: "mfw mcp: no API token, so the server will refuse calls. Create one on the host: mfw auth token create --name mcp --scope board:read --write-file",
 			);
 		return makeClient(undefined, token);
 	} catch (e) {

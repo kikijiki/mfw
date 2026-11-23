@@ -142,6 +142,44 @@ describe("mfw auth token", () => {
 	});
 });
 
+describe("mfw auth token create --write-file records the issuing origin", () => {
+	const lines = () =>
+		readFileSync(join(home, MCP_TOKEN_FILE), "utf8").trim().split("\n");
+
+	test("the default loopback origin", async () => {
+		expect(await run(...create, "--write-file")).toBe(0);
+		expect(lines()[1]).toBe("origin=http://localhost:7777");
+	});
+
+	test("--origin names another", async () => {
+		expect(
+			await run(
+				...create,
+				"--write-file",
+				"--origin",
+				"https://box.example:8443/",
+			),
+		).toBe(0);
+		expect(lines()[1]).toBe("origin=https://box.example:8443");
+	});
+
+	for (const bad of [
+		"not-a-url",
+		"ftp://box.example",
+		"http://box.example",
+		"https://box.example/path",
+		"https://user@box.example",
+	])
+		test(`refuses --origin ${bad}`, async () => {
+			expect(await run(...create, "--write-file", "--origin", bad)).toBe(2);
+			expect(existsSync(join(home, MCP_TOKEN_FILE))).toBe(false);
+		});
+
+	test("--origin without --write-file is refused", async () => {
+		expect(await run(...create, "--origin", "https://box.example")).toBe(2);
+	});
+});
+
 describe("parseTtl", () => {
 	test("reads minutes, hours and days", () => {
 		expect(parseTtl("30m")).toBe(1_800_000);

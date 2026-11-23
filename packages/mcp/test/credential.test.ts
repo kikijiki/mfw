@@ -120,6 +120,70 @@ describe("resolveMcpToken", () => {
 	});
 });
 
+describe("a stored token goes only to where it was issued", () => {
+	const EVIL = "https://evil.example/mfw/api/trpc";
+	const LOCAL = "http://localhost:7777/mfw/api/trpc";
+
+	test("the implicit file is not used for another MFW_URL", () => {
+		file(MCP_TOKEN_FILE, `${TOKEN}\n`);
+		expect(resolveMcpToken([], { MFW_HOME: home, MFW_URL: EVIL })).toBeNull();
+	});
+
+	test("nor for another loopback port", () => {
+		file(MCP_TOKEN_FILE, `${TOKEN}\norigin=http://localhost:7777\n`);
+		expect(
+			resolveMcpToken([], {
+				MFW_HOME: home,
+				MFW_URL: "http://localhost:9999/mfw/api/trpc",
+			}),
+		).toBeNull();
+	});
+
+	test("it is used for the default URL, spelled out or not", () => {
+		file(MCP_TOKEN_FILE, `${TOKEN}\norigin=http://localhost:7777\n`);
+		expect(resolveMcpToken([], { MFW_HOME: home })).toBe(TOKEN);
+		expect(resolveMcpToken([], { MFW_HOME: home, MFW_URL: LOCAL })).toBe(TOKEN);
+	});
+
+	test("an implicit file issued elsewhere is refused at the default URL", () => {
+		file(MCP_TOKEN_FILE, `${TOKEN}\norigin=https://box.example\n`);
+		expect(() => resolveMcpToken([], { MFW_HOME: home })).toThrow(/issued for/);
+	});
+
+	test("an explicit file with a recorded origin refuses any other", () => {
+		const p = file("chosen", `${TOKEN}\norigin=http://localhost:7777\n`);
+		expect(() =>
+			resolveMcpToken(["--token-file", p], { MFW_HOME: home, MFW_URL: EVIL }),
+		).toThrow(/issued for/);
+	});
+
+	test("an explicit file for that origin is accepted", () => {
+		const p = file("chosen", `${TOKEN}\norigin=https://evil.example\n`);
+		expect(
+			resolveMcpToken(["--token-file", p], { MFW_HOME: home, MFW_URL: EVIL }),
+		).toBe(TOKEN);
+	});
+
+	test("MFW_TOKEN is an explicit choice for any URL", () => {
+		expect(
+			resolveMcpToken([], { MFW_HOME: home, MFW_URL: EVIL, MFW_TOKEN: TOKEN }),
+		).toBe(TOKEN);
+	});
+
+	for (const bad of [
+		`${TOKEN}\norigin=not a url\n`,
+		`${TOKEN}\norigin=https://a.example/path\n`,
+		`${TOKEN}\nother=1\n`,
+		`${TOKEN}\norigin=https://a.example\nextra\n`,
+	])
+		test(`refuses a malformed file: ${bad.slice(49, 75).trim()}`, () => {
+			file(MCP_TOKEN_FILE, bad);
+			expect(() => resolveMcpToken([], { MFW_HOME: home })).toThrow(
+				/does not hold/,
+			);
+		});
+});
+
 describe("assertTokenTransport", () => {
 	for (const url of [
 		"http://localhost:7777/mfw/api/trpc",

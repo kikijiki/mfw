@@ -10,7 +10,13 @@ import { basename, join } from "node:path";
 import { acquireDaemonLock } from "../host-resources/daemon-lock.ts";
 import { pinnedTool } from "../sandbox.ts";
 import { AuthService, authDbPath, isAuthRefused } from "./service.ts";
-import { MCP_TOKEN_FILE, parseTtl, TOKEN_SCOPES } from "./tokens.ts";
+import {
+	DEFAULT_TOKEN_ORIGIN,
+	MCP_TOKEN_FILE,
+	normalizeTokenOrigin,
+	parseTtl,
+	TOKEN_SCOPES,
+} from "./tokens.ts";
 
 /**
  * `mfw auth ...`: the owner's recovery path. It works on `$MFW_HOME/auth.db`
@@ -28,10 +34,11 @@ export const AUTH_USAGE = [
 	"  reset --yes   remove the owner and all sessions, then repeat first-run setup;",
 	"                refused while the server or any agent session is alive",
 	"  token create --name <name> --scope <scope> [--scope <scope>]",
-	"               [--project <project>] [--ttl 30m|24h|7d] [--write-file]",
+	"               [--project <project>] [--ttl 30m|24h|7d] [--write-file [--origin <url>]]",
 	"                create an API token, shown once (default expiry 24h, at most 90d).",
 	`                scopes: ${TOKEN_SCOPES.join(", ")}`,
-	`                --write-file saves it to $MFW_HOME/${MCP_TOKEN_FILE} (0600) for \`mfw mcp\``,
+	`                --write-file saves it to $MFW_HOME/${MCP_TOKEN_FILE} (0600) for \`mfw mcp\`,`,
+	`                bound to --origin (default ${DEFAULT_TOKEN_ORIGIN})`,
 	"  token list    show tokens (never their secrets)",
 	"  token revoke <id>   revoke a token at once",
 ].join("\n");
@@ -207,6 +214,7 @@ function parseCreate(args: readonly string[]):
 			project?: string;
 			ttlMs?: number;
 			writeFile: boolean;
+			origin?: string;
 	  }
 	| string {
 	const out: {
@@ -215,6 +223,7 @@ function parseCreate(args: readonly string[]):
 		project?: string;
 		ttlMs?: number;
 		writeFile: boolean;
+		origin?: string;
 	} = { scopes: [], writeFile: false };
 	for (let i = 0; i < args.length; i++) {
 		const flag = args[i];
@@ -222,7 +231,11 @@ function parseCreate(args: readonly string[]):
 			out.writeFile = true;
 			continue;
 		}
-		if (!["--name", "--scope", "--project", "--ttl"].includes(flag ?? ""))
+		if (
+			!["--name", "--scope", "--project", "--ttl", "--origin"].includes(
+				flag ?? "",
+			)
+		)
 			return `unknown option '${flag}'`;
 		const value = args[++i];
 		if (value === undefined || value.startsWith("--"))
@@ -230,21 +243,33 @@ function parseCreate(args: readonly string[]):
 		if (flag === "--name") out.name = value;
 		else if (flag === "--scope") out.scopes.push(value);
 		else if (flag === "--project") out.project = value;
-		else {
+		else if (flag === "--origin") {
+			const origin = normalizeTokenOrigin(value);
+			if (!origin)
+				return "--origin must be a bare https:// origin, or http:// on loopback";
+			out.origin = origin;
+		} else {
 			const ttlMs = parseTtl(value);
 			if (ttlMs === null) return "--ttl must look like 30m, 24h or 7d";
 			out.ttlMs = ttlMs;
 		}
 	}
+	if (out.origin && !out.writeFile) return "--origin needs --write-file";
 	return out;
 }
 
-/** A fresh exclusive 0600 file, renamed in: never written through a planted link. */
-function writeTokenFile(home: string, token: string): string {
+/**
+ * A fresh exclusive 0600 file, renamed in: never written through a planted
+ * link. The second line names the server, and `mfw mcp` sends it nowhere else.
+ */
+function writeTokenFile(home: string, token: string, origin: string): string {
 	const path = join(home, MCP_TOKEN_FILE);
 	const temp = `${path}.${randomBytes(6).toString("hex")}`;
 	try {
-		writeFileSync(temp, `${token}\n`, { mode: 0o600, flag: "wx" });
+		writeFileSync(temp, `${token}\norigin=${origin}\n`, {
+			mode: 0o600,
+			flag: "wx",
+		});
 		renameSync(temp, path);
 	} catch (e) {
 		rmSync(temp, { force: true });
@@ -274,7 +299,11 @@ async function runTokenCommand(
 					});
 					const summary = `${info.id} '${info.name}' [${info.scopes.join(", ")}] ${info.project ? `project ${info.project}` : "all projects"}, expires ${new Date(info.expiresAt).toISOString()}`;
 					if (parsed.writeFile) {
-						const path = writeTokenFile(d.home, token);
+						const path = writeTokenFile(
+							d.home,
+							token,
+							parsed.origin ?? DEFAULT_TOKEN_ORIGIN,
+						);
 						d.out(`mfw auth: created ${summary}`);
 						d.out(`mfw auth: saved to ${path} (0600)`);
 					} else {

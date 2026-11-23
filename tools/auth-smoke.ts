@@ -1079,6 +1079,8 @@ async function scopedTokens(
 			"--scope",
 			"board:read",
 			"--write-file",
+			"--origin",
+			`http://127.0.0.1:${port}`,
 		],
 		{ cwd: ROOT, env },
 	);
@@ -1087,13 +1089,20 @@ async function scopedTokens(
 		created.exitCode === 0,
 		created.stderr.toString().slice(0, 200),
 	);
-	const viaMcp = await mcpToolCall(mcpEnv, [], "list_tasks", project);
+	const tokenArgs = ["--token-file", join(mfwHome, "mcp-token")];
+	const implicit = await mcpToolCall(mcpEnv, [], "list_tasks", project);
+	check(
+		"tokens: the stored token is not sent to a non-default MFW_URL",
+		!implicit.includes("from a token"),
+		implicit.slice(0, 200),
+	);
+	const viaMcp = await mcpToolCall(mcpEnv, tokenArgs, "list_tasks", project);
 	check(
 		"tokens: mfw mcp reads with its token",
 		viaMcp.includes("from a token"),
 		viaMcp.slice(0, 200),
 	);
-	const mcpDenied = await mcpToolCall(mcpEnv, [], "health", {});
+	const mcpDenied = await mcpToolCall(mcpEnv, tokenArgs, "health", {});
 	check(
 		"tokens: mfw mcp is held to its scope",
 		/needs the status:read scope/.test(mcpDenied),

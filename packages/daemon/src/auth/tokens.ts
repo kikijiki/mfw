@@ -34,6 +34,28 @@ export const TOKEN_RATE_BURST = 120;
 /** `$MFW_HOME/<this>`: where `mfw mcp` looks for a token (0600). */
 export const MCP_TOKEN_FILE = "mcp-token";
 
+/** The server a saved token belongs to, unless `--origin` says otherwise. */
+export const DEFAULT_TOKEN_ORIGIN = "http://localhost:7777";
+
+/**
+ * A bare origin to record beside a saved token, or null. Plain HTTP only to
+ * loopback, the same rule `mfw mcp` applies before sending a token.
+ */
+export function normalizeTokenOrigin(text: string): string | null {
+	let u: URL;
+	try {
+		u = new URL(text);
+	} catch {
+		return null;
+	}
+	const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
+	if (u.protocol !== "https:" && !(u.protocol === "http:" && loopback))
+		return null;
+	if (u.username || u.password || u.pathname !== "/" || u.search || u.hash)
+		return null;
+	return u.origin.length <= 180 ? u.origin : null;
+}
+
 /** `30m`, `24h` or `7d` in milliseconds, or null. */
 export function parseTtl(text: string): number | null {
 	const m = /^([1-9][0-9]{0,5})([mhd])$/.exec(text.trim());

@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import type { AppRouter } from "@mfw/api";
 import { createTRPCClient, httpBatchStreamLink, httpLink } from "@trpc/client";
 import SuperJSON from "superjson";
-import { assertTokenTransport } from "./credential.ts";
+import { assertTokenTransport, DEFAULT_MFW_URL } from "./credential.ts";
 
 /**
  * tRPC client to the *running* mfw app (default :7777). The MCP server is a thin
@@ -18,7 +18,7 @@ import { assertTokenTransport } from "./credential.ts";
  * per request, because the server refuses batches from tokens.
  */
 export function makeClient(
-	url = process.env.MFW_URL ?? "http://localhost:7777/mfw/api/trpc",
+	url = process.env.MFW_URL ?? DEFAULT_MFW_URL,
 	token?: string | null,
 ) {
 	if (!token)
