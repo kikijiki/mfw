@@ -23,6 +23,7 @@ import {
 	SocketPathError,
 	socketRoot,
 } from "../containment/socket-root.ts";
+import { commandFor, isSystemPath } from "./fix-text.ts";
 import type { DoctorProbes, ProjectFacts } from "./probes.ts";
 import {
 	buildReport,
@@ -30,7 +31,6 @@ import {
 	type DoctorGroup,
 	type DoctorReport,
 	sanitizeText,
-	stripUrlCredentials,
 } from "./report.ts";
 
 /**
@@ -183,6 +183,15 @@ async function toolCheck(
 
 const NON_PERSISTENT_ROOTS = ["/tmp", "/var/tmp", "/dev/shm", "/run"];
 
+/** Not a system tree, and holding a file only an mfw home has. */
+async function isRecognisableHome(p: DoctorProbes): Promise<boolean> {
+	if (isSystemPath(p.home)) return false;
+	for (const marker of ["auth.db", "daemon.lock"]) {
+		if ((await p.stat(join(p.home, marker)))?.kind === "file") return true;
+	}
+	return false;
+}
+
 async function homeCheck(p: DoctorProbes): Promise<Outcome> {
 	const moved = `point MFW_HOME at a persistent directory (MFW_HOME=$HOME/.local/share/mfw)`;
 	if (
@@ -196,6 +205,11 @@ async function homeCheck(p: DoctorProbes): Promise<Outcome> {
 	}
 	const st = await p.stat(p.home);
 	if (!st) return ok(`$MFW_HOME (${p.home}) will be created at first start`);
+	// Changing the owner or mode of a tree that is not an mfw home could damage
+	// the system, so those get advice to move instead of a command.
+	const ours = await isRecognisableHome(p);
+	const newHome =
+		"this does not look like an mfw home, so do not change it: choose a new MFW_HOME (MFW_HOME=$HOME/.local/share/mfw)";
 	if (st.kind !== "dir") {
 		return problem(
 			"blocker",
@@ -207,7 +221,12 @@ async function homeCheck(p: DoctorProbes): Promise<Outcome> {
 		return problem(
 			"blocker",
 			`$MFW_HOME (${p.home}) belongs to uid ${st.uid}, not ${p.uid}`,
-			`sudo chown -R ${p.uid} ${p.home}`,
+			ours
+				? commandFor(
+						[p.home],
+						(q) => `sudo chown -hR --preserve-root -- ${p.uid} ${q}`,
+					)
+				: newHome,
 		);
 	}
 	const mode = (st.mode & 0o777).toString(8);
@@ -215,14 +234,14 @@ async function homeCheck(p: DoctorProbes): Promise<Outcome> {
 		return problem(
 			"blocker",
 			`$MFW_HOME is writable by others (mode ${mode})`,
-			`chmod 700 ${p.home}`,
+			ours ? commandFor([p.home], (q) => `chmod 700 -- ${q}`) : newHome,
 		);
 	}
 	if (st.mode & 0o077) {
 		return problem(
 			"warn",
 			`$MFW_HOME is readable by others (mode ${mode})`,
-			`chmod 700 ${p.home}`,
+			ours ? commandFor([p.home], (q) => `chmod 700 -- ${q}`) : newHome,
 		);
 	}
 	return ok(`$MFW_HOME (${p.home}) is private`);
@@ -272,7 +291,7 @@ async function authStateCheck(p: DoctorProbes): Promise<Outcome> {
 		return problem(
 			"warn",
 			`the owner has no password (${tokens})`,
-			"mfw auth reset --yes",
+			"mfw auth reset --yes (this removes the owner and every session, then repeat first-run setup)",
 		);
 	}
 	return ok(`owner set, password set, ${tokens}`);
@@ -297,7 +316,7 @@ async function authFilesCheck(p: DoctorProbes): Promise<Outcome> {
 		return problem(
 			"blocker",
 			`readable by other users: ${open.join(", ")}`,
-			`chmod 600 ${open.join(" ")}`,
+			commandFor(open, (q) => `chmod 600 -- ${q}`),
 		);
 	}
 	return ok("secret files are private");
@@ -342,7 +361,7 @@ async function skillsCheck(
 	return problem(
 		"warn",
 		`old-name skill copies: ${s.paths.join(", ")}`,
-		`remove them after checking: rm ${s.paths.join(" ")}`,
+		commandFor(s.paths, (q) => `remove them after checking: rm -- ${q}`),
 	);
 }
 
@@ -453,12 +472,10 @@ function pushCheck(entry: StoredProjectConfig, f: ProjectFacts): Outcome {
 	if (f.remotes.length === 0) return ok("no remote");
 	if (entry.pushOnMerge === false) return ok("pushing is off");
 	if (entry.pushUrl) return ok("pushUrl is set");
-	const wanted = entry.pushRemote ?? "origin";
-	const remote = f.remotes.find((r) => r.name === wanted) ?? f.remotes[0];
 	return problem(
 		"warn",
 		"the project has a remote but no pushUrl, so pushes after a merge are refused",
-		`add "pushUrl": "${stripUrlCredentials(remote?.url ?? "<url>")}" to project '${entry.name}' in $MFW_HOME/config.json, or set "pushOnMerge": false`,
+		'set "pushOnMerge": false to keep merges local, or verify where this project should publish and add "pushUrl": "<that exact URL>" to its entry in $MFW_HOME/config.json. A remote in the repository\'s own config is not proof of the destination',
 	);
 }
 
@@ -566,14 +583,14 @@ async function projectChecks(
 				return problem(
 					"blocker",
 					`the project root ${entry.root} does not exist`,
-					`restore it, or remove project '${entry.name}' from $MFW_HOME/config.json`,
+					"restore it, or remove this project from $MFW_HOME/config.json",
 				);
 			}
 			if (!facts.isGit) {
 				return problem(
 					"blocker",
 					`${entry.root} is not a git repository`,
-					`git -C ${entry.root} init`,
+					"restore its .git directory from a backup, or remove this project from $MFW_HOME/config.json",
 				);
 			}
 			return ok(`${entry.root} is a git repository`);

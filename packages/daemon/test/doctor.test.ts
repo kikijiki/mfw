@@ -1,9 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type {
-	FsInfo,
-	HostReaders,
-	RunResult,
-} from "../src/containment/host-caps.ts";
+import type { HostReaders } from "../src/containment/host-caps.ts";
 import type { DoctorProbes, ProjectFacts } from "../src/doctor/probes.ts";
 import {
 	DOCTOR_SCHEMA_VERSION,
@@ -14,106 +10,12 @@ import {
 	sanitizeText,
 } from "../src/doctor/report.ts";
 import { runDoctor } from "../src/doctor/run.ts";
-
-/** A host where every check passes. Tests change one fact at a time. */
-function fixtureHost(over: Partial<HostFixture> = {}): HostReaders {
-	const f: HostFixture = {
-		files: {
-			"/proc/sys/user/max_user_namespaces": "63304\n",
-			"/proc/sys/dev/tty/legacy_tiocsti": "0\n",
-			"/proc/sys/kernel/osrelease": "6.12.0\n",
-			"/sys/fs/cgroup/cgroup.controllers": "cpu memory pids io\n",
-			"/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/cgroup.controllers":
-				"cpu memory pids\n",
-		},
-		existing: ["/var/lib/systemd/linger/owner"],
-		bwrapVersion: "0.11.0",
-		bwrapHelp: "--disable-userns --bind-fd --ro-bind-fd",
-		systemd: "running\n",
-		arch: "x64",
-		fstype: "btrfs",
-		...over,
-	};
-	const fs: FsInfo = { dev: 1, fstype: f.fstype, source: "/dev/sda1[/@]" };
-	return {
-		readFile: async (p) => f.files[p],
-		exists: async (p) => f.existing.includes(p),
-		run: async (argv): Promise<RunResult | undefined> => {
-			const bin = argv[0] ?? "";
-			if (bin.endsWith("bwrap")) {
-				if (f.bwrapVersion === null) return undefined;
-				return argv[1] === "--version"
-					? { code: 0, stdout: `bubblewrap ${f.bwrapVersion}\n` }
-					: { code: 0, stdout: f.bwrapHelp };
-			}
-			if (bin.endsWith("systemctl")) return { code: 0, stdout: f.systemd };
-			return undefined;
-		},
-		fsInfo: async () => fs,
-		reflink: async () => f.fstype === "btrfs",
-		arch: f.arch,
-		uid: 1000,
-		user: "owner",
-	};
-}
-
-interface HostFixture {
-	files: Record<string, string>;
-	existing: string[];
-	bwrapVersion: string | null;
-	bwrapHelp: string;
-	systemd: string;
-	arch: string;
-	fstype: string;
-}
-
-const HOME = "/srv/mfw-home";
-
-function healthyProject(over: Partial<ProjectFacts> = {}): ProjectFacts {
-	return {
-		rootExists: true,
-		isGit: true,
-		hasEnvrc: false,
-		remotes: [],
-		untracked: { count: 0, sample: [], truncated: false },
-		ignoredState: { count: 0, sample: [], truncated: false },
-		boardPush: null,
-		triggers: { armedCurrent: 0, drifted: [], quarantined: [], unarmed: 0 },
-		...over,
-	};
-}
-
-function fixture(over: Partial<DoctorProbes> = {}): DoctorProbes {
-	return {
-		env: { HOST: "127.0.0.1", XDG_RUNTIME_DIR: "/run/user/1000" },
-		home: HOME,
-		uid: 1000,
-		bunVersion: "1.3.13",
-		host: fixtureHost(),
-		tool: async (name) => ({ path: `/usr/bin/${name}` }),
-		toolVersion: async (path) =>
-			path.endsWith("tmux") ? "3.5" : path.endsWith("git") ? "2.50.1" : "1.0.0",
-		stat: async (path) => ({
-			kind: path === HOME ? "dir" : "file",
-			mode: path === HOME ? 0o700 : 0o600,
-			uid: 1000,
-		}),
-		config: async () => ({ ok: true, config: { projects: [] } }),
-		auth: async () => ({
-			state: "ready",
-			owner: true,
-			passwordSet: true,
-			liveTokens: 2,
-			pendingSetup: false,
-		}),
-		legacyHost: async () => ({ state: "none" }),
-		build: async () => ({ kind: "source" }),
-		exposure: () => ({ problem: null, warnings: [] }),
-		legacySkills: async () => ({ available: true, paths: [] }),
-		project: async () => healthyProject(),
-		...over,
-	};
-}
+import {
+	fixture,
+	fixtureHost,
+	HOME,
+	healthyProject,
+} from "./support/doctor-fixture.ts";
 
 const PROJECT = {
 	name: "demo",
@@ -401,11 +303,16 @@ describe("storage", () => {
 
 	test("a group-writable MFW_HOME is a blocker with chmod", async () => {
 		const c = await check(
-			{ stat: async () => ({ kind: "dir", mode: 0o770, uid: 1000 }) },
+			{
+				stat: async (p) =>
+					p === HOME
+						? { kind: "dir", mode: 0o770, uid: 1000 }
+						: { kind: "file", mode: 0o600, uid: 1000 },
+			},
 			"storage.home",
 		);
 		expect(c.severity).toBe("blocker");
-		expect(c.fix).toBe(`chmod 700 ${HOME}`);
+		expect(c.fix).toBe(`chmod 700 -- '${HOME}'`);
 	});
 
 	test("MFW_HOME owned by another user is a blocker", async () => {
@@ -486,7 +393,7 @@ describe("auth", () => {
 			"auth.files",
 		);
 		expect(c.severity).toBe("blocker");
-		expect(c.fix).toBe(`chmod 600 ${HOME}/auth.db`);
+		expect(c.fix).toBe(`chmod 600 -- '${HOME}/auth.db'`);
 	});
 });
 

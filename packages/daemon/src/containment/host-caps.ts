@@ -349,7 +349,7 @@ export async function detectSystemdUser(
 			...base,
 			ok: false,
 			detail: `cgroup controllers not delegated to the user manager: ${missing.join(" ")} (delegated: ${have})`,
-			fix: `delegate them: sudo mkdir -p /etc/systemd/system/user@.service.d && printf '[Service]\\nDelegate=cpu cpuset io memory pids\\n' | sudo tee /etc/systemd/system/user@.service.d/delegate.conf, then sudo systemctl daemon-reload and log in again (cgroup v2 is required)`,
+			fix: `delegate them (this stops if a delegate.conf already exists; merge by hand then): sudo test ! -e /etc/systemd/system/user@.service.d/delegate.conf && sudo mkdir -p /etc/systemd/system/user@.service.d && printf '[Service]\\nDelegate=cpu cpuset io memory pids\\n' | sudo tee /etc/systemd/system/user@.service.d/delegate.conf, then sudo systemctl daemon-reload and log in again (cgroup v2 is required)`,
 		};
 	}
 	return {
@@ -375,7 +375,7 @@ export async function detectLinger(r: HostReaders): Promise<Check<boolean>> {
 				value: false,
 				detail:
 					"linger is off: runs lose their limits scope if the session ends",
-				fix: `loginctl enable-linger ${r.user}`,
+				fix: `loginctl enable-linger ${/^[A-Za-z0-9._-]+$/.test(r.user) && !r.user.startsWith("-") ? r.user : "$USER"}`,
 			};
 }
 
