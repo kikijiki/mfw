@@ -26,6 +26,7 @@ import {
 	type MergeJobView,
 	MergeQueue,
 	type MergeQueueDeps,
+	type PushSettings,
 } from "../src/merge-queue.ts";
 import { MFW_EXCLUDE } from "./fixtures/board.ts";
 
@@ -38,6 +39,8 @@ interface Fixture {
 	reclaimed: MergeJobView[];
 	sentToReady: MergeJobView[];
 	queue: MergeQueue;
+	/** What the owner does at setup: approve this URL as the push destination. */
+	approvePush: (url: string) => void;
 	makeBranchRun: (
 		name: string,
 		file: string,
@@ -53,7 +56,7 @@ async function fixture(
 	) => Promise<{ passed: boolean; detail?: string }> = async () => ({
 		passed: true,
 	}),
-	push?: { enabled: boolean; remote: string },
+	push?: PushSettings,
 	/** Runs inside `onMerged` before the job is recorded; stands in for the board commit `tasks.release` makes. */
 	onMergedTail?: (job: MergeJobView, sha: string) => Promise<void>,
 	selfRepairMainRed?: () => boolean,
@@ -95,6 +98,7 @@ async function fixture(
 			sentToReady.push(job);
 		},
 		push,
+		landingRoot: join(root, ".git", "mfw-landing"),
 		selfRepairMainRed,
 		...(verifyMerge ? { verifyMerge } : {}),
 		...(rebaseClone ? { rebaseClone } : {}),
@@ -143,6 +147,9 @@ async function fixture(
 		reclaimed,
 		sentToReady,
 		queue,
+		approvePush: (url) => {
+			if (push) Object.assign(push, { url, allowLocalUrl: true });
+		},
 		makeBranchRun,
 		jobIdFor,
 		cleanup: async () => {
@@ -187,6 +194,7 @@ describe("MergeQueue v2, real git matrix", () => {
 		const remote = await mkdtemp(join(tmpdir(), "mfw-remote-"));
 		await git(["init", "-q", "--bare", "-b", "main"], remote);
 		await gitOk(["remote", "add", "origin", remote], f.root);
+		f.approvePush(remote);
 
 		const runId = await f.makeBranchRun("mfw/t1", "a.txt", "hello\n");
 		await f.queue.enqueue({
@@ -204,11 +212,151 @@ describe("MergeQueue v2, real git matrix", () => {
 		await f.cleanup();
 	});
 
+	test("the push after a merge never runs a planted pre-push hook", async () => {
+		const f = await fixture(undefined, { enabled: true, remote: "origin" });
+		const remote = await mkdtemp(join(tmpdir(), "mfw-remote-"));
+		const canary = join(remote, "..", `${remote.split("/").pop()}-canary`);
+		await git(["init", "-q", "--bare", "-b", "main"], remote);
+		await gitOk(["remote", "add", "origin", remote], f.root);
+		f.approvePush(remote);
+		await writeFile(
+			join(f.root, ".git/hooks/pre-push"),
+			`#!/bin/sh\ntouch "${canary}"\n`,
+			{ mode: 0o755 },
+		);
+
+		const runId = await f.makeBranchRun("mfw/t1", "a.txt", "hello\n");
+		await f.queue.enqueue({
+			runId,
+			taskId: "MFW-1",
+			branch: "mfw/t1",
+			targetBranch: "main",
+		});
+		expect(await f.queue.tick()).toBe("merged");
+
+		expect(existsSync(canary)).toBe(false);
+		expect(await gitOk(["rev-parse", "main"], remote)).toBe(
+			f.merged[0]?.sha ?? "",
+		);
+		await rm(canary, { force: true });
+		await rm(remote, { recursive: true, force: true });
+		await f.cleanup();
+	});
+
+	test("a merge never runs hooks planted in the shared gitdir", async () => {
+		const f = await fixture();
+		const fired = join(f.root, "..", `${f.root.split("/").pop()}-fired`);
+		for (const hook of [
+			"pre-merge-commit",
+			"prepare-commit-msg",
+			"commit-msg",
+			"post-merge",
+			"post-commit",
+			"post-checkout",
+			"reference-transaction",
+		]) {
+			await writeFile(
+				join(f.root, ".git/hooks", hook),
+				`#!/bin/sh\necho ${hook} >> "${fired}"\n`,
+				{ mode: 0o755 },
+			);
+		}
+		// Planted after the fixture's own setup, so only the queue can fire them.
+		const runId = await f.makeBranchRun("mfw/t1", "a.txt", "hello\n");
+		await rm(fired, { force: true });
+		await f.queue.enqueue({
+			runId,
+			taskId: "MFW-1",
+			branch: "mfw/t1",
+			targetBranch: "main",
+		});
+		expect(await f.queue.tick()).toBe("merged");
+		expect(existsSync(fired)).toBe(false);
+		await f.cleanup();
+	});
+
+	for (const [name, key] of [
+		["merge driver", "merge.evil.driver"],
+		["smudge filter", "filter.evil.smudge"],
+		["clean filter", "filter.evil.clean"],
+	] as const) {
+		test(`a ${name} in the repository config never runs`, async () => {
+			const f = await fixture();
+			const fired = `${f.root}-fired`;
+			const payload = `${f.root}-payload.sh`;
+			await writeFile(payload, `#!/bin/sh\ntouch "${fired}"\nexit 0\n`, {
+				mode: 0o755,
+			});
+			await writeFile(
+				join(f.root, ".gitattributes"),
+				"*.txt merge=evil filter=evil\n",
+			);
+			await gitOk(["add", ".gitattributes"], f.root);
+			await gitOk(["commit", "-q", "-m", "attrs"], f.root);
+			const runId = await f.makeBranchRun("mfw/t1", "a.txt", "hello\n");
+			await gitOk(["config", key, payload], f.root);
+			await f.queue.enqueue({
+				runId,
+				taskId: "MFW-1",
+				branch: "mfw/t1",
+				targetBranch: "main",
+			});
+			expect(await f.queue.tick()).toBe("parked");
+			expect(f.parked).toHaveLength(0);
+			expect((await f.queue.byRun(runId))?.error).toContain(key);
+			expect(existsSync(fired)).toBe(false);
+			await rm(payload, { force: true });
+			await f.cleanup();
+		});
+	}
+
+	test("a committed .gitattributes naming a driver merges without running one", async () => {
+		const f = await fixture();
+		await writeFile(join(f.root, "both.txt"), "1\n2\n3\n4\n5\n");
+		await writeFile(join(f.root, ".gitattributes"), "*.txt merge=evil\n");
+		await gitOk(["add", "-A"], f.root);
+		await gitOk(["commit", "-q", "-m", "attrs"], f.root);
+		const runId = await f.makeBranchRun(
+			"mfw/t1",
+			"both.txt",
+			"one\n2\n3\n4\n5\n",
+		);
+		await writeFile(join(f.root, "both.txt"), "1\n2\n3\n4\nfive\n");
+		await gitOk(["add", "-A"], f.root);
+		await gitOk(["commit", "-q", "-m", "other side"], f.root);
+		await f.queue.enqueue({
+			runId,
+			taskId: "MFW-1",
+			branch: "mfw/t1",
+			targetBranch: "main",
+		});
+		expect(await f.queue.tick()).toBe("merged");
+		expect(await gitOk(["show", "main:both.txt"], f.root)).toBe(
+			"one\n2\n3\n4\nfive",
+		);
+		await f.cleanup();
+	});
+
+	test("the merge runs outside the primary: no integration worktree appears", async () => {
+		const f = await fixture();
+		const runId = await f.makeBranchRun("mfw/t1", "a.txt", "hello\n");
+		await f.queue.enqueue({
+			runId,
+			taskId: "MFW-1",
+			branch: "mfw/t1",
+			targetBranch: "main",
+		});
+		expect(await f.queue.tick()).toBe("merged");
+		expect(existsSync(join(f.root, ".mfw", "integration"))).toBe(false);
+		await f.cleanup();
+	});
+
 	test("a merge with pushing off stays local", async () => {
 		const f = await fixture();
 		const remote = await mkdtemp(join(tmpdir(), "mfw-remote-"));
 		await git(["init", "-q", "--bare", "-b", "main"], remote);
 		await gitOk(["remote", "add", "origin", remote], f.root);
+		f.approvePush(remote);
 
 		const runId = await f.makeBranchRun("mfw/t1", "a.txt", "hello\n");
 		await f.queue.enqueue({
@@ -301,6 +449,7 @@ describe("MergeQueue v2, real git matrix", () => {
 			},
 		);
 		await gitOk(["remote", "add", "origin", remote], f.root);
+		f.approvePush(remote);
 
 		const runId = await f.makeBranchRun("mfw/t1", "a.txt", "hello\n");
 		await f.queue.enqueue({
@@ -357,6 +506,7 @@ describe("MergeQueue v2, real git matrix", () => {
 		const remote = await mkdtemp(join(tmpdir(), "mfw-remote-"));
 		await git(["init", "-q", "--bare", "-b", "main"], remote);
 		await gitOk(["remote", "add", "origin", remote], f.root);
+		f.approvePush(remote);
 
 		await writeFile(join(f.root, "board.txt"), "moved\n");
 		await gitOk(["add", "-A"], f.root);
@@ -379,6 +529,7 @@ describe("MergeQueue v2, real git matrix", () => {
 		const remote = await mkdtemp(join(tmpdir(), "mfw-remote-"));
 		await git(["init", "-q", "--bare", "-b", "main"], remote);
 		await gitOk(["remote", "add", "origin", remote], f.root);
+		f.approvePush(remote);
 
 		await f.queue.publishBranch("main");
 

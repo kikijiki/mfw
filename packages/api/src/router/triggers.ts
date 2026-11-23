@@ -17,6 +17,10 @@ export const triggersRouter = createTRPCRouter({
 				defId: z.string().min(1),
 				expectedHash: z.string().startsWith("sha256:"),
 				secrets: z.array(z.string()).optional(),
+				/** Paths that may differ from the armed commit: exact, or a `dir/` prefix. */
+				mayChange: z.array(z.string().min(1)).optional(),
+				/** The digest from `pinPreview`. A script trigger cannot be armed without it. */
+				expectedPinDigest: z.string().startsWith("sha256:").optional(),
 			}),
 		)
 		.mutation(({ ctx, input }) =>
@@ -24,6 +28,25 @@ export const triggersRouter = createTRPCRouter({
 				by: "operator",
 				expectedHash: input.expectedHash,
 				secrets: input.secrets,
+				...(input.mayChange ? { mayChange: input.mayChange } : {}),
+				...(input.expectedPinDigest
+					? { expectedPinDigest: input.expectedPinDigest }
+					: {}),
+				requirePinDigest: true,
+			}),
+		),
+
+	/** What arming would pin now: the digest, files and tools the owner approves. */
+	pinPreview: projectProcedure
+		.input(
+			z.object({
+				defId: z.string().min(1),
+				mayChange: z.array(z.string().min(1)).optional(),
+			}),
+		)
+		.query(({ ctx, input }) =>
+			ctx.svc.triggers.previewPin(input.defId, {
+				...(input.mayChange ? { mayChange: input.mayChange } : {}),
 			}),
 		),
 

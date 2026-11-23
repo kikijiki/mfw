@@ -57,6 +57,7 @@ import {
  */
 
 type TriggerView = RouterOutputs["triggers"]["list"][number];
+type TriggerPinPreview = NonNullable<RouterOutputs["triggers"]["pinPreview"]>;
 type DeliveryView = RouterOutputs["triggers"]["deliveries"][number];
 type CapturedTask = Parameters<QuickDraftCaptureDialogProps["onSuccess"]>[0];
 
@@ -234,6 +235,18 @@ function TriggerRow({
 		}),
 	);
 
+	// Fresh on each open: the digest must describe the files as they are now.
+	const pinPreview = useQuery(
+		trpc.triggers.pinPreview.queryOptions(
+			{ project, defId: view.id },
+			{
+				enabled: armReview !== null && view.action === "script",
+				staleTime: 0,
+				gcTime: 0,
+			},
+		),
+	);
+
 	const look = STATE_LOOK[view.state];
 	const Icon = look.icon;
 	const hasArmingRecord = view.armedAt !== undefined;
@@ -379,13 +392,16 @@ function TriggerRow({
 				grant={grant}
 				onGrantChange={setGrant}
 				pending={armMutation.isPending}
+				pin={view.action === "script" ? (pinPreview.data ?? null) : undefined}
 				onApprove={() => {
 					if (!armReview?.hash) return;
+					const pin = pinPreview.data;
 					armMutation.mutate({
 						project,
 						defId: armReview.id,
 						expectedHash: armReview.hash,
 						secrets: Array.from(grant),
+						...(pin?.ok ? { expectedPinDigest: pin.digest } : {}),
 					});
 				}}
 			/>
@@ -400,6 +416,7 @@ export function TriggerArmReview({
 	grant,
 	onGrantChange,
 	pending,
+	pin,
 	onApprove,
 }: {
 	view: TriggerView;
@@ -408,8 +425,11 @@ export function TriggerArmReview({
 	grant: Set<string>;
 	onGrantChange: (next: Set<string>) => void;
 	pending: boolean;
+	/** A script trigger's pin: null while loading. Undefined for other actions. */
+	pin?: TriggerPinPreview | null;
 	onApprove: () => void;
 }) {
+	const pinBlocked = pin !== undefined && !pin?.ok;
 	const current = view.definition ?? "";
 	const approved = view.approvedDefinition;
 	const rows = approved === undefined ? [] : diffLines(approved, current);
@@ -470,6 +490,42 @@ export function TriggerArmReview({
 						</div>
 					)}
 
+					{pin === null ? <p>Reading the files this trigger runs…</p> : null}
+					{pin && !pin.ok ? (
+						<p style={{ color: "var(--mfw-critical)" }}>
+							This trigger cannot be armed: {pin.reason}. {pin.fix}
+						</p>
+					) : null}
+					{pin?.ok ? (
+						<div className="flex flex-col gap-2 border p-3">
+							<span>
+								Approving runs this exact commit. Any change outside the list
+								below disarms it.
+							</span>
+							<Mono value={pin.digest} truncate={24} />
+							{pin.commit ? <Mono value={pin.commit} truncate={12} /> : null}
+							<ul className="font-mono text-xs">
+								{pin.files.map((file) => (
+									<li key={file.path}>
+										{file.role} {file.path} {file.sha256.slice(0, 12)}
+									</li>
+								))}
+								{pin.external.map((file) => (
+									<li key={file.path}>interpreter {file.real}</li>
+								))}
+								{pin.tools.map((tool) => (
+									<li key={tool}>tool {tool}</li>
+								))}
+							</ul>
+							<span>
+								May change without re-arming:{" "}
+								{pin.mayChange.length > 0
+									? pin.mayChange.join(", ")
+									: "nothing"}
+							</span>
+						</div>
+					) : null}
+
 					{view.requestedSecrets.length > 0 ? (
 						<div className="flex flex-col gap-2 border p-3">
 							<span className="flex items-center gap-1">
@@ -513,7 +569,7 @@ export function TriggerArmReview({
 						Cancel
 					</Button>
 					<Button
-						disabled={pending || current.length === 0}
+						disabled={pending || current.length === 0 || pinBlocked}
 						onClick={onApprove}
 					>
 						{pending ? "Approving…" : "Approve and arm"}

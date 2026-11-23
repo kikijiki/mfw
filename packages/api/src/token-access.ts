@@ -340,6 +340,7 @@ export const OWNER_ONLY_PROCEDURES: ReadonlySet<string> = new Set([
 	"triggers.arm",
 	"triggers.disarm",
 	"triggers.dryRun",
+	"triggers.pinPreview",
 	"triggers.deliveries",
 	"triggers.retry",
 	"sessions.open",

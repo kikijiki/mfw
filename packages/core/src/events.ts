@@ -534,7 +534,14 @@ export const EventSchema = z.discriminatedUnion("type", [
 			check: z.string(),
 			passed: z.boolean(),
 			classification: z
-				.enum(["failed", "missing-file", "no-change", "timeout", "crashed"])
+				.enum([
+					"failed",
+					"missing-file",
+					"no-change",
+					"timeout",
+					"crashed",
+					"refused",
+				])
 				.optional(),
 			detail: z.string().optional(),
 		}),
@@ -774,7 +781,13 @@ export const EventSchema = z.discriminatedUnion("type", [
 		type: z.literal("trigger.disarmed"),
 		payload: z.object({
 			defId: z.string(),
-			reason: z.enum(["hash-drift", "definition-removed", "unloadable"]),
+			reason: z.enum([
+				"hash-drift",
+				"definition-removed",
+				"unloadable",
+				"exec-pin-drift",
+				"re-arm-needed",
+			]),
 			armedHash: z.string(),
 			foundHash: z.string().optional(),
 		}),

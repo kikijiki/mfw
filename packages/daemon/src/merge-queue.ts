@@ -1,5 +1,3 @@
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
 import type { ProjectDbHandle } from "@mfw/db/client";
 import { appendEvent, type EventBus } from "@mfw/db/eventlog";
 import { engineKv, type MergeJobState, mergeJobs, runs } from "@mfw/db/schema";
@@ -7,13 +5,23 @@ import { and, asc, eq, inArray, lt } from "drizzle-orm";
 import { readProtectedBoardPaths } from "./board-layout.ts";
 import { git, gitComplete } from "./git.ts";
 import { quarantineRef } from "./host-git/fetch.ts";
+import {
+	ensureLandingRepo,
+	type LandingIdentity,
+	type LandingRepo,
+	landingMerge,
+	landingRestorePaths,
+} from "./host-git/landing.ts";
+import { hardenedPush } from "./host-git/push.ts";
+import { repoConfigRefusal } from "./host-git/repo-config.ts";
 import type { Logger } from "./log.ts";
 import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
 
 /**
  * One FIFO worker per project, one in-flight job, merging into the recorded
- * integration branch via a persistent worktree at `.mfw/integration/`; the
- * primary checkout is never touched. Job flow:
+ * integration branch in the host-owned landing repository (`host-git/landing.ts`):
+ * no work tree, no repository config, so no hook, filter or merge driver can
+ * run. The ref then moves by compare-and-swap. Job flow:
  *
  *   queued → merging → merged
  *               │(conflict)
@@ -32,8 +40,7 @@ import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
  *
  * Red-main pauses the queue: jobs stay queued instead of bouncing to review.
  * Each state change commits before the next action, so a crash resumes
- * deterministically (reconcile resets in-flight jobs to queued after
- * hard-resetting the integration worktree).
+ * deterministically (reconcile resets in-flight jobs to queued).
  *
  * A park is usually a stale conflict (target moved while the job queued), so
  * `park()` retries automatically, bounded by `MAX_PARK_RETRIES`, before calling
@@ -73,10 +80,11 @@ export interface MergeQueueDeps {
 	 */
 	reverify: (
 		job: MergeJobView,
+		/** The target's tip as a commit id: a ref could move before the gate reads it. */
+		baseSha: string,
 	) => Promise<{ passed: boolean; detail?: string; crashed?: boolean }>;
 	/**
-	 * Verify the merge commit itself (the integration worktree's HEAD, after
-	 * the board restore) before it lands, in a disposable host-owned clone.
+	 * Verify the merge commit itself (after the board restore) before it lands, in a disposable host-owned clone.
 	 * Absent (worktree projects) means no pre-landing verification. A failure
 	 * parks the job as `reverify`.
 	 */
@@ -113,9 +121,16 @@ export interface MergeQueueDeps {
 	reclaimTask?: (job: MergeJobView) => Promise<void>;
 	/** Move the task to `ready`; the job is abandoned as in `abandon`. */
 	sendTaskToReady?: (job: MergeJobView) => Promise<void>;
+	/**
+	 * The paths a landed merge changed, before `merge.completed` is recorded;
+	 * null when they could not be listed. Armed triggers touching them disarm.
+	 */
+	onLandedPaths?: (paths: readonly string[] | null) => Promise<unknown>;
 	/** Publish the target branch after each merge lands. Absent or disabled
 	 *  leaves the branch local, which is the default. */
-	push?: { enabled: boolean; remote: string };
+	push?: PushSettings;
+	/** Where the host-owned landing repositories live. Default: the daemon home. */
+	landingRoot?: string;
 	/**
 	 * Live self-repair setting. A callback because the queue is built before the
 	 * scheduler and the setting can change without a restart. When enabled, a
@@ -125,12 +140,24 @@ export interface MergeQueueDeps {
 	selfRepairMainRed?: () => boolean;
 }
 
+export interface PushSettings {
+	enabled: boolean;
+	remote: string;
+	/** The owner-approved destination, from the daemon home. Never read from the repository. */
+	url?: string;
+	/** Allow `url` to be a local path, whose receive hooks then run on this host. */
+	allowLocalUrl?: boolean;
+}
+
 const IN_FLIGHT = ["merging", "rebasing", "reverifying"] as const;
+
+/** `engine_kv` row behind the `push_refused` inbox item; gone once a push succeeds. */
+export const PUSH_REFUSED_KEY = "push_refused";
 
 export class MergeQueue {
 	/** Mutable so settings can flip publishing without a restart; affects only
 	 *  what happens after a merge. */
-	private push: { enabled: boolean; remote: string };
+	private push: PushSettings;
 
 	constructor(private readonly deps: MergeQueueDeps) {
 		this.push = deps.push ?? { enabled: false, remote: "origin" };
@@ -144,8 +171,8 @@ export class MergeQueue {
 		this.push = { ...this.push, enabled: on };
 	}
 
-	private get integrationDir(): string {
-		return join(this.deps.projectRoot, ".mfw", "integration");
+	private landing(): Promise<LandingRepo> {
+		return ensureLandingRepo(this.deps.projectRoot, this.deps.landingRoot);
 	}
 
 	/** Idempotent by runId (UNIQUE). */
@@ -257,8 +284,8 @@ export class MergeQueue {
 		try {
 			return await this.process(job);
 		} catch (e) {
-			// Requeue so an in-flight job is not stuck until restart; the next attempt
-			// hard-resets the integration worktree, so this is safe mid-merge.
+			// Requeue so an in-flight job is not stuck until restart; a merge holds no
+			// state until its ref moves, so this is safe mid-merge.
 			const detail = e instanceof Error ? e.message : String(e);
 			await this.deps.handle.db
 				.update(mergeJobs)
@@ -320,32 +347,15 @@ export class MergeQueue {
 			.where(eq(mergeJobs.id, id));
 	}
 
-	/**
-	 * Ensure `.mfw/integration/` exists as a detached worktree at the target's
-	 * tip (git refuses a second checkout of the branch the primary has). The
-	 * ref itself is moved by `finishMerged` via compare-and-swap `update-ref`.
-	 */
-	async prepareIntegration(target: string): Promise<string> {
-		const dir = this.integrationDir;
-		const there = await git(["rev-parse", "--is-inside-work-tree"], dir);
-		if (there.exitCode !== 0) {
-			await mkdir(join(this.deps.projectRoot, ".mfw"), { recursive: true });
-			const add = await git(
-				["worktree", "add", "--detach", "-q", dir, target],
-				this.deps.projectRoot,
-			);
-			if (add.exitCode !== 0)
-				throw new Error(`integration worktree add failed: ${add.stderr}`);
-		}
-		const base = await git(["rev-parse", `refs/heads/${target}`], dir);
+	/** The target's tip. `finishMerged` moves the ref by compare-and-swap from it. */
+	private async targetTip(target: string): Promise<string> {
+		const base = await git(
+			["rev-parse", "--verify", `refs/heads/${target}^{commit}`],
+			this.deps.projectRoot,
+		);
 		if (base.exitCode !== 0)
 			throw new Error(`target branch ${target} missing: ${base.stderr}`);
-		const sha = base.stdout.trim();
-		const co = await git(["checkout", "-q", "--detach", sha], dir);
-		if (co.exitCode !== 0)
-			throw new Error(`integration detach ${sha} failed: ${co.stderr}`);
-		await git(["reset", "--hard", "-q", sha], dir);
-		return sha;
+		return base.stdout.trim();
 	}
 
 	private async process(
@@ -354,23 +364,20 @@ export class MergeQueue {
 		const log = this.deps.log.child({ job: job.id, branch: job.branch });
 		let baseSha: string;
 		try {
-			baseSha = await this.prepareIntegration(job.targetBranch);
+			baseSha = await this.targetTip(job.targetBranch);
 		} catch (e) {
-			// Integration worktree unusable: park loudly rather than spin.
-			log.error({ err: e }, "integration worktree preparation failed");
-			await this.park(
-				job,
-				`integration worktree: ${(e as Error).message}`,
-				"conflict",
-			);
+			// Target unreadable or its config refused: park loudly rather than spin.
+			log.error({ err: e }, "merge preparation failed");
+			await this.park(job, `merge: ${(e as Error).message}`, "conflict");
 			return "parked";
 		}
 
 		await this.setState(job.id, "merging");
-		if (await this.tryMerge(job)) {
-			await this.restoreBoard(job, baseSha);
-			if (!(await this.mergeCommitPasses(job))) return "parked";
-			return this.finishMerged(job, baseSha);
+		const first = await this.tryMerge(job, baseSha);
+		if (first) {
+			const sha = await this.restoreBoard(job, baseSha, first);
+			if (!(await this.mergeCommitPasses(job, sha))) return "parked";
+			return this.finishMerged(job, baseSha, sha);
 		}
 
 		// Conflict: rebase the run onto the target, re-verify, retry once. A
@@ -427,7 +434,7 @@ export class MergeQueue {
 		}
 
 		await this.setState(job.id, "reverifying");
-		const verdict = await this.deps.reverify(job);
+		const verdict = await this.deps.reverify(job, baseSha);
 		if (!verdict.passed) {
 			// A crashed re-verify says nothing about the rebase; word it so a human
 			// is not told the rebase broke something.
@@ -443,13 +450,12 @@ export class MergeQueue {
 		}
 
 		await this.setState(job.id, "merging", { attempt: job.attempt + 1 });
-		// The queue is the only mover of the target ref, so baseSha is still
-		// current; reset the integration worktree onto it before retrying.
-		await git(["reset", "--hard", "-q", baseSha], this.integrationDir);
-		if (await this.tryMerge(job)) {
-			await this.restoreBoard(job, baseSha);
-			if (!(await this.mergeCommitPasses(job))) return "parked";
-			return this.finishMerged(job, baseSha);
+		// The queue is the only mover of the target ref, so baseSha is still current.
+		const retried = await this.tryMerge(job, baseSha);
+		if (retried) {
+			const sha = await this.restoreBoard(job, baseSha, retried);
+			if (!(await this.mergeCommitPasses(job, sha))) return "parked";
+			return this.finishMerged(job, baseSha, sha);
 		}
 		await this.park(job, "merge conflict persisted after rebase", "conflict");
 		return "parked";
@@ -468,81 +474,25 @@ export class MergeQueue {
 	 * Protected set: every tracked path under `.mfw/` except `.mfw/triggers/`,
 	 * plus the board's own files (`board.yaml`, `tasks/`, `adrs/` at the root of
 	 * the board folder, see `board-layout.ts`), discovered from the union of
-	 * base and merged trees (default-deny for new mfw paths). Untracked runtime state is unaffected since `git rm` only
-	 * touches tracked files. `rm` runs before `checkout` because checkout
-	 * leaves behind anything the branch added.
+	 * base and merged trees (default-deny for new mfw paths). Only the commit's
+	 * tree is rewritten, so untracked runtime state is
+	 * unaffected.
 	 */
 	private async restoreBoard(
 		job: MergeJobView,
 		baseSha: string,
-	): Promise<void> {
-		const dir = this.integrationDir;
+		mergeSha: string,
+	): Promise<string> {
 		const board = await readProtectedBoardPaths(this.deps.projectRoot);
-		const treePaths = async (ref: string): Promise<string[]> => {
-			// A cut listing would leave protected paths out of the restore.
-			const listed = await gitComplete(
-				["ls-tree", "-r", "-z", "--name-only", ref, "--", ".mfw", ...board],
-				dir,
-			).catch((e: Error) => {
-				throw new Error(`mfw firewall could not inspect ${ref}: ${e.message}`);
-			});
-			return listed.split("\0").filter(Boolean);
-		};
-		const paths = [
-			...new Set([...(await treePaths(baseSha)), ...(await treePaths("HEAD"))]),
-		].filter((path) => !path.startsWith(".mfw/triggers/"));
-		if (paths.length === 0) return;
-
-		const removed = await git(
-			["rm", "-r", "-q", "--ignore-unmatch", "--", ...paths],
-			dir,
+		const { sha, reverted } = await landingRestorePaths(
+			await this.landing(),
+			baseSha,
+			mergeSha,
+			[".mfw", ...board],
+			(path) => path.startsWith(".mfw/triggers/"),
+			await this.identity(),
 		);
-		if (removed.exitCode !== 0) {
-			throw new Error(
-				`board firewall could not clear merged paths: ${removed.stderr || removed.stdout}`,
-			);
-		}
-		const baseFiles = new Set(await treePaths(baseSha));
-		const inBase = paths.filter((path) => baseFiles.has(path));
-		if (inBase.length > 0) {
-			const restored = await git(["checkout", baseSha, "--", ...inBase], dir);
-			if (restored.exitCode !== 0) {
-				throw new Error(
-					`board firewall could not restore base paths: ${restored.stderr || restored.stdout}`,
-				);
-			}
-		}
-
-		// Versus HEAD (the merge commit): the board paths the merge changed.
-		// Normally empty.
-		const changed = await gitComplete(
-			["diff", "--cached", "--name-only", "--", ...paths],
-			dir,
-		).catch((e: Error) => {
-			throw new Error(
-				`board firewall could not verify staged paths: ${e.message}`,
-			);
-		});
-		const reverted = changed.split("\n").filter(Boolean);
-		if (reverted.length === 0) return;
-
-		const amend = await git(
-			[
-				"-c",
-				"user.name=mfw",
-				"-c",
-				"user.email=mfw@localhost",
-				"commit",
-				"--amend",
-				"--no-edit",
-				"-q",
-				"--no-verify",
-			],
-			dir,
-		);
-		if (amend.exitCode !== 0) {
-			throw new Error(`board firewall could not amend: ${amend.stderr}`);
-		}
+		if (reverted.length === 0) return sha;
 
 		this.deps.log.warn(
 			{ job: job.id, runId: job.runId, paths: reverted },
@@ -558,6 +508,19 @@ export class MergeQueue {
 			}),
 		);
 		this.deps.bus.publish([stored]);
+		return sha;
+	}
+
+	/** The repository's committer, read as data; merges never use its config otherwise. */
+	private async identity(): Promise<LandingIdentity> {
+		const read = async (key: string, fallback: string) => {
+			const r = await git(["config", "--get", key], this.deps.projectRoot);
+			return r.exitCode === 0 && r.stdout ? r.stdout : fallback;
+		};
+		return {
+			name: await read("user.name", "mfw"),
+			email: await read("user.email", "mfw@localhost"),
+		};
 	}
 
 	/**
@@ -578,11 +541,11 @@ export class MergeQueue {
 	 * Verify the merge commit before it lands (clone projects). Returns true
 	 * when the job may land; otherwise the job is parked.
 	 */
-	private async mergeCommitPasses(job: MergeJobView): Promise<boolean> {
+	private async mergeCommitPasses(
+		job: MergeJobView,
+		sha: string,
+	): Promise<boolean> {
 		if (!this.deps.verifyMerge) return true;
-		const sha = (
-			await git(["rev-parse", "HEAD"], this.integrationDir)
-		).stdout.trim();
 		await this.setState(job.id, "reverifying");
 		const verdict = await this.deps.verifyMerge(job, sha);
 		if (verdict.passed) {
@@ -600,14 +563,29 @@ export class MergeQueue {
 		return false;
 	}
 
-	/** `git merge --no-ff` in the integration worktree; abort on failure. */
-	private async tryMerge(job: MergeJobView): Promise<boolean> {
-		const dir = this.integrationDir;
+	/**
+	 * Merge in the host-owned landing repository, under an empty config.
+	 * Returns the merge commit, or null on a conflict.
+	 */
+	private async tryMerge(
+		job: MergeJobView,
+		baseSha: string,
+	): Promise<string | null> {
 		const source = await this.mergeSource(job);
-		const r = await git(["merge", "--no-ff", "--no-edit", source], dir);
-		if (r.exitCode === 0) return true;
-		await git(["merge", "--abort"], dir);
-		return false;
+		const sourceSha = await git(
+			["rev-parse", "--verify", `${source}^{commit}`],
+			this.deps.projectRoot,
+		);
+		if (sourceSha.exitCode !== 0) {
+			throw new Error(`merge source ${source} missing: ${sourceSha.stderr}`);
+		}
+		return landingMerge(
+			await this.landing(),
+			baseSha,
+			sourceSha.stdout.trim(),
+			`Merge branch '${job.branch}' into ${job.targetBranch}`,
+			await this.identity(),
+		);
 	}
 
 	/** Unmerged paths in `dir`. Read before the `--abort` of a failed merge or
@@ -623,16 +601,14 @@ export class MergeQueue {
 	 * the live ref. `merge --ff-only` refuses unless the primary's HEAD is an
 	 * ancestor of the merge commit, and `casMoveRef` refuses unless the ref
 	 * still equals `baseSha`. Either turns a stale base into `deferred` or a
-	 * thrown error, retried from a fresh `prepareIntegration()`. Keep both
+	 * thrown error, retried from a fresh target tip. Keep both
 	 * checks against live state.
 	 */
 	private async finishMerged(
 		job: MergeJobView,
 		baseSha: string,
+		sha: string,
 	): Promise<"merged" | "deferred"> {
-		const sha = (
-			await git(["rev-parse", "HEAD"], this.integrationDir)
-		).stdout.trim();
 		// Not checked out in the primary: compare-and-swap the ref.
 		// Checked out: `merge --ff-only` in the primary, which moves ref, index
 		// and worktree together and refuses rather than clobbering. A refusal
@@ -656,6 +632,7 @@ export class MergeQueue {
 				return "deferred";
 			}
 		}
+		await this.reportLandedPaths(job, baseSha, sha);
 		const stored = await this.deps.handle.withTx(async (tx) => {
 			await tx
 				.update(mergeJobs)
@@ -738,6 +715,11 @@ export class MergeQueue {
 	): Promise<
 		{ status: "pushed" | "no-remote" } | { status: "error"; reason: string }
 	> {
+		const refused = await repoConfigRefusal(this.deps.projectRoot);
+		if (refused) {
+			await this.recordPushRefusal(branch, refused.message);
+			return { status: "error", reason: refused.message };
+		}
 		const remotes = await git(["remote"], this.deps.projectRoot);
 		if (remotes.exitCode !== 0) {
 			return {
@@ -745,15 +727,76 @@ export class MergeQueue {
 				reason: `git remote: ${tail(remotes.stderr || remotes.stdout, 300)}`,
 			};
 		}
-		if (!remotes.stdout.split("\n").includes(this.push.remote)) {
+		// Only says whether this project publishes at all. The destination is
+		// the approved URL, whatever the remote's own URL says.
+		if (
+			!this.push.url &&
+			!remotes.stdout.split("\n").includes(this.push.remote)
+		) {
 			return { status: "no-remote" };
 		}
-		const r = await git(
-			["push", this.push.remote, branch],
-			this.deps.projectRoot,
-		);
-		if (r.exitCode === 0) return { status: "pushed" };
-		return { status: "error", reason: tail(r.stderr || r.stdout, 300) };
+		const r = await hardenedPush({
+			projectRoot: this.deps.projectRoot,
+			branch,
+			target: this.push.url
+				? {
+						url: this.push.url,
+						...(this.push.allowLocalUrl ? { allowLocal: true } : {}),
+					}
+				: null,
+			...(this.deps.landingRoot ? { landingRoot: this.deps.landingRoot } : {}),
+		});
+		if (r.status === "refused") await this.recordPushRefusal(branch, r.reason);
+		if (r.status === "pushed") {
+			await this.deps.handle.db
+				.delete(engineKv)
+				.where(eq(engineKv.key, PUSH_REFUSED_KEY));
+			return { status: "pushed" };
+		}
+		return { status: "error", reason: r.reason };
+	}
+
+	/** Keep the inbox item until a later push succeeds. */
+	private async recordPushRefusal(
+		branch: string,
+		reason: string,
+	): Promise<void> {
+		const value = { at: Date.now(), branch, reason };
+		await this.deps.handle.db
+			.insert(engineKv)
+			.values({ key: PUSH_REFUSED_KEY, value, updatedAt: new Date() })
+			.onConflictDoUpdate({
+				target: engineKv.key,
+				set: { value, updatedAt: new Date() },
+			});
+	}
+
+	/**
+	 * Tell the owner of armed files what this merge changed, before
+	 * `merge.completed` can fire them. Unknown paths are reported as null, which
+	 * disarms conservatively. A failure here must not undo a landed merge; the
+	 * execution-time pin check still applies.
+	 */
+	private async reportLandedPaths(
+		job: MergeJobView,
+		baseSha: string,
+		sha: string,
+	): Promise<void> {
+		if (!this.deps.onLandedPaths) return;
+		try {
+			const diff = await git(
+				["diff-tree", "-r", "-z", "--name-only", "--no-renames", baseSha, sha],
+				this.deps.projectRoot,
+			);
+			await this.deps.onLandedPaths(
+				diff.exitCode === 0 ? diff.stdout.split("\0").filter(Boolean) : null,
+			);
+		} catch (e) {
+			this.deps.log.error(
+				{ err: e, job: job.id },
+				"could not re-check armed files after a merge",
+			);
+		}
 	}
 
 	/** Compare-and-swap the branch ref on the merged base; throws rather than
@@ -765,7 +808,7 @@ export class MergeQueue {
 	): Promise<void> {
 		const cas = await git(
 			["update-ref", `refs/heads/${target}`, sha, baseSha],
-			this.integrationDir,
+			this.deps.projectRoot,
 		);
 		if (cas.exitCode !== 0)
 			throw new Error(`update-ref CAS failed: ${cas.stderr}`);
@@ -972,19 +1015,13 @@ export class MergeQueue {
 		this.deps.log.warn({ job: job.id }, "merge job abandoned");
 	}
 
-	/** Boot reconciliation: hard-reset the integration worktree, then requeue in-flight jobs. */
+	/** Boot reconciliation: requeue in-flight jobs. A merge holds no state until its ref moves. */
 	async resetInFlight(): Promise<number> {
 		const rows = await this.deps.handle.db
-			.select({ id: mergeJobs.id, target: mergeJobs.targetBranch })
+			.select({ id: mergeJobs.id })
 			.from(mergeJobs)
 			.where(inArray(mergeJobs.state, [...IN_FLIGHT]));
 		if (rows.length === 0) return 0;
-		const target = rows[0]?.target;
-		if (target) {
-			await this.prepareIntegration(target).catch((e) => {
-				this.deps.log.error({ err: e }, "reconcile: integration reset failed");
-			});
-		}
 		await this.deps.handle.db
 			.update(mergeJobs)
 			.set({ state: "queued", updatedAt: new Date() })

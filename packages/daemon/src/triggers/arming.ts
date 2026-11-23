@@ -2,6 +2,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
 import { z } from "zod";
+import { type ExecPin, ExecPinSchema } from "../containment/exec-pin.ts";
 
 /**
  * The arming store, `~/.local/share/mfw/triggers/<project>.json`.
@@ -23,7 +24,15 @@ import { z } from "zod";
 
 const DisarmSchema = z.object({
 	at: z.number(),
-	reason: z.enum(["hash-drift", "definition-removed", "unloadable"]),
+	reason: z.enum([
+		"hash-drift",
+		"definition-removed",
+		"unloadable",
+		/** A file the trigger executes no longer matches its pin. */
+		"exec-pin-drift",
+		/** A merge touched an armed file, or the record predates exec pins. */
+		"re-arm-needed",
+	]),
 	/** The hash found on disk when the pin broke; absent if the file is gone. */
 	foundHash: z.string().optional(),
 });
@@ -49,6 +58,8 @@ const RecordSchema = z.object({
 	armedBy: z.string(),
 	/** Secret names granted. Requesting an ungranted secret refuses dispatch. */
 	secrets: z.array(z.string()).default([]),
+	/** What a script action executes. A script without one never runs. */
+	execPin: ExecPinSchema.optional(),
 	disarmed: DisarmSchema.optional(),
 	failing: FailingSchema.optional(),
 });
@@ -63,6 +74,25 @@ export type ArmingFile = Record<string, ArmingRecord>;
 export function armingPath(mfwHome: string, project: string): string {
 	const safe = project.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 100) || "_";
 	return join(mfwHome, "triggers", `${safe}.json`);
+}
+
+/**
+ * One writer at a time per store file: every mutation is a load, change and
+ * save, so two overlapping ones would lose the first one's change, and a lost
+ * disarm stamp silently re-enables a trigger. Only the daemon process writes
+ * this store, so an in-process queue is enough.
+ */
+const writers = new Map<string, Promise<unknown>>();
+
+function serialized<T>(path: string, fn: () => Promise<T>): Promise<T> {
+	const previous = writers.get(path) ?? Promise.resolve();
+	const next = previous.then(fn, fn);
+	const settled = next.catch(() => {});
+	writers.set(path, settled);
+	void settled.then(() => {
+		if (writers.get(path) === settled) writers.delete(path);
+	});
+	return next;
 }
 
 export class ArmingStore {
@@ -103,38 +133,52 @@ export class ArmingStore {
 	async arm(
 		defId: string,
 		hash: string,
-		opts: { by?: string; secrets?: string[]; definition?: string } = {},
+		opts: {
+			by?: string;
+			secrets?: string[];
+			definition?: string;
+			execPin?: ExecPin;
+		} = {},
 	): Promise<ArmingRecord> {
-		const file = await this.load();
-		const record: ArmingRecord = {
-			hash,
-			...(opts.definition === undefined ? {} : { definition: opts.definition }),
-			armedAt: Date.now(),
-			armedBy: opts.by ?? "operator",
-			secrets: opts.secrets ?? [],
-		};
-		file[defId] = record;
-		await this.save(file);
-		return record;
+		return serialized(this.path, async () => {
+			const file = await this.load();
+			const record: ArmingRecord = {
+				hash,
+				...(opts.definition === undefined
+					? {}
+					: { definition: opts.definition }),
+				armedAt: Date.now(),
+				armedBy: opts.by ?? "operator",
+				secrets: opts.secrets ?? [],
+				...(opts.execPin ? { execPin: opts.execPin } : {}),
+			};
+			file[defId] = record;
+			await this.save(file);
+			return record;
+		});
 	}
 
 	/** Backfill `definition` on an older record. Caller must already have
 	 * established that the pinned hash equals the current definition's. */
 	async rememberDefinition(defId: string, definition: string): Promise<void> {
-		const file = await this.load();
-		const record = file[defId];
-		if (!record || record.definition !== undefined) return;
-		record.definition = definition;
-		await this.save(file);
+		return serialized(this.path, async () => {
+			const file = await this.load();
+			const record = file[defId];
+			if (!record || record.definition !== undefined) return;
+			record.definition = definition;
+			await this.save(file);
+		});
 	}
 
 	/** Operator disarm: the record goes entirely, so the trigger reads as
 	 *  "present, not armed" rather than "something changed under you". */
 	async disarm(defId: string): Promise<void> {
-		const file = await this.load();
-		if (!(defId in file)) return;
-		delete file[defId];
-		await this.save(file);
+		return serialized(this.path, async () => {
+			const file = await this.load();
+			if (!(defId in file)) return;
+			delete file[defId];
+			await this.save(file);
+		});
 	}
 
 	/** Automatic disarm: keep the record, stamp why. Idempotent for the same
@@ -144,18 +188,20 @@ export class ArmingStore {
 		reason: DisarmReason,
 		foundHash?: string,
 	): Promise<{ changed: boolean; record: ArmingRecord | null }> {
-		const file = await this.load();
-		const record = file[defId];
-		if (!record) return { changed: false, record: null };
-		if (
-			record.disarmed?.reason === reason &&
-			record.disarmed.foundHash === foundHash
-		) {
-			return { changed: false, record };
-		}
-		record.disarmed = { at: Date.now(), reason, foundHash };
-		await this.save(file);
-		return { changed: true, record };
+		return serialized(this.path, async () => {
+			const file = await this.load();
+			const record = file[defId];
+			if (!record) return { changed: false, record: null };
+			if (
+				record.disarmed?.reason === reason &&
+				record.disarmed.foundHash === foundHash
+			) {
+				return { changed: false, record };
+			}
+			record.disarmed = { at: Date.now(), reason, foundHash };
+			await this.save(file);
+			return { changed: true, record };
+		});
 	}
 
 	/** A delivery reached terminal failure (dead-lettered or no retries left).
@@ -165,20 +211,24 @@ export class ArmingStore {
 		detail: string,
 		holdDispatch: boolean,
 	): Promise<void> {
-		const file = await this.load();
-		const record = file[defId];
-		if (!record) return;
-		record.failing = { at: Date.now(), detail, holdDispatch };
-		await this.save(file);
+		return serialized(this.path, async () => {
+			const file = await this.load();
+			const record = file[defId];
+			if (!record) return;
+			record.failing = { at: Date.now(), detail, holdDispatch };
+			await this.save(file);
+		});
 	}
 
 	/** A delivery succeeded: clear the failing stamp. Unlike `disarmed`, this
 	 *  one is not sticky. */
 	async clearFailing(defId: string): Promise<void> {
-		const file = await this.load();
-		const record = file[defId];
-		if (!record?.failing) return;
-		record.failing = undefined;
-		await this.save(file);
+		return serialized(this.path, async () => {
+			const file = await this.load();
+			const record = file[defId];
+			if (!record?.failing) return;
+			record.failing = undefined;
+			await this.save(file);
+		});
 	}
 }

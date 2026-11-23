@@ -11,8 +11,8 @@ import {
 import { parse as parseYaml } from "yaml";
 import type { DocSourceConfig } from "./config.ts";
 import { ensureBoardConfig } from "./default-board-config.ts";
+import { gitRaw } from "./git.ts";
 import type { Logger } from "./log.ts";
-import { runProc } from "./proc.ts";
 import { NotFoundError, PathEscapeError } from "./workspace.ts";
 
 /**
@@ -331,14 +331,10 @@ async function walk(
 
 /** Tracked and untracked-but-not-ignored files under `dir`, relative to it. Falls back to a walk outside a work tree. */
 async function listFilesUnder(dir: string): Promise<string[]> {
-	const r = await runProc(
-		["git", "ls-files", "-co", "--exclude-standard", "-z"],
-		{
-			cwd: dir,
-			timeoutMs: 15_000,
-			maxOutputBytes: 16 * 1024 * 1024,
-		},
-	);
+	const r = await gitRaw(["ls-files", "-co", "--exclude-standard", "-z"], dir, {
+		timeoutMs: 15_000,
+		maxOutputBytes: 16 * 1024 * 1024,
+	});
 	if (r.exitCode === 0) {
 		return [...new Set(r.stdout.split("\0").filter((p) => p.length > 0))];
 	}

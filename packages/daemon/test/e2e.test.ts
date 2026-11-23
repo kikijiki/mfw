@@ -171,12 +171,15 @@ afterAll(async () => {
 	for (const home of ledgerHomes.splice(0))
 		await rm(home, { recursive: true, force: true });
 });
-const directAttach = async (root: string) => {
+const directAttach = async (
+	root: string,
+	extra: Partial<ProjectConfig> = {},
+) => {
 	// Outside the repo: these tests assert that the primary checkout stays clean.
 	const home = await mkdtemp(join(tmpdir(), "mfw-e2e-ledger-"));
 	ledgerHomes.push(home);
 	const { ledger } = await openTestLedger(home, { processBootId: "boot-e2e" });
-	return attachProject(cfg(root), silentLogger(), "boot-e2e", {
+	return attachProject({ ...cfg(root), ...extra }, silentLogger(), "boot-e2e", {
 		hostResources: ledger,
 		budgetWindows: new BudgetWindows(ledger.coordinator.store),
 		mfwHome: home,
@@ -194,7 +197,10 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 			"good-driver.ts",
 		);
 		await writeFile(driver, GOOD_DRIVER);
-		const svc = await directAttach(root);
+		const svc = await directAttach(root, {
+			pushUrl: remote,
+			pushAllowLocalUrl: true,
+		});
 		useDriver(svc, driver);
 
 		const task = await svc.tasks.create({

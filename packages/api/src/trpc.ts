@@ -96,6 +96,9 @@ const ERROR_CODES: Record<string, TRPCError["code"]> = {
 	RunPodControlPlaneError: "PRECONDITION_FAILED",
 	TaskNotClaimableError: "PRECONDITION_FAILED",
 	TriggerReviewStaleError: "PRECONDITION_FAILED",
+	TriggerPinStaleError: "PRECONDITION_FAILED",
+	// The remedy is in `data.fix`: commit the file, or move logic into a script.
+	TriggerPinRefusedError: "PRECONDITION_FAILED",
 	// The remedy is in `data.fix`: stop the run / merge or discard the branch.
 	RunLiveError: "PRECONDITION_FAILED",
 	TaskUnmergedError: "PRECONDITION_FAILED",

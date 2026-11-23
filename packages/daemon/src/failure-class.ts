@@ -127,7 +127,8 @@ export function classifyCheckFailure(c: FailureClass): ActionableFailureClass {
 		case "crashed":
 			return "runtime";
 		default:
-			// `failed`, `missing-file`, `no-change`: the work did not meet the bar.
+			// `failed`, `missing-file`, `no-change`, and `refused` (the change touched
+			// a file the host would execute): the work did not meet the bar.
 			return "agent";
 	}
 }

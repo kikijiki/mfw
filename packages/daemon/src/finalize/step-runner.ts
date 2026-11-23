@@ -1392,6 +1392,10 @@ export class StepRunner {
 		const verifyOpts = {
 			checkPrefix: this.deps.checkPrefix,
 			envPolicy: this.deps.envPolicy,
+			gate: {
+				primaryRoot: this.deps.projectRoot,
+				baseRev: run.baseSha || "HEAD",
+			},
 		};
 		// A clone's tree is agent-writable: the checks run in a disposable
 		// host-owned clone of the imported tip, never in the run's workspace.

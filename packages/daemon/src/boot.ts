@@ -257,6 +257,8 @@ export interface ProjectConfig {
 	selfRepairMainRed?: boolean;
 	/** Push the integration branch after every merge. Default on; no remote means no push and no error. */
 	pushOnMerge?: boolean;
+	pushUrl?: string;
+	pushAllowLocalUrl?: boolean;
 	/** Remote to push to. Defaults to `origin`. */
 	pushRemote?: string;
 	/** Filesystem-isolate agent runs via `bwrap`. Defaults and fallback: see `config.ts`. */
@@ -787,14 +789,20 @@ export async function attachProject(
 		bus,
 		projectRoot: root,
 		log: plog,
-		reverify: async (job) => {
+		reverify: async (job, baseSha) => {
 			const task = job.taskId ? await tasks.get(job.taskId) : null;
 			const dod = tasks.effectiveDod(task?.dod ?? null);
 			if (!dod) return { passed: true }; // nothing to re-check
 			const run = await registry.get(job.runId);
 			if (!run?.worktreePath || !run.baseSha)
 				return { passed: false, detail: "run worktree is gone" };
-			const opts = { checkPrefix: cfg.checkPrefix, envPolicy: cfg.envPolicy };
+			// After a rebase the candidate sits on the current target, so that is
+			// the baseline its check entry points must match.
+			const opts = {
+				checkPrefix: cfg.checkPrefix,
+				envPolicy: cfg.envPolicy,
+				gate: { primaryRoot: root, baseRev: baseSha },
+			};
 			// The merge queue never executes a check on the host: a worktree run is
 			// verified from its committed branch tip, in a disposable clone.
 			const clones = createCheckClones(root);
@@ -850,6 +858,8 @@ export async function attachProject(
 					{
 						checkPrefix: cfg.checkPrefix,
 						envPolicy: cfg.envPolicy,
+						// The target as it was before this merge commit.
+						gate: { primaryRoot: root, baseRev: `${mergeSha}^1` },
 						role: "merge-verify",
 					},
 				),
@@ -928,8 +938,13 @@ export async function attachProject(
 		push: {
 			enabled: cfg.pushOnMerge !== false,
 			remote: cfg.pushRemote ?? "origin",
+			...(cfg.pushUrl ? { url: cfg.pushUrl } : {}),
+			...(cfg.pushAllowLocalUrl ? { allowLocalUrl: true } : {}),
 		},
+		landingRoot: join(opts.mfwHome, "landing"),
 		selfRepairMainRed: () => scheduler.selfRepairMainRed,
+		// `triggers` is built later; this only runs once a merge lands.
+		onLandedPaths: (paths) => triggers.disarmForMergedPaths(paths),
 	});
 
 	const executionTargets = new ExecutionTargetRegistry([

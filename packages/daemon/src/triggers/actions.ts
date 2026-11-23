@@ -1,3 +1,4 @@
+import type { ExecPin, ExecRefusalCode } from "../containment/exec-pin.ts";
 import type { TriggerAction, TriggerDef } from "./def.ts";
 import type { TriggerEvent } from "./events.ts";
 
@@ -20,6 +21,12 @@ export interface TriggerDispatch {
 	grantedSecrets: readonly string[];
 	/** Seqs a coalescing catch-up skipped to reach this one. */
 	skippedSeqs: readonly number[];
+	/**
+	 * The armed pin of a script action. Absent means the trigger is not armed
+	 * for execution (an operator retry of a disarmed trigger), and a script
+	 * refuses to run.
+	 */
+	execGate?: { pin: ExecPin; sealRoot: string; landingRoot?: string };
 }
 
 export interface TriggerActionResult {
@@ -29,6 +36,8 @@ export interface TriggerActionResult {
 	exitCode?: number;
 	/** Set by the agent action, so a delivery links to the run it started. */
 	runId?: string;
+	/** The host refused to execute: the armed files no longer match. */
+	execRefusal?: { code: ExecRefusalCode | "not_armed"; path?: string };
 }
 
 export type TriggerActionHandler = (

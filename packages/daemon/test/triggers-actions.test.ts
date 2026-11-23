@@ -4,10 +4,14 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StoredEvent } from "@mfw/db/eventlog";
+import { buildExecPin } from "../src/containment/exec-pin.ts";
 import { git } from "../src/git.ts";
 import { silentLogger } from "../src/log.ts";
 import type { Notifier } from "../src/notify.ts";
-import type { TriggerDispatch } from "../src/triggers/actions.ts";
+import type {
+	TriggerActionResult,
+	TriggerDispatch,
+} from "../src/triggers/actions.ts";
 import { createAgentAction } from "../src/triggers/agent-action.ts";
 import type { TriggerAction, TriggerDef } from "../src/triggers/def.ts";
 import { createNotifyAction } from "../src/triggers/notify-action.ts";
@@ -192,6 +196,36 @@ describe("action: notify", () => {
 	});
 });
 
+/** The real handler, given the pin arming would have recorded for this dispatch. */
+function armedScriptAction(
+	deps: Parameters<typeof createScriptAction>[0],
+): (dispatch: TriggerDispatch) => Promise<TriggerActionResult> {
+	const handler = createScriptAction(deps);
+	return async (dispatch) => {
+		const action = dispatch.def.action;
+		if (action.kind !== "script") throw new Error("not a script");
+		const built = await buildExecPin({
+			root: dispatch.projectRoot,
+			run: action.run,
+		});
+		if (!built.ok) throw new Error(built.reason);
+		// A real event names a real commit; the fixture's placeholder cannot resolve.
+		const payload = dispatch.event.payload as Record<string, unknown> | null;
+		return handler({
+			...dispatch,
+			event: {
+				...dispatch.event,
+				payload: { ...payload, sha: built.pin.commit },
+			},
+			execGate: {
+				pin: built.pin,
+				sealRoot: join(dispatch.projectRoot, ".git", "mfw-sealed"),
+				landingRoot: join(dispatch.projectRoot, ".git", "mfw-landing"),
+			},
+		});
+	};
+}
+
 describe("action: script", () => {
 	const roots: string[] = [];
 	async function repo(): Promise<string> {
@@ -219,7 +253,7 @@ describe("action: script", () => {
 			cwd: "repo",
 			timeoutMs: 10_000,
 		});
-		const handler = createScriptAction({
+		const handler = armedScriptAction({
 			log: silentLogger(),
 			secrets: { getSecret: async () => undefined },
 			semaphore: new Semaphore(2),
@@ -240,7 +274,9 @@ describe("action: script", () => {
 		expect(dumped).toContain("MFW_EVENT_TYPE=merge.completed");
 		expect(dumped).toContain("MFW_TASK_ID=MFW-1");
 		expect(dumped).toContain("MFW_RUN_ID=r1");
-		expect(dumped).toContain('MFW_EVENT_JSON={"sha":"abc123","target":"main"}');
+		expect(dumped).toMatch(
+			/MFW_EVENT_JSON=\{"sha":"[0-9a-f]{40}","target":"main"\}/,
+		);
 		expect(dumped).toContain(
 			"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
 		);
@@ -256,7 +292,7 @@ describe("action: script", () => {
 			cwd: "repo",
 			timeoutMs: 10_000,
 		});
-		const handler = createScriptAction({
+		const handler = armedScriptAction({
 			log: silentLogger(),
 			secrets: { getSecret: async () => undefined },
 			semaphore: new Semaphore(2),
@@ -278,7 +314,7 @@ describe("action: script", () => {
 			cwd: "repo",
 			timeoutMs: 10_000,
 		});
-		const handler = createScriptAction({
+		const handler = armedScriptAction({
 			log: silentLogger(),
 			secrets: { getSecret: async () => undefined },
 			semaphore: new Semaphore(2),
@@ -296,7 +332,7 @@ describe("action: script", () => {
 			{ kind: "script", run: "true", cwd: "repo", timeoutMs: 10_000 },
 			["deploy_token"],
 		);
-		const handler = createScriptAction({
+		const handler = armedScriptAction({
 			log: silentLogger(),
 			secrets: { getSecret: async () => "should-not-be-reached" },
 			semaphore: new Semaphore(2),
@@ -321,7 +357,7 @@ describe("action: script", () => {
 			},
 			["deploy_token"],
 		);
-		const handler = createScriptAction({
+		const handler = armedScriptAction({
 			log: silentLogger(),
 			secrets: {
 				getSecret: async (name) =>
@@ -343,7 +379,7 @@ describe("action: script", () => {
 			{ kind: "script", run: "true", cwd: "repo", timeoutMs: 10_000 },
 			["deploy_token"],
 		);
-		const handler = createScriptAction({
+		const handler = armedScriptAction({
 			log: silentLogger(),
 			secrets: { getSecret: async () => undefined },
 			semaphore: new Semaphore(2),
@@ -366,7 +402,7 @@ describe("action: script", () => {
 			cwd: "worktree",
 			timeoutMs: 10_000,
 		});
-		const handler = createScriptAction({
+		const handler = armedScriptAction({
 			log: silentLogger(),
 			secrets: { getSecret: async () => undefined },
 			semaphore: new Semaphore(2),

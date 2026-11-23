@@ -1,6 +1,6 @@
 import { lstat, open, readdir, realpath, stat } from "node:fs/promises";
 import { extname, join, relative, resolve, sep } from "node:path";
-import { git } from "./git.ts";
+import { git, gitRaw } from "./git.ts";
 import { runProc } from "./proc.ts";
 import type { RunRegistry } from "./run-registry.ts";
 
@@ -285,11 +285,9 @@ export class WorkspaceService {
 	async gitStatus(input: { runId?: string } = {}): Promise<WorkspaceStatus> {
 		const base = await this.baseDir(input.runId);
 		const head = await git(["symbolic-ref", "--short", "-q", "HEAD"], base);
-		// runProc, not `git()`: that trims stdout, and porcelain records start
+		// gitRaw, not `git()`: that trims stdout, and porcelain records start
 		// with a status character that is often a space (" M path").
-		const porcelain = await runProc(["git", "status", "--porcelain", "-z"], {
-			cwd: base,
-		});
+		const porcelain = await gitRaw(["status", "--porcelain", "-z"], base);
 		const files: WorkspaceStatusFile[] = [];
 		if (porcelain.exitCode === 0) {
 			const parts = porcelain.stdout.split("\0").filter((p) => p.length > 0);
@@ -332,8 +330,7 @@ export class WorkspaceService {
 			? stripLeadingSlashes(input.fromPath)
 			: relPath;
 
-		const shown = await runProc(["git", "show", `HEAD:${oldPath}`], {
-			cwd: base,
+		const shown = await gitRaw(["show", `HEAD:${oldPath}`], base, {
 			maxOutputBytes: MAX_DIFF_BYTES,
 		});
 		const tracked = shown.exitCode === 0;

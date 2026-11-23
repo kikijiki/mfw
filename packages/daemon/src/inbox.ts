@@ -19,6 +19,7 @@ import { loadHostEvidence } from "./claims-evidence.ts";
 import { TASK_QUESTION_KIND } from "./clarify.ts";
 import { EGRESS_BREACH_KEY_PREFIX } from "./egress-ledger.ts";
 import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
+import { PUSH_REFUSED_KEY } from "./merge-queue.ts";
 import type { TaskRow, TaskService } from "./task-service.ts";
 
 /**
@@ -36,6 +37,8 @@ export type InboxKind =
 	| "merge_parked"
 	| "trigger_disarmed"
 	| "trigger_failed"
+	/** The host refused to push a merge: the repository's git config could run a program. */
+	| "push_refused"
 	| "sweep_infra"
 	| "verify_infra"
 	| "admission"
@@ -156,6 +159,8 @@ const SEVERITY: Record<InboxKind, InboxSeverity> = {
 	trigger_disarmed: "attention",
 	// Bumped to "critical" per item when armed with `on_failure: hold_dispatch`.
 	trigger_failed: "attention",
+	// The remote is falling behind until a person clears the config.
+	push_refused: "critical",
 	// "info" below `ESCALATE_AFTER_SWEEPS` (still retrying), "critical" past it.
 	sweep_infra: "info",
 	// Same, for the finalize-time verify of a completed run's DoD checks.
@@ -214,7 +219,13 @@ export class InboxService {
 			/** Triggers that disarmed themselves. Narrow read, not the whole `TriggerService`, to avoid a definition scan. */
 			triggers?: {
 				disarmed(): Promise<
-					{ defId: string; at: number; reason: string; armedBy: string }[]
+					{
+						defId: string;
+						at: number;
+						reason: string;
+						armedBy: string;
+						found?: string;
+					}[]
 				>;
 				/** Triggers whose last delivery died. Same scan-free read as `disarmed`. */
 				failing(): Promise<
@@ -432,6 +443,27 @@ export class InboxService {
 			});
 		}
 
+		const [pushRow] = await db
+			.select()
+			.from(engineKv)
+			.where(eq(engineKv.key, PUSH_REFUSED_KEY));
+		if (pushRow) {
+			const v = pushRow.value as {
+				at?: number;
+				branch?: string;
+				reason?: string;
+			};
+			items.push({
+				id: `push_refused:${project}`,
+				project,
+				kind: "push_refused",
+				severity: SEVERITY.push_refused,
+				title: `push refused: ${v.branch ?? "integration branch"}`,
+				detail: v.reason ?? "the push was refused",
+				ts: v.at ?? Date.now(),
+			});
+		}
+
 		// A check failing identically at the last known-good commit means the
 		// sweep cannot verify, not that a task regressed; it gets its own item.
 		const [infraRow] = await db
@@ -596,7 +628,11 @@ export class InboxService {
 				detail:
 					d.reason === "hash-drift"
 						? `its definition changed after ${d.armedBy} armed it; it will not fire until it is armed again`
-						: `disarmed automatically (${d.reason})`,
+						: d.reason === "exec-pin-drift"
+							? `a file it executes no longer matches what ${d.armedBy} approved (${d.found ?? "unknown"}); nothing was run. Review the change and arm it again`
+							: d.reason === "re-arm-needed"
+								? `a merge or upgrade touched what it executes (${d.found ?? "unknown"}); it will not fire until it is reviewed and armed again`
+								: `disarmed automatically (${d.reason})`,
 				defId: d.defId,
 				ts: d.at,
 			});
@@ -1049,6 +1085,7 @@ export const ATTENTION_BY_KIND: Record<InboxKind, AttentionClass> = {
 	blocked: "act",
 	trigger_disarmed: "act",
 	trigger_failed: "act",
+	push_refused: "act",
 	admission: "act",
 	draft_failed: "act",
 	ownership_conflict: "act",

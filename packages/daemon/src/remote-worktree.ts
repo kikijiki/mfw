@@ -23,7 +23,7 @@ import {
 import { writeFileAtomic } from "@mfw/core/fsatomic";
 import { z } from "zod";
 import { ExecutionEnvironmentBuilder } from "./execution-environment.ts";
-import { git } from "./git.ts";
+import { git, gitRaw } from "./git.ts";
 import { runProc } from "./proc.ts";
 
 const DEFAULT_MAX_TRANSFER_BYTES = 64 * 1024 * 1024;
@@ -396,7 +396,7 @@ async function baseEntries(
 		);
 	}
 	try {
-		const paths = await gitRaw(["ls-files", "--cached", "-z"], worktree);
+		const paths = await listing(["ls-files", "--cached", "-z"], worktree);
 		const entries: RemoteWorkspaceEntry[] = [];
 		for (const path of paths.split("\0").filter(Boolean).sort()) {
 			const entry = await readEntry(worktree, path, "tracked", maxFileBytes);
@@ -411,10 +411,10 @@ async function baseEntries(
 
 /** A full `-z` path listing of a workspace; a listing past the cap is an error. */
 export const listWorkspacePaths = (args: string[], cwd: string) =>
-	gitRaw(args, cwd);
+	listing(args, cwd);
 
-async function gitRaw(args: string[], cwd: string): Promise<string> {
-	const result = await runProc(["git", ...args], { cwd, timeoutMs: 60_000 });
+async function listing(args: string[], cwd: string): Promise<string> {
+	const result = await gitRaw(args, cwd, { timeoutMs: 60_000 });
 	if (result.exitCode !== 0) {
 		throw new RemoteWorkspaceError(
 			"stage_mismatch",
@@ -436,12 +436,12 @@ async function listedSnapshot(
 	maxFileBytes: number,
 	requiredPaths: readonly string[] = [],
 ): Promise<RemoteWorkspaceEntry[]> {
-	const tracked = await gitRaw(
+	const tracked = await listing(
 		["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
 		root,
 	);
 	const trackedSet = new Set(
-		(await gitRaw(["ls-files", "--cached", "-z"], root))
+		(await listing(["ls-files", "--cached", "-z"], root))
 			.split("\0")
 			.filter(Boolean),
 	);

@@ -131,11 +131,18 @@ describe("B1: a run is routed on what it was launched as", () => {
 });
 
 describe("B1: legacy host git refuses a run workspace", () => {
-	test("positive control: the planted fsmonitor fires outside the root", async () => {
+	test("positive control: plain git fires the planted fsmonitor outside the root", async () => {
+		const outside = join(base, "outside");
+		await plant(outside, canary);
+		Bun.spawnSync(["git", "status"], { cwd: outside, stdout: "pipe" });
+		expect(existsSync(canary)).toBe(true);
+	});
+
+	test("the hardened runner does not fire it, even outside the root", async () => {
 		const outside = join(base, "outside");
 		const sha = await plant(outside, canary);
 		await changedFiles(outside, sha);
-		expect(existsSync(canary)).toBe(true);
+		expect(existsSync(canary)).toBe(false);
 	});
 
 	test("the reviewer's exploit: changedFiles runs nothing from a clone", async () => {

@@ -1,5 +1,6 @@
 import { access, lstat } from "node:fs/promises";
 import { join, posix } from "node:path";
+import { type CheckGate, checkGateRefusal } from "./containment/check-gate.ts";
 import {
 	type CheckRunner,
 	CheckSandboxRefusal,
@@ -47,7 +48,9 @@ export type FailureClass =
 	| "missing-file"
 	| "no-change"
 	| "timeout"
-	| "crashed";
+	| "crashed"
+	/** Not run: the candidate changed a file the host would execute for it. */
+	| "refused";
 
 export interface CheckOutcome {
 	check: string;
@@ -116,6 +119,12 @@ export interface VerifyOptions {
 	 * and runs no git in it.
 	 */
 	candidateSha?: string;
+	/**
+	 * Set when `cwd` holds a candidate rather than merged code: a check whose
+	 * entry points differ from this base is refused (`containment/check-gate.ts`),
+	 * before it reaches the sandbox or the host.
+	 */
+	gate?: CheckGate;
 	/**
 	 * Run each check in the verifier sandbox. `run: null` means none is
 	 * available, and every check is then refused rather than run on the host.
@@ -368,6 +377,23 @@ export async function verify(
 		if ("run" in check) {
 			if (opts.signal?.aborted) {
 				throw new Error("verification preempted");
+			}
+			if (opts.gate) {
+				const refused = await checkGateRefusal(
+					cwd,
+					check.run,
+					opts.checkPrefix,
+					opts.gate,
+				);
+				if (refused) {
+					checks.push({
+						check: label,
+						ok: false,
+						classification: "refused",
+						detail: `not run: ${refused.reason}. Fix: ${refused.fix}`,
+					});
+					continue;
+				}
 			}
 			const timeoutMs = check.timeout
 				? check.timeout * 1000
