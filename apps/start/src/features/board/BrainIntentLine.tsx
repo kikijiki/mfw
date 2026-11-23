@@ -6,6 +6,7 @@ import type { CardIntent } from "./boardAgents";
 /** What a brain tool call means in plain words, for a card that has no room for the tool name. */
 const INTENT_WORDS: Record<string, string> = {
 	"tasks.move": "moved this task",
+	"tasks.approve": "approved this task",
 	"tasks.set_status": "changed this task's status",
 	"tasks.update": "edited this task",
 	"tasks.create": "created this task",

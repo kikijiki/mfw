@@ -274,9 +274,16 @@ export async function recordHostMergeApproval(
 	runId: string,
 	fingerprint: string,
 	actionId: string,
+	/** The commit the decision was made on, for the audit trail. */
+	commit?: string,
 ): Promise<void> {
 	const key = hostMergeApprovalKey(runId);
-	const value = { fingerprint, actionId, at: Date.now() };
+	const value = {
+		fingerprint,
+		actionId,
+		...(commit ? { commit } : {}),
+		at: Date.now(),
+	};
 	await tx
 		.insert(engineKv)
 		.values({ key, value, updatedAt: new Date() })

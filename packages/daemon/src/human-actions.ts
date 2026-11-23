@@ -20,6 +20,7 @@ export type HumanAction =
 	| "tasks.capture"
 	| "tasks.update"
 	| "tasks.move"
+	| "tasks.approve"
 	| "tasks.remove"
 	| "runs.start"
 	| "runs.stop"

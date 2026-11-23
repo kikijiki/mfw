@@ -32,6 +32,8 @@ interface Gate {
 	bare: string;
 	branchRun(name: string, files: Record<string, string>): Promise<string>;
 	enqueue(runId: string, branch: string): Promise<void>;
+	enqueueApproved(runId: string, branch: string): Promise<void>;
+	cards(): Promise<(typeof brainActions.$inferSelect)[]>;
 	card(): Promise<typeof brainActions.$inferSelect | undefined>;
 	decide(actionId: string, approved: boolean): Promise<boolean>;
 	state(runId: string): Promise<string | undefined>;
@@ -97,6 +99,7 @@ async function gate(): Promise<Gate> {
 				cwd: wt,
 				worktreePath: wt,
 				branch: name,
+				baseSha: await gitOk(["rev-parse", "main"], root),
 				integrationBranch: "main",
 				startedAt: new Date(),
 			});
@@ -104,6 +107,15 @@ async function gate(): Promise<Gate> {
 		},
 		enqueue: (runId, branch) =>
 			queue.enqueue({ runId, taskId: "T-1", branch, targetBranch: "main" }),
+		enqueueApproved: (runId, branch) =>
+			queue.enqueue({
+				runId,
+				taskId: "T-1",
+				branch,
+				targetBranch: "main",
+				ownerApproved: "review",
+			}),
+		cards: () => handle.db.select().from(brainActions),
 		card: async () =>
 			(
 				await handle.db
@@ -489,5 +501,89 @@ describe("the host-executed list covers what mfw launches or loads", () => {
 		"yarn.lock",
 	])("%s is not", (path) => {
 		expect(isHostExecutedPath(path)).toBe(false);
+	});
+});
+
+describe("one owner decision covers the merge of the same content", () => {
+	test("a person's approval lands host-executed files with no second card", async () => {
+		const g = await gate();
+		const runId = await g.branchRun("mfw/a", { ".envrc": "use flake\n" });
+		await g.enqueueApproved(runId, "mfw/a");
+
+		expect(await g.queue.tick()).toBe("merged");
+		expect(await g.cards()).toEqual([]);
+		expect(await g.remoteTip()).toBe(await g.tip());
+	});
+
+	test("without a person's decision the queue still asks", async () => {
+		const g = await gate();
+		const runId = await g.branchRun("mfw/a", { ".envrc": "use flake\n" });
+		await g.enqueue(runId, "mfw/a");
+		expect(await g.queue.tick()).toBe("held");
+		expect(await g.cards()).toHaveLength(1);
+	});
+
+	test("the approval survives an unrelated move of the target", async () => {
+		const g = await gate();
+		const runId = await g.branchRun("mfw/a", { "flake.nix": "{ }\n" });
+		await g.enqueueApproved(runId, "mfw/a");
+		await writeFile(join(g.root, "other.txt"), "other\n");
+		await git(["add", "other.txt"], g.root);
+		await git(["commit", "-q", "-m", "target moves"], g.root);
+
+		expect(await g.queue.tick()).toBe("merged");
+		expect(await g.cards()).toEqual([]);
+	});
+
+	test("the approval follows the same content through the queue's rebase", async () => {
+		const g = await gate();
+		const runId = await g.branchRun("mfw/r", { "base.txt": "target\n" });
+		const wt = join(g.root, "worktrees", "mfw/r");
+		await writeFile(join(wt, "base.txt"), "branch\n");
+		await writeFile(join(wt, ".envrc"), "use flake\n");
+		await git(["add", "-A"], wt);
+		await git(["commit", "-q", "-m", "second"], wt);
+		await writeFile(join(g.root, "base.txt"), "target\n");
+		await git(["add", "-A"], g.root);
+		await git(["commit", "-q", "-m", "target moves"], g.root);
+		await g.enqueueApproved(runId, "mfw/r");
+
+		expect(await g.queue.tick()).toBe("merged");
+		expect(await g.cards()).toEqual([]);
+	});
+
+	test("content changed after the approval raises a card and does not land", async () => {
+		const g = await gate();
+		const runId = await g.branchRun("mfw/a", { "flake.nix": "{ }\n" });
+		await g.enqueueApproved(runId, "mfw/a");
+		const wt = join(g.root, "worktrees", "mfw/a");
+		await writeFile(join(wt, "flake.nix"), "{ evil = true; }\n");
+		await git(["add", "-A"], wt);
+		await git(["commit", "-q", "-m", "swap"], wt);
+		const before = await g.tip();
+
+		expect(await g.queue.tick()).toBe("parked");
+		const [job] = await g.handle.db
+			.select({ id: mergeJobs.id })
+			.from(mergeJobs)
+			.where(eq(mergeJobs.runId, runId));
+		await g.queue.retry(job?.id as number);
+		expect(await g.queue.tick()).toBe("held");
+		expect(await g.tip()).toBe(before);
+		expect(await g.cards()).toHaveLength(1);
+	});
+
+	test("a repeated approval of a queued job records nothing new", async () => {
+		const g = await gate();
+		const runId = await g.branchRun("mfw/a", { ".envrc": "use flake\n" });
+		await g.enqueue(runId, "mfw/a");
+		await g.queue.tick();
+		expect(await g.state(runId)).toBe("held");
+		// The job already exists and waits on its card: a click elsewhere is not
+		// an answer to that card.
+		await g.enqueueApproved(runId, "mfw/a");
+		expect(await g.state(runId)).toBe("held");
+		expect(await g.queue.tick()).toBe("idle");
+		expect(g.merged).toEqual([]);
 	});
 });

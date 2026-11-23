@@ -400,6 +400,14 @@ export const tasksRouter = createTRPCRouter({
 				taskId: input.id,
 				branch: run.branch,
 				targetBranch: run.integrationBranch ?? ctx.svc.integrationBranch,
+				// Owner-only procedure: this click is also the answer to the
+				// host-executed merge gate for the same content.
+				ownerApproved: "review",
+			});
+			await recordHumanAction(ctx.svc, {
+				action: "tasks.approve",
+				taskId: input.id,
+				runId: run.id,
 			});
 			return { queued: true };
 		}),

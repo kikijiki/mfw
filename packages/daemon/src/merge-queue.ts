@@ -31,6 +31,7 @@ import {
 	hostMergeApprovalKey,
 	landedDependencyPaths,
 	recordDependencyChange,
+	recordHostMergeApproval,
 } from "./merge-gate.ts";
 
 /**
@@ -208,6 +209,8 @@ export class MergeQueue {
 		branch: string;
 		targetBranch: string;
 		requireVerified?: boolean;
+		/** A person's decision on this run (never the brain's): see `ownerApproval`. */
+		ownerApproved?: "review" | "select_winner";
 	}): Promise<void> {
 		const [run] = await this.deps.handle.db
 			.select({ verifiedSha: runs.verifiedSha })
@@ -220,8 +223,12 @@ export class MergeQueue {
 			);
 		}
 		const pinned = verified ?? (await this.sourceTip(job));
+		const approved =
+			job.ownerApproved && pinned
+				? await this.ownerApproval(job.runId, pinned)
+				: null;
 		await this.deps.handle.withTx(async (tx) => {
-			await tx
+			const inserted = await tx
 				.insert(mergeJobs)
 				.values({
 					runId: job.runId,
@@ -232,8 +239,39 @@ export class MergeQueue {
 					enqueuedAt: new Date(),
 					updatedAt: new Date(),
 				})
-				.onConflictDoNothing();
+				.onConflictDoNothing()
+				.returning({ id: mergeJobs.id });
+			// Only with a new job: one already waiting on a card needs that card's answer.
+			if (inserted.length > 0 && approved && pinned) {
+				await recordHostMergeApproval(
+					tx,
+					job.runId,
+					approved.fingerprint,
+					`owner:${job.ownerApproved}`,
+					pinned,
+				);
+			}
 		});
+	}
+
+	/**
+	 * What a person's decision on this run covers: the protected content of the
+	 * pinned commit, so the gate does not ask again for it and accepts nothing
+	 * else. Null (no protected file, or it cannot be read) records nothing, and
+	 * the gate then decides on its own.
+	 */
+	private async ownerApproval(
+		runId: string,
+		pinned: string,
+	): Promise<HostExecutedChange | null> {
+		const [run] = await this.deps.handle.db
+			.select({ baseSha: runs.baseSha })
+			.from(runs)
+			.where(eq(runs.id, runId));
+		if (!run?.baseSha) return null;
+		return hostExecutedChange(this.deps.projectRoot, run.baseSha, pinned).catch(
+			() => null,
+		);
 	}
 
 	async paused(): Promise<boolean> {
