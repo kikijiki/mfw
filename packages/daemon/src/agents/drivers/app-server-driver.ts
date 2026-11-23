@@ -10,6 +10,7 @@ import {
 	type AppServerResponse,
 	parseAppServerEnvelope,
 } from "../app-server-protocol.ts";
+import { limitAgentEvent } from "../event-limits.ts";
 import { AgentEventSchema } from "../events.ts";
 
 const runDir = process.argv[2];
@@ -41,7 +42,7 @@ let lastResultText: string | undefined;
 
 function emit(payload: Record<string, unknown>): void {
 	const candidate = { ts: new Date().toISOString(), seq: seq++, ...payload };
-	const parsed = AgentEventSchema.safeParse(candidate);
+	const parsed = AgentEventSchema.safeParse(limitAgentEvent(candidate));
 	if (!parsed.success) {
 		process.stderr.write(
 			`app-server driver: invalid event ${String(payload.type ?? "unknown")}\n`,

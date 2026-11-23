@@ -97,7 +97,9 @@ export type KillReason =
 	/** Touched files another claimed task owns (scope watchdog). */
 	| "watchdog-scope"
 	/** Changed more files than the scope watchdog allows. */
-	| "watchdog-files";
+	| "watchdog-files"
+	/** Wrote more to the host than a run may (line length or total bytes). */
+	| "watchdog-output";
 
 export type TargetLifecycleState =
 	| "legacy"

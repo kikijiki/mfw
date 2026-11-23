@@ -17,6 +17,7 @@ import {
 	agentSpawnCwd,
 } from "../../containment/agent-launch-argv.ts";
 import { driverRunPaths } from "../../containment/run-dir.ts";
+import { limitAgentEvent } from "../event-limits.ts";
 import { isAllowedStatus } from "../rate-limit-claude.ts";
 
 const runDir = process.argv[2];
@@ -43,7 +44,7 @@ let seq = 0;
 function emit(event: Record<string, unknown>): void {
 	appendFileSync(
 		eventsPath,
-		`${JSON.stringify({ ts: new Date().toISOString(), seq: seq++, ...event })}\n`,
+		`${JSON.stringify(limitAgentEvent({ ts: new Date().toISOString(), seq: seq++, ...event }))}\n`,
 	);
 }
 

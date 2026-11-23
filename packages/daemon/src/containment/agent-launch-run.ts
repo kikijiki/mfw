@@ -3,8 +3,16 @@
  * stdio. A refusal is one line on stderr and exit 78; the agent never starts.
  */
 
-import { lstatSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+	closeSync,
+	constants,
+	lstatSync,
+	openSync,
+	readFileSync,
+	writeFileSync,
+	writeSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import { openProjectDb } from "@mfw/db/client";
 import {
 	type AgentLaunchDeps,
@@ -12,6 +20,7 @@ import {
 	AgentLaunchRequestSchema,
 	launchAgentSandbox,
 } from "./agent-launch.ts";
+import { RUN_CONTROL_DIR } from "./run-dir.ts";
 
 const REFUSED = 78;
 const MAX_REQUEST_BYTES = 256 * 1024;
@@ -59,11 +68,22 @@ async function relayStdin(sink: {
 }
 
 /**
- * The longest line relayed to the host-side bridge. The bridge and driver
- * buffer until a newline and run outside the sandbox's memory limit, so an
- * agent writing without newlines could otherwise exhaust the host's memory.
+ * Limits on what an agent can push through the host. The launcher, bridge and
+ * driver run outside the sandbox's memory limit and each buffers up to one
+ * line, so the line cap is what bounds their memory. They are not under a
+ * cgroup of their own: `ulimit -v` breaks bun, which reserves far more address
+ * space than it uses, and a host without a user manager has no scope to give.
  */
-export const MAX_RELAY_LINE_BYTES = 16 * 1024 * 1024;
+export const MAX_RELAY_LINE_BYTES = 1024 * 1024;
+
+/** What one run may send to the host in total, across relaunches of its CLI. */
+export const MAX_RUN_OUTPUT_BYTES = 512 * 1024 * 1024;
+
+/** How often the running total reaches the disk. */
+const OUTPUT_SAVE_EVERY_BYTES = 1024 * 1024;
+
+/** Recorded as the run's exit, so it settles as a watchdog kill. */
+export const OUTPUT_KILL_REASON = "watchdog-output";
 
 /** Bytes since the last newline after `chunk`, given the count before it. */
 export function openLineBytes(before: number, chunk: Uint8Array): number {
@@ -71,20 +91,91 @@ export function openLineBytes(before: number, chunk: Uint8Array): number {
 	return newline >= 0 ? chunk.length - newline - 1 : before + chunk.length;
 }
 
+/** The run's output total, kept in the host-only run root. */
+class OutputBudget {
+	private readonly path: string;
+	private total: number;
+	private saved: number;
+
+	constructor(
+		runDir: string,
+		readonly max: number,
+	) {
+		this.path = join(runDir, "relay-bytes");
+		let start = 0;
+		try {
+			const value = Number(readFileSync(this.path, "utf8").trim());
+			if (Number.isSafeInteger(value) && value > 0) start = value;
+		} catch {
+			// No earlier launch in this run.
+		}
+		this.total = start;
+		this.saved = start;
+	}
+
+	/** False once the run is over its budget. */
+	add(bytes: number): boolean {
+		this.total += bytes;
+		if (this.total - this.saved >= OUTPUT_SAVE_EVERY_BYTES) this.save();
+		return this.total <= this.max;
+	}
+
+	save(): void {
+		this.saved = this.total;
+		writeFileSync(this.path, String(this.total), { mode: 0o600 });
+	}
+}
+
+type OutputStop = "line" | "budget";
+
 async function relayOut(
 	from: ReadableStream<Uint8Array>,
 	to: NodeJS.WriteStream,
-	onOverflow: () => void,
+	budget: OutputBudget,
+	onStop: (why: OutputStop) => void,
 ): Promise<void> {
 	let open = 0;
 	for await (const chunk of from) {
 		open = openLineBytes(open, chunk);
 		if (open > MAX_RELAY_LINE_BYTES) {
-			onOverflow();
+			onStop("line");
+			return;
+		}
+		if (!budget.add(chunk.length)) {
+			onStop("budget");
 			return;
 		}
 		if (!to.write(chunk)) {
 			await new Promise<void>((resolve) => to.once("drain", () => resolve()));
+		}
+	}
+}
+
+/**
+ * Record the kill where the host reads a run's exit. Exclusive, so a recorded
+ * exit is never replaced, and `run.sh` then keeps this one.
+ */
+function recordOutputKill(requestPath: string, req: AgentLaunchRequest): void {
+	for (const path of [
+		join(dirname(requestPath), `exit-${req.runId}`),
+		join(req.runDir, RUN_CONTROL_DIR, "exit"),
+	]) {
+		try {
+			const fd = openSync(
+				path,
+				constants.O_WRONLY |
+					constants.O_CREAT |
+					constants.O_EXCL |
+					constants.O_NOFOLLOW,
+				0o600,
+			);
+			try {
+				writeSync(fd, `killed:${OUTPUT_KILL_REASON}`);
+			} finally {
+				closeSync(fd);
+			}
+		} catch {
+			// Already recorded.
 		}
 	}
 }
@@ -99,6 +190,7 @@ export type LauncherSteps = Pick<
 export async function runLauncher(
 	args: readonly string[],
 	steps: LauncherSteps,
+	limits: { maxOutputBytes?: number } = {},
 ): Promise<void> {
 	const [requestPath, separator, ...argv] = args;
 	if (!requestPath || separator !== "--" || argv.length === 0) {
@@ -137,18 +229,26 @@ export async function runLauncher(
 		process.on(signal, () => child.kill(signal));
 	}
 	void relayStdin(child.stdin as never);
-	let overflowed = false;
-	const overflow = () => {
-		overflowed = true;
+	const budget = new OutputBudget(
+		req.runDir,
+		limits.maxOutputBytes ?? MAX_RUN_OUTPUT_BYTES,
+	);
+	let stopped: OutputStop | null = null;
+	const stop = (why: OutputStop) => {
+		stopped ??= why;
 		child.kill("SIGKILL");
 	};
-	const out = relayOut(child.stdout as never, process.stdout, overflow);
-	const err = relayOut(child.stderr as never, process.stderr, overflow);
+	const out = relayOut(child.stdout as never, process.stdout, budget, stop);
+	const err = relayOut(child.stderr as never, process.stderr, budget, stop);
 	const code = await child.exited;
 	await Promise.allSettled([out, err]);
-	if (overflowed) {
+	budget.save();
+	if (stopped) {
+		recordOutputKill(requestPath, req);
 		die(
-			`the agent wrote a line over ${MAX_RELAY_LINE_BYTES} bytes and was stopped`,
+			stopped === "line"
+				? `the agent wrote a line over ${MAX_RELAY_LINE_BYTES} bytes and was stopped`
+				: `the agent exceeded the run's output budget of ${budget.max} bytes and was stopped`,
 		);
 	}
 	process.exit(code);

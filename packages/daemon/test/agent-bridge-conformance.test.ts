@@ -531,7 +531,7 @@ describe.skipIf(skip !== null)("the launcher process", () => {
 		rmSync(f.base, { recursive: true, force: true });
 	});
 
-	function spawnCaged(body: string) {
+	function spawnCaged(body: string, maxOutputBytes?: number) {
 		installAgent(f, body);
 		const dir = mkdtempSync(join(f.base, "req-"));
 		chmodSync(dir, 0o700);
@@ -553,6 +553,9 @@ describe.skipIf(skip !== null)("the launcher process", () => {
 				env: {
 					PATH: process.env.PATH ?? "",
 					MFW_CAGE_CONFIG: readFileSync(f.cageFile, "utf8"),
+					...(maxOutputBytes
+						? { MFW_CAGE_MAX_OUTPUT: String(maxOutputBytes) }
+						: {}),
 				},
 				stdin: "pipe",
 				stdout: "pipe",
@@ -619,6 +622,63 @@ require("node:fs").writeFileSync("/work/flood-finished", "1");`,
 		expect(stdout.byteLength).toBeLessThanOrEqual(MAX_RELAY_LINE_BYTES);
 		expect(existsSync(join(f.tree, "flood-finished"))).toBe(false);
 	}, 40_000);
+
+	const finish = async (child: ReturnType<typeof spawnCaged>) => {
+		(child.stdin as unknown as { end(): void }).end();
+		const [stdout, stderr, code] = await Promise.all([
+			new Response(child.stdout).arrayBuffer(),
+			new Response(child.stderr).text(),
+			child.exited,
+		]);
+		return { bytes: stdout.byteLength, stderr, code };
+	};
+
+	const floodLines = (mib: number) => `const line = "y".repeat(1023) + "\\n";
+const chunk = new TextEncoder().encode(line.repeat(1024));
+for (let i = 0; i < ${mib}; i++) await Bun.write(Bun.stdout, chunk);`;
+
+	test("M3: a 2 MiB line is cut off and recorded as an output-limit kill", async () => {
+		writeFileSync(
+			join(f.tree, "long.ts"),
+			"await Bun.write(Bun.stdout, new Uint8Array(2 * 1024 * 1024).fill(0x41));",
+		);
+		const r = await finish(
+			spawnCaged("bun --config=/dev/null --no-env-file run /work/long.ts"),
+		);
+		expect(r.code).toBe(78);
+		expect(MAX_RELAY_LINE_BYTES).toBeLessThanOrEqual(1024 * 1024);
+		expect(r.bytes).toBeLessThanOrEqual(MAX_RELAY_LINE_BYTES);
+		expect(readFileSync(join(f.runDir, "control/exit"), "utf8")).toBe(
+			"killed:watchdog-output",
+		);
+	}, 40_000);
+
+	test("M3: well-formed output past the run's byte budget kills the run", async () => {
+		writeFileSync(join(f.tree, "flood.ts"), floodLines(32));
+		const r = await finish(
+			spawnCaged(
+				"bun --config=/dev/null --no-env-file run /work/flood.ts",
+				4 * 1024 * 1024,
+			),
+		);
+		expect(r.code).toBe(78);
+		expect(r.stderr).toContain("output budget");
+		expect(r.bytes).toBeLessThanOrEqual(4 * 1024 * 1024);
+		expect(readFileSync(join(f.runDir, "control/exit"), "utf8")).toBe(
+			"killed:watchdog-output",
+		);
+	}, 40_000);
+
+	test("M3: the budget is per run, across relaunches of its provider", async () => {
+		writeFileSync(join(f.tree, "flood.ts"), floodLines(3));
+		const budget = 5 * 1024 * 1024;
+		const body = "bun --config=/dev/null --no-env-file run /work/flood.ts";
+		const first = await finish(spawnCaged(body, budget));
+		expect(first.code).toBe(0);
+		const second = await finish(spawnCaged(body, budget));
+		expect(second.code).toBe(78);
+		expect(second.bytes).toBeLessThanOrEqual(2 * 1024 * 1024);
+	}, 60_000);
 
 	test("long output with newlines passes through whole", async () => {
 		writeFileSync(
@@ -902,6 +962,32 @@ describe.skipIf(skip !== null)("the real drivers and bridges", () => {
 				expect(readFileSync(path, "utf8")).not.toContain(canary);
 			}
 		}
+	}, 90_000);
+
+	test("M3: a tool id and name cannot inflate the host's event log", async () => {
+		const huge = "n".repeat(200 * 1024);
+		writeFileSync(
+			join(f.bin, "fake-claude.ts"),
+			`for await (const bytes of Bun.stdin.stream()) {
+  console.log(JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: ${JSON.stringify(huge)}, name: ${JSON.stringify(huge)}, input: {} }] } }));
+  console.log(JSON.stringify({ type: "result", result: "ok", usage: {} }));
+  break;
+}`,
+		);
+		const script = join(f.bin, "claude");
+		writeFileSync(
+			script,
+			`#!/bin/sh\nexec bun --config=/dev/null --no-env-file run '${join(f.bin, "fake-claude.ts")}'\n`,
+		);
+		chmodSync(script, 0o755);
+		const r = await runBridged("claude");
+		const call = r.events.find((e) => e.type === "tool_call") as unknown as {
+			id: string;
+			name: string;
+		};
+		expect(call).toBeDefined();
+		expect(call.id.length).toBeLessThanOrEqual(256);
+		expect(call.name.length).toBeLessThanOrEqual(256);
 	}, 90_000);
 
 	test("codex runs under the bridge, in the sandbox", async () => {

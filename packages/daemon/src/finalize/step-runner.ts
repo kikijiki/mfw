@@ -122,6 +122,7 @@ const KILL_REASONS: ReadonlySet<string> = new Set([
 	"watchdog-wall",
 	"watchdog-turns",
 	"watchdog-timebox",
+	"watchdog-output",
 	...SCOPE_KILL_REASONS,
 ]);
 
