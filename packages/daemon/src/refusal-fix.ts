@@ -71,7 +71,7 @@ export const REFUSAL_FIXES: Record<RefusalCode, FixFor> = {
 	),
 	definition: ui(
 		(ids) =>
-			`Register host resource ${ids} (Host Resources page → Detected host resources, or hostResources.createDefinition) and make it available, or remove it from the task's requires_resources.`,
+			`Register host resource ${ids} (Host Resources page → Detected host resources, or the API: hostResources.createDefinition) and make it available, or remove it from the task's requires_resources.`,
 	),
 	invalid_amount: ui(
 		(ids) =>
@@ -88,7 +88,7 @@ export const REFUSAL_FIXES: Record<RefusalCode, FixFor> = {
 	),
 	fifo: ui(
 		(ids) =>
-			`Nothing to change: earlier tasks are queued for ${ids} and this one is served in order. To go faster, raise the capacity of ${ids} (hostResources.updateDefinition).`,
+			`Nothing to change: earlier tasks are queued for ${ids} and this one is served in order. To go faster, raise the capacity of ${ids} (API: hostResources.updateDefinition).`,
 	),
 	generation: ui(
 		() =>
@@ -100,7 +100,7 @@ export const REFUSAL_FIXES: Record<RefusalCode, FixFor> = {
 	),
 	headroom: ui(
 		(ids) =>
-			`Free memory on the host, or lower the safetyHeadroom of ${ids} (hostResources.updateDefinition).`,
+			`Free memory on the host, or lower the safetyHeadroom of ${ids} (API: hostResources.updateDefinition).`,
 	),
 	pool_held: ui(
 		(ids) =>
@@ -131,15 +131,15 @@ export const REFUSAL_FIXES: Record<RefusalCode, FixFor> = {
 	),
 	"dynamic-unprovisioned": ui(
 		(ids) =>
-			`Redefine host resource ${ids} as static with an explicit capacity (hostResources.updateDefinition).`,
+			`Redefine host resource ${ids} as static with an explicit capacity (API: hostResources.updateDefinition).`,
 	),
 	"invalid-definition": ui(
 		(ids) =>
-			`Fix the definition of host resource ${ids} (hostResources.updateDefinition); the Host Resources page shows the problem.`,
+			`Fix the definition of host resource ${ids} (API: hostResources.updateDefinition); the Host Resources page shows the problem.`,
 	),
 	"quota-exhausted": ui(
 		(ids) =>
-			`Wait for runs holding ${ids} to finish, or raise its capacity (hostResources.updateDefinition).`,
+			`Wait for runs holding ${ids} to finish, or raise its capacity (API: hostResources.updateDefinition).`,
 	),
 	"observation-missing": ui(
 		(ids) =>
@@ -171,7 +171,7 @@ export const REFUSAL_FIXES: Record<RefusalCode, FixFor> = {
 	),
 	"cpu-pressure": ui(
 		() =>
-			"Wait for host CPU pressure to fall, or raise cpuPressure.maxBusyFraction / maxRunnableProcesses on the CPU resource (hostResources.updateDefinition).",
+			"Wait for host CPU pressure to fall, or raise cpuPressure.maxBusyFraction / maxRunnableProcesses on the CPU resource (API: hostResources.updateDefinition).",
 	),
 	"external-occupancy": ui(
 		(ids) =>
@@ -183,7 +183,7 @@ export const REFUSAL_FIXES: Record<RefusalCode, FixFor> = {
 	),
 	"headroom-exhausted": ui(
 		(ids) =>
-			`Free memory on the host, wait for running tasks to finish, or lower the safetyHeadroom of ${ids} (hostResources.updateDefinition).`,
+			`Free memory on the host, wait for running tasks to finish, or lower the safetyHeadroom of ${ids} (API: hostResources.updateDefinition).`,
 	),
 	// dispatch preflight (dispatch-preflight.ts); waitingFor carries the subject
 	integration_branch_missing: (waitingFor) => ({
