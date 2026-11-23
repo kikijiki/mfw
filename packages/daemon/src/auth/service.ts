@@ -52,6 +52,18 @@ export class AuthRefused extends Error {
 	}
 }
 
+/**
+ * Use this, not `instanceof`: the production bundle can emit this module into
+ * several chunks, each with its own copy of the class.
+ */
+export function isAuthRefused(e: unknown): e is AuthRefused {
+	return (
+		e instanceof Error &&
+		e.name === "AuthRefused" &&
+		typeof (e as { code?: unknown }).code === "string"
+	);
+}
+
 export const PASSWORD_MIN = 12;
 /** Bounds the work an unauthenticated caller can make the hash do. */
 export const PASSWORD_MAX = 1024;
@@ -88,10 +100,13 @@ export function backoffMs(failures: number): number {
 
 export interface AuthServiceOptions {
 	now?: () => number;
+	/** How often an open stream re-checks its session. */
+	streamRecheckMs?: number;
 }
 
 export class AuthService {
 	private readonly now: () => number;
+	private readonly streamRecheckMs: number;
 	private readonly listeners = new Map<string, Set<() => void>>();
 	/** Serializes throttle check-and-charge so parallel guesses cannot race it. */
 	private gate: Promise<unknown> = Promise.resolve();
@@ -101,6 +116,7 @@ export class AuthService {
 		opts: AuthServiceOptions = {},
 	) {
 		this.now = opts.now ?? Date.now;
+		this.streamRecheckMs = opts.streamRecheckMs ?? STREAM_RECHECK_MS;
 	}
 
 	static async open(
@@ -187,7 +203,7 @@ export class AuthService {
 			],
 			"write",
 		);
-		if (!created || created.rowsAffected !== 1)
+		if (created?.rowsAffected !== 1)
 			throw new AuthRefused("already_set_up", "setup is already complete");
 		await this.clearThrottle("setup");
 		return this.issue(id);
@@ -284,8 +300,12 @@ export class AuthService {
 	/**
 	 * A signal for a long-lived response: aborts when `parent` does, at once on
 	 * revocation, and within one recheck of expiry. A failed recheck aborts too.
+	 * `release` ends the watch when the response finishes by itself.
 	 */
-	streamSignal(sessionId: string, parent: AbortSignal): AbortSignal {
+	streamSignal(
+		sessionId: string,
+		parent: AbortSignal,
+	): { signal: AbortSignal; release: () => void } {
 		const ac = new AbortController();
 		const listeners = this.listeners.get(sessionId) ?? new Set<() => void>();
 		this.listeners.set(sessionId, listeners);
@@ -300,12 +320,19 @@ export class AuthService {
 			this.isSessionLive(sessionId).then((live) => {
 				if (!live) end();
 			}, end);
-		}, STREAM_RECHECK_MS);
+		}, this.streamRecheckMs);
 		(timer as unknown as { unref?: () => void }).unref?.();
 		listeners.add(end);
 		if (parent.aborted) end();
 		else parent.addEventListener("abort", end, { once: true });
-		return ac.signal;
+		return { signal: ac.signal, release: end };
+	}
+
+	/** Open stream watches (tests and status). */
+	get watchedStreams(): number {
+		let n = 0;
+		for (const l of this.listeners.values()) n += l.size;
+		return n;
 	}
 
 	private notifyEnded(sessionId: string): void {

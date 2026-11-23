@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as SplatRouteImport } from './routes/$'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as FleetIndexRouteImport } from './routes/fleet.index'
@@ -17,6 +18,7 @@ import { Route as PProjectRouteImport } from './routes/p.$project'
 import { Route as FleetRunpodRouteImport } from './routes/fleet.runpod'
 import { Route as FleetResourcesRouteImport } from './routes/fleet.resources'
 import { Route as FleetOpenrouterRouteImport } from './routes/fleet.openrouter'
+import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as PProjectIndexRouteImport } from './routes/p.$project.index'
 import { Route as PProjectTriggersRouteImport } from './routes/p.$project.triggers'
 import { Route as PProjectSettingsRouteImport } from './routes/p.$project.settings'
@@ -25,6 +27,7 @@ import { Route as PProjectFilesRouteImport } from './routes/p.$project.files'
 import { Route as PProjectBoardRouteImport } from './routes/p.$project.board'
 import { Route as PProjectAdrsRouteImport } from './routes/p.$project.adrs'
 import { Route as ApiTrpcSplatRouteImport } from './routes/api/trpc.$'
+import { Route as ApiAuthActionRouteImport } from './routes/api/auth.$action'
 import { Route as PProjectTasksTaskIdRouteImport } from './routes/p.$project.tasks.$taskId'
 import { Route as PProjectRunsRunIdRouteImport } from './routes/p.$project.runs.$runId'
 import { Route as PProjectReviewTaskIdRouteImport } from './routes/p.$project.review.$taskId'
@@ -38,6 +41,11 @@ import { Route as ApiAttachmentsProjectTaskIdNameRouteImport } from './routes/ap
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SplatRoute = SplatRouteImport.update({
@@ -73,6 +81,11 @@ const FleetResourcesRoute = FleetResourcesRouteImport.update({
 const FleetOpenrouterRoute = FleetOpenrouterRouteImport.update({
   id: '/fleet/openrouter',
   path: '/fleet/openrouter',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiHealthRoute = ApiHealthRouteImport.update({
+  id: '/api/health',
+  path: '/api/health',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PProjectIndexRoute = PProjectIndexRouteImport.update({
@@ -113,6 +126,11 @@ const PProjectAdrsRoute = PProjectAdrsRouteImport.update({
 const ApiTrpcSplatRoute = ApiTrpcSplatRouteImport.update({
   id: '/api/trpc/$',
   path: '/api/trpc/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAuthActionRoute = ApiAuthActionRouteImport.update({
+  id: '/api/auth/$action',
+  path: '/api/auth/$action',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PProjectTasksTaskIdRoute = PProjectTasksTaskIdRouteImport.update({
@@ -166,12 +184,15 @@ const ApiAttachmentsProjectTaskIdNameRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/$': typeof SplatRoute
+  '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
+  '/api/health': typeof ApiHealthRoute
   '/fleet/openrouter': typeof FleetOpenrouterRoute
   '/fleet/resources': typeof FleetResourcesRoute
   '/fleet/runpod': typeof FleetRunpodRoute
   '/p/$project': typeof PProjectRouteWithChildren
   '/fleet/': typeof FleetIndexRoute
+  '/api/auth/$action': typeof ApiAuthActionRoute
   '/api/trpc/$': typeof ApiTrpcSplatRoute
   '/p/$project/adrs': typeof PProjectAdrsRoute
   '/p/$project/board': typeof PProjectBoardRoute
@@ -193,11 +214,14 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/$': typeof SplatRoute
+  '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
+  '/api/health': typeof ApiHealthRoute
   '/fleet/openrouter': typeof FleetOpenrouterRoute
   '/fleet/resources': typeof FleetResourcesRoute
   '/fleet/runpod': typeof FleetRunpodRoute
   '/fleet': typeof FleetIndexRoute
+  '/api/auth/$action': typeof ApiAuthActionRoute
   '/api/trpc/$': typeof ApiTrpcSplatRoute
   '/p/$project/adrs': typeof PProjectAdrsRoute
   '/p/$project/board': typeof PProjectBoardRoute
@@ -220,12 +244,15 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/$': typeof SplatRoute
+  '/login': typeof LoginRoute
   '/settings': typeof SettingsRoute
+  '/api/health': typeof ApiHealthRoute
   '/fleet/openrouter': typeof FleetOpenrouterRoute
   '/fleet/resources': typeof FleetResourcesRoute
   '/fleet/runpod': typeof FleetRunpodRoute
   '/p/$project': typeof PProjectRouteWithChildren
   '/fleet/': typeof FleetIndexRoute
+  '/api/auth/$action': typeof ApiAuthActionRoute
   '/api/trpc/$': typeof ApiTrpcSplatRoute
   '/p/$project/adrs': typeof PProjectAdrsRoute
   '/p/$project/board': typeof PProjectBoardRoute
@@ -249,12 +276,15 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/$'
+    | '/login'
     | '/settings'
+    | '/api/health'
     | '/fleet/openrouter'
     | '/fleet/resources'
     | '/fleet/runpod'
     | '/p/$project'
     | '/fleet/'
+    | '/api/auth/$action'
     | '/api/trpc/$'
     | '/p/$project/adrs'
     | '/p/$project/board'
@@ -276,11 +306,14 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/$'
+    | '/login'
     | '/settings'
+    | '/api/health'
     | '/fleet/openrouter'
     | '/fleet/resources'
     | '/fleet/runpod'
     | '/fleet'
+    | '/api/auth/$action'
     | '/api/trpc/$'
     | '/p/$project/adrs'
     | '/p/$project/board'
@@ -302,12 +335,15 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/$'
+    | '/login'
     | '/settings'
+    | '/api/health'
     | '/fleet/openrouter'
     | '/fleet/resources'
     | '/fleet/runpod'
     | '/p/$project'
     | '/fleet/'
+    | '/api/auth/$action'
     | '/api/trpc/$'
     | '/p/$project/adrs'
     | '/p/$project/board'
@@ -330,12 +366,15 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   SplatRoute: typeof SplatRoute
+  LoginRoute: typeof LoginRoute
   SettingsRoute: typeof SettingsRoute
+  ApiHealthRoute: typeof ApiHealthRoute
   FleetOpenrouterRoute: typeof FleetOpenrouterRoute
   FleetResourcesRoute: typeof FleetResourcesRoute
   FleetRunpodRoute: typeof FleetRunpodRoute
   PProjectRoute: typeof PProjectRouteWithChildren
   FleetIndexRoute: typeof FleetIndexRoute
+  ApiAuthActionRoute: typeof ApiAuthActionRoute
   ApiTrpcSplatRoute: typeof ApiTrpcSplatRoute
   ApiFilesProjectSplatRoute: typeof ApiFilesProjectSplatRoute
   ApiAttachmentsProjectTaskIdNameRoute: typeof ApiAttachmentsProjectTaskIdNameRoute
@@ -349,6 +388,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/$': {
@@ -398,6 +444,13 @@ declare module '@tanstack/react-router' {
       path: '/fleet/openrouter'
       fullPath: '/fleet/openrouter'
       preLoaderRoute: typeof FleetOpenrouterRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/health': {
+      id: '/api/health'
+      path: '/api/health'
+      fullPath: '/api/health'
+      preLoaderRoute: typeof ApiHealthRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/p/$project/': {
@@ -454,6 +507,13 @@ declare module '@tanstack/react-router' {
       path: '/api/trpc/$'
       fullPath: '/api/trpc/$'
       preLoaderRoute: typeof ApiTrpcSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/auth/$action': {
+      id: '/api/auth/$action'
+      path: '/api/auth/$action'
+      fullPath: '/api/auth/$action'
+      preLoaderRoute: typeof ApiAuthActionRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/p/$project/tasks/$taskId': {
@@ -561,12 +621,15 @@ const PProjectRouteWithChildren = PProjectRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   SplatRoute: SplatRoute,
+  LoginRoute: LoginRoute,
   SettingsRoute: SettingsRoute,
+  ApiHealthRoute: ApiHealthRoute,
   FleetOpenrouterRoute: FleetOpenrouterRoute,
   FleetResourcesRoute: FleetResourcesRoute,
   FleetRunpodRoute: FleetRunpodRoute,
   PProjectRoute: PProjectRouteWithChildren,
   FleetIndexRoute: FleetIndexRoute,
+  ApiAuthActionRoute: ApiAuthActionRoute,
   ApiTrpcSplatRoute: ApiTrpcSplatRoute,
   ApiFilesProjectSplatRoute: ApiFilesProjectSplatRoute,
   ApiAttachmentsProjectTaskIdNameRoute: ApiAttachmentsProjectTaskIdNameRoute,

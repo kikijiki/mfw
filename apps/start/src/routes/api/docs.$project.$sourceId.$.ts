@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { requireSession } from "~/server/auth-guard";
 import { getOrchestrator } from "~/server/orchestrator";
-import { checkRequest } from "~/server/request-guard";
 
 /**
  * Raw bytes of an image or SVG inside a doc source, for `<img>` in the Docs
@@ -24,7 +24,7 @@ export const Route = createFileRoute("/api/docs/$project/$sourceId/$")({
 	server: {
 		handlers: {
 			GET: async ({ params, request }) => {
-				const refused = checkRequest(request);
+				const refused = await requireSession(request);
 				if (refused) return refused;
 				const orchestrator = await getOrchestrator();
 				let svc: ReturnType<typeof orchestrator.get>;

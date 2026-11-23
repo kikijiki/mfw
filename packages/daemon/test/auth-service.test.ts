@@ -8,6 +8,7 @@ import {
 	BACKOFF_MAX_MS,
 	backoffMs,
 	FREE_ATTEMPTS,
+	isAuthRefused,
 	SESSION_ABSOLUTE_MS,
 	SESSION_IDLE_MS,
 	SETUP_TOKEN_TTL_MS,
@@ -207,20 +208,76 @@ describe("brute force", () => {
 	});
 });
 
+describe("isAuthRefused", () => {
+	test("recognises a copy of the class from another bundle chunk", () => {
+		class CopiedChunkError extends Error {
+			override readonly name = "AuthRefused";
+			readonly code = "locked";
+		}
+		const copy = new CopiedChunkError("locked");
+		expect(copy instanceof AuthRefused).toBe(false);
+		expect(isAuthRefused(copy)).toBe(true);
+		expect(isAuthRefused(new AuthRefused("locked", "x"))).toBe(true);
+		expect(isAuthRefused(new Error("other"))).toBe(false);
+		expect(isAuthRefused(null)).toBe(false);
+	});
+});
+
 describe("stream signal", () => {
-	test("aborts at once on logout", async () => {
+	test("aborts at once on logout, and stops watching", async () => {
 		const s = await owner();
-		const signal = auth.streamSignal(s.sessionId, new AbortController().signal);
+		const { signal } = auth.streamSignal(
+			s.sessionId,
+			new AbortController().signal,
+		);
 		expect(signal.aborted).toBe(false);
+		expect(auth.watchedStreams).toBe(1);
 		await auth.logout(s.token);
 		expect(signal.aborted).toBe(true);
+		expect(auth.watchedStreams).toBe(0);
 	});
 
 	test("follows the parent", async () => {
 		const s = await owner();
 		const parent = new AbortController();
-		const signal = auth.streamSignal(s.sessionId, parent.signal);
+		const { signal } = auth.streamSignal(s.sessionId, parent.signal);
 		parent.abort();
 		expect(signal.aborted).toBe(true);
+		expect(auth.watchedStreams).toBe(0);
+	});
+
+	test("release ends the watch", async () => {
+		const s = await owner();
+		const { signal, release } = auth.streamSignal(
+			s.sessionId,
+			new AbortController().signal,
+		);
+		release();
+		expect(signal.aborted).toBe(true);
+		expect(auth.watchedStreams).toBe(0);
+	});
+
+	test("aborts when the session expires", async () => {
+		const quick = await AuthService.open(join(dir, "quick.db"), {
+			now: () => clock,
+			streamRecheckMs: 5,
+		});
+		try {
+			const token = (await quick.beginFirstRun()) as string;
+			const s = await quick.setup(token, PASSWORD);
+			const { signal } = quick.streamSignal(
+				s.sessionId,
+				new AbortController().signal,
+			);
+			clock += SESSION_IDLE_MS + 1;
+			const aborted = new Promise<boolean>((done) =>
+				signal.addEventListener("abort", () => done(true)),
+			);
+			expect(
+				await Promise.race([aborted, Bun.sleep(2000).then(() => false)]),
+			).toBe(true);
+		} finally {
+			quick.close();
+		}
 	});
 });

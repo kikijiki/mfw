@@ -20,7 +20,8 @@ import { join, resolve } from "node:path";
  * itself is injected (`setHandler`): `@mfw/api` depends on this package, so
  * the app wires its tRPC handler in at startup.
  *
- * The UI's TCP listener is unchanged and stays open until auth v1 (C1).
+ * The UI's TCP listener requires an owner session (auth v1), so this socket
+ * is the brain's only working route to the API.
  */
 
 export const BRAIN_TURN_HEADER = "x-mfw-brain-turn";

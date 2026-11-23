@@ -4,6 +4,7 @@ import {
 	createStart,
 } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
+import { guard } from "./server/auth-guard";
 import {
 	applySecurityHeaders,
 	newNonce,
@@ -35,6 +36,22 @@ const securityHeadersMiddleware = createMiddleware().server(async (ctx) => {
 	};
 });
 
+/**
+ * Every request the app handles passes the session guard: pages get a login
+ * redirect, everything else a 401. It sits inside the headers middleware so a
+ * refusal carries the security headers too. Route handlers guard again, because
+ * they need the session and must stay safe if this list ever changes.
+ */
+const authMiddleware = createMiddleware().server(async (ctx) => {
+	const guarded = await guard(getRequest());
+	if (!guarded.ok) return guarded.response as never;
+	return ctx.next();
+});
+
 export const startInstance = createStart(() => ({
-	requestMiddleware: [csrfMiddleware, securityHeadersMiddleware],
+	requestMiddleware: [
+		csrfMiddleware,
+		securityHeadersMiddleware,
+		authMiddleware,
+	],
 }));
