@@ -174,6 +174,8 @@ export interface AuthServiceOptions {
 	streamRecheckMs?: number;
 	/** How often an open stream re-checks its API token. */
 	tokenStreamRecheckMs?: number;
+	/** Per-token request limit (tests that make many calls raise it). */
+	tokenRate?: { perSecond: number; burst: number };
 	/** Minimum spacing of password hash checks, across all sources. */
 	passwordCheckIntervalMs?: number;
 	/** Password checks allowed to wait at once; further ones are refused. */
@@ -307,7 +309,7 @@ export class AuthService {
 	private readonly now: () => number;
 	private readonly streamRecheckMs: number;
 	private readonly tokenStreamRecheckMs: number;
-	private readonly tokenRate = new TokenRateLimiter();
+	private readonly tokenRate: TokenRateLimiter;
 	private readonly listeners = new Map<string, Set<() => void>>();
 	/** The 0600 file holding a pending setup token, under the masked `$MFW_HOME`. */
 	readonly setupTokenFile: string | null;
@@ -324,6 +326,10 @@ export class AuthService {
 		this.streamRecheckMs = opts.streamRecheckMs ?? STREAM_RECHECK_MS;
 		this.tokenStreamRecheckMs =
 			opts.tokenStreamRecheckMs ?? TOKEN_STREAM_RECHECK_MS;
+		this.tokenRate = new TokenRateLimiter(
+			opts.tokenRate?.perSecond,
+			opts.tokenRate?.burst,
+		);
 		this.setupTokenFile = opts.setupTokenFile ?? null;
 		this.afterPasswordCheck = opts.afterPasswordCheck;
 		this.passwordChecks = new PasswordCheckQueue(

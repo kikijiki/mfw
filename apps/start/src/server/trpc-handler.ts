@@ -1,5 +1,8 @@
 import { appRouter } from "@mfw/api";
-import type { AuthService } from "@mfw/daemon/auth/service";
+import type {
+	AuthenticatedSession,
+	AuthService,
+} from "@mfw/daemon/auth/service";
 import type { Orchestrator } from "@mfw/daemon/services";
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { type GuardResult, jsonResponse } from "./auth-guard";
@@ -41,14 +44,31 @@ export async function serveTrpc(
 ): Promise<Response> {
 	if (!guarded.ok) return guarded.response;
 	const session = guarded.session;
-	if (!session)
+	const apiToken = guarded.apiToken;
+	const principal = apiToken ?? session?.principal;
+	if (!principal)
 		return jsonResponse(401, {
 			error: "unauthenticated",
 			message: "sign in to use the mfw API",
 		});
-	if (!isCanonicalTrpcPath(new URL(req.url).pathname, deps.endpoint))
+	const url = new URL(req.url);
+	if (!isCanonicalTrpcPath(url.pathname, deps.endpoint))
 		return jsonResponse(404, { error: "not_found", message: "not found" });
+	// One call per request, so the per-token rate limit counts calls.
+	if (apiToken && (url.searchParams.has("batch") || url.pathname.includes(",")))
+		return jsonResponse(400, {
+			error: "batch_refused",
+			message: "API tokens make one call per request",
+		});
 	const orchestrator = await deps.orchestrator();
+	const tokenAudit = apiToken
+		? {
+				begin: (entry: Parameters<AuthService["beginTokenAction"]>[0]) =>
+					deps.auth.beginTokenAction(entry),
+				finish: (id: number, outcome: string) =>
+					deps.auth.finishTokenAction(id, outcome),
+			}
+		: undefined;
 
 	// A body cannot be re-wrapped cheaply, and only GET opens a subscription.
 	const ac = new AbortController();
@@ -66,7 +86,11 @@ export async function serveTrpc(
 				endpoint: deps.endpoint,
 				router: appRouter,
 				req: scoped,
-				createContext: () => ({ orchestrator, principal: session.principal }),
+				createContext: () => ({
+					orchestrator,
+					principal,
+					...(tokenAudit ? { tokenAudit } : {}),
+				}),
 				onError({ error, path }) {
 					console.error(`[mfw] tRPC error on '${path}':`, error.message);
 				},
@@ -79,11 +103,30 @@ export async function serveTrpc(
 		req.signal.removeEventListener("abort", forward);
 		return response;
 	}
+	if (apiToken && !deps.auth.tokenStreamAvailable(apiToken.tokenId)) {
+		req.signal.removeEventListener("abort", forward);
+		ac.abort();
+		await response.body.cancel().catch(() => undefined);
+		return jsonResponse(
+			429,
+			{
+				error: "too_many_streams",
+				message: "this token has too many open streams",
+			},
+			{ "Retry-After": "5" },
+		);
+	}
 	return endingWithSession(response, response.body, {
 		ac,
 		parent: req.signal,
 		forward,
-		watch: (onEnd) => deps.auth.watchSession(session.sessionId, onEnd),
+		watch: (onEnd) =>
+			apiToken
+				? deps.auth.watchToken(apiToken.tokenId, onEnd)
+				: deps.auth.watchSession(
+						(session as AuthenticatedSession).sessionId,
+						onEnd,
+					),
 	});
 }
 

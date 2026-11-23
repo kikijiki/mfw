@@ -31,6 +31,8 @@ const STATUS: Record<AuthRefused["code"], number> = {
 	weak_password: 400,
 	locked: 429,
 	busy: 429,
+	invalid_token_request: 400,
+	too_many_tokens: 409,
 };
 
 function refusal(e: AuthRefused): Response {
