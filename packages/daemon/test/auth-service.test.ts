@@ -10,6 +10,7 @@ import {
 	backoffMs,
 	FREE_ATTEMPTS,
 	isAuthRefused,
+	LOOPBACK_SOURCE,
 	SESSION_ABSOLUTE_MS,
 	SESSION_IDLE_MS,
 	SETUP_TOKEN_TTL_MS,
@@ -376,6 +377,223 @@ describe("setup retries and the password policy (reviewer m4, m5)", () => {
 
 	test("accepts a long uncommon passphrase", () => {
 		expect(() => assertPasswordPolicy(PASSWORD)).not.toThrow();
+	});
+});
+
+describe("loopback is one source (recheck N1)", () => {
+	for (const address of [
+		"127.0.0.1",
+		"127.0.0.2",
+		"127.66.0.9",
+		"127.255.255.254",
+		"::1",
+		"0:0:0:0:0:0:0:1",
+		"0000:0000:0000:0000:0000:0000:0000:0001",
+		"[::1]",
+		"::1%lo",
+		"::ffff:127.0.0.1",
+		"::ffff:127.9.8.7",
+		"::ffff:7f00:1",
+		"0:0:0:0:0:ffff:7f42:0102",
+	])
+		test(`${address} is loopback`, () => {
+			expect(throttleSource(address)).toBe(LOOPBACK_SOURCE);
+		});
+
+	for (const address of ["128.0.0.1", "10.127.0.1", "::2", "::ffff:128.0.0.1"])
+		test(`${address} is not loopback`, () => {
+			expect(throttleSource(address)).not.toBe(LOOPBACK_SOURCE);
+		});
+
+	test("rotating loopback addresses does not escape the lock", async () => {
+		await owner();
+		for (let i = 1; i <= FREE_ATTEMPTS; i++)
+			expect(
+				await code(auth.login("wrong password!", undefined, `127.66.0.${i}`)),
+			).toBe("invalid_password");
+		expect(
+			await code(auth.login("wrong password!", undefined, "127.66.0.99")),
+		).toBe("locked");
+		expect(await code(auth.login(PASSWORD, undefined, "::1"))).toBe("locked");
+		await auth.unlock();
+		expect(await code(auth.login(PASSWORD, undefined, "127.0.0.1"))).toBe("ok");
+	});
+});
+
+describe("the password queue is bounded (recheck N1)", () => {
+	test("a full queue refuses new attempts with a retry time, and queued ones finish", async () => {
+		const small = await AuthService.open(join(dir, "queue.db"), {
+			now: () => clock,
+			passwordCheckIntervalMs: 20,
+			maxQueuedPasswordChecks: 3,
+		});
+		try {
+			await small.setup((await small.beginFirstRun()) as string, PASSWORD);
+			const queued = [
+				small.login(PASSWORD, undefined, "10.0.1.1"),
+				small.login("wrong password!", undefined, "10.0.1.2"),
+				small.login(PASSWORD, undefined, "10.0.1.3"),
+			];
+			let refused: unknown;
+			await small.login(PASSWORD, undefined, "10.0.1.4").catch((e) => {
+				refused = e;
+			});
+			expect(isAuthRefused(refused) && refused.code).toBe("busy");
+			expect((refused as AuthRefused).retryAfterMs).toBeGreaterThan(0);
+			expect(await code(queued[0] as Promise<unknown>)).toBe("ok");
+			expect(await code(queued[1] as Promise<unknown>)).toBe(
+				"invalid_password",
+			);
+			expect(await code(queued[2] as Promise<unknown>)).toBe("ok");
+			expect(await code(small.login(PASSWORD, undefined, "10.0.1.4"))).toBe(
+				"ok",
+			);
+		} finally {
+			small.close();
+		}
+	});
+});
+
+describe("a login cannot outlive a credential change (recheck N3)", () => {
+	const NEXT = "a different long passphrase";
+
+	/** A service whose next password check pauses after verifying, until released. */
+	async function paused() {
+		let reached = () => {};
+		let release = () => {};
+		const atHook = new Promise<void>((r) => {
+			reached = r;
+		});
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		let armed = false;
+		const svc = await AuthService.open(join(dir, "race.db"), {
+			now: () => clock,
+			passwordCheckIntervalMs: 0,
+			afterPasswordCheck: async () => {
+				if (!armed) return;
+				armed = false;
+				reached();
+				await gate;
+			},
+		});
+		const first = await svc.setup(
+			(await svc.beginFirstRun()) as string,
+			PASSWORD,
+		);
+		return {
+			svc,
+			first,
+			atHook,
+			release,
+			arm: () => {
+				armed = true;
+			},
+		};
+	}
+
+	test("a verified login is refused if the password changed before it issued", async () => {
+		const { svc, first, atHook, release, arm } = await paused();
+		try {
+			arm();
+			const late = svc.login(PASSWORD, undefined, "10.0.2.1");
+			await atHook;
+			await svc.changePassword(PASSWORD, NEXT, first.sessionId, "10.0.2.2");
+			release();
+			expect(await code(late)).toBe("invalid_password");
+			expect(await code(svc.login(PASSWORD, undefined, "10.0.2.3"))).toBe(
+				"invalid_password",
+			);
+			expect(await code(svc.login(NEXT, undefined, "10.0.2.4"))).toBe("ok");
+		} finally {
+			svc.close();
+		}
+	});
+
+	test("a verified login is refused if everyone was signed out before it issued", async () => {
+		const { svc, atHook, release, arm } = await paused();
+		try {
+			arm();
+			const late = svc.login(PASSWORD, undefined, "10.0.2.1");
+			await atHook;
+			await svc.revokeAll();
+			release();
+			expect(await code(late)).toBe("invalid_password");
+			expect(await code(svc.login(PASSWORD, undefined, "10.0.2.3"))).toBe("ok");
+		} finally {
+			svc.close();
+		}
+	});
+
+	test("a refused late login leaves no session behind", async () => {
+		const { svc, first, atHook, release, arm } = await paused();
+		try {
+			arm();
+			const late = svc.login(PASSWORD, undefined, "10.0.2.1");
+			await atHook;
+			await svc.changePassword(PASSWORD, NEXT, first.sessionId, "10.0.2.2");
+			release();
+			await code(late);
+			const rows = await (
+				svc as unknown as {
+					db: { client: { execute(q: string): Promise<{ rows: unknown[] }> } };
+				}
+			).db.client.execute(
+				"SELECT id FROM auth_sessions WHERE revoked_at IS NULL",
+			);
+			expect(rows.rows).toHaveLength(1);
+		} finally {
+			svc.close();
+		}
+	});
+
+	test("two racing password changes: only one wins", async () => {
+		const { svc, first, atHook, release, arm } = await paused();
+		try {
+			arm();
+			const slow = svc.changePassword(
+				PASSWORD,
+				"the slower passphrase",
+				first.sessionId,
+				"10.0.2.1",
+			);
+			await atHook;
+			await svc.changePassword(PASSWORD, NEXT, first.sessionId, "10.0.2.2");
+			release();
+			expect(await code(slow)).toBe("invalid_password");
+			expect(await code(svc.login(NEXT, undefined, "10.0.2.3"))).toBe("ok");
+		} finally {
+			svc.close();
+		}
+	});
+
+	test("a login overlapping a change never leaves a live session", async () => {
+		const svc = await AuthService.open(join(dir, "queued.db"), {
+			now: () => clock,
+			passwordCheckIntervalMs: 30,
+		});
+		try {
+			const first = await svc.setup(
+				(await svc.beginFirstRun()) as string,
+				PASSWORD,
+			);
+			const change = svc.changePassword(
+				PASSWORD,
+				NEXT,
+				first.sessionId,
+				"10.0.2.1",
+			);
+			// Either refused, or issued just before the change and revoked by it.
+			const late = svc.login(PASSWORD, undefined, "10.0.2.2").catch(() => null);
+			const [, session] = await Promise.all([change, late]);
+			if (session) expect(await svc.authenticate(session.token)).toBeNull();
+			expect(await code(svc.login(PASSWORD, undefined, "10.0.2.3"))).toBe(
+				"invalid_password",
+			);
+		} finally {
+			svc.close();
+		}
 	});
 });
 

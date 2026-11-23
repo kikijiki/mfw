@@ -10,13 +10,19 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { liveAgentSessions, runAuthCommand } from "../src/auth/cli.ts";
+import {
+	discoverTmuxSockets,
+	findAgentSessions,
+	liveAgentSessions,
+	runAuthCommand,
+} from "../src/auth/cli.ts";
 import {
 	AuthRefused,
 	AuthService,
 	FREE_ATTEMPTS,
 } from "../src/auth/service.ts";
 import { acquireDaemonLock } from "../src/host-resources/daemon-lock.ts";
+import { pinnedTool } from "../src/sandbox.ts";
 
 const PASSWORD = "correct horse battery";
 let home: string;
@@ -190,27 +196,123 @@ describe("mfw auth reset (reviewer B3)", () => {
 	});
 });
 
-describe("liveAgentSessions", () => {
+describe("agent discovery does not depend on the caller's env (recheck Low)", () => {
 	const fakeTmux = (script: string) => {
 		const path = join(home, "fake-tmux");
 		writeFileSync(path, `#!/bin/sh\n${script}\n`);
 		chmodSync(path, 0o755);
 		return path;
 	};
+	const line = (path: string) =>
+		`0000000000000000: 00000002 00000000 00010000 0001 01 12345 ${path}`;
 
-	test("lists sessions on the given socket", async () => {
-		const tmux = fakeTmux('[ "$2" = "sock" ] && printf "a\\nb\\n"');
-		expect(await liveAgentSessions(tmux, "sock")).toEqual(["a", "b"]);
+	test("finds tmux sockets anywhere, for this uid only", () => {
+		const table = [
+			"Num RefCount Protocol Flags Type St Inode Path",
+			line("/custom/dir/tmux-1000/mfw"),
+			line("/tmp/tmux-1000/other"),
+			line("/tmp/tmux-1001/mfw"),
+			line("/run/user/1000/bus"),
+			"0000000000000000: 00000002 00000000 00000000 0001 03 777",
+		].join("\n");
+		const found = discoverTmuxSockets(table, 1000, {});
+		expect(found).toContain("/custom/dir/tmux-1000/mfw");
+		expect(found).toContain("/tmp/tmux-1000/other");
+		expect(found).not.toContain("/tmp/tmux-1001/mfw");
+		expect(found).not.toContain("/run/user/1000/bus");
 	});
 
-	test("no server means no sessions", async () => {
-		const tmux = fakeTmux('echo "no server running on /x" >&2; exit 1');
-		expect(await liveAgentSessions(tmux, "sock")).toEqual([]);
+	test("always includes the configured and default socket paths", () => {
+		const found = discoverTmuxSockets("Num Path\n", 1000, {
+			TMUX_TMPDIR: "/elsewhere",
+			MFW_TMUX_SOCKET: "custom",
+		});
+		for (const path of [
+			"/tmp/tmux-1000/mfw",
+			"/elsewhere/tmux-1000/mfw",
+			"/tmp/tmux-1000/custom",
+			"/elsewhere/tmux-1000/custom",
+		])
+			expect(found).toContain(path);
+	});
+
+	test("any session on an mfw socket counts", async () => {
+		const tmux = fakeTmux('printf "whatever\\n"');
+		expect(await liveAgentSessions(tmux, ["/x/tmux-1000/mfw"])).toEqual([
+			"whatever",
+		]);
+	});
+
+	test("on another socket only agent-named sessions count", async () => {
+		const tmux = fakeTmux('printf "my-editor\\nmfw_run1\\n"');
+		expect(await liveAgentSessions(tmux, ["/x/tmux-1000/default"])).toEqual([
+			"mfw_run1",
+		]);
+	});
+
+	test("no server, or a stale socket, means no sessions", async () => {
+		for (const message of [
+			"no server running on /x",
+			"error connecting to /x (No such file or directory)",
+			"error connecting to /x (Connection refused)",
+		]) {
+			const tmux = fakeTmux(`echo "${message}" >&2; exit 1`);
+			expect(await liveAgentSessions(tmux, ["/x/tmux-1000/mfw"])).toEqual([]);
+		}
 	});
 
 	test("any other failure throws, so reset fails closed", async () => {
 		const tmux = fakeTmux('echo "permission denied" >&2; exit 1');
-		await expect(liveAgentSessions(tmux, "sock")).rejects.toThrow();
+		await expect(
+			liveAgentSessions(tmux, ["/x/tmux-1000/mfw"]),
+		).rejects.toThrow();
+	});
+
+	test("an unreadable socket table refuses instead of guessing", async () => {
+		await expect(
+			findAgentSessions({
+				tmux: "/bin/true",
+				readUnixTable: () => {
+					throw new Error("no /proc");
+				},
+				uid: 1000,
+				env: {},
+			}),
+		).rejects.toThrow();
+	});
+
+	test("a real server under another TMUX_TMPDIR is found from a clean env", async () => {
+		const tmux = pinnedTool("tmux");
+		if (!tmux) {
+			console.log("skip: tmux is not on a trusted PATH");
+			return;
+		}
+		const elsewhere = mkdtempSync(join(tmpdir(), "mfw-tm-"));
+		const name = `mfw-reset-${process.pid}`;
+		const env = { ...process.env, TMUX_TMPDIR: elsewhere };
+		const kill = () =>
+			Bun.spawnSync([tmux, "-L", name, "kill-server"], {
+				env,
+				stdout: "ignore",
+				stderr: "ignore",
+			});
+		try {
+			const started = Bun.spawnSync(
+				[tmux, "-L", name, "new-session", "-d", "-s", "mfw_run1", "sleep 30"],
+				{ env, stdout: "ignore", stderr: "pipe" },
+			);
+			expect(started.exitCode).toBe(0);
+			const found = await findAgentSessions({
+				tmux,
+				readUnixTable: () => readFileSync("/proc/net/unix", "utf8"),
+				uid: process.getuid?.() ?? 0,
+				env: {},
+			});
+			expect(found).toContain("mfw_run1");
+		} finally {
+			kill();
+			rmSync(elsewhere, { recursive: true, force: true });
+		}
 	});
 });
 

@@ -56,6 +56,10 @@ const MIGRATIONS: readonly (readonly string[])[] = [
 		"DELETE FROM auth_sessions",
 		"ALTER TABLE auth_sessions ADD COLUMN request_key_hash TEXT NOT NULL DEFAULT ''",
 	],
+	[
+		// Bumped whenever existing credentials stop being valid; see `issue`.
+		"ALTER TABLE principals ADD COLUMN credential_epoch INTEGER NOT NULL DEFAULT 0",
+	],
 ];
 
 export const AUTH_SCHEMA_VERSION = MIGRATIONS.length;
