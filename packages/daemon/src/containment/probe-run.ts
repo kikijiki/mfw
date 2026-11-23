@@ -257,6 +257,11 @@ export interface ProbeTargets {
 	toolchainHomeRoots: readonly string[];
 	/** Every toolchain and system bind: the only place an unlistable directory is tolerated. */
 	toolchainBinds: readonly string[];
+	/**
+	 * Executables already known in writable fleet directories, by sandbox path
+	 * and sha256. Anything else there fails `exec_sweep`.
+	 */
+	fleetExecBaseline: readonly { path: string; sha256: string }[];
 	/** Resolves symlinks; null when the path does not exist on the host. */
 	realpath(path: string): string | null;
 }
@@ -326,10 +331,13 @@ export function buildProbePlan(
 	const options = decodeBwrapOptions(compiled.bwrapArgs);
 	const syscalls = probeSyscallPlan();
 	const hookDirs: string[] = [];
+	const gitDirs: string[] = [];
 	if (profile.filesystem?.workspace) {
 		hookDirs.push(`${SANDBOX_PATHS.workspace}/.git/hooks`);
+		gitDirs.push(`${SANDBOX_PATHS.workspace}/.git`);
 		if (profile.filesystem.workspace.gitDir) {
 			hookDirs.push(`${SANDBOX_PATHS.gitDir}/hooks`);
+			gitDirs.push(SANDBOX_PATHS.gitDir);
 		}
 	}
 	const limits = effectiveLimits(profile);
@@ -349,6 +357,15 @@ export function buildProbePlan(
 			],
 			homes: homeForms(targets),
 			hookDirs,
+			gitConfigs: gitDirs.flatMap((d) => [
+				`${d}/config`,
+				`${d}/config.worktree`,
+			]),
+			fleetWritable: compiled.pinnedBinds
+				.filter(
+					(p) => p.writable && p.dest.startsWith(`${SANDBOX_PATHS.fleet}/`),
+				)
+				.map((p) => p.dest),
 			egressDir: SANDBOX_PATHS.egress,
 			syscalls,
 			// `/sys` holds no sockets and is its own failing item if it is mounted at all.
@@ -377,6 +394,7 @@ export function buildProbePlan(
 				memoryMaxBytes: memoryBytes(limits.memoryMax),
 			},
 			sweepTolerated: targets.toolchainBinds.map(escapedPath),
+			fleetExecBaseline: targets.fleetExecBaseline,
 		},
 	};
 }

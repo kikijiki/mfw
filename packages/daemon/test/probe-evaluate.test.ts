@@ -61,6 +61,7 @@ const expectation = (
 	scope: "systemd",
 	limits: { tasksMax: 256, memoryMaxBytes: 1024 ** 3 },
 	sweepTolerated: [],
+	fleetExecBaseline: [],
 	seccompFilters: 1,
 	...over,
 });
@@ -118,6 +119,8 @@ const good = (): ProbeObservations => ({
 		],
 	},
 	envNames: ["PATH", "HOME", "PWD"],
+	fleetExecutables: [],
+	gitConfigs: [],
 	fds: [
 		{ fd: 0, target: "socket:[1]" },
 		{ fd: 1, target: "pipe:[2]" },
@@ -380,6 +383,38 @@ const NEGATIVES: Negative[] = [
 		name: "a planted git hook",
 		weaken: (o) => {
 			o.sweep.hostRun.push("/work/.git/hooks/post-checkout");
+		},
+	},
+	{
+		item: "exec_sweep",
+		name: "an executable outside the fleet baseline",
+		weaken: (o) => {
+			o.fleetExecutables.push({ path: "/fleet/claude/x", sha256: "a" });
+		},
+	},
+	{
+		item: "exec_sweep",
+		name: "a fleet entry that could not be hashed",
+		expect: { fleetExecBaseline: [{ path: "/fleet/claude/x", sha256: "a" }] },
+		weaken: (o) => {
+			o.fleetExecutables.push({ path: "/fleet/claude/x", sha256: null });
+		},
+	},
+	{
+		item: "exec_sweep",
+		name: "a dangerous git config key",
+		weaken: (o) => {
+			o.gitConfigs.push({
+				path: "/work/.git/config",
+				content: b64("[core]\n\thooksPath = /work/x\n"),
+			});
+		},
+	},
+	{
+		item: "exec_sweep",
+		name: "a git config that could not be read",
+		weaken: (o) => {
+			o.gitConfigs.push({ path: "/work/.git/config", content: null });
 		},
 	},
 	{

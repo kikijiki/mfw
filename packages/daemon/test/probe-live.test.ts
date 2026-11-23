@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
@@ -177,6 +178,7 @@ const targets = () => ({
 	home,
 	mfwHome: mfw,
 	protectedPaths: [join(home, ".ssh")],
+	fleetExecBaseline: [] as { path: string; sha256: string }[],
 });
 
 /** A host-side scope reading matching the profile's limits. */
@@ -221,13 +223,14 @@ const NAMESPACES_NO_NET = [
 async function attest(
 	weaken?: (c: CompiledSandbox) => CompiledSandbox,
 	profile = baseProfile(),
+	fleetExecBaseline: readonly { path: string; sha256: string }[] = [],
 ): Promise<AttestResult> {
 	const r = await attestSandbox({
 		db: handle.db,
 		runId: "r1",
 		profile,
 		host: compileHost(),
-		targets: targets(),
+		targets: { ...targets(), fleetExecBaseline },
 		// The launch has no scope in the cage. The plan still expects one, so
 		// `readCgroup` is the only stand-in and every other item is real.
 		scope: "none",
@@ -586,6 +589,7 @@ describe.skipIf(skip !== null)("the probe in a real sandbox", () => {
 				home: linkHome,
 				mfwHome: mfw,
 				protectedPaths: [join(linkHome, ".ssh")],
+				fleetExecBaseline: [],
 			},
 			scope: "none",
 			timeoutMs: 40_000,
@@ -644,6 +648,58 @@ describe.skipIf(skip !== null)("the probe in a real sandbox", () => {
 		expect(same.filter((n) => provable.includes(n))).toEqual([]);
 		expect(provable.length).toBeGreaterThan(20);
 	}, 45_000);
+
+	for (const [key, config] of [
+		["core.hooksPath", "[core]\n\thooksPath = /work/evil\n"],
+		["core.fsmonitor", "[core]\n\tfsmonitor = /work/evil\n"],
+		["core.sshCommand", "[core]\n\tsshCommand = /work/evil\n"],
+		["a filter driver", '[filter "x"]\n\tsmudge = /work/evil\n'],
+	] as const) {
+		test(`exec_sweep flags ${key} in the git config`, async () => {
+			mkdirSync(join(work, ".git"), { recursive: true });
+			writeFileSync(
+				join(work, ".git/config"),
+				"[core]\n\trepositoryformatversion = 0\n",
+			);
+			const clean = await attest();
+			expect(failed(clean.items)).not.toContain("exec_sweep");
+			writeFileSync(join(work, ".git/config"), config);
+			const r = await attest();
+			expect(measured(r.items)).toBe(true);
+			expect(failed(r.items)).toContain("exec_sweep");
+		}, 45_000);
+	}
+
+	test("exec_sweep compares writable fleet executables to the baseline", async () => {
+		const fleet = join(mfw, "runs/r1/fleet");
+		mkdirSync(join(fleet, "sessions"), { recursive: true });
+		const profile = baseProfile({
+			filesystem: {
+				workspace: { source: work, access: "rw" },
+				fleetConfig: { cli: "claude", source: fleet, writable: ["sessions"] },
+				toolchain: { binaries: ["bun"] },
+			},
+		});
+		const clean = await attest(undefined, profile);
+		expect(failed(clean.items)).not.toContain("exec_sweep");
+
+		const tool = join(fleet, "sessions/tool");
+		writeFileSync(tool, "#!/bin/sh\necho one\n", { mode: 0o755 });
+		const planted = await attest(undefined, profile);
+		expect(measured(planted.items)).toBe(true);
+		expect(failed(planted.items)).toContain("exec_sweep");
+
+		const sha256 = createHash("sha256")
+			.update(readFileSync(tool))
+			.digest("hex");
+		const baseline = [{ path: "/fleet/claude/sessions/tool", sha256 }];
+		const known = await attest(undefined, profile, baseline);
+		expect(failed(known.items)).not.toContain("exec_sweep");
+
+		writeFileSync(tool, "#!/bin/sh\necho two\n", { mode: 0o755 });
+		const changed = await attest(undefined, profile, baseline);
+		expect(failed(changed.items)).toContain("exec_sweep");
+	}, 90_000);
 
 	test("exec_sweep finds a planted git hook", async () => {
 		mkdirSync(join(work, ".git/hooks"), { recursive: true });

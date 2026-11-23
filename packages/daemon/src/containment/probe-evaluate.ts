@@ -30,11 +30,15 @@
  *   socket. The launcher is what guarantees these are its own: it accepts only
  *   `"pipe"` or a verified FIFO. The host never calls `recvmsg` on them, so
  *   descriptors passed over them are dropped.
+ * - `exec_sweep` reads the config of `/git` and `/work/.git`. A `.git` file
+ *   pointing elsewhere and per-worktree config under `worktrees/` are not read,
+ *   and its key list is a denylist. Host git overrides these keys regardless.
  * - Open descriptors above 2 may be the runtime's own anonymous inodes,
  *   `/dev/urandom` and its `statm` handle. Anything else is a failure.
  */
 
 import { z } from "zod";
+import { dangerousGitKeys } from "./git-config-scan.ts";
 
 export const PROBE_ITEMS = [
 	"compiled_flags",
@@ -114,6 +118,12 @@ export const ProbeObservationsSchema = z.strictObject({
 		entries: z.number().int(),
 		truncated: z.boolean(),
 	}),
+	fleetExecutables: z.array(
+		z.strictObject({ path: z.string(), sha256: z.string().nullable() }),
+	),
+	gitConfigs: z.array(
+		z.strictObject({ path: z.string(), content: z.string().nullable() }),
+	),
 	pid1: z.strictObject({
 		cmdline: z.string().nullable(),
 		environ: z.string().nullable(),
@@ -157,6 +167,8 @@ export interface ProbeExpectation {
 	 * egress, tmpfs) it could hide a socket reachable by its known name.
 	 */
 	sweepTolerated: readonly string[];
+	/** Executables allowed in writable fleet directories, by sandbox path and hash. */
+	fleetExecBaseline: readonly { path: string; sha256: string }[];
 }
 
 const EPERM = 1;
@@ -237,6 +249,30 @@ function checkSockets(o: ProbeObservations, e: ProbeExpectation): Verdict {
 			: null;
 	const bad = o.sweep.sockets.filter((s) => s !== allowed);
 	return bad.length ? `sockets in bound paths: ${list(bad)}` : null;
+}
+
+function checkExecutables(o: ProbeObservations, e: ProbeExpectation): Verdict {
+	if (o.sweep.truncated) return "the sweep did not finish";
+	if (o.sweep.hostRun.length) {
+		return `host-run executables: ${list(o.sweep.hostRun)}`;
+	}
+	const known = new Map(e.fleetExecBaseline.map((b) => [b.path, b.sha256]));
+	const fleet = o.fleetExecutables
+		.filter((f) => f.sha256 === null || known.get(f.path) !== f.sha256)
+		.map((f) => f.path);
+	if (fleet.length) {
+		return `executables not in the fleet baseline: ${list(fleet)}`;
+	}
+	const unread = o.gitConfigs.filter((c) => c.content === null);
+	if (unread.length) {
+		return `cannot read git config: ${list(unread.map((c) => c.path))}`;
+	}
+	const risky = o.gitConfigs.flatMap((c) =>
+		dangerousGitKeys(
+			Buffer.from(c.content as string, "base64").toString("latin1"),
+		).map((key) => `${c.path}: ${key}`),
+	);
+	return risky.length ? `dangerous git config: ${list(risky)}` : null;
 }
 
 function checkMounts(o: ProbeObservations, e: ProbeExpectation): Verdict {
@@ -401,12 +437,7 @@ const CHECKS: Record<
 	home_absent: (o) =>
 		o.homeVisible.length ? `visible: ${list(o.homeVisible)}` : null,
 	socket_sweep: checkSockets,
-	exec_sweep: (o) => {
-		if (o.sweep.truncated) return "the sweep did not finish";
-		return o.sweep.hostRun.length
-			? `host-run executables: ${list(o.sweep.hostRun)}`
-			: null;
-	},
+	exec_sweep: checkExecutables,
 	pid1_cmdline: checkCmdline,
 	pid1_environ: checkPid1Environ,
 	env_clean: (o, e) => {

@@ -55,6 +55,10 @@ export interface ProbeSpec {
 	homes: { path: string; allowedRoots: string[] }[];
 	/** Hook directories the host's git would execute from. */
 	hookDirs: string[];
+	/** Git config files a sandbox could have written. */
+	gitConfigs: string[];
+	/** Writable fleet directories, swept for executables. */
+	fleetWritable: string[];
 	egressDir: string;
 	syscalls: ProbeSyscall[];
 	/** Trees the sweep does not enter. */
@@ -66,6 +70,7 @@ export interface ProbeSpec {
 export async function probeChildMain(): Promise<void> {
 	const fs = await import("node:fs");
 	const ffi = await import("bun:ffi");
+	const crypto = await import("node:crypto");
 
 	const listFds = (pid: string) => {
 		const out: { fd: number; target: string }[] = [];
@@ -343,6 +348,85 @@ export async function probeChildMain(): Promise<void> {
 		}
 	}
 
+	// ---- executables in writable fleet directories
+	const fleetExecutables: { path: string; sha256: string | null }[] = [];
+	const MAX_HASHED_BYTES = 64 * 1024 * 1024;
+	const MAX_FLEET_ENTRIES = 100_000;
+	let fleetSeen = 0;
+	for (const root of spec.fleetWritable) {
+		const pending = [Buffer.from(root)];
+		while (pending.length > 0) {
+			const dir = pending.pop() as Buffer;
+			let names: Buffer[];
+			try {
+				names = listRaw(dir);
+			} catch {
+				fleetExecutables.push({ path: pathText(dir), sha256: null });
+				continue;
+			}
+			for (const name of names) {
+				if (++fleetSeen > MAX_FLEET_ENTRIES) {
+					fleetExecutables.push({
+						path: `${root} (too many entries)`,
+						sha256: null,
+					});
+					pending.length = 0;
+					break;
+				}
+				const entry = joinRaw(dir, name);
+				const path = pathText(entry);
+				try {
+					const st = fs.lstatSync(entry);
+					if (st.isDirectory()) {
+						pending.push(entry);
+					} else if (st.isSymbolicLink()) {
+						const target = fs.readlinkSync(entry, {
+							encoding: "buffer",
+						}) as unknown as Uint8Array;
+						fleetExecutables.push({
+							path,
+							sha256: `symlink:${pathText(target)}`,
+						});
+					} else if (st.isFile() && st.mode & 0o111) {
+						fleetExecutables.push({
+							path,
+							sha256:
+								st.size > MAX_HASHED_BYTES
+									? null
+									: crypto
+											.createHash("sha256")
+											.update(fs.readFileSync(entry))
+											.digest("hex"),
+						});
+					}
+				} catch {
+					fleetExecutables.push({ path, sha256: null });
+				}
+			}
+		}
+	}
+
+	// ---- git config
+	const MAX_GIT_CONFIG_BYTES = 1024 * 1024;
+	const gitConfigs: { path: string; content: string | null }[] = [];
+	for (const path of spec.gitConfigs) {
+		try {
+			const st = fs.lstatSync(path);
+			gitConfigs.push({
+				path,
+				content:
+					st.isFile() && st.size <= MAX_GIT_CONFIG_BYTES
+						? fs.readFileSync(path).toString("base64")
+						: null,
+			});
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT" && code !== "ENOTDIR") {
+				gitConfigs.push({ path, content: null });
+			}
+		}
+	}
+
 	// ---- pid 1
 	const b64 = (s: string | null) =>
 		s === null ? null : Buffer.from(s, "latin1").toString("base64");
@@ -482,6 +566,8 @@ export async function probeChildMain(): Promise<void> {
 		absentVisible,
 		homeVisible,
 		sweep: { sockets, hostRun, unreadable, entries, truncated },
+		fleetExecutables,
+		gitConfigs,
 		pid1,
 		envNames,
 		fds,
