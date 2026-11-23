@@ -75,7 +75,7 @@ export function needsDevShell(root: string): boolean {
 }
 
 export const DEV_SHELL_REFUSAL =
-	"this project has an .envrc, and dev shells inside the sandbox are not available yet: remove the .envrc requirement, or run it with approvalMode interactive and agentIsolation none until the dev-shell work lands";
+	"this project has an .envrc, and dev shells inside the sandbox are not available yet (P8). Sandboxed runs of this project start once P8 lands, or now if the project works with its plain toolchain and its .envrc is removed";
 
 /** Build the fixture and probe it. Every path is inside a fresh private directory. */
 async function probeLayout(

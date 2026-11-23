@@ -94,6 +94,15 @@ describe("agentSandboxRefusal", () => {
 		expect(d.seen.calls).toBe(0);
 	});
 
+	test("m6: the .envrc refusal never steers the owner to an unsandboxed run", async () => {
+		writeFileSync(join(base, ".envrc"), "use flake\n");
+		const r = await agentSandboxRefusal(input(), deps().value);
+		expect(r?.detail).toContain(".envrc");
+		expect(r?.detail).toContain("P8");
+		expect(r?.detail).not.toContain("agentIsolation");
+		expect(r?.detail).not.toContain("none");
+	});
+
 	test("probes the split layout a real launch gets, then removes it", async () => {
 		const d = deps();
 		expect(await agentSandboxRefusal(input(), d.value)).toBeNull();
