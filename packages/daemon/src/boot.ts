@@ -147,6 +147,7 @@ import type {
 	RunPodProjectPolicy,
 } from "./runpod-policy.ts";
 import { Scheduler } from "./scheduler.ts";
+import { branchChangedFiles } from "./scope-watchdog.ts";
 import type { Orchestrator, ProjectServices } from "./services.ts";
 import { SessionService } from "./session.ts";
 import {
@@ -1374,19 +1375,7 @@ export async function attachProject(
 			// never from the run's agent-writable worktree.
 			changedFiles: async (run) => {
 				if (!run.branch || !run.baseSha) return null;
-				const diff = await git(
-					[
-						"diff",
-						"--name-only",
-						"--no-renames",
-						"-z",
-						`${run.baseSha}..${run.branch}`,
-					],
-					root,
-				).catch(() => null);
-				return diff?.exitCode === 0
-					? diff.stdout.split("\0").filter(Boolean)
-					: null;
+				return branchChangedFiles(root, run.baseSha, run.branch);
 			},
 			routeHeld: async (task, pick) => {
 				const held = (await engine.routeTask(task, pick ? { brain: pick } : {}))

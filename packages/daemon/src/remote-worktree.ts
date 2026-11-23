@@ -409,12 +409,23 @@ async function baseEntries(
 	}
 }
 
+/** A full `-z` path listing of a workspace; a listing past the cap is an error. */
+export const listWorkspacePaths = (args: string[], cwd: string) =>
+	gitRaw(args, cwd);
+
 async function gitRaw(args: string[], cwd: string): Promise<string> {
 	const result = await runProc(["git", ...args], { cwd, timeoutMs: 60_000 });
 	if (result.exitCode !== 0) {
 		throw new RemoteWorkspaceError(
 			"stage_mismatch",
 			"could not enumerate workspace content",
+		);
+	}
+	// The output is tail-kept: a cut listing would silently drop files.
+	if (result.truncated) {
+		throw new RemoteWorkspaceError(
+			"stage_mismatch",
+			"the workspace listing is larger than the output cap",
 		);
 	}
 	return result.stdout;

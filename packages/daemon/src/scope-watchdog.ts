@@ -227,6 +227,26 @@ export function finishScope(
 	};
 }
 
+/**
+ * Every path a branch changed, for a decision about the run. Null when the
+ * listing failed or did not fit: the caller must treat that as unknown.
+ */
+export async function branchChangedFiles(
+	repoRoot: string,
+	baseSha: string,
+	branch: string,
+): Promise<string[] | null> {
+	try {
+		const listed = await gitList(
+			["diff", "--name-only", "--no-renames", "-z", `${baseSha}..${branch}`],
+			repoRoot,
+		);
+		return listed.truncated ? null : listed.paths;
+	} catch {
+		return null;
+	}
+}
+
 /** Classify a changed-file set against the run's and other tasks' `owns`. */
 export function assessScope(
 	files: readonly string[],

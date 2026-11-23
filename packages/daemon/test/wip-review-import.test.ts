@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { worktreeState } from "../src/agent-review.ts";
 import { gitComplete, gitOk } from "../src/git.ts";
 import {
 	fetchRunResult,
@@ -15,9 +16,14 @@ import {
 	unsafeNoValidation,
 } from "../src/host-git/fetch.ts";
 import { HostGit, HostGitError } from "../src/host-git/runner.ts";
+import {
+	listWorkspacePaths,
+	RemoteWorkspaceError,
+} from "../src/remote-worktree.ts";
 import { validateRunResult } from "../src/run-workspace/clone-impl.ts";
 import {
 	assessScope,
+	branchChangedFiles,
 	changedFilesInRef,
 	DEFAULT_SCOPE_POLICY,
 	finishScope,
@@ -457,4 +463,70 @@ describe("L3: protected names are matched as a checkout would see them", () => {
 		);
 		expect(await refusal(validateRunResult(b.ctx, b.base))).toBeNull();
 	});
+});
+
+describe("B1 audit: other capped reads behind a decision", () => {
+	/** A work tree whose index lists many long paths that are not on disk. */
+	async function longStatus() {
+		const b = await bare();
+		const repo = join(b.root, "wt");
+		mkdirSync(repo);
+		await gitOk(["init", "-q", "-b", "main"], repo);
+		await gitOk(["config", "user.email", "t@t"], repo);
+		await gitOk(["config", "user.name", "t"], repo);
+		writeFileSync(join(repo, "a.txt"), "a\n");
+		await gitOk(["add", "-A"], repo);
+		await gitOk(["commit", "-q", "-m", "c"], repo);
+		const sha = await gitOk(["rev-parse", "HEAD:a.txt"], repo);
+		const p = Bun.spawn(
+			["git", "update-index", "--add", "-z", "--index-info"],
+			{
+				cwd: repo,
+				stdin: new TextEncoder().encode(
+					fillers(19_000, sha)
+						.map(([m, path, s]) => `${m} ${s}\t${path}\0`)
+						.join(""),
+				),
+			},
+		);
+		expect(await p.exited).toBe(0);
+		return repo;
+	}
+
+	test("the decision-rights listing is whole, or unknown past the cap", async () => {
+		const b = await bare();
+		const head = await b.commit(
+			[
+				[EMPTY_MODE, "a.txt", b.one],
+				[EMPTY_MODE, "a-first.txt", b.one],
+				...fillers(19_000, b.one),
+			],
+			"refs/heads/run",
+			b.base,
+		);
+		expect(await branchChangedFiles(b.repo, b.base, head)).toContain(
+			"a-first.txt",
+		);
+		const over = await b.commit(
+			[[EMPTY_MODE, "a.txt", b.one], ...fillers(MAX_SCOPE_PATHS + 5, b.one)],
+			"refs/heads/over",
+			b.base,
+		);
+		expect(await branchChangedFiles(b.repo, b.base, over)).toBeNull();
+	}, 60_000);
+
+	test("the agent-review tamper check never matches on a cut status", async () => {
+		const repo = await longStatus();
+		const before = await worktreeState(repo);
+		const after = await worktreeState(repo);
+		expect(before).not.toBeNull();
+		expect(after).not.toBe(before);
+	}, 60_000);
+
+	test("a remote stage refuses a listing past the output cap", async () => {
+		const repo = await longStatus();
+		await expect(
+			listWorkspacePaths(["ls-files", "--cached", "-z"], repo),
+		).rejects.toBeInstanceOf(RemoteWorkspaceError);
+	}, 60_000);
 });

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,7 +10,7 @@ import type {
 } from "./brain.ts";
 import { claudeEnvelopeUsage } from "./brain.ts";
 import { PROBE_SENTINEL } from "./containment/minimal-probe.ts";
-import { git } from "./git.ts";
+import { git, gitComplete } from "./git.ts";
 import { type ProcOpts, type ProcResult, runProc } from "./proc.ts";
 import {
 	agentSandboxPath,
@@ -81,14 +82,16 @@ async function gitOut(args: string[], cwd: string): Promise<string> {
 }
 
 /** HEAD plus every tracked and untracked change, as one comparable string. */
-async function worktreeState(path: string): Promise<string | null> {
+export async function worktreeState(path: string): Promise<string | null> {
 	const head = await git(["rev-parse", "HEAD"], path);
 	if (head.exitCode !== 0) return null;
-	const status = await git(
+	// The tamper check compares two of these. A status that cannot be read in
+	// full is unique, so it reads as a change rather than as "nothing moved".
+	const status = await gitComplete(
 		["status", "--porcelain=v1", "--untracked-files=all"],
 		path,
-	);
-	return `${head.stdout.trim()}\n${status.stdout}`;
+	).catch(() => `unverifiable:${randomUUID()}`);
+	return `${head.stdout.trim()}\n${status}`;
 }
 
 export class AgentReviewInference implements InferenceClient {
