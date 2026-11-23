@@ -81,6 +81,8 @@ export const authedFetch: typeof fetch = Object.assign(
 			headers,
 			credentials: "same-origin",
 		});
+		// The stored key is left alone: a planted cookie can cause these answers,
+		// and only signing in or out may replace it.
 		let lost = res.status === 401;
 		if (res.status === 403) {
 			const body = (await res
@@ -89,10 +91,7 @@ export const authedFetch: typeof fetch = Object.assign(
 				.catch(() => null)) as { error?: string } | null;
 			lost = body?.error === "request_key";
 		}
-		if (lost) {
-			writeRequestKey(null);
-			redirectToLogin();
-		}
+		if (lost) redirectToLogin();
 		return res;
 	},
 	{ preconnect: fetch.preconnect },

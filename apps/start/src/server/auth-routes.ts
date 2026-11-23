@@ -9,6 +9,8 @@ import {
 	type GuardResult,
 	jsonResponse,
 	sessionCookie,
+	shadowCookieClears,
+	withCookies,
 } from "./auth-guard";
 
 /**
@@ -107,20 +109,18 @@ export async function handleAuthAction(
 
 	if (action === "logout" && method === "POST") {
 		if (guarded.token) await auth.logout(guarded.token);
-		return jsonResponse(
-			200,
-			{ state: "login" },
-			{ "Set-Cookie": clearSessionCookie(req, base) },
-		);
+		return withCookies(jsonResponse(200, { state: "login" }), [
+			...shadowCookieClears(req, base),
+			clearSessionCookie(req, base),
+		]);
 	}
 
 	if (action === "sign-out-everywhere" && method === "POST") {
 		await auth.revokeAll();
-		return jsonResponse(
-			200,
-			{ state: "login" },
-			{ "Set-Cookie": clearSessionCookie(req, base) },
-		);
+		return withCookies(jsonResponse(200, { state: "login" }), [
+			...shadowCookieClears(req, base),
+			clearSessionCookie(req, base),
+		]);
 	}
 
 	if (action === "password" && method === "POST") {
@@ -164,10 +164,16 @@ export async function handleAuthAction(
 					peer,
 				);
 			}
-			return jsonResponse(
-				200,
-				{ state: "authenticated", requestKey: issued.requestKey },
-				{ "Set-Cookie": sessionCookie(req, issued.token, base) },
+			return withCookies(
+				jsonResponse(200, {
+					state: "authenticated",
+					requestKey: issued.requestKey,
+				}),
+				// The deletions first: the session cookie is the last word.
+				[
+					...shadowCookieClears(req, base),
+					sessionCookie(req, issued.token, base),
+				],
 			);
 		} catch (e) {
 			if (isAuthRefused(e)) return refusal(e);

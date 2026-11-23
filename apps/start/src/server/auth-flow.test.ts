@@ -12,7 +12,12 @@ import { AuthService } from "@mfw/daemon/auth/service";
 import type { Orchestrator } from "@mfw/daemon/services";
 import { safeNext } from "../lib/auth-paths";
 import { announceFirstRun } from "./auth-boot";
-import { guardRequest, REQUEST_KEY_HEADER, sessionCookie } from "./auth-guard";
+import {
+	guardRequest,
+	REQUEST_KEY_HEADER,
+	readSessionTokens,
+	sessionCookie,
+} from "./auth-guard";
 import {
 	AUTH_INTENT_HEADER,
 	handleAuthAction,
@@ -57,8 +62,10 @@ async function action(
 	return handleAuthAction(name, req, guarded, auth, base);
 }
 
-const cookieOf = (res: Response) =>
-	(res.headers.get("set-cookie") ?? "").split(";")[0] as string;
+/** The session's Set-Cookie: the others delete shadow cookies. */
+const liveSetCookie = (res: Response) =>
+	res.headers.getSetCookie().find((c) => !c.includes("Max-Age=0")) ?? "";
+const cookieOf = (res: Response) => liveSetCookie(res).split(";")[0] as string;
 
 describe("first run", () => {
 	test("the token is printed once, and never once an owner exists", async () => {
@@ -104,7 +111,7 @@ describe("cookies", () => {
 	};
 
 	test("HttpOnly and SameSite=Strict, not Secure on plain HTTP", async () => {
-		const c = (await issue({})).headers.get("set-cookie") as string;
+		const c = liveSetCookie(await issue({}));
 		expect(c).toStartWith("mfw_session=");
 		expect(c).toContain("HttpOnly");
 		expect(c).toContain("SameSite=Strict");
@@ -113,9 +120,7 @@ describe("cookies", () => {
 	});
 
 	test("Secure with the __Secure- name behind TLS", async () => {
-		const c = (await issue({ "x-forwarded-proto": "https" })).headers.get(
-			"set-cookie",
-		) as string;
+		const c = liveSetCookie(await issue({ "x-forwarded-proto": "https" }));
 		expect(c).toStartWith("__Secure-mfw_session=");
 		expect(c).toContain("; Secure");
 	});
@@ -436,6 +441,107 @@ describe("password change and sign out everywhere over HTTP (reviewer M4)", () =
 		expect(res.headers.get("set-cookie")).toContain("Max-Age=0");
 		expect(await auth.authenticate(cookie.split("=")[1])).toBeNull();
 		expect(await auth.authenticate(cookieOf(other).split("=")[1])).toBeNull();
+	});
+});
+
+describe("planted cookies (recheck N2)", () => {
+	const BOGUS = "A".repeat(43);
+	const signedIn = async () => {
+		const token = (await auth.beginFirstRun()) as string;
+		const res = await action("setup", { token, password: PASSWORD });
+		const { requestKey } = (await res.json()) as { requestKey: string };
+		return { value: cookieOf(res).split("=")[1] as string, key: requestKey };
+	};
+	const api = (cookie: string, key?: string) =>
+		guardRequest(
+			new Request(`${ORIGIN}/api/files/x/y.png`, {
+				headers: {
+					host: "localhost:7777",
+					cookie,
+					...(key ? { [REQUEST_KEY_HEADER]: key } : {}),
+				},
+			}),
+			{ auth, base: "/", env: {}, api: true },
+		);
+
+	test("the real session is found behind a planted value", async () => {
+		const { value, key } = await signedIn();
+		expect(
+			(await api(`mfw_session=${BOGUS}; mfw_session=${value}`, key)).ok,
+		).toBe(true);
+		expect(
+			(await api(`mfw_session=${value}; mfw_session=${BOGUS}`, key)).ok,
+		).toBe(true);
+	});
+
+	test("many planted values on longer paths cannot push it past the cap", async () => {
+		const { value, key } = await signedIn();
+		const planted = Array.from(
+			{ length: 40 },
+			(_, i) => `mfw_session=${BOGUS.slice(2)}${String(i).padStart(2, "0")}`,
+		);
+		expect(
+			(await api(`${planted.join("; ")}; mfw_session=${value}`, key)).ok,
+		).toBe(true);
+		expect(
+			readSessionTokens(
+				new Request(ORIGIN, { headers: { cookie: planted.join("; ") } }),
+			).length,
+		).toBe(8);
+	});
+
+	test("several cookies do not replace the key", async () => {
+		const { value } = await signedIn();
+		expect((await api(`mfw_session=${BOGUS}; mfw_session=${value}`)).ok).toBe(
+			false,
+		);
+		expect(
+			(await api(`mfw_session=${BOGUS}; mfw_session=${value}`, BOGUS)).ok,
+		).toBe(false);
+	});
+
+	test("login deletes shadows on every app path, then sets the session last", async () => {
+		const token = (await auth.beginFirstRun()) as string;
+		const res = await action(
+			"setup",
+			{ token, password: PASSWORD },
+			{ cookie: `mfw_session=${BOGUS}` },
+			"/mfw/",
+		);
+		const cookies = res.headers.getSetCookie();
+		const last = cookies.at(-1) as string;
+		expect(last).toContain("Path=/mfw;");
+		expect(last).not.toContain("Max-Age=0");
+		for (const path of [
+			"/",
+			"/mfw/",
+			"/mfw/api",
+			"/mfw/api/trpc",
+			"/mfw/api/files",
+		])
+			expect(
+				cookies.some(
+					(c) => c.includes(`Path=${path};`) && c.includes("Max-Age=0"),
+				),
+			).toBe(true);
+		// Never a deletion for the session's own path.
+		expect(
+			cookies.filter(
+				(c) => c.includes("Path=/mfw;") && c.includes("Max-Age=0"),
+			),
+		).toEqual([]);
+	});
+
+	test("the browser client keeps its key on a 401", () => {
+		const source = readFileSync(
+			join(import.meta.dir, "../lib/auth-client.ts"),
+			"utf8",
+		);
+		const fetcher = source.slice(
+			source.indexOf("export const authedFetch"),
+			source.indexOf("export function isAuthedAssetUrl"),
+		);
+		expect(fetcher).not.toContain("writeRequestKey");
 	});
 });
 

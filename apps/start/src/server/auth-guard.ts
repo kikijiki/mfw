@@ -68,16 +68,49 @@ export function isTls(req: Request): boolean {
 	return forwarded?.split(",")[0]?.trim().toLowerCase() === "https";
 }
 
-export function readSessionToken(req: Request): string | null {
+/** How many values of the session cookie are considered. */
+const MAX_SESSION_COOKIES = 8;
+
+/**
+ * Every well-formed value of the session cookie, best candidate first. Another
+ * localhost port can plant a cookie with this name on a longer Path, and
+ * browsers send longer Paths first, so the real one comes LAST: reading from
+ * the end means a pile of planted cookies cannot push it past the cap.
+ */
+export function readSessionTokens(req: Request): string[] {
 	const name = isTls(req) ? COOKIE_TLS : COOKIE_PLAIN;
+	const values: string[] = [];
 	for (const part of (req.headers.get("cookie") ?? "").split(";")) {
 		const at = part.indexOf("=");
-		if (at > 0 && part.slice(0, at).trim() === name) {
-			const value = part.slice(at + 1).trim();
-			return /^[A-Za-z0-9_-]{32,128}$/.test(value) ? value : null;
-		}
+		if (at <= 0 || part.slice(0, at).trim() !== name) continue;
+		const value = part.slice(at + 1).trim();
+		if (/^[A-Za-z0-9_-]{32,128}$/.test(value)) values.push(value);
 	}
-	return null;
+	return [...new Set(values.reverse())].slice(0, MAX_SESSION_COOKIES);
+}
+
+/** The value that authenticates and matches the key, else one that authenticates. */
+async function resolveSession(
+	auth: AuthService,
+	tokens: readonly string[],
+	key: string | null,
+): Promise<{
+	session: AuthenticatedSession | null;
+	token: string | null;
+	keyValid: boolean;
+}> {
+	let cookieOnly: { session: AuthenticatedSession; token: string } | null =
+		null;
+	for (const token of tokens) {
+		const session = await auth.authenticate(token);
+		if (!session) continue;
+		if (auth.checkRequestKey(session, key))
+			return { session, token, keyValid: true };
+		cookieOnly ??= { session, token };
+	}
+	return cookieOnly
+		? { ...cookieOnly, keyValid: false }
+		: { session: null, token: null, keyValid: false };
 }
 
 function cookieAttributes(req: Request, base: string): string {
@@ -98,6 +131,47 @@ export function sessionCookie(
 export function clearSessionCookie(req: Request, base: string): string {
 	const name = isTls(req) ? COOKIE_TLS : COOKIE_PLAIN;
 	return `${name}=; ${cookieAttributes(req, base)}; Max-Age=0`;
+}
+
+/**
+ * Deletions for shadow cookies a sibling port may have planted: one per Path a
+ * request to this app can match, except the session's own. A browser removes a
+ * cookie only when name and Path both match.
+ */
+export function shadowCookieClears(req: Request, base: string): string[] {
+	const name = isTls(req) ? COOKIE_TLS : COOKIE_PLAIN;
+	const root = base.replace(/\/$/, "");
+	const own = root || "/";
+	const paths = new Set(["/", root, `${root}/`]);
+	for (const sub of [
+		"api",
+		"api/",
+		"api/auth",
+		"api/trpc",
+		"api/files",
+		"api/docs",
+		"api/attachments",
+		"login",
+		"settings",
+		"p",
+	])
+		paths.add(`${root}/${sub}`);
+	paths.delete("");
+	paths.delete(own);
+	const secure = isTls(req) ? "; Secure" : "";
+	return [...paths].map(
+		(path) =>
+			`${name}=; Path=${path}; HttpOnly; SameSite=Strict${secure}; Max-Age=0`,
+	);
+}
+
+/** Add Set-Cookie headers; each must stay a separate header. */
+export function withCookies(
+	res: Response,
+	cookies: readonly string[],
+): Response {
+	for (const cookie of cookies) res.headers.append("Set-Cookie", cookie);
+	return res;
 }
 
 export function jsonResponse(
@@ -205,13 +279,13 @@ export async function guardRequest(
 			}),
 		};
 
-	const token = readSessionToken(req);
-	const session = await deps.auth.authenticate(token);
-	const keyValid =
-		!!session &&
-		deps.auth.checkRequestKey(session, req.headers.get(REQUEST_KEY_HEADER));
+	const { session, token, keyValid } = await resolveSession(
+		deps.auth,
+		readSessionTokens(req),
+		req.headers.get(REQUEST_KEY_HEADER),
+	);
 	if (isPublicPath(rel, req.method))
-		return { ok: true, session, token: session ? token : null, keyValid };
+		return { ok: true, session, token, keyValid };
 
 	if (!session || !token)
 		return { ok: false, response: unauthenticated(req, url, rel, base) };

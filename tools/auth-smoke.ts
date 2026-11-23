@@ -171,7 +171,11 @@ async function authPost(
 		),
 		{ ms: 8000, ...(from ? { from } : {}) },
 	);
-	const setCookie = /set-cookie: ([^\r\n]+)/i.exec(res.head)?.[1] ?? "";
+	// The session's cookie: the other Set-Cookie headers delete shadow cookies.
+	const setCookie =
+		[...res.head.matchAll(/set-cookie: ([^\r\n]+)/gi)]
+			.map((m) => m[1] as string)
+			.find((c) => !/Max-Age=0/i.test(c)) ?? "";
 	let json: Record<string, unknown> = {};
 	try {
 		json = JSON.parse(res.body);
@@ -460,6 +464,256 @@ async function loopbackIsOneSource(
 	check("unlock lets the owner back in", after.status === 200, after.status);
 }
 
+const BOGUS = "A".repeat(43);
+
+/** N2: a planted cookie is sent first, and must not hide the real one. */
+async function plantedCookie(port: number): Promise<void> {
+	const session = await authPost(port, "login", { password: PASSWORD });
+	const value = session.cookie.split("=")[1] as string;
+	const both = `mfw_session=${BOGUS}; mfw_session=${value}`;
+	const api = await raw(
+		port,
+		request("GET", `/mfw/api/trpc/${Q}`, {
+			Cookie: both,
+			"x-mfw-key": session.key,
+		}),
+	);
+	check(
+		"a shadow cookie does not hide the real session",
+		api.status === 200,
+		api.status,
+	);
+	const state = await raw(
+		port,
+		request("GET", "/mfw/api/auth/state", {
+			Cookie: both,
+			"x-mfw-key": session.key,
+		}),
+	);
+	check(
+		"state sees the real session behind a shadow",
+		state.body.includes("authenticated"),
+		state.body,
+	);
+	const relogin = await authPost(
+		port,
+		"login",
+		{ password: PASSWORD },
+		{ Cookie: `mfw_session=${BOGUS}` },
+	);
+	check(
+		"login works with a planted cookie",
+		relogin.status === 200,
+		relogin.status,
+	);
+	const cleared = [...relogin.head.matchAll(/set-cookie: ([^\r\n]+)/gi)].map(
+		(m) => m[1] as string,
+	);
+	check(
+		"login clears shadow cookies on the longer paths",
+		cleared.some((c) => /Path=\/mfw\/api(;|$)/.test(c) && /Max-Age=0/.test(c)),
+		cleared.length,
+	);
+	const fresh = (cleared.find((c) => !/Max-Age=0/.test(c)) ?? "").split(
+		";",
+	)[0] as string;
+	const afterLogin = await raw(
+		port,
+		request("GET", `/mfw/api/trpc/${Q}`, {
+			Cookie: `mfw_session=${BOGUS}; ${fresh}`,
+			"x-mfw-key": relogin.key,
+		}),
+	);
+	check(
+		"the new session works behind the planted cookie",
+		afterLogin.status === 200,
+		afterLogin.status,
+	);
+	const stolen = await raw(
+		port,
+		request("GET", `/mfw/api/trpc/${Q}`, { Cookie: both }),
+	);
+	check(
+		"several cookies without the key are still refused",
+		stolen.status === 403,
+		stolen.status,
+	);
+}
+
+/** N2 in a real browser: script on a sibling localhost port plants the cookie. */
+async function plantedCookieInChrome(
+	port: number,
+	scratch: string,
+): Promise<void> {
+	const chromeBin = Bun.which("google-chrome") ?? Bun.which("chromium");
+	if (!chromeBin) {
+		if (process.env.MFW_SMOKE_CHROME === "1")
+			check("Chrome is available", false);
+		else console.log("auth-smoke: no Chrome on PATH, browser case not run");
+		return;
+	}
+	const sibling = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		fetch: () =>
+			new Response("<!doctype html><title>sibling</title>", {
+				headers: { "content-type": "text/html" },
+			}),
+	});
+	const cdpPort = await freePort();
+	const chrome = Bun.spawn(
+		[
+			chromeBin,
+			"--headless=new",
+			"--no-sandbox",
+			"--disable-gpu",
+			"--disable-dev-shm-usage",
+			"--no-first-run",
+			"--disable-background-networking",
+			"--disable-component-update",
+			"--no-proxy-server",
+			`--user-data-dir=${join(scratch, "chrome")}`,
+			`--remote-debugging-port=${cdpPort}`,
+			"--remote-debugging-address=127.0.0.1",
+			"about:blank",
+		],
+		{
+			env: { PATH: process.env.PATH ?? "", HOME: join(scratch, "home") },
+			stdout: "ignore",
+			stderr: "ignore",
+		},
+	);
+	let ws: WebSocket | null = null;
+	try {
+		let target: { type: string; webSocketDebuggerUrl: string } | undefined;
+		for (let i = 0; i < 150 && !target; i++) {
+			try {
+				const list = (await (
+					await fetch(`http://127.0.0.1:${cdpPort}/json`)
+				).json()) as { type: string; webSocketDebuggerUrl: string }[];
+				target = list.find((t) => t.type === "page");
+			} catch {
+				// not up yet
+			}
+			if (!target) await Bun.sleep(100);
+		}
+		if (!target) throw new Error("Chrome did not start");
+		const socket = new WebSocket(target.webSocketDebuggerUrl);
+		ws = socket;
+		await new Promise((r) =>
+			socket.addEventListener("open", r, { once: true }),
+		);
+		let id = 0;
+		const pending = new Map<
+			number,
+			(v: { result?: { result?: { value?: unknown } } }) => void
+		>();
+		socket.addEventListener("message", (m) => {
+			const d = JSON.parse(String(m.data));
+			if (d.id) pending.get(d.id)?.(d);
+		});
+		const send = (method: string, params: unknown = {}) =>
+			new Promise<{ result?: { result?: { value?: unknown } } }>((done) => {
+				const i = ++id;
+				pending.set(i, done);
+				socket.send(JSON.stringify({ id: i, method, params }));
+			});
+		const ev = async (expression: string) =>
+			(
+				await send("Runtime.evaluate", {
+					expression,
+					awaitPromise: true,
+					returnByValue: true,
+				})
+			).result?.result?.value;
+		const until = async (expression: string, ms = 45_000) => {
+			const end = Date.now() + ms;
+			while (Date.now() < end) {
+				try {
+					if (await ev(expression)) return true;
+				} catch {
+					// navigating
+				}
+				await Bun.sleep(150);
+			}
+			return false;
+		};
+		const app = `http://localhost:${port}/mfw`;
+		// `document.cookie` cannot see a cookie scoped to a longer path.
+		const hasPlanted = async () => {
+			const r = (await send("Network.getCookies", {
+				urls: [`${app}/api/trpc/x`],
+			})) as unknown as { result?: { cookies?: { value: string }[] } };
+			return (r.result?.cookies ?? []).some((c) => c.value === BOGUS);
+		};
+		const KEY = "mfw:auth:request-key";
+		await send("Page.enable");
+		await send("Runtime.enable");
+		await send("Page.navigate", { url: `${app}/login` });
+		await until(
+			`location.pathname === '/mfw/login' && document.readyState === 'complete'`,
+		);
+		const signedIn = await ev(
+			`fetch('/mfw/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json', 'x-mfw-auth': '1' }, body: ${JSON.stringify(JSON.stringify({ password: PASSWORD }))} }).then(async (r) => { if (r.ok) localStorage.setItem(${JSON.stringify(KEY)}, (await r.json()).requestKey); return r.status; })`,
+		);
+		check("Chrome: signs in", signedIn === 200, signedIn);
+		const key = await ev(`localStorage.getItem(${JSON.stringify(KEY)})`);
+
+		await send("Page.navigate", { url: `http://localhost:${sibling.port}/` });
+		await until(`document.title === 'sibling'`);
+		await ev(
+			`document.cookie = "mfw_session=${BOGUS}; path=/mfw/api; max-age=31536000"`,
+		);
+		check("Chrome: the sibling page planted the cookie", await hasPlanted());
+
+		await send("Page.navigate", { url: `${app}/settings` });
+		await until(
+			`location.pathname === '/mfw/settings' && document.readyState === 'complete'`,
+		);
+		await Bun.sleep(2500);
+		check(
+			"Chrome: a planted cookie does not bounce the owner to login",
+			(await ev("location.pathname")) === "/mfw/settings",
+			await ev("location.href"),
+		);
+		check(
+			"Chrome: a planted cookie does not wipe the key",
+			(await ev(`localStorage.getItem(${JSON.stringify(KEY)})`)) === key,
+		);
+		const status = await ev(
+			`fetch('/mfw/api/trpc/${Q}', { headers: { 'x-mfw-key': localStorage.getItem(${JSON.stringify(KEY)}) ?? '' } }).then((r) => r.status)`,
+		);
+		check(
+			"Chrome: the API still answers behind the planted cookie",
+			status === 200,
+			status,
+		);
+		const again = await ev(
+			`fetch('/mfw/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json', 'x-mfw-auth': '1' }, body: ${JSON.stringify(JSON.stringify({ password: PASSWORD }))} }).then(async (r) => { if (r.ok) localStorage.setItem(${JSON.stringify(KEY)}, (await r.json()).requestKey); return r.status; })`,
+		);
+		const afterLogin = await ev(
+			`fetch('/mfw/api/trpc/${Q}', { headers: { 'x-mfw-key': localStorage.getItem(${JSON.stringify(KEY)}) ?? '' } }).then((r) => r.status)`,
+		);
+		check(
+			"Chrome: signing in again works with the planted cookie",
+			again === 200 && afterLogin === 200,
+			`${again}/${afterLogin}`,
+		);
+		await send("Page.navigate", { url: `http://localhost:${sibling.port}/` });
+		await until(`document.title === 'sibling'`);
+		check("Chrome: login removed the planted cookie", !(await hasPlanted()));
+	} finally {
+		try {
+			ws?.close();
+		} catch {
+			// already closed
+		}
+		chrome.kill("SIGKILL");
+		await chrome.exited;
+		sibling.stop(true);
+	}
+}
+
 async function main(): Promise<number> {
 	if (!existsSync(ENTRY)) {
 		console.error("auth-smoke: no production build. Fix: bun run build");
@@ -556,6 +810,8 @@ async function main(): Promise<number> {
 		await matrix(port, setup.cookie, setup.key);
 		await streamEndsOnLogout(port);
 		await loopbackIsOneSource(port, mfwHome, env);
+		await plantedCookie(port);
+		await plantedCookieInChrome(port, scratch);
 		check(
 			"no agent CLI ran",
 			!existsSync(join(fakeHome, ".codex")) &&

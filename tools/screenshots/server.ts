@@ -157,7 +157,9 @@ async function signIn(base: string, mfwHome: string): Promise<void> {
 	});
 	if (!res.ok) throw new Error(`sign-in failed: HTTP ${res.status}`);
 	const { requestKey } = (await res.json()) as { requestKey: string };
-	const cookie = (res.headers.get("set-cookie") ?? "").split(";")[0] as string;
+	// The session's cookie: the other Set-Cookie headers delete shadow cookies.
+	const live = res.headers.getSetCookie().find((c) => !c.includes("Max-Age=0"));
+	const cookie = (live ?? "").split(";")[0] as string;
 	sessions.set(base, { cookie, key: requestKey });
 }
 
