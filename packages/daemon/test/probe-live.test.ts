@@ -25,16 +25,17 @@ import {
 import type { Check } from "../src/containment/host-caps.ts";
 import { launchSandbox } from "../src/containment/launch-sandbox.ts";
 import { PROBE_READY, PROBE_RESULT } from "../src/containment/probe-child.ts";
+import { collectProbe } from "../src/containment/probe-collect.ts";
 import type {
 	CgroupObservation,
 	ProbeItemId,
 	ProbeItemResult,
 } from "../src/containment/probe-evaluate.ts";
+import { probeOutcome } from "../src/containment/probe-evaluate.ts";
 import {
 	type AttestResult,
 	attestSandbox,
 	buildProbePlan,
-	collectProbe,
 	decodeBwrapOptions,
 	probeCommand,
 	probeSyscallPlan,
@@ -220,22 +221,74 @@ const NAMESPACES_NO_NET = [
 	"--unshare-cgroup",
 ];
 
+type Weaken = (c: CompiledSandbox) => CompiledSandbox;
+
+/**
+ * Probe a deliberately weakened sandbox. Built from the lower-level pieces,
+ * because the production `attestSandbox` cannot be handed a changed sandbox.
+ * Nothing here is recorded.
+ */
+async function probeWeakened(
+	weaken: Weaken,
+	opts: {
+		profile?: SandboxProfile;
+		host?: CompileHost;
+		targets?: ReturnType<typeof targets>;
+	} = {},
+) {
+	const profile = opts.profile ?? baseProfile();
+	const host = opts.host ?? compileHost();
+	const bun = host.toolchain.resolved.find((b) => b.name === "bun");
+	const result = compileBwrap(profile, probeCommand(bun?.path as string), host);
+	if (!result.ok) throw new Error(result.reason);
+	const compiled = weaken(result);
+	const server = net.createServer((s) => s.destroy());
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	try {
+		const plan = buildProbePlan(
+			profile,
+			compiled,
+			{
+				...(opts.targets ?? targets()),
+				...probeToolchainTargets(host.toolchain),
+				realpath: host.realpath,
+			},
+			{
+				nonce: "weakened",
+				loopbackPort: (server.address() as net.AddressInfo).port,
+				scope: "none",
+			},
+		);
+		const items = await collectProbe(compiled, plan, {
+			scope: "none",
+			timeoutMs: 40_000,
+		});
+		return { items, outcome: probeOutcome(items) };
+	} finally {
+		await new Promise<void>((r) => server.close(() => r()));
+	}
+}
+
 async function attest(
-	weaken?: (c: CompiledSandbox) => CompiledSandbox,
+	weaken?: Weaken,
 	profile = baseProfile(),
 	fleetExecBaseline: readonly { path: string; sha256: string }[] = [],
-): Promise<AttestResult> {
+): Promise<Pick<AttestResult, "items" | "outcome">> {
+	if (weaken) {
+		return probeWeakened(weaken, {
+			profile,
+			targets: { ...targets(), fleetExecBaseline: [...fleetExecBaseline] },
+		});
+	}
 	const r = await attestSandbox({
 		db: handle.db,
 		runId: "r1",
 		profile,
 		host: compileHost(),
 		targets: { ...targets(), fleetExecBaseline },
-		// The launch has no scope in the cage. The plan still expects one, so
-		// `readCgroup` is the only stand-in and every other item is real.
+		// The launch has no scope in the cage, so `cgroup_limits` always fails.
 		scope: "none",
 		timeoutMs: 40_000,
-		weaken,
 	});
 	if (!r.ok) throw new Error(`attest refused: ${r.reason}`);
 	return r;
@@ -319,21 +372,14 @@ describe.skipIf(skip !== null)("the probe in a real sandbox", () => {
 		expect(failedBesidesScope(ok.items)).toEqual([]);
 
 		// The same layout with one more file of the real home bound in.
-		const leaked = await attestSandbox({
-			db: handle.db,
-			runId: "r1",
-			profile: baseProfile(),
-			host,
-			targets: targets(),
-			scope: "none",
-			timeoutMs: 40_000,
-			weaken: beforeRemount(
+		const leaked = await probeWeakened(
+			beforeRemount(
 				"--ro-bind",
 				join(home, "notes.txt"),
 				join(home, "notes.txt"),
 			),
-		});
-		if (!leaked.ok) throw new Error(leaked.reason);
+			{ host },
+		);
 		expect(failed(leaked.items)).toContain("home_absent");
 	}, 90_000);
 
@@ -573,33 +619,29 @@ describe.skipIf(skip !== null)("the probe in a real sandbox", () => {
 		writeFileSync(join(realHome, ".ssh/id_canary"), "not a real key\n");
 		const linkHome = join(root, "link-home");
 		symlinkSync(realHome, linkHome);
-		const r = await attestSandbox({
-			db: handle.db,
-			runId: "r1",
-			profile: baseProfile(),
-			host: compileHost({
-				home: linkHome,
-				toolchain: discoverToolchain({
-					home: linkHome,
-					binaries: ["bun"],
-					path: `${resolve(BUN, "..")}:${process.env.PATH ?? ""}`,
-				}),
-			}),
-			targets: {
-				home: linkHome,
-				mfwHome: mfw,
-				protectedPaths: [join(linkHome, ".ssh")],
-				fleetExecBaseline: [],
-			},
-			scope: "none",
-			timeoutMs: 40_000,
-			weaken: beforeRemount(
+		const r = await probeWeakened(
+			beforeRemount(
 				"--ro-bind",
 				join(realHome, ".ssh"),
 				join(realHome, ".ssh"),
 			),
-		});
-		if (!r.ok) throw new Error(r.reason);
+			{
+				host: compileHost({
+					home: linkHome,
+					toolchain: discoverToolchain({
+						home: linkHome,
+						binaries: ["bun"],
+						path: `${resolve(BUN, "..")}:${process.env.PATH ?? ""}`,
+					}),
+				}),
+				targets: {
+					home: linkHome,
+					mfwHome: mfw,
+					protectedPaths: [join(linkHome, ".ssh")],
+					fleetExecBaseline: [],
+				},
+			},
+		);
 		expect(measured(r.items)).toBe(true);
 		expect(failed(r.items)).toContain("secrets_absent");
 		expect(failed(r.items)).toContain("home_absent");
@@ -850,11 +892,39 @@ describe.skipIf(skip !== null)("forged results", () => {
 		for (const name of ["probe-result.json", "attestation.json"]) {
 			writeFileSync(join(work, name), JSON.stringify(forged));
 		}
-		const r = await attest(without("--disable-userns"));
-		expect(failed(r.items)).toContain("compiled_flags");
+		// No scope in the cage, so the honest outcome here is a recorded failure.
+		const r = await attest();
+		expect(failed(r.items)).toEqual(["cgroup_limits"]);
 		expect(r.outcome).toBe("fail");
 		const row = await latestAttestation(handle.db, "r1");
 		expect(row?.outcome).toBe("fail");
+	}, 45_000);
+
+	test("the production request cannot stub the cgroup or change the sandbox", async () => {
+		const stub = join(root, "systemd-run");
+		writeFileSync(
+			stub,
+			`#!${Bun.which("sh")}\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n`,
+			{ mode: 0o755 },
+		);
+		const r = await attestSandbox({
+			db: handle.db,
+			runId: "r1",
+			profile: baseProfile(),
+			host: compileHost({ systemdRunPath: stub }),
+			targets: targets(),
+			scope: "systemd",
+			timeoutMs: 40_000,
+			readCgroup: honestScope(),
+			weaken: without("--new-session"),
+		} as never);
+		if (!r.ok) throw new Error(r.reason);
+		expect(measured(r.items)).toBe(true);
+		// The stubbed reading is ignored, so a fake scope proves nothing...
+		expect(failed(r.items)).toContain("cgroup_limits");
+		// ...and the sandbox that ran is the one that was compiled.
+		expect(failed(r.items)).not.toContain("compiled_flags");
+		expect((await latestAttestation(handle.db, "r1"))?.outcome).toBe("fail");
 	}, 45_000);
 
 	test("a planted bunfig preload and .env do not run in the probe", async () => {
