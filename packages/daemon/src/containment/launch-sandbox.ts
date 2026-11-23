@@ -92,6 +92,12 @@ export interface LaunchOptions {
 	 * successful spawn takes ownership.
 	 */
 	sealedProbeFds?: readonly number[];
+	/**
+	 * The write end of a host-owned pipe, placed right after the pins. The
+	 * sandbox entry reports on it and closes it before it execs the check. A
+	 * successful spawn takes ownership.
+	 */
+	startPipeFd?: number;
 }
 
 /**
@@ -287,6 +293,15 @@ export function launchSandbox(
 	}
 	const sealed = options.sealedProbeFds ?? [];
 	if (sealed.length > 0) checkSealedFds(sealed, options.approvalMode);
+	if (options.startPipeFd !== undefined) {
+		if (sealed.length > 0) {
+			throw new SandboxLaunchError(
+				"invalid_compiled",
+				"a probe launch has no start handshake",
+			);
+		}
+		checkStdio("the start pipe", options.startPipeFd);
+	}
 	const expectPins = approvedPins(compiled, options) ?? options.expectPins;
 
 	const opened = openSandboxFds(compiled, options.tmpDir);
@@ -306,6 +321,7 @@ export function launchSandbox(
 			stderr,
 			...opened.fds,
 			...sealed,
+			...(options.startPipeFd === undefined ? [] : [options.startPipeFd]),
 		]);
 	} catch (err) {
 		// A spawn that throws leaves the descriptors with us.

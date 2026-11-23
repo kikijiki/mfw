@@ -17,7 +17,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { closeSync, realpathSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ProjectDb } from "@mfw/db/client";
 import {
@@ -30,9 +30,15 @@ import { AgentProfileError } from "./agent-profile.ts";
 import {
 	type CheckRunner,
 	CheckSandboxRefusal,
+	checkStartedOn,
 	drainTail,
+	openStartPipe,
 } from "./check-runner.ts";
-import { type CompileHost, compileBwrap } from "./compile-bwrap.ts";
+import {
+	type CompileHost,
+	compileBwrap,
+	FIRST_PINNED_FD,
+} from "./compile-bwrap.ts";
 import { ProfileRejectedError } from "./profile.ts";
 import { buildVerifierProfile, VERIFIER_TOOLS } from "./role-profiles.ts";
 
@@ -47,9 +53,14 @@ export interface CheckSandboxDeps {
 /**
  * Set inside, so no value crosses from the host. A check has no terminal and
  * nobody to answer a prompt: `true` is a no-op editor.
+ *
+ * The entry reports on the start pipe and closes it before the exec, so no
+ * candidate code ever holds it. Without that report the exit status is the
+ * sandbox's, not the check's.
  */
-const CHECK_ENTRY =
-	'export MFW_VERIFY=1 EDITOR=true GIT_EDITOR=true VISUAL=true GIT_TERMINAL_PROMPT=0; exec "$0" -c "$1"';
+export function checkEntry(startFd: number): string {
+	return `export MFW_VERIFY=1 EDITOR=true GIT_EDITOR=true VISUAL=true GIT_TERMINAL_PROMPT=0; printf 'started\\n' >&${startFd} || exit 125; exec ${startFd}>&-; exec "$0" -c "$1"`;
+}
 
 const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
@@ -122,12 +133,23 @@ export function createCheckSandbox(deps: CheckSandboxDeps): CheckRunner {
 			}
 			throw err;
 		}
+		// The pins depend on the profile alone, so this fixes the pipe's number.
+		const shape = compileBwrap(profile, [sh.path], host);
+		if (!shape.ok) return refuse(shape.code, shape.reason, shape.fix);
+		const startFd = FIRST_PINNED_FD + shape.pinnedBinds.length;
+		if (startFd > 9) {
+			return refuse(
+				"profile",
+				"too many binds for the check's start pipe",
+				"reduce the declared caches",
+			);
+		}
 		const compiled = compileBwrap(
 			profile,
 			[
 				sh.path,
 				"-c",
-				CHECK_ENTRY,
+				checkEntry(startFd),
 				sh.path,
 				checkShellText(req.command, req.prefix),
 			],
@@ -189,10 +211,20 @@ export function createCheckSandbox(deps: CheckSandboxDeps): CheckRunner {
 			};
 		}
 
-		const child = steps.launch(compiled, {
-			approvalMode: "autonomous",
-			authorization: gate.authorization,
-		});
+		const start = openStartPipe();
+		let child: ReturnType<LauncherSteps["launch"]>;
+		try {
+			child = steps.launch(compiled, {
+				approvalMode: "autonomous",
+				authorization: gate.authorization,
+				startPipeFd: start.write,
+			});
+		} catch (err) {
+			// A launch that threw left both ends with us.
+			closeSync(start.write);
+			closeSync(start.read);
+			throw err;
+		}
 		(child.stdin as unknown as { end(): void }).end();
 		let timedOut = false;
 		// bwrap dies with its parent and takes the check's pid namespace with it.
@@ -202,6 +234,7 @@ export function createCheckSandbox(deps: CheckSandboxDeps): CheckRunner {
 			kill();
 		}, req.timeoutMs);
 		req.signal?.addEventListener("abort", kill, { once: true });
+		let started: boolean | null = null;
 		try {
 			const [out, err, exitCode] = await Promise.all([
 				drainTail(child.stdout as never, req.maxOutputBytes),
@@ -209,6 +242,14 @@ export function createCheckSandbox(deps: CheckSandboxDeps): CheckRunner {
 				child.exited,
 			]);
 			const signalCode = (child.signalCode ?? null) as NodeJS.Signals | null;
+			started = checkStartedOn(start.read);
+			if (!started) {
+				return refuse(
+					"no_start_handshake",
+					`the sandbox ended (${signalCode ?? `exit ${exitCode}`}) before the check started`,
+					"run `mfw doctor`, then retry",
+				);
+			}
 			return {
 				exitCode: signalCode ? null : exitCode,
 				stdout: out.text,
@@ -220,6 +261,8 @@ export function createCheckSandbox(deps: CheckSandboxDeps): CheckRunner {
 		} finally {
 			clearTimeout(timer);
 			req.signal?.removeEventListener("abort", kill);
+			// Reading it closes it, so only an early throw leaves it open.
+			if (started === null) closeSync(start.read);
 		}
 	};
 }

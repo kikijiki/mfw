@@ -229,6 +229,63 @@ describe.skipIf(skip !== null)("a DoD check in the verifier role", () => {
 		expect(left.stdout.toString().trim()).toBe("0");
 	}, 60_000);
 
+	// Review P7, H1 (X3): the probe passes, then the check's scope exits 1 before
+	// the command starts, which must not satisfy `expect_exit: 1`.
+	test("a sandbox that dies before the check started is never a result", async () => {
+		const expectOne = {
+			verifier: "deterministic",
+			checks: [{ run: "exit 0", expect_exit: 1 }],
+		} as never;
+		const control = await verifyInClone(
+			clones,
+			sha,
+			"control",
+			{
+				verifier: "deterministic",
+				checks: [{ run: "exit 1", expect_exit: 1 }],
+			} as never,
+			sha,
+		);
+		expect(control.passed).toBe(true);
+		const reallyRan = await verifyInClone(clones, sha, "ran", expectOne, sha);
+		expect(reallyRan.passed).toBe(false);
+		expect(reallyRan.crashed).toBe(false);
+
+		const dyingShim = join(base, "dying-shim");
+		writeFileSync(
+			dyingShim,
+			'#!/bin/sh\ncase "$*" in *MFW_VERIFY=1*) exit 1;; esac\nwhile [ "$#" -gt 0 ]; do a="$1"; shift; [ "$a" = "--" ] && break; done\nexec "$@"\n',
+		);
+		chmodSync(dyingShim, 0o755);
+		const dying = new VerifierClones({
+			workspaceRoot: join(base, "mfw/workspaces"),
+			primaryRoot: primary,
+			checkRunner: createCheckSandbox({
+				db: handle.db,
+				mfwHome: join(base, "mfw"),
+				projectRoot: primary,
+				stateDir: join(primary, ".mfw"),
+				steps: cagedSteps({
+					home,
+					path: process.env.PATH ?? "",
+					shim: dyingShim,
+				}),
+			}),
+		});
+		const r = await verifyInClone(dying, sha, "dying", expectOne, sha);
+		expect(r.passed).toBe(false);
+		expect(r.crashed).toBe(true);
+		expect(r.checks[0]?.detail).toContain("no_start_handshake");
+	}, 60_000);
+
+	test("the check itself cannot reach the handshake pipe", async () => {
+		const r = await check(
+			'for fd in 3 4 5 6 7 8 9; do if ( : >&"$fd" ) 2>/dev/null; then exit 9; fi; done',
+		);
+		expect(r.checks[0]?.detail).toBeUndefined();
+		expect(r.passed).toBe(true);
+	}, 60_000);
+
 	test("the launch used a recorded, consumed attestation", async () => {
 		await check("true");
 		const uses = await handle.client.execute(
