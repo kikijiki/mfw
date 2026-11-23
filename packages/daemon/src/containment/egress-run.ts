@@ -9,8 +9,10 @@
  *
  * Three locations, none readable from another run's sandbox:
  *
- * - `$MFW_HOME/run/s/<hash>/e.sock`: the socket directory, the only part bound
- *   into the sandbox (read-only, pinned). It holds nothing else;
+ * - `<socket root>/s/<hash>/e.sock`: the socket directory, the only part bound
+ *   into the sandbox (read-only, pinned). It holds nothing else. It is outside
+ *   `$MFW_HOME` and short (socket-root.ts), because a unix socket path is
+ *   limited to 107 bytes;
  * - `<runDir>/egress/`: config and counters, in the host-only run root;
  * - `$MFW_HOME/run/e/<hash>.json`: the index recovery uses to find a proxy whose
  *   run is gone.
@@ -21,7 +23,6 @@ import { createHash } from "node:crypto";
 import {
 	chmodSync,
 	lstatSync,
-	mkdirSync,
 	readdirSync,
 	readFileSync,
 	renameSync,
@@ -35,6 +36,11 @@ import {
 	egressSocketPath,
 	type UploadBudget,
 } from "./egress-proxy.ts";
+import {
+	ensurePrivateDir,
+	ensureSocketRoot,
+	socketRoot,
+} from "./socket-root.ts";
 
 export const EGRESS_SOCKET_NAME = "e.sock";
 
@@ -115,19 +121,6 @@ export function runEgressPaths(
 	};
 }
 
-/** A real directory of ours, mode 0700. Refuses a planted link or a shared directory. */
-function ensurePrivateDir(path: string): void {
-	mkdirSync(path, { recursive: true, mode: 0o700 });
-	const st = lstatSync(path);
-	if (
-		!st.isDirectory() ||
-		st.uid !== process.getuid?.() ||
-		(st.mode & 0o077) !== 0
-	) {
-		throw new Error(`egress directory ${path} is not private to this user`);
-	}
-}
-
 /**
  * Create the run's directories and proxy config, replacing what an earlier
  * launch of the same run left. Counters are kept, so a relaunch adds to them.
@@ -142,6 +135,7 @@ export function prepareRunEgress(input: {
 	maxRuns?: number;
 }): RunEgressPaths {
 	const paths = runEgressPaths(input.mfwHome, input.runDir, input.runId);
+	ensureSocketRoot(input.mfwHome);
 	for (const dir of [dirname(paths.socketDir), indexRoot(input.mfwHome)]) {
 		ensurePrivateDir(dir);
 	}
@@ -329,7 +323,9 @@ export async function sweepRunEgress(
 	} catch {
 		return report;
 	}
-	const socketsRoot = join(mfwHome, "run", "s");
+	const socketsRoot = join(socketRoot(mfwHome), "s");
+	// Where the directories lived before sockets moved out of `$MFW_HOME`.
+	const legacyRoot = join(mfwHome, "run", "s");
 	for (const name of names) {
 		if (!/^[0-9a-f]{12}\.json$/.test(name)) continue;
 		const path = join(root, name);
@@ -360,10 +356,9 @@ export async function sweepRunEgress(
 			}
 		}
 		// Derived from the index file's name, never from its contents.
-		rmSync(join(socketsRoot, name.slice(0, 12)), {
-			recursive: true,
-			force: true,
-		});
+		for (const root of [socketsRoot, legacyRoot]) {
+			rmSync(join(root, name.slice(0, 12)), { recursive: true, force: true });
+		}
 		rmSync(path, { force: true });
 		report.removed++;
 	}

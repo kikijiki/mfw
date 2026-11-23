@@ -8,6 +8,7 @@ import {
 	type Row,
 	type Transaction,
 } from "@libsql/client";
+import { pooledTransactions } from "@mfw/db/client";
 import { parsePoolId, parseQuotaRef } from "../../../plugin-api/src/pool-id.ts";
 import {
 	capacityRaised,
@@ -2982,10 +2983,18 @@ export async function openResourceStore(
 	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
 	const timeout = options.busyTimeoutMs ?? 2_000;
 	const slice = Math.max(1, Math.min(25, timeout));
-	const client = createClient({
+	const clientOptions = {
 		url: `file:${path}`,
-		intMode: "bigint",
+		intMode: "bigint" as const,
 		timeout: slice,
+	};
+	// Transactions run on pooled dedicated connections, never on the main one:
+	// libsql would otherwise hand its connection to each and strand it.
+	const client = pooledTransactions(createClient(clientOptions), {
+		open: () => createClient(clientOptions),
+		pragmas: `PRAGMA synchronous=FULL;
+					 PRAGMA foreign_keys=ON;
+					 PRAGMA busy_timeout=${slice};`,
 	});
 	try {
 		const started = performance.now();

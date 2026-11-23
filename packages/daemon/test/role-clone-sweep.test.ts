@@ -5,6 +5,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
+	readFileSync,
 	realpathSync,
 	writeFileSync,
 } from "node:fs";
@@ -64,9 +65,109 @@ afterEach(async () => {
 	await removeTree(root);
 });
 
+/** Rewrite who a clone says owns it, and how old it is. */
+function rewriteMarker(
+	clone: { root: string },
+	change: {
+		owner?: unknown;
+		dropOwner?: boolean;
+		ageMs?: number;
+	},
+): void {
+	const file = join(clone.root, "mfw-workspace.json");
+	const meta = JSON.parse(readFileSync(file, "utf8"));
+	if (change.owner !== undefined) meta.owner = change.owner;
+	if (change.dropOwner) {
+		meta.owner = undefined;
+		meta.createdAt = undefined;
+	}
+	if (change.ageMs !== undefined) {
+		meta.createdAt = new Date(Date.now() - change.ageMs).toISOString();
+	}
+	writeFileSync(file, `${JSON.stringify(meta)}\n`);
+}
+
+/** What a daemon that died mid-run leaves: an owner that is gone. */
+async function abandonAsCrashed(clone: { root: string }): Promise<void> {
+	const dead = Bun.spawn(["true"]);
+	await dead.exited;
+	rewriteMarker(clone, { owner: { instance: "gone", pid: dead.pid } });
+}
+
+describe("the owner record of a role clone", () => {
+	test("names this instance and process, and when it was made", async () => {
+		const c = await createRoleClone(project, "owned");
+		const meta = JSON.parse(
+			readFileSync(join(c.root, "mfw-workspace.json"), "utf8"),
+		);
+		expect(meta.owner.pid).toBe(process.pid);
+		expect(typeof meta.owner.instance).toBe("string");
+		expect(meta.owner.instance.length).toBeGreaterThan(8);
+		expect(typeof meta.owner.startTicks).toBe("string");
+		expect(Number.isFinite(Date.parse(meta.createdAt))).toBe(true);
+		expect(meta.primaryRoot).toBe(project);
+	});
+});
+
+describe("sweeping role clones is owner-aware", () => {
+	test("a clone this process just made is spared even if its session is not up yet", async () => {
+		const c = await createRoleClone(project, "launching");
+		expect(await sweepRoleClones(project, async () => false)).toBe(0);
+		expect(existsSync(c.tree)).toBe(true);
+	});
+
+	test("this process's clone goes once it is past the launch grace and its session is dead", async () => {
+		const c = await createRoleClone(project, "old-own");
+		rewriteMarker(c, { ageMs: 60 * 60_000 });
+		expect(await sweepRoleClones(project, async () => true)).toBe(0);
+		expect(await sweepRoleClones(project, async () => false)).toBe(1);
+		expect(existsSync(c.root)).toBe(false);
+	});
+
+	test("a clone another live daemon owns is spared until the age bound", async () => {
+		const c = await createRoleClone(project, "theirs");
+		// Another process that is alive: this test's parent.
+		rewriteMarker(c, {
+			owner: { instance: "other", pid: process.ppid },
+			ageMs: 60 * 60_000,
+		});
+		expect(await sweepRoleClones(project, async () => false)).toBe(0);
+		expect(existsSync(c.tree)).toBe(true);
+		expect(
+			await sweepRoleClones(project, async () => false, { orphanAgeMs: 0 }),
+		).toBe(1);
+	});
+
+	test("a pid that was reused by another process does not keep a clone", async () => {
+		const c = await createRoleClone(project, "reused");
+		rewriteMarker(c, {
+			owner: { instance: "gone", pid: process.ppid, startTicks: "1" },
+		});
+		expect(await sweepRoleClones(project, async () => false)).toBe(1);
+	});
+
+	test("an owner record with no creation time and a clone from before records are swept after the grace", async () => {
+		const c = await createRoleClone(project, "legacy");
+		rewriteMarker(c, { dropOwner: true });
+		expect(await sweepRoleClones(project, async () => false)).toBe(0);
+		expect(
+			await sweepRoleClones(project, async () => false, { launchGraceMs: 0 }),
+		).toBe(1);
+	});
+
+	test("liveness still has the last word: a live session keeps a crashed owner's clone", async () => {
+		const c = await createRoleClone(project, "survivor");
+		await abandonAsCrashed(c);
+		expect(await sweepRoleClones(project, async () => true)).toBe(0);
+		expect(await sweepRoleClones(project, async () => null)).toBe(0);
+		expect(existsSync(c.tree)).toBe(true);
+	});
+});
+
 describe("sweeping role clones after a crash", () => {
 	test("a dead run's clone goes, even one it poisoned", async () => {
 		const c = await createRoleClone(project, "dead");
+		await abandonAsCrashed(c);
 		mkdirSync(join(c.root, "fleet-state/locked"), { recursive: true });
 		chmodSync(join(c.root, "fleet-state/locked"), 0o000);
 		expect(await sweepRoleClones(project, async () => false)).toBe(1);
@@ -75,12 +176,14 @@ describe("sweeping role clones after a crash", () => {
 
 	test("a live run's clone stays", async () => {
 		const c = await createRoleClone(project, "live");
+		await abandonAsCrashed(c);
 		expect(await sweepRoleClones(project, async () => true)).toBe(0);
 		expect(existsSync(c.tree)).toBe(true);
 	});
 
 	test("an unknown liveness keeps it", async () => {
 		const c = await createRoleClone(project, "unknown");
+		await abandonAsCrashed(c);
 		expect(await sweepRoleClones(project, async () => null)).toBe(0);
 		expect(existsSync(c.tree)).toBe(true);
 	});
@@ -88,6 +191,8 @@ describe("sweeping role clones after a crash", () => {
 	test("another project's clone in the shared root is left alone", async () => {
 		const mine = await createRoleClone(project, "mine");
 		const theirs = await createRoleClone(other, "theirs");
+		await abandonAsCrashed(mine);
+		await abandonAsCrashed(theirs);
 		expect(await sweepRoleClones(project, async () => false)).toBe(1);
 		expect(existsSync(mine.root)).toBe(false);
 		expect(existsSync(theirs.tree)).toBe(true);

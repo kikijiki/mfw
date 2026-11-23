@@ -249,7 +249,9 @@ describe("host resource store", () => {
 			version: 1n,
 		}));
 		const generation = (await store.freshModel()).generation;
-		await store.client.execute(`CREATE TEMP TRIGGER fail_second_detected_binding
+		// A real trigger, not a TEMP one: transactions run on their own pooled
+		// connections, and a temp trigger belongs to the connection that made it.
+		await store.client.execute(`CREATE TRIGGER fail_second_detected_binding
 			BEFORE INSERT ON rp_host_bindings
 			WHEN NEW.id = 'gpu-amd-b'
 			BEGIN SELECT RAISE(ABORT, 'injected detected binding failure'); END`);
@@ -294,7 +296,7 @@ describe("host resource store", () => {
 			kernelBootId: "kernel-a",
 		});
 		const generation = (await store.freshModel()).generation;
-		await store.client.execute(`CREATE TEMP TRIGGER fail_second_detected_resource
+		await store.client.execute(`CREATE TRIGGER fail_second_detected_resource
 			BEFORE INSERT ON rp_host_definitions
 			WHEN NEW.id = 'ram'
 			BEGIN SELECT RAISE(ABORT, 'injected second recommendation failure'); END`);

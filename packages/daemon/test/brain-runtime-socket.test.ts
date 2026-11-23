@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { BrainSocket } from "../src/brain-runtime/brain-socket.ts";
+import { socketRoot } from "../src/containment/socket-root.ts";
 import { type BrainUnit, brainUnit } from "./support/brain-unit.ts";
 
 /**
@@ -43,7 +44,9 @@ describe("a brain turn's MCP server", () => {
 		const t = await started();
 		const { env } = t.launch.mcp;
 		expect(env.MFW_URL).toBeUndefined();
-		expect(env.MFW_SOCKET?.startsWith(join(home ?? "", "run", "b"))).toBe(true);
+		expect(env.MFW_SOCKET?.startsWith(join(socketRoot(home ?? ""), "b"))).toBe(
+			true,
+		);
 		expect(env.MFW_SOCKET?.endsWith("/brain.sock")).toBe(true);
 		expect(env.MFW_BRAIN_TURN).toBe(t.runId);
 		expect(env.MFW_PROJECT).toBe("unit");
@@ -94,7 +97,7 @@ describe("the unix socket is the brain's only transport", () => {
 		const t = await started();
 		expect(t.launch.mcp.env.MFW_URL).toBeUndefined();
 		expect(
-			t.launch.mcp.env.MFW_SOCKET?.startsWith(join(home ?? "", "run")),
+			t.launch.mcp.env.MFW_SOCKET?.startsWith(socketRoot(home ?? "")),
 		).toBe(true);
 		expect(t.launch.mcp.env.MFW_SOCKET?.endsWith("/brain.sock")).toBe(true);
 	});

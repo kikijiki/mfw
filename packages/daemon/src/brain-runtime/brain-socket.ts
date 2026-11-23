@@ -2,6 +2,11 @@ import { createHash, randomBytes } from "node:crypto";
 import { unlinkSync } from "node:fs";
 import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import {
+	assertSocketPathFits,
+	ensureSocketRoot,
+	socketRoot,
+} from "../containment/socket-root.ts";
 
 /**
  * The brain's transport: a unix socket instead of unauthenticated TCP.
@@ -52,8 +57,6 @@ export type BrainSocketHandler = (
 	binding: BrainTurnBinding,
 ) => Response | Promise<Response>;
 
-/** Linux `sun_path` holds 108 bytes including the NUL. */
-const MAX_SOCKET_PATH = 100;
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const TURN_DIR_CHARS = 12;
 /** Names inside a turn's directory, which a brain sandbox binds read-only. */
@@ -77,9 +80,8 @@ interface TurnEndpoint {
 }
 
 export class BrainSocket {
-	readonly dir: string;
-	/** Short, because a unix socket path is limited: `<home>/run/b/<hash>/brain.sock`. */
-	private readonly turnRoot: string;
+	/** Where turns lived before sockets moved out of `$MFW_HOME`. */
+	private readonly legacyTurnRoot: string;
 	private handler: BrainSocketHandler | null = null;
 	private prepared: Promise<void> | null = null;
 	/** sha256(token) -> binding. */
@@ -94,9 +96,20 @@ export class BrainSocket {
 		}
 	};
 
-	constructor(home: string) {
-		this.dir = join(resolve(home), "run");
-		this.turnRoot = join(this.dir, "b");
+	constructor(private readonly home: string) {
+		this.legacyTurnRoot = join(resolve(home), "run", "b");
+	}
+
+	/**
+	 * Short and outside `$MFW_HOME`, because a unix socket path is limited to
+	 * 107 bytes: `<socket root>/b/<hash>/brain.sock` (socket-root.ts).
+	 */
+	get dir(): string {
+		return socketRoot(this.home);
+	}
+
+	private get turnRoot(): string {
+		return join(this.dir, "b");
 	}
 
 	setHandler(handler: BrainSocketHandler | null): void {
@@ -121,10 +134,7 @@ export class BrainSocket {
 			sha(binding.runId).slice(0, TURN_DIR_CHARS),
 		);
 		const socketPath = join(turnDir, BRAIN_SOCKET_FILE);
-		if (socketPath.length > MAX_SOCKET_PATH)
-			throw new Error(
-				`the brain socket path is too long for a unix socket (${socketPath.length} > ${MAX_SOCKET_PATH}); set MFW_HOME to a shorter directory`,
-			);
+		assertSocketPathFits(socketPath, "brain socket");
 		await rm(turnDir, { recursive: true, force: true });
 		await mkdir(turnDir, { mode: 0o700 });
 		await chmod(turnDir, 0o700);
@@ -188,8 +198,8 @@ export class BrainSocket {
 
 	private async sweepTurns(): Promise<void> {
 		// The directory is the real barrier (0700); the socket mode is belt and braces.
-		await mkdir(this.dir, { recursive: true, mode: 0o700 });
-		await chmod(this.dir, 0o700);
+		ensureSocketRoot(this.home);
+		await rm(this.legacyTurnRoot, { recursive: true, force: true });
 		// A previous daemon's tokens are dead with it: never leave their files around.
 		await rm(this.turnRoot, { recursive: true, force: true });
 		await mkdir(this.turnRoot, { recursive: true, mode: 0o700 });

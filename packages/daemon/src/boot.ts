@@ -46,6 +46,7 @@ import { agentSandboxRefusal } from "./containment/agent-preflight.ts";
 import { createCheckSandbox } from "./containment/check-sandbox.ts";
 import { runDirLayout } from "./containment/run-dir.ts";
 import { assertRunDead } from "./containment/run-liveness.ts";
+import { ensureSocketRoot } from "./containment/socket-root.ts";
 import { CredentialStore, WorkloadSecretGrantStore } from "./credentials.ts";
 import { ensureBoardConfig } from "./default-board-config.ts";
 import { readMemAvailable } from "./dispatch-preflight.ts";
@@ -2276,6 +2277,9 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 	const startedAt = Date.now();
 	const log = (opts.log ?? rootLogger()).child({ bootId });
 	const home = resolve(opts.mfwHome ?? configuredMfwHome());
+	// Per-run unix sockets live in a short host-owned directory. Refuse to start
+	// where none can exist, rather than fail the first sandboxed run with network.
+	ensureSocketRoot(home);
 	const kernelBootId =
 		opts.kernelBootId === undefined
 			? await readKernelBootId()

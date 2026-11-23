@@ -9,6 +9,7 @@ import {
 	type BrainSocketAccess,
 	brainSocketFor,
 } from "../src/brain-runtime/brain-socket.ts";
+import { socketRoot } from "../src/containment/socket-root.ts";
 
 /**
  * The brain socket in isolation: a stand-in handler records what reaches the
@@ -79,11 +80,11 @@ describe("brain socket", () => {
 	test("the socket and token file are 0600 under a 0700 run directory", async () => {
 		const { dir, socket } = await setup();
 		const access = await socket.issue(binding);
-		expect(access.socketPath.startsWith(join(dir, "run", "b"))).toBe(true);
+		expect(access.socketPath.startsWith(join(socketRoot(dir), "b"))).toBe(true);
 		expect(basename(access.socketPath)).toBe("brain.sock");
 		expect(dirname(access.tokenFile)).toBe(dirname(access.socketPath));
 		expect(statSync(access.socketPath).mode & 0o777).toBe(0o600);
-		expect(statSync(join(dir, "run")).mode & 0o777).toBe(0o700);
+		expect(statSync(socketRoot(dir)).mode & 0o777).toBe(0o700);
 		expect(statSync(access.tokenFile).mode & 0o777).toBe(0o600);
 		expect((await tokenOf(access)).length).toBeGreaterThanOrEqual(32);
 	});
@@ -247,7 +248,7 @@ describe("brain socket", () => {
 		sockets.push(next);
 		next.setHandler(async () => new Response("{}"));
 		const fresh = await next.issue({ ...binding, runId: "R9" });
-		expect(await readdir(join(dir, "run", "b"))).toEqual([
+		expect(await readdir(join(socketRoot(dir), "b"))).toEqual([
 			basename(dirname(fresh.tokenFile)),
 		]);
 		expect(existsSync(access.tokenFile)).toBe(false);
@@ -270,12 +271,26 @@ describe("brain socket", () => {
 		expect(existsSync(access.tokenFile)).toBe(false);
 	});
 
-	test("a home whose path cannot be a unix socket is refused with the fix", async () => {
+	test("a very long home still gets a socket that fits", async () => {
 		const dir = await home();
-		const long = new BrainSocket(join(dir, "x".repeat(120)));
-		await expect(long.issue(binding)).rejects.toThrow(
-			/set MFW_HOME to a shorter/,
-		);
+		const long = new BrainSocket(join(dir, "x".repeat(200), "y".repeat(200)));
+		sockets.push(long);
+		const access = await long.issue(binding);
+		expect(Buffer.byteLength(access.socketPath)).toBeLessThanOrEqual(107);
+		expect(access.socketPath.startsWith(dir)).toBe(false);
+		expect(statSync(access.socketPath).mode & 0o777).toBe(0o600);
+	});
+
+	test("an unusable socket directory is refused with the fix", async () => {
+		const prior = process.env.MFW_SOCKET_DIR;
+		process.env.MFW_SOCKET_DIR = join(await home(), "z".repeat(110));
+		try {
+			const s = new BrainSocket(await home());
+			await expect(s.issue(binding)).rejects.toThrow(/MFW_SOCKET_DIR/);
+		} finally {
+			if (prior === undefined) delete process.env.MFW_SOCKET_DIR;
+			else process.env.MFW_SOCKET_DIR = prior;
+		}
 	});
 
 	test("brainSocketFor shares one socket per home", async () => {

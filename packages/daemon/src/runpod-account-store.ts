@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type Client, createClient } from "@libsql/client";
+import { pooledTransactions } from "@mfw/db/client";
 import type { ExecutionOwnership } from "./execution-target.ts";
 import type { RunPodPod } from "./runpod-client.ts";
 import type {
@@ -341,14 +342,18 @@ export class RunPodAccountStore {
 	): Promise<RunPodAccountStore> {
 		const path = RunPodAccountStore.path(mfwHome, accountId);
 		await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-		const client = createClient({ url: `file:${path}` });
+		const url = `file:${path}`;
+		const connectionPragmas = [
+			"PRAGMA synchronous=FULL;",
+			"PRAGMA foreign_keys=ON;",
+			`PRAGMA busy_timeout=${WRITER_WAIT_MS};`,
+		].join("\n");
+		const client = pooledTransactions(createClient({ url }), {
+			open: () => createClient({ url }),
+			pragmas: connectionPragmas,
+		});
 		await client.executeMultiple(
-			[
-				"PRAGMA journal_mode=WAL;",
-				"PRAGMA synchronous=FULL;",
-				"PRAGMA foreign_keys=ON;",
-				`PRAGMA busy_timeout=${WRITER_WAIT_MS};`,
-			].join("\n"),
+			`PRAGMA journal_mode=WAL;\n${connectionPragmas}`,
 		);
 		const versionResult = await client.execute("PRAGMA user_version");
 		const version = rowNumber(versionResult.rows[0]?.user_version ?? 0);

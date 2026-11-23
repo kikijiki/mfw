@@ -57,6 +57,49 @@ async function until(check: () => boolean, ms = 15_000): Promise<void> {
 	}
 }
 
+describe("a very long MFW_HOME", () => {
+	test("the egress socket stays under the unix path limit and is private", () => {
+		const long = join(root, "x".repeat(200), "y".repeat(200));
+		mkdirSync(long, { recursive: true, mode: 0o700 });
+		const paths = prepareRunEgress({
+			mfwHome: long,
+			runDir,
+			runId: "r1",
+			allow: [],
+		});
+		expect(Buffer.byteLength(paths.socketPath)).toBeLessThanOrEqual(107);
+		expect(paths.socketPath.startsWith(long)).toBe(false);
+		expect(statSync(paths.socketDir).mode & 0o777).toBe(0o700);
+		// Only the index and config stay in the (long) home and run directory.
+		expect(paths.indexPath.startsWith(long)).toBe(true);
+	});
+
+	test("an unusable socket directory refuses the launch with the fix", () => {
+		const prior = process.env.MFW_SOCKET_DIR;
+		process.env.MFW_SOCKET_DIR = join(root, "z".repeat(110));
+		try {
+			expect(() =>
+				prepareRunEgress({ mfwHome, runDir, runId: "r1", allow: [] }),
+			).toThrow(/MFW_SOCKET_DIR/);
+		} finally {
+			if (prior === undefined) delete process.env.MFW_SOCKET_DIR;
+			else process.env.MFW_SOCKET_DIR = prior;
+		}
+	});
+
+	test("the sweep removes a dead run's socket directory from the short root", async () => {
+		const paths = prepareRunEgress({
+			mfwHome,
+			runDir,
+			runId: "dead",
+			allow: [],
+		});
+		expect(existsSync(paths.socketDir)).toBe(true);
+		await sweepRunEgress(mfwHome, async () => false, { graceMs: 0 });
+		expect(existsSync(paths.socketDir)).toBe(false);
+	});
+});
+
 function startProxy(runId = "r1", dir = runDir) {
 	const paths = prepareRunEgress({ mfwHome, runDir: dir, runId, allow: [] });
 	const child = Bun.spawn(
