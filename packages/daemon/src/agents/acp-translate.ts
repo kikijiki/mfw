@@ -18,8 +18,10 @@ import type {
 	ToolKind,
 } from "@agentclientprotocol/sdk";
 import { PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
-import type { HarnessManifest } from "@mfw/plugin-api/harness";
-import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
+import type { HarnessManifestInput } from "@mfw/plugin-api/harness";
+// A relative path: Bun.build inside the test runner fails on a second bundle
+// that reaches this file through the workspace package name.
+import { BUILTIN_HARNESS_MANIFESTS } from "../../../plugin-api/src/harness-builtins.ts";
 import {
 	type BinaryIdentity,
 	harnessBinaryIdentity,
@@ -62,8 +64,8 @@ export type AcpProfile = {
 	identity?: { bin: string; identity: BinaryIdentity };
 };
 
-function acpProfile(m: HarnessManifest): AcpProfile {
-	const acp = m.acp as NonNullable<HarnessManifest["acp"]>;
+function acpProfile(m: HarnessManifestInput): AcpProfile {
+	const acp = m.acp as NonNullable<HarnessManifestInput["acp"]>;
 	const identity = harnessBinaryIdentity(m.id);
 	return {
 		id: m.id,
@@ -79,11 +81,12 @@ function acpProfile(m: HarnessManifest): AcpProfile {
 	};
 }
 
+/** Read without the validator: the bridge bundles this file. */
 const PROFILES: Readonly<Record<string, AcpProfile>> = Object.fromEntries(
-	builtinHarnessRegistry()
-		.list()
-		.filter((m) => m.dialect === "acp")
-		.map((m) => [m.id, acpProfile(m)]),
+	BUILTIN_HARNESS_MANIFESTS.filter((m) => m.dialect === "acp").map((m) => [
+		m.id,
+		acpProfile(m),
+	]),
 );
 
 export function profileFor(name: string | undefined): AcpProfile {

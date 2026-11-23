@@ -1,12 +1,14 @@
-import {
-	type HarnessManifestInput,
-	UNATTESTED_CONFIG_MARKER,
-} from "./harness.ts";
+import type { HarnessManifestInput } from "./harness.ts";
+import { UNATTESTED_CONFIG_MARKER } from "./harness-markers.ts";
 
 /**
  * The harnesses mfw ships, as data. Every value here was moved from the
  * hand-written maps it replaces; `harness-equivalence.test.ts` compares the
  * result with a snapshot of what those maps produced.
+ *
+ * This module imports no validator, because the ACP bridge bundles it and a
+ * host script keeps a small import graph. The daemon validates this same data
+ * through the registry before it launches any bridge.
  *
  * The egress lists come from the sandbox experiments and the vendors' network
  * documentation. Left out on purpose:

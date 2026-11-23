@@ -162,6 +162,27 @@ describe("the manifests agree with the code they describe", () => {
 		}
 	});
 
+	test.each([
+		"agents/acp-translate.ts",
+		"agents/agent-identity.ts",
+	])("%s, which the ACP bridge bundles, stays free of the validator", (file) => {
+		const source = readFileSync(join(import.meta.dir, "../src", file), "utf8");
+		const runtime = [
+			...source.matchAll(/^import (?!type )[^;]*?from "([^"]+)"/gm),
+		]
+			.map((x) => x[1] as string)
+			.filter((x) => x.includes("plugin-api") || x.startsWith("@mfw/"));
+		expect(runtime).toEqual(["../../../plugin-api/src/harness-builtins.ts"]);
+	});
+
+	test("the built-in data the bridge reads is what the registry validated", () => {
+		expect(
+			BUILTIN_HARNESS_MANIFESTS.map((m) => [m.id, m.acp, m.detect.identity]),
+		).toEqual(
+			registry.list().map((m) => [m.id, m.acp, m.detect.identity]) as never,
+		);
+	});
+
 	test("skill directories match what the board installs", () => {
 		for (const tool of ALL_TOOLS) {
 			const m = registry.list().find((x) => x.detect.bin === TOOLS[tool].exe);

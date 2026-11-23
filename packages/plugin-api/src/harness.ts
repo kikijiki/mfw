@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { Id, JsonObjectSchema, Text } from "./common.ts";
+import { UNATTESTED_CONFIG_MARKER } from "./harness-markers.ts";
 
 /**
  * `mfw.harness/v1`: a manifest plus one of a fixed set of core dialects. An
@@ -40,8 +41,7 @@ export const ARGV_PLACEHOLDERS = [
 /** The manifest format this core reads (`mfw.harness/v1`). */
 export const HARNESS_SCHEMA_VERSION = 1;
 
-/** Printed wherever a fleet allowlist has not been checked against the real CLI. */
-export const UNATTESTED_CONFIG_MARKER = "unattested-config";
+export { UNATTESTED_CONFIG_MARKER };
 
 const PLACEHOLDER_RE = /\{([^{}]*)\}/g;
 

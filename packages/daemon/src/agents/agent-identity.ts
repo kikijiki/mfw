@@ -1,7 +1,9 @@
 import { realpathSync } from "node:fs";
 import { basename } from "node:path";
 import type { HarnessIdentity } from "@mfw/plugin-api/harness";
-import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
+// A relative path: Bun.build inside the test runner fails on a second bundle
+// that reaches this file through the workspace package name.
+import { BUILTIN_HARNESS_MANIFESTS } from "../../../plugin-api/src/harness-builtins.ts";
 
 /**
  * Confirms that a generically named binary on PATH (`agent`, `pi`) is the CLI
@@ -42,7 +44,9 @@ const identities = new Map<string, BinaryIdentity>();
 export function harnessBinaryIdentity(id: string): BinaryIdentity | undefined {
 	const known = identities.get(id);
 	if (known) return known;
-	const declared = builtinHarnessRegistry().get(id)?.detect.identity;
+	// The bridge imports this file, so it reads the data without the validator.
+	const declared = BUILTIN_HARNESS_MANIFESTS.find((m) => m.id === id)?.detect
+		.identity;
 	if (!declared) return undefined;
 	const identity = toBinaryIdentity(declared);
 	identities.set(id, identity);
