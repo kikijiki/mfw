@@ -1,13 +1,15 @@
+import type { HarnessDialect, HarnessManifest } from "@mfw/plugin-api/harness";
+import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 import type { ModelTier } from "../tasks/types.ts";
 import type { ProviderConfig } from "./adapter.ts";
 import {
 	type BinaryIdentity,
-	CURSOR_AGENT_IDENTITY,
-	PI_IDENTITY,
+	harnessBinaryIdentity,
 } from "./agent-identity.ts";
 
 /**
- * The agent-CLI catalogue: which providers and models exist, as data.
+ * The agent-CLI catalogue: the harness manifests in the shape the settings,
+ * routing and detection code reads.
  *
  * `drivable` is true only when a daemon adapter can run the CLI end to end
  * (Claude, Codex, and the ACP agents). Any other entry would be detected and
@@ -96,192 +98,39 @@ export const MODEL_SNAPSHOT_CHECKED = "2026-08-10";
  */
 export const MODEL_LIST_IS_A_HINT = true;
 
-/**
- * Claude Code's `--model` takes an alias or a full model name. Aliases are
- * listed first and recommended: the CLI resolves them, so they survive model
- * launches while a pinned id eventually names something retired.
- */
-const CLAUDE_MODELS: readonly ProviderModelChoice[] = [
-	{ id: "sonnet", label: "Sonnet (latest)", kind: "alias" },
-	{ id: "opus", label: "Opus (latest)", kind: "alias" },
-	{ id: "haiku", label: "Haiku (latest)", kind: "alias" },
-	{ id: "fable", label: "Fable (latest)", kind: "alias" },
-	{ id: "claude-opus-5", label: "Claude Opus 5", kind: "pinned" },
-	{ id: "claude-sonnet-5", label: "Claude Sonnet 5", kind: "pinned" },
-	{ id: "claude-opus-4-8", label: "Claude Opus 4.8", kind: "pinned" },
-	{ id: "claude-haiku-4-5", label: "Claude Haiku 4.5", kind: "pinned" },
-	{ id: "claude-fable-5", label: "Claude Fable 5", kind: "pinned" },
-];
+const CONFIG_TYPE: Readonly<Record<HarnessDialect, ProviderConfig["type"]>> = {
+	"claude-stream-json": "claude-cli",
+	"codex-app-server": "codex-cli",
+	"codex-exec": "codex-cli",
+	acp: "acp",
+};
 
-/**
- * The app server's `model/list` response is authoritative at runtime. This
- * small snapshot keeps first-time configuration useful before a Codex process
- * has been started, and remains a suggestion rather than validation.
- */
-const CODEX_MODELS: readonly ProviderModelChoice[] = [
-	{ id: "gpt-5.6", label: "GPT-5.6 (Sol alias)", kind: "alias" },
-	{ id: "gpt-5.6-sol", label: "GPT-5.6-Sol", kind: "pinned" },
-	{ id: "gpt-5.6-terra", label: "GPT-5.6-Terra", kind: "pinned" },
-	{ id: "gpt-5.6-luna", label: "GPT-5.6-Luna", kind: "pinned" },
-];
+function providerEntry(m: HarnessManifest): ProviderEntry {
+	const models = m.models;
+	if (!models?.default) throw new Error(`${m.id}: no default model`);
+	const identity = harnessBinaryIdentity(m.id);
+	return {
+		id: m.id,
+		name: m.displayName,
+		description: m.description,
+		bin: m.detect.bin,
+		versionArgs: m.detect.versionArgs,
+		...(identity ? { identity } : {}),
+		// Every manifest names a dialect, and each dialect has a core bridge.
+		drivable: true,
+		configType: CONFIG_TYPE[m.dialect],
+		...(m.acceptsEndpoints ? { acceptsEndpoints: true } : {}),
+		auth: m.auth.methods,
+		models: models.choices,
+		defaultModel: models.default,
+		modelsAreSnapshot: models.isSnapshot,
+		...(m.docsUrl ? { docsUrl: m.docsUrl } : {}),
+		...(models.tiers ? { tiers: models.tiers } : {}),
+	};
+}
 
-/** ACP agents own their model list; the bridge picks over ACP session config, and `default` leaves the agent's own choice. */
-const ACP_MODELS: readonly ProviderModelChoice[] = [
-	{ id: "default", label: "Agent default", kind: "alias" },
-];
-
-export const PROVIDER_CATALOGUE: readonly ProviderEntry[] = [
-	{
-		id: "claude-cli",
-		name: "Claude Code",
-		description:
-			"Anthropic's Claude Code CLI, driven in stream-json mode through mfw's compatibility server.",
-		bin: "claude",
-		versionArgs: ["--version"],
-		drivable: true,
-		configType: "claude-cli",
-		auth: [
-			{
-				kind: "subscription",
-				loginFiles: [".claude/.credentials.json"],
-				hint: "Run `claude` once and sign in, or `claude setup-token`. A Claude subscription needs no API key: this is how most operators run mfw.",
-			},
-			{
-				kind: "api-key",
-				credentialId: "anthropic",
-				envVars: ["ANTHROPIC_API_KEY"],
-				hint: "Pay-per-token instead of a subscription. NOTE: mfw does not yet inject a stored key into the agent's environment: export ANTHROPIC_API_KEY for the daemon until it does.",
-			},
-		],
-		models: CLAUDE_MODELS,
-		defaultModel: "sonnet",
-		modelsAreSnapshot: true,
-		docsUrl: "https://code.claude.com/docs/en/cli-reference",
-		tiers: { light: "haiku", standard: "sonnet", strong: "opus" },
-	},
-	{
-		id: "codex-cli",
-		name: "OpenAI Codex CLI",
-		description:
-			"OpenAI's Codex CLI, driven through its app-server protocol with structured lifecycle events, steering, interruption and approvals.",
-		bin: "codex",
-		versionArgs: ["--version"],
-		drivable: true,
-		configType: "codex-cli",
-		acceptsEndpoints: true,
-		auth: [
-			{
-				kind: "subscription",
-				loginFiles: [".codex/auth.json"],
-				hint: "Sign in through the Codex CLI itself.",
-			},
-		],
-		models: CODEX_MODELS,
-		defaultModel: "gpt-5.6-sol",
-		modelsAreSnapshot: true,
-		docsUrl: "https://developers.openai.com/codex/app-server",
-		tiers: {
-			light: "gpt-5.6-luna",
-			standard: "gpt-5.6-terra",
-			strong: "gpt-5.6-sol",
-		},
-	},
-	{
-		id: "gemini-cli",
-		name: "Gemini CLI",
-		description:
-			"Google's Gemini CLI, driven over the Agent Client Protocol (`gemini --acp`). Runs tasks, project-brain turns (read-only plan mode) and critic calls; no custom endpoints.",
-		bin: "gemini",
-		versionArgs: ["--version"],
-		drivable: true,
-		configType: "acp",
-		auth: [
-			{
-				kind: "api-key",
-				credentialId: "google",
-				envVars: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-				hint: "Set GEMINI_API_KEY, or sign in through the Gemini CLI.",
-			},
-		],
-		models: ACP_MODELS,
-		defaultModel: "default",
-		modelsAreSnapshot: false,
-		docsUrl: "https://google-gemini.github.io/gemini-cli/",
-	},
-	{
-		id: "cursor-agent",
-		name: "Cursor Agent",
-		description:
-			"Cursor's agent CLI, driven over the Agent Client Protocol (`agent acp`). Runs tasks, project-brain turns (read-only plan mode) and critic calls; no custom endpoints.",
-		bin: "agent",
-		versionArgs: ["--version"],
-		identity: CURSOR_AGENT_IDENTITY,
-		drivable: true,
-		configType: "acp",
-		auth: [
-			{
-				kind: "subscription",
-				loginFiles: [".cursor/cli-config.json"],
-				hint: "Sign in through the Cursor agent CLI itself.",
-			},
-			{
-				kind: "api-key",
-				envVars: ["CURSOR_API_KEY"],
-				hint: "Export CURSOR_API_KEY for the daemon instead of signing in.",
-			},
-		],
-		models: ACP_MODELS,
-		defaultModel: "default",
-		modelsAreSnapshot: false,
-		docsUrl: "https://cursor.com/docs/cli/acp",
-	},
-	{
-		id: "opencode",
-		name: "opencode",
-		description:
-			"opencode, driven over the Agent Client Protocol (`opencode acp`). Runs tasks, project-brain turns and critic calls with permissions denied for edits and shell; can use an OpenAI-compatible endpoint.",
-		bin: "opencode",
-		versionArgs: ["--version"],
-		drivable: true,
-		configType: "acp",
-		acceptsEndpoints: true,
-		auth: [
-			{
-				kind: "api-key",
-				credentialId: "opencode",
-				envVars: ["OPENCODE_API_KEY"],
-				hint: "Configure a provider inside opencode itself.",
-			},
-		],
-		models: ACP_MODELS,
-		defaultModel: "default",
-		modelsAreSnapshot: false,
-		docsUrl: "https://opencode.ai/docs/",
-	},
-	{
-		id: "pi",
-		name: "pi",
-		description:
-			"The pi coding agent, driven over the Agent Client Protocol through pi-acp (an MVP adapter; needs pi >= 0.81 and Node >= 22). Runs tasks, project-brain turns and critic calls; can use an OpenAI-compatible endpoint. Models are `provider/id` from your own pi configuration.",
-		bin: "pi",
-		versionArgs: ["--version"],
-		identity: PI_IDENTITY,
-		drivable: true,
-		configType: "acp",
-		acceptsEndpoints: true,
-		auth: [
-			{
-				kind: "subscription",
-				loginFiles: [".pi/agent/auth.json", ".pi/agent/models.json"],
-				hint: "Configure a provider in pi itself: `pi auth login <provider>`, or add one to ~/.pi/agent/models.json.",
-			},
-		],
-		models: ACP_MODELS,
-		defaultModel: "default",
-		modelsAreSnapshot: false,
-		docsUrl: "https://github.com/svkozak/pi-acp",
-	},
-];
+export const PROVIDER_CATALOGUE: readonly ProviderEntry[] =
+	builtinHarnessRegistry().list().map(providerEntry);
 
 /** The id a project gets when it has never been configured. */
 export const DEFAULT_PROVIDER_ID = "claude-cli";

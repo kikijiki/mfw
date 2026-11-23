@@ -2,8 +2,16 @@ import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
+import {
+	builtinHarnessRegistry,
+	type HarnessDetectionSpec,
+} from "@mfw/plugin-api/harness-registry";
 import { runProc } from "../proc.ts";
-import { checkIdentity, resolvedPath } from "./agent-identity.ts";
+import {
+	checkIdentity,
+	harnessBinaryIdentity,
+	resolvedPath,
+} from "./agent-identity.ts";
 import type {
 	ProviderAuthKind,
 	ProviderAuthMethod,
@@ -89,6 +97,34 @@ export interface DetectorDeps {
 	) => Promise<{ ok: boolean; text: string }>;
 }
 
+/** What detection needs to know about a harness. */
+export type DetectableHarness = Pick<
+	ProviderEntry,
+	"id" | "bin" | "versionArgs" | "identity"
+>;
+
+/** The manifests' detection facts, in the form the detector takes. */
+export function harnessDetectionTargets(
+	specs: readonly HarnessDetectionSpec[] = builtinHarnessRegistry().detectionSpecs(),
+): DetectableHarness[] {
+	return specs.map((spec) => {
+		const identity = harnessBinaryIdentity(spec.id);
+		return {
+			id: spec.id,
+			bin: spec.bin,
+			versionArgs: spec.versionArgs,
+			...(identity ? { identity } : {}),
+		};
+	});
+}
+
+/** Which harnesses this machine has, for the doctor and anything else that asks. */
+export function detectInstalledHarnesses(
+	detector: ProviderDetector = new ProviderDetector(),
+): Promise<Map<string, ProviderDetection>> {
+	return detector.detectAll(harnessDetectionTargets());
+}
+
 /** Caches per entry id so a polling settings panel does not spawn `--version` on every render. */
 export class ProviderDetector {
 	private readonly cache = new Map<
@@ -109,7 +145,7 @@ export class ProviderDetector {
 		this.cache.clear();
 	}
 
-	async detect(entry: ProviderEntry): Promise<ProviderDetection> {
+	async detect(entry: DetectableHarness): Promise<ProviderDetection> {
 		const hit = this.cache.get(entry.id);
 		if (hit && this.now() - hit.at < this.ttlMs) return hit.value;
 		const value = await this.probe(entry);
@@ -118,7 +154,7 @@ export class ProviderDetector {
 	}
 
 	async detectAll(
-		entries: readonly ProviderEntry[],
+		entries: readonly DetectableHarness[],
 	): Promise<Map<string, ProviderDetection>> {
 		const found = await Promise.all(entries.map((e) => this.detect(e)));
 		return new Map(found.map((d) => [d.id, d]));
@@ -126,7 +162,7 @@ export class ProviderDetector {
 
 	/** The reason `path` is not the CLI the entry means, or null when it is (or needs no check). */
 	private async identityFailure(
-		entry: ProviderEntry,
+		entry: DetectableHarness,
 		path: string,
 	): Promise<string | null> {
 		const identity = entry.identity;
@@ -159,7 +195,7 @@ export class ProviderDetector {
 		return v.ok ? null : v.reason;
 	}
 
-	private async probe(entry: ProviderEntry): Promise<ProviderDetection> {
+	private async probe(entry: DetectableHarness): Promise<ProviderDetection> {
 		const path = await whichBin(entry.bin, this.env);
 		if (!path) {
 			return { id: entry.id, installed: false, path: null, version: null };

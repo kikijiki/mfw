@@ -13,6 +13,11 @@ import {
 	type RunState,
 	reviewVerdicts,
 } from "@mfw/db/schema";
+import {
+	type HarnessArgvValues,
+	renderHarnessArgv,
+} from "@mfw/plugin-api/harness";
+import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { runAcpOneShot } from "./agents/acp-inference.ts";
@@ -114,6 +119,21 @@ function addUsage(a: InferenceUsage, b: InferenceUsage): InferenceUsage {
 
 const CLI_MAX_OUTPUT_BYTES = 1024 * 1024;
 
+/** A harness's one-shot argv from its manifest, on an optional replacement binary. */
+function inferenceArgv(
+	id: string,
+	bin: string | undefined,
+	values: HarnessArgvValues,
+): string[] {
+	const m = builtinHarnessRegistry().require(id);
+	const [command, ...rest] = renderHarnessArgv(
+		m.modes.inference ?? [],
+		m,
+		values,
+	);
+	return [bin ?? (command as string), ...rest];
+}
+
 /**
  * Headless `claude` CLI via `proc.ts` (budgeted, group-killed).
  *
@@ -144,19 +164,10 @@ export class ClaudeCliInference implements InferenceClient {
 		cwd: string,
 	): Promise<InferenceReply> {
 		const r = await runProc(
-			[
-				this.opts.bin ?? "claude",
-				"-p",
+			inferenceArgv("claude-cli", this.opts.bin, {
+				model: opts.model,
 				prompt,
-				"--model",
-				opts.model,
-				"--output-format",
-				"json",
-				"--tools",
-				"",
-				"--strict-mcp-config",
-				"--no-session-persistence",
-			],
+			}),
 			{
 				cwd,
 				env: inferenceEnv("claude-cli"),
@@ -203,19 +214,11 @@ export class CodexCliInference implements InferenceClient {
 			? ["-c", `model_reasoning_effort=${JSON.stringify(opts.reasoningEffort)}`]
 			: [];
 		const r = await runProc(
-			[
-				this.opts.bin ?? "codex",
-				"exec",
-				"--ephemeral",
-				"--sandbox",
-				"read-only",
-				"--color",
-				"never",
-				"-m",
-				opts.model,
-				...reasoning,
+			inferenceArgv("codex-cli", this.opts.bin, {
+				model: opts.model,
 				prompt,
-			],
+				effortArgv: reasoning,
+			}),
 			{
 				cwd: this.opts.cwd,
 				env: inferenceEnv("codex-cli"),

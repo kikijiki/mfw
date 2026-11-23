@@ -1,0 +1,416 @@
+{
+	"capturedFrom": "the autonomy detector before the harness manifests",
+	"rows": [
+		{
+			"argv": ["cli", "-anever"],
+			"flags": [],
+			"without": ["cli", "-anever"]
+		},
+		{
+			"argv": ["cli", "-a=never"],
+			"flags": ["-a=never"],
+			"without": ["cli"]
+		},
+		{
+			"argv": ["cli", "-sdanger-full-access"],
+			"flags": [],
+			"without": ["cli", "-sdanger-full-access"]
+		},
+		{
+			"argv": ["cli", "-s=danger-full-access"],
+			"flags": ["-s=danger-full-access"],
+			"without": ["cli"]
+		},
+		{
+			"argv": ["cli", "-capproval_policy=never"],
+			"flags": [],
+			"without": ["cli", "-capproval_policy=never"]
+		},
+		{
+			"argv": ["cli", "-csandbox_mode=danger-full-access"],
+			"flags": [],
+			"without": ["cli", "-csandbox_mode=danger-full-access"]
+		},
+		{
+			"argv": ["cli", "-capproval_policy=\"never\""],
+			"flags": [],
+			"without": ["cli", "-capproval_policy=\"never\""]
+		},
+		{
+			"argv": ["cli", "-c", "approval_policy=\"never\" # x"],
+			"flags": [],
+			"without": ["cli", "-c", "approval_policy=\"never\" # x"]
+		},
+		{
+			"argv": ["cli", "-c", "approval_policy=\"\"\"never\"\"\""],
+			"flags": [],
+			"without": ["cli", "-c", "approval_policy=\"\"\"never\"\"\""]
+		},
+		{
+			"argv": ["cli", "-c", "approval_policy='''never'''"],
+			"flags": [],
+			"without": ["cli", "-c", "approval_policy='''never'''"]
+		},
+		{
+			"argv": ["cli", "-c", "approval_policy='never'"],
+			"flags": ["-c approval_policy='never'"],
+			"without": ["cli"]
+		},
+		{
+			"argv": ["cli", "-c", "\"approval_policy\"=never"],
+			"flags": [],
+			"without": ["cli", "-c", "\"approval_policy\"=never"]
+		},
+		{
+			"argv": ["cli", "-c", "\"approval_policy\"=\"never\""],
+			"flags": [],
+			"without": ["cli", "-c", "\"approval_policy\"=\"never\""]
+		},
+		{
+			"argv": ["cli", "-c", "'approval_policy'=\"never\""],
+			"flags": [],
+			"without": ["cli", "-c", "'approval_policy'=\"never\""]
+		},
+		{
+			"argv": ["cli", "-c", "approval_policy=\"nev\\u0065r\""],
+			"flags": [],
+			"without": ["cli", "-c", "approval_policy=\"nev\\u0065r\""]
+		},
+		{
+			"argv": ["cli", "-c", "approval_policy = \"never\""],
+			"flags": ["-c approval_policy = \"never\""],
+			"without": ["cli"]
+		},
+		{
+			"argv": ["cli", "-c", "a=1\napproval_policy=\"never\""],
+			"flags": [],
+			"without": ["cli", "-c", "a=1\napproval_policy=\"never\""]
+		},
+		{
+			"argv": ["cli", "-c", "sandbox_mode=\"\"\"danger-full-access\"\"\""],
+			"flags": [],
+			"without": ["cli", "-c", "sandbox_mode=\"\"\"danger-full-access\"\"\""]
+		},
+		{
+			"argv": [
+				"cli",
+				"--config",
+				"\"sandbox_mode\"=\"danger-full-access\" # x"
+			],
+			"flags": [],
+			"without": [
+				"cli",
+				"--config",
+				"\"sandbox_mode\"=\"danger-full-access\" # x"
+			]
+		},
+		{
+			"argv": ["cli", "--config=approval_policy=\"never\" # x"],
+			"flags": [],
+			"without": ["cli", "--config=approval_policy=\"never\" # x"]
+		},
+		{
+			"argv": [
+				"cli",
+				"--settings",
+				"{\"permissions\":{\"defaultMode\":\"bypassPermissions\"}}"
+			],
+			"flags": [],
+			"without": [
+				"cli",
+				"--settings",
+				"{\"permissions\":{\"defaultMode\":\"bypassPermissions\"}}"
+			]
+		},
+		{
+			"argv": ["cli", "--settings=/tmp/settings.json"],
+			"flags": [],
+			"without": ["cli", "--settings=/tmp/settings.json"]
+		},
+		{
+			"argv": ["cli", "--profile", "x"],
+			"flags": [],
+			"without": ["cli", "--profile", "x"]
+		},
+		{
+			"argv": ["cli", "--profile=x"],
+			"flags": [],
+			"without": ["cli", "--profile=x"]
+		},
+		{
+			"argv": ["cli", "-c", "profile=x"],
+			"flags": [],
+			"without": ["cli", "-c", "profile=x"]
+		},
+		{
+			"argv": ["cli", "-c", "profiles.x.approval_policy=\"never\""],
+			"flags": [],
+			"without": ["cli", "-c", "profiles.x.approval_policy=\"never\""]
+		},
+		{
+			"argv": ["cli", "-c", "\"profiles\".\"x\".approval_policy=\"never\""],
+			"flags": [],
+			"without": ["cli", "-c", "\"profiles\".\"x\".approval_policy=\"never\""]
+		},
+		{
+			"argv": ["cli", "-cprofile=x"],
+			"flags": [],
+			"without": ["cli", "-cprofile=x"]
+		},
+		{
+			"argv": ["cli", "-c", "approvals_reviewer=agent"],
+			"flags": [],
+			"without": ["cli", "-c", "approvals_reviewer=agent"]
+		},
+		{
+			"argv": ["cli", "-c", "sandbox_workspace_write.network_access=true"],
+			"flags": [],
+			"without": ["cli", "-c", "sandbox_workspace_write.network_access=true"]
+		},
+		{
+			"argv": ["cli", "-yd"],
+			"flags": [],
+			"without": ["cli", "-yd"]
+		},
+		{
+			"argv": ["cli", "-fp"],
+			"flags": [],
+			"without": ["cli", "-fp"]
+		},
+		{
+			"argv": ["cli", "-py"],
+			"flags": [],
+			"without": ["cli", "-py"]
+		},
+		{
+			"argv": ["cli", "-pf"],
+			"flags": [],
+			"without": ["cli", "-pf"]
+		},
+		{
+			"argv": ["cli", "--FULL-AUTO"],
+			"flags": [],
+			"without": ["cli", "--FULL-AUTO"]
+		},
+		{
+			"argv": ["cli", "--full_auto"],
+			"flags": [],
+			"without": ["cli", "--full_auto"]
+		},
+		{
+			"argv": ["cli", "--Full_Auto"],
+			"flags": [],
+			"without": ["cli", "--Full_Auto"]
+		},
+		{
+			"argv": ["cli", "--YOLO"],
+			"flags": [],
+			"without": ["cli", "--YOLO"]
+		},
+		{
+			"argv": ["cli", "--FORCE"],
+			"flags": [],
+			"without": ["cli", "--FORCE"]
+		},
+		{
+			"argv": ["cli", "--Dangerously_Skip_Permissions"],
+			"flags": [],
+			"without": ["cli", "--Dangerously_Skip_Permissions"]
+		},
+		{
+			"argv": ["cli", "--approval-mode", "YOLO"],
+			"flags": [],
+			"without": ["cli", "--approval-mode", "YOLO"]
+		},
+		{
+			"argv": ["cli", "--approval_mode", "yolo"],
+			"flags": [],
+			"without": ["cli", "--approval_mode", "yolo"]
+		},
+		{
+			"argv": ["cli", "--approval-mode=YOLO"],
+			"flags": [],
+			"without": ["cli", "--approval-mode=YOLO"]
+		},
+		{
+			"argv": ["cli", "--approval-mode", "auto-edit"],
+			"flags": [],
+			"without": ["cli", "--approval-mode", "auto-edit"]
+		},
+		{
+			"argv": ["cli", "--sandbox", "DANGER-FULL-ACCESS"],
+			"flags": [],
+			"without": ["cli", "--sandbox", "DANGER-FULL-ACCESS"]
+		},
+		{
+			"argv": ["cli", "--sandbox", "danger_full_access"],
+			"flags": [],
+			"without": ["cli", "--sandbox", "danger_full_access"]
+		},
+		{
+			"argv": ["cli", "--ask-for-approval", "NEVER"],
+			"flags": [],
+			"without": ["cli", "--ask-for-approval", "NEVER"]
+		},
+		{
+			"argv": ["cli", "--permission-mode", "BYPASSPERMISSIONS"],
+			"flags": [],
+			"without": ["cli", "--permission-mode", "BYPASSPERMISSIONS"]
+		},
+		{
+			"argv": ["cli", "--model", "-f"],
+			"flags": [],
+			"without": ["cli", "--model", "-f"]
+		},
+		{
+			"argv": ["cli", "--model", "-y"],
+			"flags": [],
+			"without": ["cli", "--model", "-y"]
+		},
+		{
+			"argv": ["cli", "--model", "--force"],
+			"flags": [],
+			"without": ["cli", "--model", "--force"]
+		},
+		{
+			"argv": ["cli", "--model", "--yolo"],
+			"flags": ["--yolo"],
+			"without": ["cli", "--model"]
+		},
+		{
+			"argv": ["sh", "-c", "claude --dangerously-skip-permissions"],
+			"flags": [],
+			"without": ["sh", "-c", "claude --dangerously-skip-permissions"]
+		},
+		{
+			"argv": ["bash", "-lc", "claude --dangerously-skip-permissions"],
+			"flags": [],
+			"without": ["bash", "-lc", "claude --dangerously-skip-permissions"]
+		},
+		{
+			"argv": ["/bin/sh", "-c", "codex --yolo"],
+			"flags": [],
+			"without": ["/bin/sh", "-c", "codex --yolo"]
+		},
+		{
+			"argv": ["env", "claude", "--dangerously-skip-permissions"],
+			"flags": ["--dangerously-skip-permissions"],
+			"without": ["env", "claude"]
+		},
+		{
+			"argv": ["/usr/bin/env", "FOO=1", "claude"],
+			"flags": [],
+			"without": ["/usr/bin/env", "FOO=1", "claude"]
+		},
+		{
+			"argv": ["xargs", "claude"],
+			"flags": [],
+			"without": ["xargs", "claude"]
+		},
+		{
+			"argv": ["dash", "-c", "claude"],
+			"flags": [],
+			"without": ["dash", "-c", "claude"]
+		},
+		{
+			"argv": ["zsh", "-c", "claude"],
+			"flags": [],
+			"without": ["zsh", "-c", "claude"]
+		},
+		{
+			"argv": ["nohup", "claude"],
+			"flags": [],
+			"without": ["nohup", "claude"]
+		},
+		{
+			"argv": ["setsid", "claude"],
+			"flags": [],
+			"without": ["setsid", "claude"]
+		},
+		{
+			"argv": ["timeout", "5", "claude"],
+			"flags": [],
+			"without": ["timeout", "5", "claude"]
+		},
+		{
+			"argv": ["busybox", "sh", "-c", "claude"],
+			"flags": [],
+			"without": ["busybox", "sh", "-c", "claude"]
+		},
+		{
+			"argv": ["cli", "--sandbox", "read-only"],
+			"flags": [],
+			"without": ["cli", "--sandbox", "read-only"]
+		},
+		{
+			"argv": ["cli", "-s", "read-only"],
+			"flags": [],
+			"without": ["cli", "-s", "read-only"]
+		},
+		{
+			"argv": ["cli", "-sread-only"],
+			"flags": [],
+			"without": ["cli", "-sread-only"]
+		},
+		{
+			"argv": ["cli", "-a", "on-request"],
+			"flags": [],
+			"without": ["cli", "-a", "on-request"]
+		},
+		{
+			"argv": ["cli", "-aon-request"],
+			"flags": [],
+			"without": ["cli", "-aon-request"]
+		},
+		{
+			"argv": ["cli", "-c", "approval_policy=\"on-request\""],
+			"flags": [],
+			"without": ["cli", "-c", "approval_policy=\"on-request\""]
+		},
+		{
+			"argv": ["cli", "-c", "sandbox_mode=\"read-only\""],
+			"flags": [],
+			"without": ["cli", "-c", "sandbox_mode=\"read-only\""]
+		},
+		{
+			"argv": ["cli", "-c", "model_reasoning_effort=\"high\""],
+			"flags": [],
+			"without": ["cli", "-c", "model_reasoning_effort=\"high\""]
+		},
+		{
+			"argv": ["cli", "--approval-mode", "plan"],
+			"flags": [],
+			"without": ["cli", "--approval-mode", "plan"]
+		},
+		{
+			"argv": ["cli", "--permission-mode", "plan"],
+			"flags": [],
+			"without": ["cli", "--permission-mode", "plan"]
+		},
+		{
+			"argv": ["cli", "--no-approve"],
+			"flags": [],
+			"without": ["cli", "--no-approve"]
+		},
+		{
+			"argv": ["cli", "-p"],
+			"flags": [],
+			"without": ["cli", "-p"]
+		},
+		{
+			"argv": ["cli", "--print"],
+			"flags": [],
+			"without": ["cli", "--print"]
+		},
+		{
+			"argv": ["cli", "--model", "opus"],
+			"flags": [],
+			"without": ["cli", "--model", "opus"]
+		},
+		{
+			"argv": ["cli", "--skip-git-repo-check"],
+			"flags": [],
+			"without": ["cli", "--skip-git-repo-check"]
+		}
+	]
+}

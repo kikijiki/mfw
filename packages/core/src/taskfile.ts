@@ -6,6 +6,7 @@ import {
 	stringify as stringifyYaml,
 } from "yaml";
 import { z } from "zod";
+import { ModelId } from "./model-id.ts";
 import { normalizeOwnsPattern, validateOwnsPattern } from "./ownership.ts";
 import {
 	type Priority,
@@ -313,7 +314,7 @@ const frontmatterSchema = z.object({
 			.default(null),
 	),
 	/** Routing pin: an exact model id. */
-	model: nullish(z.string().min(1).nullable().default(null)),
+	model: nullish(ModelId.nullable().default(null)),
 	/** The task whose run discovered this follow-up. */
 	discovered_from: nullish(z.string().nullable().default(null)),
 	/** Immutable follow-up replay identity. */

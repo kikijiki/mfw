@@ -10,8 +10,9 @@ none has a network path of its own. An unsandboxed run (`agentIsolation:
 
 ## What a run can reach
 
-Each harness has a fixed list of exact `host:port` pairs, in
-`packages/daemon/src/containment/egress-allowlists.ts`. Everything else is
+Each harness has a fixed list of exact `host:port` pairs, in its manifest
+(`packages/plugin-api/src/harness-builtins.ts`, summarized in
+[the harness matrix](harness-matrix.md)). Everything else is
 refused, including IP addresses, private and link-local ranges, and the host's
 own addresses, even when an allowed name resolves to one of them.
 

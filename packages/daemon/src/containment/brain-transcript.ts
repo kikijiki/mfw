@@ -25,13 +25,20 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { dirname, join, normalize } from "node:path";
+import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 import type { FleetCli } from "./agent-profile.ts";
 import { readRegularFile } from "./safe-file.ts";
 
+function transcriptDir(cli: FleetCli): string {
+	const dir = builtinHarnessRegistry().byFleetCli(cli).fleet.transcriptDir;
+	if (!dir) throw new Error(`the ${cli} manifest names no transcript dir`);
+	return dir;
+}
+
 /** The one directory of each CLI that holds resumable sessions. */
 export const BRAIN_TRANSCRIPT_DIR: Readonly<Record<FleetCli, string>> = {
-	claude: "projects",
-	codex: "sessions",
+	claude: transcriptDir("claude"),
+	codex: transcriptDir("codex"),
 };
 
 const MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024;

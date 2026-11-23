@@ -14,6 +14,8 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
+import { withoutLaunchFlags } from "@mfw/plugin-api/harness-launch";
+import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 import type { AgentLaunchRequest } from "./containment/agent-launch.ts";
 import {
 	AGENT_BRIDGED_ENV,
@@ -26,9 +28,10 @@ import {
 } from "./containment/agent-preflight.ts";
 import {
 	AgentProfileError,
+	autonomyFlags,
 	cloneLayout,
+	type FleetCli,
 	fleetPrivateState,
-	withoutAutonomyFlags,
 } from "./containment/agent-profile.ts";
 import {
 	BrainLaunchError,
@@ -278,10 +281,17 @@ const EGRESS_START_POLLS = 400;
 /** 0.05 s each: past the proxy's hard exit deadline. */
 const EGRESS_STOP_POLLS = 80;
 
-const FLEET_CLI: Readonly<Record<string, "claude" | "codex">> = {
-	"claude-cli": "claude",
-	"codex-cli": "codex",
-};
+const FLEET_CLI: ReadonlyMap<string, FleetCli> = new Map(
+	builtinHarnessRegistry()
+		.list()
+		.flatMap((m) =>
+			m.fleet.cli ? [[m.id, m.fleet.cli as FleetCli] as const] : [],
+		),
+);
+
+/** A harness's fleet dir. Without one it has no sandboxed launch. */
+export const fleetCliOf = (id: string): FleetCli | undefined =>
+	FLEET_CLI.get(id);
 
 const exists = (path: string) =>
 	lstat(path).then(
@@ -747,7 +757,7 @@ export class AgentHost {
 		made: { roleClone?: string },
 	): Promise<HostBridge> {
 		const mfwHome = spec.isolation?.mfwHome;
-		const cli = FLEET_CLI[spec.providerId ?? ""];
+		const cli = fleetCliOf(spec.providerId ?? "");
 		if (!mfwHome || !cli) {
 			throw new SandboxUnavailableError(
 				`provider ${spec.providerId ?? "(none)"} has no sandbox profile yet: sandboxed runs support claude-cli and codex-cli`,
@@ -780,8 +790,20 @@ export class AgentHost {
 			);
 		}
 		const approvalMode = spec.approvalMode ?? "autonomous";
-		const forMode = (argv: string[]) =>
-			approvalMode === "autonomous" ? argv : withoutAutonomyFlags(argv);
+		// Only the manifest's own autonomy arguments come off. Anything else that
+		// reads as one refuses the launch: rewriting an argv can shift its options.
+		const manifest = builtinHarnessRegistry().byFleetCli(cli);
+		const forMode = (argv: string[]) => {
+			if (approvalMode === "autonomous") return argv;
+			const kept = withoutLaunchFlags(manifest, argv);
+			const left = autonomyFlags(kept);
+			if (left.length > 0) {
+				throw new SandboxUnavailableError(
+					`refusing an ${approvalMode} launch: its command line carries ${left.join(", ")}`,
+				);
+			}
+			return kept;
+		};
 		let agentArgv = forMode(spec.agentArgv);
 		let providerArgv = forMode(spec.providerArgv ?? spec.agentArgv);
 		const realHome = await realpath(mfwHome);

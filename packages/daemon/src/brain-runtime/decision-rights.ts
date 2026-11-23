@@ -1,3 +1,4 @@
+import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 import type { ActTool } from "./actions.ts";
 
 /**
@@ -114,24 +115,21 @@ export interface RightsFacts {
 }
 
 /**
- * What each supported harness loads from a project checkout, by catalogue id.
- * A new harness without an entry fails `merge-host-executed-gate.test.ts`.
+ * What each supported harness loads from a project checkout, by catalogue id,
+ * from its manifest. The host-executed lists below stay in the core, so a
+ * manifest cannot remove a protected path, and
+ * `merge-host-executed-gate.test.ts` fails if a manifest names a path they miss.
  */
 export const HARNESS_CONFIG_PATHS: Readonly<Record<string, readonly string[]>> =
-	{
-		"claude-cli": [
-			".claude/settings.json",
-			".claude.json",
-			".mcp.json",
-			"CLAUDE.md",
-			"CLAUDE.local.md",
-		],
-		"codex-cli": [".codex/config.toml", "AGENTS.md", "AGENTS.override.md"],
-		"gemini-cli": [".gemini/settings.json", "GEMINI.md"],
-		"cursor-agent": [".cursor/mcp.json", ".cursor/cli.json", ".cursorrules"],
-		opencode: ["opencode.json", "opencode.jsonc", ".opencode/opencode.json"],
-		pi: [".pi/mcp.json", ".pi/settings.json"],
-	};
+	// No prototype: an id is data and must not resolve to `constructor`.
+	Object.assign(
+		Object.create(null),
+		Object.fromEntries(
+			builtinHarnessRegistry()
+				.list()
+				.map((m) => [m.id, m.install.projectConfig]),
+		),
+	);
 
 const HOST_EXECUTED_DIRS = [
 	// Harness configuration.

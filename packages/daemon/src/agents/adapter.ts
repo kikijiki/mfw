@@ -1,4 +1,8 @@
 import { existsSync } from "node:fs";
+import { assertModelId } from "@mfw/core/model-id";
+import { renderHarnessArgv } from "@mfw/plugin-api/harness";
+import { PI_ACP_VERSION } from "@mfw/plugin-api/harness-builtins";
+import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 import type {
 	BrainMcpServer,
 	BrainTurnLaunch,
@@ -19,8 +23,8 @@ import { nativeSessionUuid } from "./native-session.ts";
 import { parseClaudeRateLimit } from "./rate-limit-claude.ts";
 
 /**
- * Adapters are pure configuration: argv/env/driver-script/capabilities. All
- * translation lives in the driver processes; a run is steerable only after
+ * Adapters are pure configuration: the argv comes from the harness manifest,
+ * plus the per-launch session, MCP and endpoint arguments. All translation lives in the driver processes; a run is steerable only after
  * its driver's verified `hello` (the triple gate, §5.5).
  *
  * `parseRateLimit` is the one hook that interprets provider output rather
@@ -183,13 +187,8 @@ const BACKGROUND_AGENT_TOOLS = [
 /** What a Claude brain turn may use: its own MCP tools and read-only file tools. Never agents, shell or writes. */
 const BRAIN_ALLOWED_TOOLS = (server: string) =>
 	`mcp__${server}__*,Read,Grep,Glob`;
-const BRAIN_DISALLOWED_TOOLS = [
-	...BACKGROUND_AGENT_TOOLS,
-	"Bash",
-	"Edit",
-	"Write",
-	"NotebookEdit",
-];
+
+const harness = (id: string) => builtinHarnessRegistry().require(id);
 
 /**
  * A Claude brain turn: the first turn passes `--session-id <minted uuid>`,
@@ -205,26 +204,16 @@ export function claudeBrainArgv(
 		: brain.sessionId
 			? ["--session-id", brain.sessionId]
 			: [];
+	const m = harness("claude-cli");
 	return [
-		"claude",
-		"--print",
-		"--input-format",
-		"stream-json",
-		"--output-format",
-		"stream-json",
-		"--verbose",
-		"--include-partial-messages",
-		"--replay-user-messages",
-		"--model",
-		model,
+		...renderHarnessArgv(m.modes.brain ?? [], m, { model }),
 		...session,
 		"--mcp-config",
 		brain.mcpConfigPath,
 		"--strict-mcp-config",
 		"--allowedTools",
 		BRAIN_ALLOWED_TOOLS(brain.mcp.name),
-		"--disallowedTools",
-		BRAIN_DISALLOWED_TOOLS.join(","),
+		...m.readOnly.value,
 	];
 }
 
@@ -249,16 +238,13 @@ export function codexBrainArgv(
 	brain: BrainTurnLaunch,
 	endpoint?: ProviderConfig["endpoint"],
 ): string[] {
+	const m = harness("codex-cli");
 	return [
-		"codex",
-		"exec",
+		...(m.modes.brain ?? []),
 		...(brain.resumeSessionId ? ["resume", brain.resumeSessionId] : []),
 		"--json",
 		"--skip-git-repo-check",
-		"-c",
-		'sandbox_mode="read-only"',
-		"-c",
-		'approval_policy="never"',
+		...m.readOnly.value,
 		...codexMcpArgs(brain.mcp),
 		...(endpoint ? codexEndpointArgs(endpoint) : []),
 	];
@@ -290,19 +276,9 @@ export const claudeAdapter: AgentAdapter = {
 				declaredCapabilities: { steer: opts.steer },
 			};
 		}
+		const manifest = harness("claude-cli");
 		const providerArgv = [
-			"claude",
-			"--print",
-			"--input-format",
-			"stream-json",
-			"--output-format",
-			"stream-json",
-			"--verbose",
-			"--include-partial-messages",
-			"--replay-user-messages",
-			"--dangerously-skip-permissions",
-			"--model",
-			model,
+			...renderHarnessArgv(manifest.modes.task, manifest, { model }),
 			// A known uuid up front: the session is resumable even if the first
 			// turn crashes, and nothing has to be parsed back out of the output.
 			...(opts.runId ? ["--session-id", nativeSessionUuid(opts.runId)] : []),
@@ -367,8 +343,7 @@ export const codexAdapter: AgentAdapter = {
 			};
 		}
 		const providerArgv = [
-			"codex",
-			"app-server",
+			...harness("codex-cli").modes.task,
 			...(cfg.endpoint ? codexEndpointArgs(cfg.endpoint) : []),
 		];
 		return {
@@ -396,35 +371,22 @@ export const codexAdapter: AgentAdapter = {
  * Endpoints reach the bridge as `MFW_ACP_ENDPOINT` + `MFW_ACP_MODEL`; the
  * bridge decides per agent whether it can honour them.
  */
-type AcpArgv = (model: string, mode: AcpLaunchMode) => string[];
-
 /** How an ACP provider CLI is launched: a task run, a project-brain turn, or the critic's one-shot call. */
 type AcpLaunchMode = "task" | "brain" | "inference";
 
 /** The pi-acp release mfw launches (adapter) and installs (RunPod). */
-export const PI_ACP_VERSION = "0.0.34";
+export { PI_ACP_VERSION };
 
-const hasModel = (model: string) => model !== "" && model !== "default";
-
-const ACP_ARGV: Record<string, AcpArgv> = {
-	"cursor-agent": (_model, mode) => [
-		"agent",
-		// Root flags go before the `acp` subcommand.
-		...(mode === "task" ? [] : ["--mode", "plan"]),
-		...(mode === "brain" ? ["--approve-mcps"] : []),
-		"acp",
-	],
-	"gemini-cli": (model, mode) => [
-		"gemini",
-		"--acp",
-		...(hasModel(model) ? ["--model", model] : []),
-		...(mode === "task" ? [] : ["--approval-mode", "plan"]),
-	],
-	// opencode's read-only enforcement is config the bridge injects, not argv.
-	opencode: () => ["opencode", "acp"],
-	// pi-acp takes no pi flags; the bridge wraps pi itself for those.
-	pi: () => ["bunx", `pi-acp@${PI_ACP_VERSION}`],
-};
+/** The manifest's argv for this mode, or null for a harness that is not ACP. */
+function acpArgv(
+	id: string,
+	model: string,
+	mode: AcpLaunchMode,
+): string[] | null {
+	const m = builtinHarnessRegistry().get(id);
+	if (m?.dialect !== "acp") return null;
+	return renderHarnessArgv(m.modes[mode] ?? m.modes.task, m, { model });
+}
 
 function acpEndpointEnv(
 	cfg: ProviderConfig,
@@ -442,11 +404,14 @@ function acpEndpointEnv(
 }
 
 function acpAdapter(id: string): AgentAdapter {
-	const argv = ACP_ARGV[id] as AcpArgv;
 	return {
 		id,
 		invocation(cfg, model, _prompt, opts) {
-			const providerArgv = argv(model, opts.brain ? "brain" : "task");
+			const providerArgv = acpArgv(
+				id,
+				model,
+				opts.brain ? "brain" : "task",
+			) as string[];
 			return {
 				driverScript: appServerDriverScript(),
 				agentArgv: providerArgv,
@@ -486,11 +451,11 @@ export function acpInferenceLaunch(
 	providerArgv: string[];
 	env: Record<string, string>;
 } {
-	const argv = ACP_ARGV[providerId];
-	if (!argv) throw new Error(`'${providerId}' is not an ACP provider`);
+	const providerArgv = acpArgv(providerId, model, "inference");
+	if (!providerArgv) throw new Error(`'${providerId}' is not an ACP provider`);
 	return {
 		bridgeArgv: ["bun", "run", bridgeScript("acp")],
-		providerArgv: argv(model, "inference"),
+		providerArgv,
 		env: {
 			MFW_ACP_AGENT: providerId,
 			MFW_ACP_POLICY: "none",
@@ -535,6 +500,7 @@ export class AdapterRegistry {
 		prompt: string,
 		opts: InvocationOpts,
 	): Invocation {
+		assertModelId(model);
 		const adapter = ADAPTERS.get(cfg.id);
 		if (!adapter) {
 			throw new Error(

@@ -1,0 +1,2416 @@
+{
+	"capturedFrom": "the hand-written harness maps before the manifests",
+	"piAcpVersion": "0.0.34",
+	"defaultProviderId": "claude-cli",
+	"modelSnapshotChecked": "2026-08-10",
+	"credentialIds": ["anthropic", "google", "opencode"],
+	"fleetWritable": {
+		"claude": ["backups", "projects", "sessions"],
+		"codex": [
+			"cache",
+			"sessions",
+			"shell_snapshots",
+			"thread-writer-locks",
+			"tmp"
+		]
+	},
+	"brainTranscriptDir": {
+		"claude": "projects",
+		"codex": "sessions"
+	},
+	"egress": {
+		"claude": {
+			"entries": [
+				{
+					"host": "api.anthropic.com",
+					"port": 443,
+					"purpose": "inference",
+					"source": "observed: the only host an unauthenticated CLI contacted (2.1.330)"
+				},
+				{
+					"host": "platform.claude.com",
+					"port": 443,
+					"purpose": "auth",
+					"source": "vendor network configuration page; not observed (OAuth token exchange and refresh)"
+				},
+				{
+					"host": "http-intake.logs.us5.datadoghq.com",
+					"port": 443,
+					"purpose": "telemetry",
+					"source": "vendor network configuration page; not observed"
+				},
+				{
+					"host": "browser-intake-us5-datadoghq.com",
+					"port": 443,
+					"purpose": "telemetry",
+					"source": "vendor network configuration page; not observed (error reports)"
+				}
+			],
+			"telemetryOffEnv": {
+				"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+				"DISABLE_TELEMETRY": "1",
+				"DISABLE_ERROR_REPORTING": "1"
+			}
+		},
+		"codex": {
+			"entries": [
+				{
+					"host": "chatgpt.com",
+					"port": 443,
+					"purpose": "inference",
+					"source": "observed: the only host three runs needed (0.170.0)"
+				},
+				{
+					"host": "api.openai.com",
+					"port": 443,
+					"purpose": "inference",
+					"source": "string in the 0.170.0 binary, for API-key mode; not observed",
+					"requiresApiKey": true
+				},
+				{
+					"host": "auth.openai.com",
+					"port": 443,
+					"purpose": "auth",
+					"source": "expected for token refresh; never contacted in the experiments"
+				},
+				{
+					"host": "ab.chatgpt.com",
+					"port": 443,
+					"purpose": "telemetry",
+					"source": "observed: telemetry, gone with telemetry disabled"
+				}
+			],
+			"telemetryOffEnv": {}
+		}
+	},
+	"allowlists": {
+		"claude|telemetry=false|apiKey=false": {
+			"allow": [
+				{
+					"host": "api.anthropic.com",
+					"port": 443
+				},
+				{
+					"host": "platform.claude.com",
+					"port": 443
+				}
+			],
+			"env": {
+				"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+				"DISABLE_TELEMETRY": "1",
+				"DISABLE_ERROR_REPORTING": "1"
+			}
+		},
+		"claude|telemetry=false|apiKey=true": {
+			"allow": [
+				{
+					"host": "api.anthropic.com",
+					"port": 443
+				},
+				{
+					"host": "platform.claude.com",
+					"port": 443
+				}
+			],
+			"env": {
+				"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+				"DISABLE_TELEMETRY": "1",
+				"DISABLE_ERROR_REPORTING": "1"
+			}
+		},
+		"claude|telemetry=true|apiKey=false": {
+			"allow": [
+				{
+					"host": "api.anthropic.com",
+					"port": 443
+				},
+				{
+					"host": "platform.claude.com",
+					"port": 443
+				},
+				{
+					"host": "http-intake.logs.us5.datadoghq.com",
+					"port": 443
+				},
+				{
+					"host": "browser-intake-us5-datadoghq.com",
+					"port": 443
+				}
+			],
+			"env": {}
+		},
+		"claude|telemetry=true|apiKey=true": {
+			"allow": [
+				{
+					"host": "api.anthropic.com",
+					"port": 443
+				},
+				{
+					"host": "platform.claude.com",
+					"port": 443
+				},
+				{
+					"host": "http-intake.logs.us5.datadoghq.com",
+					"port": 443
+				},
+				{
+					"host": "browser-intake-us5-datadoghq.com",
+					"port": 443
+				}
+			],
+			"env": {}
+		},
+		"codex|telemetry=false|apiKey=false": {
+			"allow": [
+				{
+					"host": "chatgpt.com",
+					"port": 443
+				},
+				{
+					"host": "auth.openai.com",
+					"port": 443
+				}
+			],
+			"env": {}
+		},
+		"codex|telemetry=false|apiKey=true": {
+			"allow": [
+				{
+					"host": "chatgpt.com",
+					"port": 443
+				},
+				{
+					"host": "api.openai.com",
+					"port": 443
+				},
+				{
+					"host": "auth.openai.com",
+					"port": 443
+				}
+			],
+			"env": {}
+		},
+		"codex|telemetry=true|apiKey=false": {
+			"allow": [
+				{
+					"host": "chatgpt.com",
+					"port": 443
+				},
+				{
+					"host": "auth.openai.com",
+					"port": 443
+				},
+				{
+					"host": "ab.chatgpt.com",
+					"port": 443
+				}
+			],
+			"env": {}
+		},
+		"codex|telemetry=true|apiKey=true": {
+			"allow": [
+				{
+					"host": "chatgpt.com",
+					"port": 443
+				},
+				{
+					"host": "api.openai.com",
+					"port": 443
+				},
+				{
+					"host": "auth.openai.com",
+					"port": 443
+				},
+				{
+					"host": "ab.chatgpt.com",
+					"port": 443
+				}
+			],
+			"env": {}
+		}
+	},
+	"apiKey": {
+		"claude|": false,
+		"claude|OPENAI_API_KEY": false,
+		"claude|ANTHROPIC_API_KEY": false,
+		"claude|MFW_RUN_ID": false,
+		"codex|": false,
+		"codex|OPENAI_API_KEY": true,
+		"codex|ANTHROPIC_API_KEY": false,
+		"codex|MFW_RUN_ID": false
+	},
+	"catalogue": [
+		{
+			"id": "claude-cli",
+			"name": "Claude Code",
+			"description": "Anthropic's Claude Code CLI, driven in stream-json mode through mfw's compatibility server.",
+			"bin": "claude",
+			"versionArgs": ["--version"],
+			"drivable": true,
+			"configType": "claude-cli",
+			"auth": [
+				{
+					"kind": "subscription",
+					"loginFiles": [".claude/.credentials.json"],
+					"hint": "Run `claude` once and sign in, or `claude setup-token`. A Claude subscription needs no API key: this is how most operators run mfw."
+				},
+				{
+					"kind": "api-key",
+					"credentialId": "anthropic",
+					"envVars": ["ANTHROPIC_API_KEY"],
+					"hint": "Pay-per-token instead of a subscription. NOTE: mfw does not yet inject a stored key into the agent's environment: export ANTHROPIC_API_KEY for the daemon until it does."
+				}
+			],
+			"models": [
+				{
+					"id": "sonnet",
+					"label": "Sonnet (latest)",
+					"kind": "alias"
+				},
+				{
+					"id": "opus",
+					"label": "Opus (latest)",
+					"kind": "alias"
+				},
+				{
+					"id": "haiku",
+					"label": "Haiku (latest)",
+					"kind": "alias"
+				},
+				{
+					"id": "fable",
+					"label": "Fable (latest)",
+					"kind": "alias"
+				},
+				{
+					"id": "claude-opus-5",
+					"label": "Claude Opus 5",
+					"kind": "pinned"
+				},
+				{
+					"id": "claude-sonnet-5",
+					"label": "Claude Sonnet 5",
+					"kind": "pinned"
+				},
+				{
+					"id": "claude-opus-4-8",
+					"label": "Claude Opus 4.8",
+					"kind": "pinned"
+				},
+				{
+					"id": "claude-haiku-4-5",
+					"label": "Claude Haiku 4.5",
+					"kind": "pinned"
+				},
+				{
+					"id": "claude-fable-5",
+					"label": "Claude Fable 5",
+					"kind": "pinned"
+				}
+			],
+			"defaultModel": "sonnet",
+			"modelsAreSnapshot": true,
+			"docsUrl": "https://code.claude.com/docs/en/cli-reference",
+			"tiers": {
+				"light": "haiku",
+				"standard": "sonnet",
+				"strong": "opus"
+			}
+		},
+		{
+			"id": "codex-cli",
+			"name": "OpenAI Codex CLI",
+			"description": "OpenAI's Codex CLI, driven through its app-server protocol with structured lifecycle events, steering, interruption and approvals.",
+			"bin": "codex",
+			"versionArgs": ["--version"],
+			"drivable": true,
+			"configType": "codex-cli",
+			"acceptsEndpoints": true,
+			"auth": [
+				{
+					"kind": "subscription",
+					"loginFiles": [".codex/auth.json"],
+					"hint": "Sign in through the Codex CLI itself."
+				}
+			],
+			"models": [
+				{
+					"id": "gpt-5.6",
+					"label": "GPT-5.6 (Sol alias)",
+					"kind": "alias"
+				},
+				{
+					"id": "gpt-5.6-sol",
+					"label": "GPT-5.6-Sol",
+					"kind": "pinned"
+				},
+				{
+					"id": "gpt-5.6-terra",
+					"label": "GPT-5.6-Terra",
+					"kind": "pinned"
+				},
+				{
+					"id": "gpt-5.6-luna",
+					"label": "GPT-5.6-Luna",
+					"kind": "pinned"
+				}
+			],
+			"defaultModel": "gpt-5.6-sol",
+			"modelsAreSnapshot": true,
+			"docsUrl": "https://developers.openai.com/codex/app-server",
+			"tiers": {
+				"light": "gpt-5.6-luna",
+				"standard": "gpt-5.6-terra",
+				"strong": "gpt-5.6-sol"
+			}
+		},
+		{
+			"id": "gemini-cli",
+			"name": "Gemini CLI",
+			"description": "Google's Gemini CLI, driven over the Agent Client Protocol (`gemini --acp`). Runs tasks, project-brain turns (read-only plan mode) and critic calls; no custom endpoints.",
+			"bin": "gemini",
+			"versionArgs": ["--version"],
+			"drivable": true,
+			"configType": "acp",
+			"auth": [
+				{
+					"kind": "api-key",
+					"credentialId": "google",
+					"envVars": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+					"hint": "Set GEMINI_API_KEY, or sign in through the Gemini CLI."
+				}
+			],
+			"models": [
+				{
+					"id": "default",
+					"label": "Agent default",
+					"kind": "alias"
+				}
+			],
+			"defaultModel": "default",
+			"modelsAreSnapshot": false,
+			"docsUrl": "https://google-gemini.github.io/gemini-cli/"
+		},
+		{
+			"id": "cursor-agent",
+			"name": "Cursor Agent",
+			"description": "Cursor's agent CLI, driven over the Agent Client Protocol (`agent acp`). Runs tasks, project-brain turns (read-only plan mode) and critic calls; no custom endpoints.",
+			"bin": "agent",
+			"versionArgs": ["--version"],
+			"identity": {
+				"kind": "symlink-target",
+				"basename": "cursor-agent",
+				"describe": "Cursor's CLI (installed as a link to .../cursor-agent)"
+			},
+			"drivable": true,
+			"configType": "acp",
+			"auth": [
+				{
+					"kind": "subscription",
+					"loginFiles": [".cursor/cli-config.json"],
+					"hint": "Sign in through the Cursor agent CLI itself."
+				},
+				{
+					"kind": "api-key",
+					"envVars": ["CURSOR_API_KEY"],
+					"hint": "Export CURSOR_API_KEY for the daemon instead of signing in."
+				}
+			],
+			"models": [
+				{
+					"id": "default",
+					"label": "Agent default",
+					"kind": "alias"
+				}
+			],
+			"defaultModel": "default",
+			"modelsAreSnapshot": false,
+			"docsUrl": "https://cursor.com/docs/cli/acp"
+		},
+		{
+			"id": "opencode",
+			"name": "opencode",
+			"description": "opencode, driven over the Agent Client Protocol (`opencode acp`). Runs tasks, project-brain turns and critic calls with permissions denied for edits and shell; can use an OpenAI-compatible endpoint.",
+			"bin": "opencode",
+			"versionArgs": ["--version"],
+			"drivable": true,
+			"configType": "acp",
+			"acceptsEndpoints": true,
+			"auth": [
+				{
+					"kind": "api-key",
+					"credentialId": "opencode",
+					"envVars": ["OPENCODE_API_KEY"],
+					"hint": "Configure a provider inside opencode itself."
+				}
+			],
+			"models": [
+				{
+					"id": "default",
+					"label": "Agent default",
+					"kind": "alias"
+				}
+			],
+			"defaultModel": "default",
+			"modelsAreSnapshot": false,
+			"docsUrl": "https://opencode.ai/docs/"
+		},
+		{
+			"id": "pi",
+			"name": "pi",
+			"description": "The pi coding agent, driven over the Agent Client Protocol through pi-acp (an MVP adapter; needs pi >= 0.81 and Node >= 22). Runs tasks, project-brain turns and critic calls; can use an OpenAI-compatible endpoint. Models are `provider/id` from your own pi configuration.",
+			"bin": "pi",
+			"versionArgs": ["--version"],
+			"identity": {
+				"kind": "help-text",
+				"args": ["--help"],
+				"pattern": {
+					"regexSource": "^pi\\b.*\\bcoding (assistant|agent)\\b",
+					"regexFlags": "im"
+				},
+				"describe": "the pi coding agent (`pi --help` names it)"
+			},
+			"drivable": true,
+			"configType": "acp",
+			"acceptsEndpoints": true,
+			"auth": [
+				{
+					"kind": "subscription",
+					"loginFiles": [".pi/agent/auth.json", ".pi/agent/models.json"],
+					"hint": "Configure a provider in pi itself: `pi auth login <provider>`, or add one to ~/.pi/agent/models.json."
+				}
+			],
+			"models": [
+				{
+					"id": "default",
+					"label": "Agent default",
+					"kind": "alias"
+				}
+			],
+			"defaultModel": "default",
+			"modelsAreSnapshot": false,
+			"docsUrl": "https://github.com/svkozak/pi-acp"
+		}
+	],
+	"remote": {
+		"claude-cli": {
+			"binary": "claude",
+			"authPaths": [".claude/.credentials.json"]
+		},
+		"codex-cli": {
+			"binary": "codex",
+			"authPaths": [".codex/auth.json"]
+		},
+		"cursor-agent": {
+			"binary": "agent",
+			"authPaths": [".cursor/cli-config.json"],
+			"identity": {
+				"kind": "symlink-target",
+				"basename": "cursor-agent",
+				"describe": "Cursor's CLI (installed as a link to .../cursor-agent)"
+			}
+		},
+		"gemini-cli": {
+			"binary": "gemini",
+			"authPaths": [".gemini/oauth_creds.json"]
+		},
+		"opencode": {
+			"binary": "opencode",
+			"authPaths": [".local/share/opencode/auth.json"]
+		},
+		"pi": {
+			"binary": "pi",
+			"authPaths": [".pi/agent/auth.json", ".pi/agent/models.json"],
+			"identity": {
+				"kind": "help-text",
+				"args": ["--help"],
+				"pattern": {
+					"regexSource": "^pi\\b.*\\bcoding (assistant|agent)\\b",
+					"regexFlags": "im"
+				},
+				"describe": "the pi coding agent (`pi --help` names it)"
+			}
+		}
+	},
+	"configPaths": {
+		"claude-cli": [
+			".claude/settings.json",
+			".claude.json",
+			".mcp.json",
+			"CLAUDE.md",
+			"CLAUDE.local.md"
+		],
+		"codex-cli": [".codex/config.toml", "AGENTS.md", "AGENTS.override.md"],
+		"gemini-cli": [".gemini/settings.json", "GEMINI.md"],
+		"cursor-agent": [".cursor/mcp.json", ".cursor/cli.json", ".cursorrules"],
+		"opencode": ["opencode.json", "opencode.jsonc", ".opencode/opencode.json"],
+		"pi": [".pi/mcp.json", ".pi/settings.json"]
+	},
+	"hostExecuted": {
+		".claude/settings.json": true,
+		".claude.json": true,
+		".mcp.json": true,
+		"CLAUDE.md": true,
+		"CLAUDE.local.md": true,
+		".codex/config.toml": true,
+		"AGENTS.md": true,
+		"AGENTS.override.md": true,
+		".gemini/settings.json": true,
+		"GEMINI.md": true,
+		".cursor/mcp.json": true,
+		".cursor/cli.json": true,
+		".cursorrules": true,
+		"opencode.json": true,
+		"opencode.jsonc": true,
+		".opencode/opencode.json": true,
+		".pi/mcp.json": true,
+		".pi/settings.json": true,
+		".claude/x": true,
+		".codex/x": true,
+		".gemini/x": true,
+		".cursor/x": true,
+		".opencode/plugin.ts": true,
+		".pi/x": true,
+		".vscode/tasks.json": true,
+		"src/.claude/settings.json": true,
+		"sub/AGENTS.md": true,
+		"CLAUDE.MD": true,
+		"README.md": false,
+		"src/index.ts": false
+	},
+	"acpProfiles": {
+		"gemini-cli": {
+			"id": "gemini-cli",
+			"label": "Gemini CLI",
+			"modelOnArgv": true,
+			"brainEligible": true
+		},
+		"cursor-agent": {
+			"id": "cursor-agent",
+			"label": "Cursor Agent",
+			"capabilityMeta": {
+				"parameterizedModelPicker": true
+			},
+			"readOnlyMode": "plan",
+			"brainEligible": true,
+			"identity": {
+				"bin": "agent",
+				"identity": {
+					"kind": "symlink-target",
+					"basename": "cursor-agent",
+					"describe": "Cursor's CLI (installed as a link to .../cursor-agent)"
+				}
+			}
+		},
+		"opencode": {
+			"id": "opencode",
+			"label": "OpenCode",
+			"readOnlyMode": "plan",
+			"brainEligible": true
+		},
+		"pi": {
+			"id": "pi",
+			"label": "pi",
+			"brainEligible": true,
+			"readOnlyOtherTitles": ["grep", "find", "ls"],
+			"identity": {
+				"bin": "pi",
+				"identity": {
+					"kind": "help-text",
+					"args": ["--help"],
+					"pattern": {
+						"regexSource": "^pi\\b.*\\bcoding (assistant|agent)\\b",
+						"regexFlags": "im"
+					},
+					"describe": "the pi coding agent (`pi --help` names it)"
+				}
+			}
+		},
+		"unknown": {
+			"id": "acp",
+			"label": "ACP agent",
+			"brainEligible": false
+		}
+	},
+	"launches": {
+		"claude-cli|default|task": {
+			"providerArgv": [
+				"claude",
+				"--print",
+				"--input-format",
+				"stream-json",
+				"--output-format",
+				"stream-json",
+				"--verbose",
+				"--include-partial-messages",
+				"--replay-user-messages",
+				"--dangerously-skip-permissions",
+				"--model",
+				"default",
+				"--session-id",
+				"80699307-0839-5b55-87b3-3e48efb8fefd"
+			],
+			"agentArgv": [
+				"claude",
+				"--print",
+				"--input-format",
+				"stream-json",
+				"--output-format",
+				"stream-json",
+				"--verbose",
+				"--include-partial-messages",
+				"--replay-user-messages",
+				"--dangerously-skip-permissions",
+				"--model",
+				"default",
+				"--session-id",
+				"80699307-0839-5b55-87b3-3e48efb8fefd"
+			],
+			"bridge": "claude-app-server.ts",
+			"env": {
+				"FIXTURE": "1"
+			},
+			"declaredCapabilities": {
+				"steer": true
+			}
+		},
+		"claude-cli|default|task-bg": {
+			"providerArgv": [
+				"claude",
+				"--print",
+				"--input-format",
+				"stream-json",
+				"--output-format",
+				"stream-json",
+				"--verbose",
+				"--include-partial-messages",
+				"--replay-user-messages",
+				"--dangerously-skip-permissions",
+				"--model",
+				"default",
+				"--disallowedTools",
+				"Agent,ScheduleWakeup,ListAgents,Workflow"
+			],
+			"agentArgv": [
+				"claude",
+				"--print",
+				"--input-format",
+				"stream-json",
+				"--output-format",
+				"stream-json",
+				"--verbose",
+				"--include-partial-messages",
+				"--replay-user-messages",
+				"--dangerously-skip-permissions",
+				"--model",
+				"default",
+				"--disallowedTools",
+				"Agent,ScheduleWakeup,ListAgents,Workflow"
+			],
+			"bridge": "claude-app-server.ts",
+			"env": {
+				"FIXTURE": "1"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"claude-cli|default|brain": {
+			"providerArgv": [
+				"claude",
+				"--print",
+				"--input-format",
+				"stream-json",
+				"--output-format",
+				"stream-json",
+				"--verbose",
+				"--include-partial-messages",
+				"--replay-user-messages",
+				"--model",
+				"default",
+				"--session-id",
+				"11111111-1111-4111-8111-111111111111",
+				"--mcp-config",
+				"/fixture/mcp.json",
+				"--strict-mcp-config",
+				"--allowedTools",
+				"mcp__mfw-brain__*,Read,Grep,Glob",
+				"--disallowedTools",
+				"Agent,ScheduleWakeup,ListAgents,Workflow,Bash,Edit,Write,NotebookEdit"
+			],
+			"agentArgv": [
+				"claude",
+				"--print",
+				"--input-format",
+				"stream-json",
+				"--output-format",
+				"stream-json",
+				"--verbose",
+				"--include-partial-messages",
+				"--replay-user-messages",
+				"--model",
+				"default",
+				"--session-id",
+				"11111111-1111-4111-8111-111111111111",
+				"--mcp-config",
+				"/fixture/mcp.json",
+				"--strict-mcp-config",
+				"--allowedTools",
+				"mcp__mfw-brain__*,Read,Grep,Glob",
+				"--disallowedTools",
+				"Agent,ScheduleWakeup,ListAgents,Workflow,Bash,Edit,Write,NotebookEdit"
+			],
+			"bridge": "claude-app-server.ts",
+			"env": {
+				"FIXTURE": "1",
+				"CLAUDE_CODE_PROJECT_DIR_NAME": "fixture-project"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"claude-cli|default|brain-resume": {
+			"providerArgv": [
+				"claude",
+				"--print",
+				"--input-format",
+				"stream-json",
+				"--output-format",
+				"stream-json",
+				"--verbose",
+				"--include-partial-messages",
+				"--replay-user-messages",
+				"--model",
+				"default",
+				"--resume",
+				"22222222-2222-4222-8222-222222222222",
+				"--mcp-config",
+				"/fixture/mcp.json",
+				"--strict-mcp-config",
+				"--allowedTools",
+				"mcp__mfw-brain__*,Read,Grep,Glob",
+				"--disallowedTools",
+				"Agent,ScheduleWakeup,ListAgents,Workflow,Bash,Edit,Write,NotebookEdit"
+			],
+			"agentArgv": [
+				"claude",
+				"--print",
+				"--input-format",
+				"stream-json",
+				"--output-format",
+				"stream-json",
+				"--verbose",
+				"--include-partial-messages",
+				"--replay-user-messages",
+				"--model",
+				"default",
+				"--resume",
+				"22222222-2222-4222-8222-222222222222",
+				"--mcp-config",
+				"/fixture/mcp.json",
+				"--strict-mcp-config",
+				"--allowedTools",
+				"mcp__mfw-brain__*,Read,Grep,Glob",
+				"--disallowedTools",
+				"Agent,ScheduleWakeup,ListAgents,Workflow,Bash,Edit,Write,NotebookEdit"
+			],
+			"bridge": "claude-app-server.ts",
+			"env": {
+				"FIXTURE": "1",
+				"CLAUDE_CODE_PROJECT_DIR_NAME": "fixture-project"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"claude-cli|default|task-endpoint": {
+			"throws": "claude-cli cannot use OpenAI-compatible endpoint 'fixture': route it through codex-cli"
+		},
+		"claude-cli|default|brain-endpoint": {
+			"throws": "claude-cli cannot use OpenAI-compatible endpoint 'fixture': route it through codex-cli"
+		},
+		"claude-cli|fixture-model|task": {
+			"providerArgv": [
+				"claude",
+				"--print",
+				"--input-format",
+				"stream-json",
+				"--output-format",
+				"stream-json",
+				"--verbose",
+				"--include-partial-messages",
+				"--replay-user-messages",
+				"--dangerously-skip-permissions",
+				"--model",
+				"fixture-model",
+				"--session-id",
+				"80699307-0839-5b55-87b3-3e48efb8fefd"
+			],
+			"agentArgv": [
+				"claude",
+				"--print",
+				"--input-format",
+				"stream-json",
+				"--output-format",
+				"stream-json",
+				"--verbose",
+				"--include-partial-messages",
+				"--replay-user-messages",
+				"--dangerously-skip-permissions",
+				"--model",
+				"fixture-model",
+				"--session-id",
+				"80699307-0839-5b55-87b3-3e48efb8fefd"
+			],
+			"bridge": "claude-app-server.ts",
+			"env": {
+				"FIXTURE": "1"
+			},
+			"declaredCapabilities": {
+				"steer": true
+			}
+		},
+		"claude-cli|fixture-model|task-bg": {
+			"providerArgv": [
+				"claude",
+				"--print",
+				"--input-format",
+				"stream-json",
+				"--output-format",
+				"stream-json",
+				"--verbose",
+				"--include-partial-messages",
+				"--replay-user-messages",
+				"--dangerously-skip-permissions",
+				"--model",
+				"fixture-model",
+				"--disallowedTools",
+				"Agent,ScheduleWakeup,ListAgents,Workflow"
+			],
+			"agentArgv": [
+				"claude",
+				"--print",
+				"--input-format",
+				"stream-json",
+				"--output-format",
+				"stream-json",
+				"--verbose",
+				"--include-partial-messages",
+				"--replay-user-messages",
+				"--dangerously-skip-permissions",
+				"--model",
+				"fixture-model",
+				"--disallowedTools",
+				"Agent,ScheduleWakeup,ListAgents,Workflow"
+			],
+			"bridge": "claude-app-server.ts",
+			"env": {
+				"FIXTURE": "1"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"claude-cli|fixture-model|brain": {
+			"providerArgv": [
+				"claude",
+				"--print",
+				"--input-format",
+				"stream-json",
+				"--output-format",
+				"stream-json",
+				"--verbose",
+				"--include-partial-messages",
+				"--replay-user-messages",
+				"--model",
+				"fixture-model",
+				"--session-id",
+				"11111111-1111-4111-8111-111111111111",
+				"--mcp-config",
+				"/fixture/mcp.json",
+				"--strict-mcp-config",
+				"--allowedTools",
+				"mcp__mfw-brain__*,Read,Grep,Glob",
+				"--disallowedTools",
+				"Agent,ScheduleWakeup,ListAgents,Workflow,Bash,Edit,Write,NotebookEdit"
+			],
+			"agentArgv": [
+				"claude",
+				"--print",
+				"--input-format",
+				"stream-json",
+				"--output-format",
+				"stream-json",
+				"--verbose",
+				"--include-partial-messages",
+				"--replay-user-messages",
+				"--model",
+				"fixture-model",
+				"--session-id",
+				"11111111-1111-4111-8111-111111111111",
+				"--mcp-config",
+				"/fixture/mcp.json",
+				"--strict-mcp-config",
+				"--allowedTools",
+				"mcp__mfw-brain__*,Read,Grep,Glob",
+				"--disallowedTools",
+				"Agent,ScheduleWakeup,ListAgents,Workflow,Bash,Edit,Write,NotebookEdit"
+			],
+			"bridge": "claude-app-server.ts",
+			"env": {
+				"FIXTURE": "1",
+				"CLAUDE_CODE_PROJECT_DIR_NAME": "fixture-project"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"claude-cli|fixture-model|brain-resume": {
+			"providerArgv": [
+				"claude",
+				"--print",
+				"--input-format",
+				"stream-json",
+				"--output-format",
+				"stream-json",
+				"--verbose",
+				"--include-partial-messages",
+				"--replay-user-messages",
+				"--model",
+				"fixture-model",
+				"--resume",
+				"22222222-2222-4222-8222-222222222222",
+				"--mcp-config",
+				"/fixture/mcp.json",
+				"--strict-mcp-config",
+				"--allowedTools",
+				"mcp__mfw-brain__*,Read,Grep,Glob",
+				"--disallowedTools",
+				"Agent,ScheduleWakeup,ListAgents,Workflow,Bash,Edit,Write,NotebookEdit"
+			],
+			"agentArgv": [
+				"claude",
+				"--print",
+				"--input-format",
+				"stream-json",
+				"--output-format",
+				"stream-json",
+				"--verbose",
+				"--include-partial-messages",
+				"--replay-user-messages",
+				"--model",
+				"fixture-model",
+				"--resume",
+				"22222222-2222-4222-8222-222222222222",
+				"--mcp-config",
+				"/fixture/mcp.json",
+				"--strict-mcp-config",
+				"--allowedTools",
+				"mcp__mfw-brain__*,Read,Grep,Glob",
+				"--disallowedTools",
+				"Agent,ScheduleWakeup,ListAgents,Workflow,Bash,Edit,Write,NotebookEdit"
+			],
+			"bridge": "claude-app-server.ts",
+			"env": {
+				"FIXTURE": "1",
+				"CLAUDE_CODE_PROJECT_DIR_NAME": "fixture-project"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"claude-cli|fixture-model|task-endpoint": {
+			"throws": "claude-cli cannot use OpenAI-compatible endpoint 'fixture': route it through codex-cli"
+		},
+		"claude-cli|fixture-model|brain-endpoint": {
+			"throws": "claude-cli cannot use OpenAI-compatible endpoint 'fixture': route it through codex-cli"
+		},
+		"codex-cli|default|task": {
+			"providerArgv": ["codex", "app-server"],
+			"agentArgv": ["codex", "app-server"],
+			"bridge": "codex-app-server-bridge.ts",
+			"env": {
+				"FIXTURE": "1"
+			},
+			"declaredCapabilities": {
+				"steer": true
+			}
+		},
+		"codex-cli|default|task-bg": {
+			"providerArgv": ["codex", "app-server"],
+			"agentArgv": ["codex", "app-server"],
+			"bridge": "codex-app-server-bridge.ts",
+			"env": {
+				"FIXTURE": "1"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"codex-cli|default|brain": {
+			"providerArgv": [
+				"codex",
+				"exec",
+				"--json",
+				"--skip-git-repo-check",
+				"-c",
+				"sandbox_mode=\"read-only\"",
+				"-c",
+				"approval_policy=\"never\"",
+				"-c",
+				"mcp_servers.mfw-brain.command=\"/fixture/bun\"",
+				"-c",
+				"mcp_servers.mfw-brain.args=[\"run\",\"/fixture/mcp.ts\"]",
+				"-c",
+				"mcp_servers.mfw-brain.env={ MFW_FIXTURE = \"1\" }"
+			],
+			"agentArgv": [
+				"codex",
+				"exec",
+				"--json",
+				"--skip-git-repo-check",
+				"-c",
+				"sandbox_mode=\"read-only\"",
+				"-c",
+				"approval_policy=\"never\"",
+				"-c",
+				"mcp_servers.mfw-brain.command=\"/fixture/bun\"",
+				"-c",
+				"mcp_servers.mfw-brain.args=[\"run\",\"/fixture/mcp.ts\"]",
+				"-c",
+				"mcp_servers.mfw-brain.env={ MFW_FIXTURE = \"1\" }"
+			],
+			"bridge": "codex-exec-bridge.ts",
+			"env": {
+				"FIXTURE": "1"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"codex-cli|default|brain-resume": {
+			"providerArgv": [
+				"codex",
+				"exec",
+				"resume",
+				"22222222-2222-4222-8222-222222222222",
+				"--json",
+				"--skip-git-repo-check",
+				"-c",
+				"sandbox_mode=\"read-only\"",
+				"-c",
+				"approval_policy=\"never\"",
+				"-c",
+				"mcp_servers.mfw-brain.command=\"/fixture/bun\"",
+				"-c",
+				"mcp_servers.mfw-brain.args=[\"run\",\"/fixture/mcp.ts\"]",
+				"-c",
+				"mcp_servers.mfw-brain.env={ MFW_FIXTURE = \"1\" }"
+			],
+			"agentArgv": [
+				"codex",
+				"exec",
+				"resume",
+				"22222222-2222-4222-8222-222222222222",
+				"--json",
+				"--skip-git-repo-check",
+				"-c",
+				"sandbox_mode=\"read-only\"",
+				"-c",
+				"approval_policy=\"never\"",
+				"-c",
+				"mcp_servers.mfw-brain.command=\"/fixture/bun\"",
+				"-c",
+				"mcp_servers.mfw-brain.args=[\"run\",\"/fixture/mcp.ts\"]",
+				"-c",
+				"mcp_servers.mfw-brain.env={ MFW_FIXTURE = \"1\" }"
+			],
+			"bridge": "codex-exec-bridge.ts",
+			"env": {
+				"FIXTURE": "1"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"codex-cli|default|task-endpoint": {
+			"providerArgv": [
+				"codex",
+				"app-server",
+				"-c",
+				"model_provider=\"mfw-fixture\"",
+				"-c",
+				"model_providers.mfw-fixture={ name = \"mfw fixture\", base_url = \"https://endpoint.example/v1\", wire_api = \"responses\", env_key = \"FIXTURE_KEY\" }"
+			],
+			"agentArgv": [
+				"codex",
+				"app-server",
+				"-c",
+				"model_provider=\"mfw-fixture\"",
+				"-c",
+				"model_providers.mfw-fixture={ name = \"mfw fixture\", base_url = \"https://endpoint.example/v1\", wire_api = \"responses\", env_key = \"FIXTURE_KEY\" }"
+			],
+			"bridge": "codex-app-server-bridge.ts",
+			"env": {
+				"FIXTURE": "1"
+			},
+			"declaredCapabilities": {
+				"steer": true
+			}
+		},
+		"codex-cli|default|brain-endpoint": {
+			"providerArgv": [
+				"codex",
+				"exec",
+				"--json",
+				"--skip-git-repo-check",
+				"-c",
+				"sandbox_mode=\"read-only\"",
+				"-c",
+				"approval_policy=\"never\"",
+				"-c",
+				"mcp_servers.mfw-brain.command=\"/fixture/bun\"",
+				"-c",
+				"mcp_servers.mfw-brain.args=[\"run\",\"/fixture/mcp.ts\"]",
+				"-c",
+				"mcp_servers.mfw-brain.env={ MFW_FIXTURE = \"1\" }",
+				"-c",
+				"model_provider=\"mfw-fixture\"",
+				"-c",
+				"model_providers.mfw-fixture={ name = \"mfw fixture\", base_url = \"https://endpoint.example/v1\", wire_api = \"responses\", env_key = \"FIXTURE_KEY\" }"
+			],
+			"agentArgv": [
+				"codex",
+				"exec",
+				"--json",
+				"--skip-git-repo-check",
+				"-c",
+				"sandbox_mode=\"read-only\"",
+				"-c",
+				"approval_policy=\"never\"",
+				"-c",
+				"mcp_servers.mfw-brain.command=\"/fixture/bun\"",
+				"-c",
+				"mcp_servers.mfw-brain.args=[\"run\",\"/fixture/mcp.ts\"]",
+				"-c",
+				"mcp_servers.mfw-brain.env={ MFW_FIXTURE = \"1\" }",
+				"-c",
+				"model_provider=\"mfw-fixture\"",
+				"-c",
+				"model_providers.mfw-fixture={ name = \"mfw fixture\", base_url = \"https://endpoint.example/v1\", wire_api = \"responses\", env_key = \"FIXTURE_KEY\" }"
+			],
+			"bridge": "codex-exec-bridge.ts",
+			"env": {
+				"FIXTURE": "1"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"codex-cli|fixture-model|task": {
+			"providerArgv": ["codex", "app-server"],
+			"agentArgv": ["codex", "app-server"],
+			"bridge": "codex-app-server-bridge.ts",
+			"env": {
+				"FIXTURE": "1"
+			},
+			"declaredCapabilities": {
+				"steer": true
+			}
+		},
+		"codex-cli|fixture-model|task-bg": {
+			"providerArgv": ["codex", "app-server"],
+			"agentArgv": ["codex", "app-server"],
+			"bridge": "codex-app-server-bridge.ts",
+			"env": {
+				"FIXTURE": "1"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"codex-cli|fixture-model|brain": {
+			"providerArgv": [
+				"codex",
+				"exec",
+				"--json",
+				"--skip-git-repo-check",
+				"-c",
+				"sandbox_mode=\"read-only\"",
+				"-c",
+				"approval_policy=\"never\"",
+				"-c",
+				"mcp_servers.mfw-brain.command=\"/fixture/bun\"",
+				"-c",
+				"mcp_servers.mfw-brain.args=[\"run\",\"/fixture/mcp.ts\"]",
+				"-c",
+				"mcp_servers.mfw-brain.env={ MFW_FIXTURE = \"1\" }"
+			],
+			"agentArgv": [
+				"codex",
+				"exec",
+				"--json",
+				"--skip-git-repo-check",
+				"-c",
+				"sandbox_mode=\"read-only\"",
+				"-c",
+				"approval_policy=\"never\"",
+				"-c",
+				"mcp_servers.mfw-brain.command=\"/fixture/bun\"",
+				"-c",
+				"mcp_servers.mfw-brain.args=[\"run\",\"/fixture/mcp.ts\"]",
+				"-c",
+				"mcp_servers.mfw-brain.env={ MFW_FIXTURE = \"1\" }"
+			],
+			"bridge": "codex-exec-bridge.ts",
+			"env": {
+				"FIXTURE": "1"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"codex-cli|fixture-model|brain-resume": {
+			"providerArgv": [
+				"codex",
+				"exec",
+				"resume",
+				"22222222-2222-4222-8222-222222222222",
+				"--json",
+				"--skip-git-repo-check",
+				"-c",
+				"sandbox_mode=\"read-only\"",
+				"-c",
+				"approval_policy=\"never\"",
+				"-c",
+				"mcp_servers.mfw-brain.command=\"/fixture/bun\"",
+				"-c",
+				"mcp_servers.mfw-brain.args=[\"run\",\"/fixture/mcp.ts\"]",
+				"-c",
+				"mcp_servers.mfw-brain.env={ MFW_FIXTURE = \"1\" }"
+			],
+			"agentArgv": [
+				"codex",
+				"exec",
+				"resume",
+				"22222222-2222-4222-8222-222222222222",
+				"--json",
+				"--skip-git-repo-check",
+				"-c",
+				"sandbox_mode=\"read-only\"",
+				"-c",
+				"approval_policy=\"never\"",
+				"-c",
+				"mcp_servers.mfw-brain.command=\"/fixture/bun\"",
+				"-c",
+				"mcp_servers.mfw-brain.args=[\"run\",\"/fixture/mcp.ts\"]",
+				"-c",
+				"mcp_servers.mfw-brain.env={ MFW_FIXTURE = \"1\" }"
+			],
+			"bridge": "codex-exec-bridge.ts",
+			"env": {
+				"FIXTURE": "1"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"codex-cli|fixture-model|task-endpoint": {
+			"providerArgv": [
+				"codex",
+				"app-server",
+				"-c",
+				"model_provider=\"mfw-fixture\"",
+				"-c",
+				"model_providers.mfw-fixture={ name = \"mfw fixture\", base_url = \"https://endpoint.example/v1\", wire_api = \"responses\", env_key = \"FIXTURE_KEY\" }"
+			],
+			"agentArgv": [
+				"codex",
+				"app-server",
+				"-c",
+				"model_provider=\"mfw-fixture\"",
+				"-c",
+				"model_providers.mfw-fixture={ name = \"mfw fixture\", base_url = \"https://endpoint.example/v1\", wire_api = \"responses\", env_key = \"FIXTURE_KEY\" }"
+			],
+			"bridge": "codex-app-server-bridge.ts",
+			"env": {
+				"FIXTURE": "1"
+			},
+			"declaredCapabilities": {
+				"steer": true
+			}
+		},
+		"codex-cli|fixture-model|brain-endpoint": {
+			"providerArgv": [
+				"codex",
+				"exec",
+				"--json",
+				"--skip-git-repo-check",
+				"-c",
+				"sandbox_mode=\"read-only\"",
+				"-c",
+				"approval_policy=\"never\"",
+				"-c",
+				"mcp_servers.mfw-brain.command=\"/fixture/bun\"",
+				"-c",
+				"mcp_servers.mfw-brain.args=[\"run\",\"/fixture/mcp.ts\"]",
+				"-c",
+				"mcp_servers.mfw-brain.env={ MFW_FIXTURE = \"1\" }",
+				"-c",
+				"model_provider=\"mfw-fixture\"",
+				"-c",
+				"model_providers.mfw-fixture={ name = \"mfw fixture\", base_url = \"https://endpoint.example/v1\", wire_api = \"responses\", env_key = \"FIXTURE_KEY\" }"
+			],
+			"agentArgv": [
+				"codex",
+				"exec",
+				"--json",
+				"--skip-git-repo-check",
+				"-c",
+				"sandbox_mode=\"read-only\"",
+				"-c",
+				"approval_policy=\"never\"",
+				"-c",
+				"mcp_servers.mfw-brain.command=\"/fixture/bun\"",
+				"-c",
+				"mcp_servers.mfw-brain.args=[\"run\",\"/fixture/mcp.ts\"]",
+				"-c",
+				"mcp_servers.mfw-brain.env={ MFW_FIXTURE = \"1\" }",
+				"-c",
+				"model_provider=\"mfw-fixture\"",
+				"-c",
+				"model_providers.mfw-fixture={ name = \"mfw fixture\", base_url = \"https://endpoint.example/v1\", wire_api = \"responses\", env_key = \"FIXTURE_KEY\" }"
+			],
+			"bridge": "codex-exec-bridge.ts",
+			"env": {
+				"FIXTURE": "1"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"gemini-cli|default|task": {
+			"providerArgv": ["gemini", "--acp"],
+			"agentArgv": ["gemini", "--acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "gemini-cli"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"gemini-cli|default|task-bg": {
+			"providerArgv": ["gemini", "--acp"],
+			"agentArgv": ["gemini", "--acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "gemini-cli"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"gemini-cli|default|brain": {
+			"providerArgv": ["gemini", "--acp", "--approval-mode", "plan"],
+			"agentArgv": ["gemini", "--acp", "--approval-mode", "plan"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "gemini-cli",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"gemini-cli|default|brain-resume": {
+			"providerArgv": ["gemini", "--acp", "--approval-mode", "plan"],
+			"agentArgv": ["gemini", "--acp", "--approval-mode", "plan"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "gemini-cli",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json",
+				"MFW_ACP_RESUME_SESSION": "22222222-2222-4222-8222-222222222222"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"gemini-cli|default|task-endpoint": {
+			"providerArgv": ["gemini", "--acp"],
+			"agentArgv": ["gemini", "--acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "gemini-cli",
+				"MFW_ACP_ENDPOINT": "{\"id\":\"fixture\",\"baseUrl\":\"https://endpoint.example/v1\",\"envKey\":\"FIXTURE_KEY\"}",
+				"MFW_ACP_MODEL": "default"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"gemini-cli|default|brain-endpoint": {
+			"providerArgv": ["gemini", "--acp", "--approval-mode", "plan"],
+			"agentArgv": ["gemini", "--acp", "--approval-mode", "plan"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "gemini-cli",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json",
+				"MFW_ACP_ENDPOINT": "{\"id\":\"fixture\",\"baseUrl\":\"https://endpoint.example/v1\",\"envKey\":\"FIXTURE_KEY\"}",
+				"MFW_ACP_MODEL": "default"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"gemini-cli|fixture-model|task": {
+			"providerArgv": ["gemini", "--acp", "--model", "fixture-model"],
+			"agentArgv": ["gemini", "--acp", "--model", "fixture-model"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "gemini-cli"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"gemini-cli|fixture-model|task-bg": {
+			"providerArgv": ["gemini", "--acp", "--model", "fixture-model"],
+			"agentArgv": ["gemini", "--acp", "--model", "fixture-model"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "gemini-cli"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"gemini-cli|fixture-model|brain": {
+			"providerArgv": [
+				"gemini",
+				"--acp",
+				"--model",
+				"fixture-model",
+				"--approval-mode",
+				"plan"
+			],
+			"agentArgv": [
+				"gemini",
+				"--acp",
+				"--model",
+				"fixture-model",
+				"--approval-mode",
+				"plan"
+			],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "gemini-cli",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"gemini-cli|fixture-model|brain-resume": {
+			"providerArgv": [
+				"gemini",
+				"--acp",
+				"--model",
+				"fixture-model",
+				"--approval-mode",
+				"plan"
+			],
+			"agentArgv": [
+				"gemini",
+				"--acp",
+				"--model",
+				"fixture-model",
+				"--approval-mode",
+				"plan"
+			],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "gemini-cli",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json",
+				"MFW_ACP_RESUME_SESSION": "22222222-2222-4222-8222-222222222222"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"gemini-cli|fixture-model|task-endpoint": {
+			"providerArgv": ["gemini", "--acp", "--model", "fixture-model"],
+			"agentArgv": ["gemini", "--acp", "--model", "fixture-model"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "gemini-cli",
+				"MFW_ACP_ENDPOINT": "{\"id\":\"fixture\",\"baseUrl\":\"https://endpoint.example/v1\",\"envKey\":\"FIXTURE_KEY\"}",
+				"MFW_ACP_MODEL": "fixture-model"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"gemini-cli|fixture-model|brain-endpoint": {
+			"providerArgv": [
+				"gemini",
+				"--acp",
+				"--model",
+				"fixture-model",
+				"--approval-mode",
+				"plan"
+			],
+			"agentArgv": [
+				"gemini",
+				"--acp",
+				"--model",
+				"fixture-model",
+				"--approval-mode",
+				"plan"
+			],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "gemini-cli",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json",
+				"MFW_ACP_ENDPOINT": "{\"id\":\"fixture\",\"baseUrl\":\"https://endpoint.example/v1\",\"envKey\":\"FIXTURE_KEY\"}",
+				"MFW_ACP_MODEL": "fixture-model"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"cursor-agent|default|task": {
+			"providerArgv": ["agent", "acp"],
+			"agentArgv": ["agent", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "cursor-agent"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"cursor-agent|default|task-bg": {
+			"providerArgv": ["agent", "acp"],
+			"agentArgv": ["agent", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "cursor-agent"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"cursor-agent|default|brain": {
+			"providerArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
+			"agentArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "cursor-agent",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"cursor-agent|default|brain-resume": {
+			"providerArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
+			"agentArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "cursor-agent",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json",
+				"MFW_ACP_RESUME_SESSION": "22222222-2222-4222-8222-222222222222"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"cursor-agent|default|task-endpoint": {
+			"providerArgv": ["agent", "acp"],
+			"agentArgv": ["agent", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "cursor-agent",
+				"MFW_ACP_ENDPOINT": "{\"id\":\"fixture\",\"baseUrl\":\"https://endpoint.example/v1\",\"envKey\":\"FIXTURE_KEY\"}",
+				"MFW_ACP_MODEL": "default"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"cursor-agent|default|brain-endpoint": {
+			"providerArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
+			"agentArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "cursor-agent",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json",
+				"MFW_ACP_ENDPOINT": "{\"id\":\"fixture\",\"baseUrl\":\"https://endpoint.example/v1\",\"envKey\":\"FIXTURE_KEY\"}",
+				"MFW_ACP_MODEL": "default"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"cursor-agent|fixture-model|task": {
+			"providerArgv": ["agent", "acp"],
+			"agentArgv": ["agent", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "cursor-agent"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"cursor-agent|fixture-model|task-bg": {
+			"providerArgv": ["agent", "acp"],
+			"agentArgv": ["agent", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "cursor-agent"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"cursor-agent|fixture-model|brain": {
+			"providerArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
+			"agentArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "cursor-agent",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"cursor-agent|fixture-model|brain-resume": {
+			"providerArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
+			"agentArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "cursor-agent",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json",
+				"MFW_ACP_RESUME_SESSION": "22222222-2222-4222-8222-222222222222"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"cursor-agent|fixture-model|task-endpoint": {
+			"providerArgv": ["agent", "acp"],
+			"agentArgv": ["agent", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "cursor-agent",
+				"MFW_ACP_ENDPOINT": "{\"id\":\"fixture\",\"baseUrl\":\"https://endpoint.example/v1\",\"envKey\":\"FIXTURE_KEY\"}",
+				"MFW_ACP_MODEL": "fixture-model"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"cursor-agent|fixture-model|brain-endpoint": {
+			"providerArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
+			"agentArgv": ["agent", "--mode", "plan", "--approve-mcps", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "cursor-agent",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json",
+				"MFW_ACP_ENDPOINT": "{\"id\":\"fixture\",\"baseUrl\":\"https://endpoint.example/v1\",\"envKey\":\"FIXTURE_KEY\"}",
+				"MFW_ACP_MODEL": "fixture-model"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"opencode|default|task": {
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "opencode"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"opencode|default|task-bg": {
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "opencode"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"opencode|default|brain": {
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "opencode",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"opencode|default|brain-resume": {
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "opencode",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json",
+				"MFW_ACP_RESUME_SESSION": "22222222-2222-4222-8222-222222222222"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"opencode|default|task-endpoint": {
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "opencode",
+				"MFW_ACP_ENDPOINT": "{\"id\":\"fixture\",\"baseUrl\":\"https://endpoint.example/v1\",\"envKey\":\"FIXTURE_KEY\"}",
+				"MFW_ACP_MODEL": "default"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"opencode|default|brain-endpoint": {
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "opencode",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json",
+				"MFW_ACP_ENDPOINT": "{\"id\":\"fixture\",\"baseUrl\":\"https://endpoint.example/v1\",\"envKey\":\"FIXTURE_KEY\"}",
+				"MFW_ACP_MODEL": "default"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"opencode|fixture-model|task": {
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "opencode"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"opencode|fixture-model|task-bg": {
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "opencode"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"opencode|fixture-model|brain": {
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "opencode",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"opencode|fixture-model|brain-resume": {
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "opencode",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json",
+				"MFW_ACP_RESUME_SESSION": "22222222-2222-4222-8222-222222222222"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"opencode|fixture-model|task-endpoint": {
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "opencode",
+				"MFW_ACP_ENDPOINT": "{\"id\":\"fixture\",\"baseUrl\":\"https://endpoint.example/v1\",\"envKey\":\"FIXTURE_KEY\"}",
+				"MFW_ACP_MODEL": "fixture-model"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"opencode|fixture-model|brain-endpoint": {
+			"providerArgv": ["opencode", "acp"],
+			"agentArgv": ["opencode", "acp"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "opencode",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json",
+				"MFW_ACP_ENDPOINT": "{\"id\":\"fixture\",\"baseUrl\":\"https://endpoint.example/v1\",\"envKey\":\"FIXTURE_KEY\"}",
+				"MFW_ACP_MODEL": "fixture-model"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"pi|default|task": {
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "pi"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"pi|default|task-bg": {
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "pi"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"pi|default|brain": {
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "pi",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"pi|default|brain-resume": {
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "pi",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json",
+				"MFW_ACP_RESUME_SESSION": "22222222-2222-4222-8222-222222222222"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"pi|default|task-endpoint": {
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "pi",
+				"MFW_ACP_ENDPOINT": "{\"id\":\"fixture\",\"baseUrl\":\"https://endpoint.example/v1\",\"envKey\":\"FIXTURE_KEY\"}",
+				"MFW_ACP_MODEL": "default"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"pi|default|brain-endpoint": {
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "pi",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json",
+				"MFW_ACP_ENDPOINT": "{\"id\":\"fixture\",\"baseUrl\":\"https://endpoint.example/v1\",\"envKey\":\"FIXTURE_KEY\"}",
+				"MFW_ACP_MODEL": "default"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"pi|fixture-model|task": {
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "pi"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"pi|fixture-model|task-bg": {
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "pi"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"pi|fixture-model|brain": {
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "pi",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"pi|fixture-model|brain-resume": {
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "pi",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json",
+				"MFW_ACP_RESUME_SESSION": "22222222-2222-4222-8222-222222222222"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"pi|fixture-model|task-endpoint": {
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "pi",
+				"MFW_ACP_ENDPOINT": "{\"id\":\"fixture\",\"baseUrl\":\"https://endpoint.example/v1\",\"envKey\":\"FIXTURE_KEY\"}",
+				"MFW_ACP_MODEL": "fixture-model"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		},
+		"pi|fixture-model|brain-endpoint": {
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"agentArgv": ["bunx", "pi-acp@0.0.34"],
+			"bridge": "acp-bridge.ts",
+			"env": {
+				"FIXTURE": "1",
+				"MFW_ACP_AGENT": "pi",
+				"MFW_ACP_POLICY": "read-only",
+				"MFW_ACP_MCP_CONFIG": "/fixture/mcp.json",
+				"MFW_ACP_ENDPOINT": "{\"id\":\"fixture\",\"baseUrl\":\"https://endpoint.example/v1\",\"envKey\":\"FIXTURE_KEY\"}",
+				"MFW_ACP_MODEL": "fixture-model"
+			},
+			"declaredCapabilities": {
+				"steer": false
+			}
+		}
+	},
+	"inference": {
+		"gemini-cli|default": {
+			"providerArgv": ["gemini", "--acp", "--approval-mode", "plan"],
+			"env": {
+				"MFW_ACP_AGENT": "gemini-cli",
+				"MFW_ACP_POLICY": "none"
+			}
+		},
+		"gemini-cli|fixture-model": {
+			"providerArgv": [
+				"gemini",
+				"--acp",
+				"--model",
+				"fixture-model",
+				"--approval-mode",
+				"plan"
+			],
+			"env": {
+				"MFW_ACP_AGENT": "gemini-cli",
+				"MFW_ACP_POLICY": "none"
+			}
+		},
+		"cursor-agent|default": {
+			"providerArgv": ["agent", "--mode", "plan", "acp"],
+			"env": {
+				"MFW_ACP_AGENT": "cursor-agent",
+				"MFW_ACP_POLICY": "none"
+			}
+		},
+		"cursor-agent|fixture-model": {
+			"providerArgv": ["agent", "--mode", "plan", "acp"],
+			"env": {
+				"MFW_ACP_AGENT": "cursor-agent",
+				"MFW_ACP_POLICY": "none"
+			}
+		},
+		"opencode|default": {
+			"providerArgv": ["opencode", "acp"],
+			"env": {
+				"MFW_ACP_AGENT": "opencode",
+				"MFW_ACP_POLICY": "none"
+			}
+		},
+		"opencode|fixture-model": {
+			"providerArgv": ["opencode", "acp"],
+			"env": {
+				"MFW_ACP_AGENT": "opencode",
+				"MFW_ACP_POLICY": "none"
+			}
+		},
+		"pi|default": {
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"env": {
+				"MFW_ACP_AGENT": "pi",
+				"MFW_ACP_POLICY": "none"
+			}
+		},
+		"pi|fixture-model": {
+			"providerArgv": ["bunx", "pi-acp@0.0.34"],
+			"env": {
+				"MFW_ACP_AGENT": "pi",
+				"MFW_ACP_POLICY": "none"
+			}
+		}
+	},
+	"inferenceEnvs": {
+		"claude-cli": {
+			"PATH": "v-PATH",
+			"HOME": "v-HOME",
+			"CLAUDE_CONFIG_DIR": "v-CLAUDE_CONFIG_DIR",
+			"CODEX_HOME": "v-CODEX_HOME",
+			"ANTHROPIC_API_KEY": "v-ANTHROPIC_API_KEY"
+		},
+		"codex-cli": {
+			"PATH": "v-PATH",
+			"HOME": "v-HOME",
+			"CLAUDE_CONFIG_DIR": "v-CLAUDE_CONFIG_DIR",
+			"CODEX_HOME": "v-CODEX_HOME"
+		},
+		"gemini-cli": {
+			"PATH": "v-PATH",
+			"HOME": "v-HOME",
+			"CLAUDE_CONFIG_DIR": "v-CLAUDE_CONFIG_DIR",
+			"CODEX_HOME": "v-CODEX_HOME",
+			"GEMINI_API_KEY": "v-GEMINI_API_KEY",
+			"GOOGLE_API_KEY": "v-GOOGLE_API_KEY"
+		},
+		"cursor-agent": {
+			"PATH": "v-PATH",
+			"HOME": "v-HOME",
+			"CLAUDE_CONFIG_DIR": "v-CLAUDE_CONFIG_DIR",
+			"CODEX_HOME": "v-CODEX_HOME",
+			"CURSOR_API_KEY": "v-CURSOR_API_KEY"
+		},
+		"opencode": {
+			"PATH": "v-PATH",
+			"HOME": "v-HOME",
+			"CLAUDE_CONFIG_DIR": "v-CLAUDE_CONFIG_DIR",
+			"CODEX_HOME": "v-CODEX_HOME",
+			"OPENCODE_API_KEY": "v-OPENCODE_API_KEY"
+		},
+		"pi": {
+			"PATH": "v-PATH",
+			"HOME": "v-HOME",
+			"CLAUDE_CONFIG_DIR": "v-CLAUDE_CONFIG_DIR",
+			"CODEX_HOME": "v-CODEX_HOME"
+		},
+		"unknown": {
+			"PATH": "v-PATH",
+			"HOME": "v-HOME",
+			"CLAUDE_CONFIG_DIR": "v-CLAUDE_CONFIG_DIR",
+			"CODEX_HOME": "v-CODEX_HOME"
+		}
+	},
+	"autonomyCorpus": [
+		{
+			"argv": ["cli", "--dangerously-skip-permissions", "tail"],
+			"flags": ["--dangerously-skip-permissions"],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "--dangerously-skip-permissions=true", "tail"],
+			"flags": ["--dangerously-skip-permissions=true"],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "--allow-dangerously-skip-permissions", "tail"],
+			"flags": ["--allow-dangerously-skip-permissions"],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "--dangerously-bypass-approvals-and-sandbox", "tail"],
+			"flags": ["--dangerously-bypass-approvals-and-sandbox"],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "--full-auto", "tail"],
+			"flags": ["--full-auto"],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "--yolo", "tail"],
+			"flags": ["--yolo"],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "--yolo=1", "tail"],
+			"flags": ["--yolo=1"],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "-y", "tail"],
+			"flags": [],
+			"without": ["cli", "-y", "tail"]
+		},
+		{
+			"argv": ["cli", "--force", "tail"],
+			"flags": [],
+			"without": ["cli", "--force", "tail"]
+		},
+		{
+			"argv": ["cli", "--permission-mode", "bypassPermissions", "tail"],
+			"flags": ["--permission-mode bypassPermissions"],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "--permission-mode=bypassPermissions", "tail"],
+			"flags": ["--permission-mode=bypassPermissions"],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "--permission-mode", "plan", "tail"],
+			"flags": [],
+			"without": ["cli", "--permission-mode", "plan", "tail"]
+		},
+		{
+			"argv": ["cli", "--ask-for-approval", "never", "tail"],
+			"flags": ["--ask-for-approval never"],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "--ask-for-approval=never", "tail"],
+			"flags": ["--ask-for-approval=never"],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "--ask-for-approval", "on-request", "tail"],
+			"flags": [],
+			"without": ["cli", "--ask-for-approval", "on-request", "tail"]
+		},
+		{
+			"argv": ["cli", "-a", "never", "tail"],
+			"flags": ["-a never"],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "-a=never", "tail"],
+			"flags": ["-a=never"],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "-a", "on-request", "tail"],
+			"flags": [],
+			"without": ["cli", "-a", "on-request", "tail"]
+		},
+		{
+			"argv": ["cli", "--sandbox", "danger-full-access", "tail"],
+			"flags": ["--sandbox danger-full-access"],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "--sandbox=danger-full-access", "tail"],
+			"flags": ["--sandbox=danger-full-access"],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "--sandbox", "read-only", "tail"],
+			"flags": [],
+			"without": ["cli", "--sandbox", "read-only", "tail"]
+		},
+		{
+			"argv": ["cli", "-s", "danger-full-access", "tail"],
+			"flags": ["-s danger-full-access"],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "-s=danger-full-access", "tail"],
+			"flags": ["-s=danger-full-access"],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "-s", "read-only", "tail"],
+			"flags": [],
+			"without": ["cli", "-s", "read-only", "tail"]
+		},
+		{
+			"argv": ["cli", "-c", "approval_policy=\"never\"", "tail"],
+			"flags": ["-c approval_policy=\"never\""],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "-c", "approval_policy=never", "tail"],
+			"flags": ["-c approval_policy=never"],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "-c", "approval_policy='never'", "tail"],
+			"flags": ["-c approval_policy='never'"],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "-c", "approval_policy=\"on-request\"", "tail"],
+			"flags": [],
+			"without": ["cli", "-c", "approval_policy=\"on-request\"", "tail"]
+		},
+		{
+			"argv": ["cli", "-c", "sandbox_mode=\"danger-full-access\"", "tail"],
+			"flags": ["-c sandbox_mode=\"danger-full-access\""],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "-c", "sandbox_mode=\"read-only\"", "tail"],
+			"flags": [],
+			"without": ["cli", "-c", "sandbox_mode=\"read-only\"", "tail"]
+		},
+		{
+			"argv": ["cli", "--config", "approval_policy=\"never\"", "tail"],
+			"flags": ["--config approval_policy=\"never\""],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "--config=approval_policy=\"never\"", "tail"],
+			"flags": ["--config=approval_policy=\"never\""],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "--config=sandbox_mode=\"danger-full-access\"", "tail"],
+			"flags": ["--config=sandbox_mode=\"danger-full-access\""],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "-c=approval_policy=\"never\"", "tail"],
+			"flags": ["-c=approval_policy=\"never\""],
+			"without": ["cli", "tail"]
+		},
+		{
+			"argv": ["cli", "-c", "other=1", "tail"],
+			"flags": [],
+			"without": ["cli", "-c", "other=1", "tail"]
+		},
+		{
+			"argv": ["cli", "--approval-mode", "yolo", "tail"],
+			"flags": [],
+			"without": ["cli", "--approval-mode", "yolo", "tail"]
+		},
+		{
+			"argv": ["cli", "--approval-mode", "plan", "tail"],
+			"flags": [],
+			"without": ["cli", "--approval-mode", "plan", "tail"]
+		},
+		{
+			"argv": ["cli", "--model", "opus", "tail"],
+			"flags": [],
+			"without": ["cli", "--model", "opus", "tail"]
+		},
+		{
+			"argv": ["cli", "--sandbox", "tail"],
+			"flags": [],
+			"without": ["cli", "--sandbox", "tail"]
+		},
+		{
+			"argv": ["cli", "-c", "tail"],
+			"flags": [],
+			"without": ["cli", "-c", "tail"]
+		}
+	],
+	"hostProbeScript": "set -u\nlp=$(sh -lc 'printf \"\\nMFW_LOGIN_PATH=%s\\n\" \"$PATH\"' </dev/null 2>/dev/null | sed -n 's/^MFW_LOGIN_PATH=//p' | tail -n1)\nif [ -n \"$lp\" ]; then PATH=\"$lp:$PATH\"; fi\nPATH=\"$HOME/.local/bin:$HOME/.bun/bin:$PATH\"\nexport PATH\nprintf '%s\\n' MFW_HOST_PROBE_V1\nprintf 'uid=%s\\n' \"$(id -u)\"\nprintf 'user=%s\\n' \"$(id -un)\"\nprintf 'home=%s\\n' \"$HOME\"\nprintf 'path=%s\\n' \"$PATH\"\nif sudo -n true >/dev/null 2>&1; then echo sudo=allowed; else echo sudo=refused; fi\nprintf 'bwrap.path=%s\\n' \"$(command -v bwrap || true)\"\nif command -v bwrap >/dev/null 2>&1 && bwrap --die-with-parent --ro-bind / / --dev /dev --proc /proc true >/dev/null 2>&1; then echo bwrap=yes; else echo bwrap=no; fi\nprintf 'setsid=%s\\n' \"$(command -v setsid || true)\"\nprintf 'bun=%s\\n' \"$(command -v bun || true)\"\nprintf 'git=%s\\n' \"$(command -v git || true)\"\nif command -v claude >/dev/null 2>&1; then printf 'harness.claude-cli=%s\\n' \"$(claude --version 2>/dev/null | head -n1 | tr -d '\\r')\"; else printf 'harness.claude-cli=\\n'; fi\na=no; for f in \"$HOME\"/'.claude/.credentials.json'; do [ -s \"$f\" ] && a=yes; done; printf 'auth.claude-cli=%s\\n' \"$a\"\nif command -v codex >/dev/null 2>&1; then printf 'harness.codex-cli=%s\\n' \"$(codex --version 2>/dev/null | head -n1 | tr -d '\\r')\"; else printf 'harness.codex-cli=\\n'; fi\na=no; for f in \"$HOME\"/'.codex/auth.json'; do [ -s \"$f\" ] && a=yes; done; printf 'auth.codex-cli=%s\\n' \"$a\"\nif command -v agent >/dev/null 2>&1 && [ \"$(basename \"$(readlink -f \"$(command -v agent)\")\")\" = 'cursor-agent' ]; then printf 'harness.cursor-agent=%s\\n' \"$(agent --version 2>/dev/null | head -n1 | tr -d '\\r')\"; else printf 'harness.cursor-agent=\\n'; fi\na=no; for f in \"$HOME\"/'.cursor/cli-config.json'; do [ -s \"$f\" ] && a=yes; done; printf 'auth.cursor-agent=%s\\n' \"$a\"\nif command -v gemini >/dev/null 2>&1; then printf 'harness.gemini-cli=%s\\n' \"$(gemini --version 2>/dev/null | head -n1 | tr -d '\\r')\"; else printf 'harness.gemini-cli=\\n'; fi\na=no; for f in \"$HOME\"/'.gemini/oauth_creds.json'; do [ -s \"$f\" ] && a=yes; done; printf 'auth.gemini-cli=%s\\n' \"$a\"\nif command -v opencode >/dev/null 2>&1; then printf 'harness.opencode=%s\\n' \"$(opencode --version 2>/dev/null | head -n1 | tr -d '\\r')\"; else printf 'harness.opencode=\\n'; fi\na=no; for f in \"$HOME\"/'.local/share/opencode/auth.json'; do [ -s \"$f\" ] && a=yes; done; printf 'auth.opencode=%s\\n' \"$a\"\nif command -v pi >/dev/null 2>&1 && pi '--help' 2>/dev/null | grep -Eiq '^pi.*coding (assistant|agent)'; then printf 'harness.pi=%s\\n' \"$(pi --version 2>/dev/null | head -n1 | tr -d '\\r')\"; else printf 'harness.pi=\\n'; fi\na=no; for f in \"$HOME\"/'.pi/agent/auth.json' \"$HOME\"/'.pi/agent/models.json'; do [ -s \"$f\" ] && a=yes; done; printf 'auth.pi=%s\\n' \"$a\"\nprintf 'gpus=%s\\n' \"$( (nvidia-smi -L 2>/dev/null || true) | grep -c '^GPU' )\"\nprintf 'disk.kib=%s\\n' \"$(df -Pk \"$HOME\" 2>/dev/null | awk 'NR==2{print $4}')\"\nprintf 'mem.kib=%s\\n' \"$(awk '/^MemAvailable:/{print $2}' /proc/meminfo 2>/dev/null)\""
+}

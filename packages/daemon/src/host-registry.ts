@@ -2,11 +2,11 @@ import { mkdir, readFile, rm } from "node:fs/promises";
 import { isIP } from "node:net";
 import { dirname, join } from "node:path";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
+import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 import { z } from "zod";
 import {
 	type BinaryIdentity,
-	CURSOR_AGENT_IDENTITY,
-	PI_IDENTITY,
+	harnessBinaryIdentity,
 } from "./agents/agent-identity.ts";
 import { ExecutionEnvironmentBuilder } from "./execution-environment.ts";
 import { runProc } from "./proc.ts";
@@ -49,34 +49,41 @@ const HOSTNAME =
 const LABEL = /^[a-z0-9][a-z0-9_.:-]{0,62}$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-/** Harnesses a host can run, keyed by the catalogue id routing uses. */
-export const REMOTE_HARNESSES = {
-	"claude-cli": { binary: "claude", authPaths: [".claude/.credentials.json"] },
-	"codex-cli": { binary: "codex", authPaths: [".codex/auth.json"] },
-	"cursor-agent": {
-		binary: "agent",
-		authPaths: [".cursor/cli-config.json"],
-		identity: CURSOR_AGENT_IDENTITY,
-	},
-	"gemini-cli": { binary: "gemini", authPaths: [".gemini/oauth_creds.json"] },
-	opencode: {
-		binary: "opencode",
-		authPaths: [".local/share/opencode/auth.json"],
-	},
-	pi: {
-		binary: "pi",
-		authPaths: [".pi/agent/auth.json", ".pi/agent/models.json"],
-		identity: PI_IDENTITY,
-	},
-} as const satisfies Record<
-	string,
-	{
-		binary: string;
-		authPaths: readonly string[];
-		identity?: BinaryIdentity;
-	}
->;
-export type RemoteHarnessId = keyof typeof REMOTE_HARNESSES;
+export type RemoteHarnessId =
+	| "claude-cli"
+	| "codex-cli"
+	| "cursor-agent"
+	| "gemini-cli"
+	| "opencode"
+	| "pi";
+
+export interface RemoteHarness {
+	binary: string;
+	authPaths: readonly string[];
+	identity?: BinaryIdentity;
+}
+
+/**
+ * Harnesses a host can run, keyed by the catalogue id routing uses. Sorted by
+ * id, so the probe script does not change when the manifests are reordered.
+ */
+export const REMOTE_HARNESSES = Object.assign(
+	// No prototype: an id is data and must not resolve to `constructor`.
+	Object.create(null),
+	Object.fromEntries(
+		[...builtinHarnessRegistry().list()]
+			.sort((a, b) => (a.id < b.id ? -1 : 1))
+			.map((m) => {
+				const identity = harnessBinaryIdentity(m.id);
+				const facts: RemoteHarness = {
+					binary: m.detect.bin,
+					authPaths: m.auth.remoteLoginFiles,
+					...(identity ? { identity } : {}),
+				};
+				return [m.id, facts];
+			}),
+	),
+) as Readonly<Record<RemoteHarnessId, RemoteHarness>>;
 
 export const HostConfigSchema = z
 	.object({

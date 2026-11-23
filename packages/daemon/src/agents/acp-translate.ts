@@ -18,10 +18,13 @@ import type {
 	ToolKind,
 } from "@agentclientprotocol/sdk";
 import { PROTOCOL_VERSION } from "@agentclientprotocol/sdk";
+import type { HarnessManifestInput } from "@mfw/plugin-api/harness";
+// A relative path: Bun.build inside the test runner fails on a second bundle
+// that reaches this file through the workspace package name.
+import { BUILTIN_HARNESS_MANIFESTS } from "../../../plugin-api/src/harness-builtins.ts";
 import {
 	type BinaryIdentity,
-	CURSOR_AGENT_IDENTITY,
-	PI_IDENTITY,
+	harnessBinaryIdentity,
 } from "./agent-identity.ts";
 import {
 	type ApprovalDecision,
@@ -61,43 +64,34 @@ export type AcpProfile = {
 	identity?: { bin: string; identity: BinaryIdentity };
 };
 
-const PROFILES: Record<string, AcpProfile> = {
-	"cursor-agent": {
-		id: "cursor-agent",
-		label: "Cursor Agent",
-		// Without this Cursor advertises exploded model ids pinned to a fast tier.
-		capabilityMeta: { parameterizedModelPicker: true },
-		readOnlyMode: "plan",
-		brainEligible: true,
-		identity: { bin: "agent", identity: CURSOR_AGENT_IDENTITY },
-	},
-	// Gemini's plan mode is selected on its argv (`--approval-mode plan`).
-	"gemini-cli": {
-		id: "gemini-cli",
-		label: "Gemini CLI",
-		modelOnArgv: true,
-		brainEligible: true,
-	},
-	opencode: {
-		id: "opencode",
-		label: "OpenCode",
-		readOnlyMode: "plan",
-		brainEligible: true,
-	},
-	// pi-acp's `modes` are thinking levels, so there is no read-only mode: pi's
-	// own flags (the wrapper script) restrict it.
-	pi: {
-		id: "pi",
-		label: "pi",
-		brainEligible: true,
-		readOnlyOtherTitles: ["grep", "find", "ls"],
-		identity: { bin: "pi", identity: PI_IDENTITY },
-	},
-};
+function acpProfile(m: HarnessManifestInput): AcpProfile {
+	const acp = m.acp as NonNullable<HarnessManifestInput["acp"]>;
+	const identity = harnessBinaryIdentity(m.id);
+	return {
+		id: m.id,
+		label: acp.label,
+		...(acp.capabilityMeta ? { capabilityMeta: acp.capabilityMeta } : {}),
+		...(acp.modelOnArgv ? { modelOnArgv: true } : {}),
+		...(acp.readOnlyMode ? { readOnlyMode: acp.readOnlyMode } : {}),
+		brainEligible: acp.brainEligible,
+		...(acp.readOnlyOtherTitles
+			? { readOnlyOtherTitles: acp.readOnlyOtherTitles }
+			: {}),
+		...(identity ? { identity: { bin: m.detect.bin, identity } } : {}),
+	};
+}
+
+/** Read without the validator: the bridge bundles this file. */
+const PROFILES: ReadonlyMap<string, AcpProfile> = new Map(
+	BUILTIN_HARNESS_MANIFESTS.filter((m) => m.dialect === "acp").map((m) => [
+		m.id,
+		acpProfile(m),
+	]),
+);
 
 export function profileFor(name: string | undefined): AcpProfile {
 	return (
-		(name && PROFILES[name]) || {
+		(name && PROFILES.get(name)) || {
 			id: "acp",
 			label: "ACP agent",
 			brainEligible: false,

@@ -9,31 +9,39 @@
 
 import { lstatSync, mkdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { UNATTESTED_CONFIG_MARKER } from "@mfw/plugin-api/harness";
+import {
+	findAutonomyFlags,
+	stripAutonomyFlags,
+} from "@mfw/plugin-api/harness-autonomy";
+import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 import type { PinnedBind } from "./pinned-binds.ts";
 import { parseSandboxProfile, type SandboxProfile } from "./profile.ts";
 
 /** Printed wherever the temporary fleet allowlist below is in force. */
-export const UNATTESTED_CONFIG_MARKER = "unattested-config";
+export { UNATTESTED_CONFIG_MARKER };
+
+/** The fleet dirs the sandbox profile knows (`profile.ts` holds the same closed list). */
+export type FleetCli = "claude" | "codex";
+
+const fleetWritable = (cli: FleetCli): readonly string[] =>
+	builtinHarnessRegistry().byFleetCli(cli).fleet.writable;
 
 /**
- * TEMPORARY, until P4 supplies the versioned per-CLI allowlist. These are the
- * provisional directories from the sandbox experiments and are not attested
- * for an authenticated CLI. Files in the config root (`.claude.json`,
- * `auth.json`, Codex's sqlite state) stay read-only, so a CLI that must rewrite
- * them fails rather than gaining a writable config root. `plugins/store` is
- * left out because a CLI loads code from it.
+ * TEMPORARY, until P4 supplies the versioned per-CLI allowlist: the manifests
+ * carry the provisional directories, marked `unattested-config`.
  *
  * Each run mounts a private, empty copy of these directories over the shared
  * ones (see {@link fleetPrivateState}): a CLI loads instructions and scripts
  * from them, so what one run writes must never reach another. Task and repair
  * runs start fresh sessions, so nothing is imported.
  */
-export const TEMPORARY_FLEET_WRITABLE = {
-	claude: ["backups", "projects", "sessions"],
-	codex: ["cache", "sessions", "shell_snapshots", "thread-writer-locks", "tmp"],
-} as const;
-
-export type FleetCli = keyof typeof TEMPORARY_FLEET_WRITABLE;
+export const TEMPORARY_FLEET_WRITABLE: Readonly<
+	Record<FleetCli, readonly string[]>
+> = {
+	claude: fleetWritable("claude"),
+	codex: fleetWritable("codex"),
+};
 
 /**
  * Ordinary tools an agent's shell commands expect. PATH is built only from
@@ -319,81 +327,14 @@ export function findLaunchSecret(check: LaunchSecretCheck): string | null {
 	return null;
 }
 
-/** Flags that make a CLI act without asking. Only an authorized launch may carry them. */
-const AUTONOMY_FLAGS = [
-	"--dangerously-skip-permissions",
-	"--allow-dangerously-skip-permissions",
-	"--dangerously-bypass-approvals-and-sandbox",
-	"--full-auto",
-	"--yolo",
-];
-
-/** Options that grant autonomy only with one of these values. */
-const AUTONOMY_VALUES: Readonly<Record<string, string>> = {
-	"--permission-mode": "bypassPermissions",
-	"--ask-for-approval": "never",
-	"-a": "never",
-	"--sandbox": "danger-full-access",
-	"-s": "danger-full-access",
-};
-
-/** Codex `-c key=value` overrides that do the same. */
-const AUTONOMY_CONFIG: Readonly<Record<string, string>> = {
-	approval_policy: "never",
-	sandbox_mode: "danger-full-access",
-};
-
-const CONFIG_OPTIONS = ["-c", "--config"];
-
-const unquoted = (value: string) => value.trim().replace(/^["']|["']$/g, "");
-
-function isAutonomyConfig(setting: string): boolean {
-	const at = setting.indexOf("=");
-	if (at < 0) return false;
-	const wanted = AUTONOMY_CONFIG[setting.slice(0, at).trim()];
-	return wanted !== undefined && unquoted(setting.slice(at + 1)) === wanted;
-}
-
-/** How many arguments at `i` grant autonomy: 0, 1, or 2 for an option and value. */
-function autonomySpan(argv: readonly string[], i: number): number {
-	const arg = argv[i] as string;
-	if (AUTONOMY_FLAGS.some((f) => arg === f || arg.startsWith(`${f}=`)))
-		return 1;
-	const next = argv[i + 1];
-	if (AUTONOMY_VALUES[arg] !== undefined) {
-		return next !== undefined && unquoted(next) === AUTONOMY_VALUES[arg]
-			? 2
-			: 0;
-	}
-	if (CONFIG_OPTIONS.includes(arg)) {
-		return next !== undefined && isAutonomyConfig(next) ? 2 : 0;
-	}
-	const eq = arg.indexOf("=");
-	if (eq < 0) return 0;
-	const name = arg.slice(0, eq);
-	const value = arg.slice(eq + 1);
-	if (AUTONOMY_VALUES[name] !== undefined) {
-		return unquoted(value) === AUTONOMY_VALUES[name] ? 1 : 0;
-	}
-	return CONFIG_OPTIONS.includes(name) && isAutonomyConfig(value) ? 1 : 0;
-}
-
+/**
+ * The arguments that make a CLI act without asking: the core's known list plus
+ * every manifest's. Only an authorized launch may carry them.
+ */
 export function autonomyFlags(argv: readonly string[]): string[] {
-	const out: string[] = [];
-	for (let i = 0; i < argv.length; ) {
-		const span = autonomySpan(argv, i);
-		if (span > 0) out.push(argv.slice(i, i + span).join(" "));
-		i += span || 1;
-	}
-	return out;
+	return findAutonomyFlags(builtinHarnessRegistry().autonomy, argv);
 }
 
 export function withoutAutonomyFlags(argv: readonly string[]): string[] {
-	const out: string[] = [];
-	for (let i = 0; i < argv.length; ) {
-		const span = autonomySpan(argv, i);
-		if (span === 0) out.push(argv[i] as string);
-		i += span || 1;
-	}
-	return out;
+	return stripAutonomyFlags(builtinHarnessRegistry().autonomy, argv);
 }

@@ -17,6 +17,8 @@ import { chmodSync, copyFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ProjectDb } from "@mfw/db/client";
+import { launchArgvProblem } from "@mfw/plugin-api/harness-launch";
+import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 import { z } from "zod";
 import {
 	installWipHelper,
@@ -224,6 +226,20 @@ export async function launchAgentSandbox(
 			`an ${req.approvalMode} launch carries ${autonomyFlags(argv).join(", ")}`,
 			"autonomous flags are applied only to an authorized autonomous launch",
 		);
+	}
+	if (req.approvalMode !== "autonomous" && !snapshot) {
+		const problem = launchArgvProblem(
+			builtinHarnessRegistry().byFleetCli(req.cli),
+			argv,
+			req.role,
+		);
+		if (problem) {
+			return refuse(
+				"autonomy_flag_refused",
+				`an ${req.approvalMode} launch may carry only what mfw generates: ${problem}`,
+				"remove the extra argument, or run this project autonomously in the sandbox",
+			);
+		}
 	}
 
 	const secrets: Record<string, string> = {};

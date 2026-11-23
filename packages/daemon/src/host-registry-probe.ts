@@ -1,8 +1,9 @@
-import { type BinaryIdentity, identityShell } from "./agents/agent-identity.ts";
+import { identityShell } from "./agents/agent-identity.ts";
 import {
 	type HostConfig,
 	type HostObservation,
 	REMOTE_HARNESSES,
+	type RemoteHarness,
 } from "./host-registry.ts";
 import { RemoteTransportError } from "./ssh-transport.ts";
 
@@ -16,12 +17,6 @@ import { RemoteTransportError } from "./ssh-transport.ts";
  */
 
 const MARKER = "MFW_HOST_PROBE_V1";
-
-type RemoteHarness = {
-	binary: string;
-	authPaths: readonly string[];
-	identity?: BinaryIdentity;
-};
 
 function q(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
