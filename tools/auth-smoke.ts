@@ -921,11 +921,38 @@ async function scopedTokens(
 		name: "all",
 		scopes: ["status:read", "board:read", "board:write", "runs:act"],
 	});
-	const otherProject = await mint({
+	const unknownProject = await mint({
 		name: "other",
 		scopes: ["board:read"],
 		project: "not-this-one",
 	});
+	check(
+		"tokens: the server refuses a project that does not exist",
+		unknownProject.status === 400,
+		unknownProject.status,
+	);
+	// The CLI only warns, so it can still produce a token bound elsewhere.
+	const otherProject = {
+		token: Bun.spawnSync(
+			[
+				process.execPath,
+				"run",
+				join(ROOT, "packages/cli/src/main.ts"),
+				"auth",
+				"token",
+				"create",
+				"--name",
+				"other",
+				"--scope",
+				"board:read",
+				"--project",
+				"not-this-one",
+			],
+			{ cwd: ROOT, env },
+		)
+			.stdout.toString()
+			.trim(),
+	};
 	check(
 		"tokens: the owner mints",
 		reader.status === 200 && reader.token.startsWith("mfwt_"),
@@ -1206,6 +1233,124 @@ async function scopedTokens(
 		}),
 	);
 	check("tokens: the rate limit answers 429", limited > 0);
+
+	// A real scheduler tick. It promotes only with a brain route, and no agent CLI
+	// is on this PATH, so nothing can launch. The owner's task proves the tick ran.
+	const ownerCall = (
+		type: "query" | "mutation",
+		path: string,
+		input: unknown,
+	) => raw(port, trpcRequest(type, path, input, session), { ms: 10_000 });
+	const idOf = (body: string) => /"id":"([^"]+)"/.exec(body)?.[1] ?? "";
+	const statusOf = async (id: string) =>
+		/"status":"([a-z_]+)"/.exec(
+			(await ownerCall("query", "tasks.get", { ...project, id })).body,
+		)?.[1];
+	const victim = idOf(
+		(
+			await ownerCall("mutation", "tasks.create", {
+				...project,
+				title: "waiting for a spec",
+			})
+		).body,
+	);
+	const control = idOf(
+		(
+			await ownerCall("mutation", "tasks.create", {
+				...project,
+				title: "control",
+				body: "the owner's spec",
+			})
+		).body,
+	);
+	const parkedByToken = idOf(
+		(
+			await raw(
+				port,
+				trpcRequest(
+					"mutation",
+					"tasks.create",
+					{ ...project, title: "token task", body: "token text" },
+					bearer(writer.token),
+				),
+			)
+		).body,
+	);
+	check(
+		"tokens: board:write cannot give a waiting task a body",
+		(await status(writer.token, "mutation", "tasks.update", {
+			...project,
+			id: victim,
+			patch: { body: "orders from a token" },
+		})) === 403,
+	);
+	check(
+		"tokens: board:write cannot give a waiting task a criterion",
+		(await status(writer.token, "mutation", "tasks.criteria", {
+			...project,
+			id: victim,
+			op: { op: "add", text: "orders from a token" },
+		})) === 403,
+	);
+	await ownerCall("mutation", "settings.update", {
+		...project,
+		patch: {
+			brain: { routes: [{ provider: "claude-cli" }], maxTurnsPerHour: 1 },
+		},
+	});
+	await ownerCall("mutation", "system.scheduler.set", {
+		...project,
+		enabled: true,
+	});
+	let controlStatus: string | undefined;
+	for (let i = 0; i < 40 && controlStatus !== "ready"; i++) {
+		await ownerCall("mutation", "system.scheduler.kick", project);
+		await Bun.sleep(250);
+		controlStatus = await statusOf(control);
+	}
+	check(
+		"tokens: the scheduler tick ran",
+		controlStatus === "ready",
+		controlStatus,
+	);
+	const victimStatus = await statusOf(victim);
+	const parkedStatus = await statusOf(parkedByToken);
+	await ownerCall("mutation", "system.scheduler.set", {
+		...project,
+		enabled: false,
+	});
+	await ownerCall("mutation", "settings.update", {
+		...project,
+		patch: { brain: null },
+	});
+	check(
+		"tokens: the task a token tried to write stays in backlog",
+		victimStatus === "backlog",
+		victimStatus,
+	);
+	check(
+		"tokens: a token's own task stays in backlog through a tick",
+		parkedStatus === "backlog",
+		parkedStatus,
+	);
+	const launched = await ownerCall("query", "runs.list", project);
+	check(
+		"tokens: board:write caused no agent launch",
+		launched.status === 200 && !/"kind":"task"/.test(launched.body),
+		launched.body.slice(0, 200),
+	);
+	const auditView = await raw(
+		port,
+		request("GET", "/mfw/api/auth/token-audit", session),
+	);
+	check(
+		"tokens: the owner can read the audit log",
+		auditView.status === 200 &&
+			auditView.body.includes("tasks.create") &&
+			auditView.body.includes("live.events") &&
+			/"refused":[1-9]/.test(auditView.body),
+		auditView.body.slice(0, 200),
+	);
 
 	const log = readFileSync(logFile, "utf8");
 	check(
