@@ -87,7 +87,8 @@ export interface GateClock {
 	maxAgeMs: number;
 }
 
-const REPROBE = "re-run the sandbox probe for this run (see `mfw doctor`)";
+const REPROBE =
+	"retry the run, which probes its sandbox again (`mfw doctor` shows any host problem)";
 
 /** Judge a stored record against the launch. Pure. */
 export function judgeAttestation(

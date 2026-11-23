@@ -464,7 +464,7 @@ export async function verify(
 					ok: false,
 					exitCode: r.exitCode,
 					classification: "crashed",
-					detail: `could not run in the verifier sandbox (a tool or dependency is unavailable until P8): ${lastLines(r.stdout + r.stderr, 5)}`,
+					detail: `could not run in the verifier sandbox (a tool or dependency is not available in the sandbox yet): ${lastLines(r.stdout + r.stderr, 5)}`,
 				});
 				continue;
 			}
@@ -523,7 +523,7 @@ export async function verify(
 								check: label,
 								ok,
 								classification: "crashed",
-								detail: `cannot be answered until the sandbox has installed dependencies (P8): ${uninstalled.join(", ")}`,
+								detail: `cannot be answered until the sandbox has installed dependencies: ${uninstalled.join(", ")}`,
 							}
 						: {
 								check: label,

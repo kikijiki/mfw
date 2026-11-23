@@ -424,7 +424,7 @@ export function isolationDispatchProblem(p: {
 				'agentIsolation "bwrap" with runWorkspace "worktree": sandboxed runs need a private clone, so no run of this project can start.',
 			fix: `Add "runWorkspace": "clone" to this project's entry in $MFW_HOME/config.json and restart the daemon.${
 				p.hasDevShell
-					? " This project also has an .envrc, which is refused until dev shells work in the sandbox (P8) or the file is removed."
+					? " This project also has an .envrc, which is refused until dev shells work in the sandbox or the file is removed."
 					: ""
 			}`,
 		};
@@ -432,8 +432,8 @@ export function isolationDispatchProblem(p: {
 	if (p.hasDevShell) {
 		return {
 			detail:
-				"this project has an .envrc, and dev shells inside the sandbox are not available yet (P8), so no run of this project can start.",
-			fix: "Wait for P8, or remove the .envrc if the project works with its plain toolchain.",
+				"this project has an .envrc, and dev shells inside the sandbox are not available yet, so no run of this project can start.",
+			fix: "Wait for dev shell support in the sandbox, or remove the .envrc if the project works with its plain toolchain.",
 		};
 	}
 	return null;
