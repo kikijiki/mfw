@@ -14,6 +14,7 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
+import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 import type { AgentLaunchRequest } from "./containment/agent-launch.ts";
 import {
 	AGENT_BRIDGED_ENV,
@@ -27,6 +28,7 @@ import {
 import {
 	AgentProfileError,
 	cloneLayout,
+	type FleetCli,
 	fleetPrivateState,
 	withoutAutonomyFlags,
 } from "./containment/agent-profile.ts";
@@ -278,10 +280,14 @@ const EGRESS_START_POLLS = 400;
 /** 0.05 s each: past the proxy's hard exit deadline. */
 const EGRESS_STOP_POLLS = 80;
 
-const FLEET_CLI: Readonly<Record<string, "claude" | "codex">> = {
-	"claude-cli": "claude",
-	"codex-cli": "codex",
-};
+/** Harness id to its fleet dir; a harness without one has no sandboxed launch. */
+const FLEET_CLI: Readonly<Record<string, FleetCli>> = Object.fromEntries(
+	builtinHarnessRegistry()
+		.list()
+		.flatMap((m) =>
+			m.fleet.cli ? [[m.id, m.fleet.cli as FleetCli] as const] : [],
+		),
+);
 
 const exists = (path: string) =>
 	lstat(path).then(

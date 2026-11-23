@@ -25,6 +25,7 @@
  */
 
 import { posix } from "node:path";
+import { FLEET_ENV_CEILING } from "@mfw/plugin-api/harness-registry";
 import { egressClientEnv } from "./egress-env.ts";
 import {
 	type Arch,
@@ -65,8 +66,6 @@ export const SANDBOX_PATHS = {
 	runControl: "/mfw-run/control",
 	runOutbox: "/mfw-run/outbox",
 } as const;
-
-const FLEET_ENV = { claude: "CLAUDE_CONFIG_DIR", codex: "CODEX_HOME" } as const;
 
 /** PATH when the profile declares no toolchain: nothing resolves. */
 const EMPTY_PATH = "/nonexistent";
@@ -592,8 +591,9 @@ function buildEnv(
 		env.GIT_WORK_TREE = SANDBOX_PATHS.workspace;
 	}
 	if (fs?.fleetConfig) {
-		env[FLEET_ENV[fs.fleetConfig.cli]] =
-			`${SANDBOX_PATHS.fleet}/${fs.fleetConfig.cli}`;
+		// The registry holds this to the ceiling for that CLI.
+		const fleetEnv = FLEET_ENV_CEILING[fs.fleetConfig.cli] as string;
+		env[fleetEnv] = `${SANDBOX_PATHS.fleet}/${fs.fleetConfig.cli}`;
 	}
 	if (fs?.runDir) {
 		env.MFW_RUN_CONTROL = SANDBOX_PATHS.runControl;
