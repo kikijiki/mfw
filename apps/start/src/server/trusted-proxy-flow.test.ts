@@ -119,6 +119,25 @@ describe("host and origin behind the proxy", () => {
 				check(viaProxy("203.0.113.9", { "x-forwarded-host": host }))?.status,
 			).toBe(403);
 	});
+	test("a trailing dot is not the listed name (review L1)", () => {
+		for (const host of ["box.tail1234.ts.net.:8443", "box.tail1234.ts.net."])
+			expect(
+				check(viaProxy("203.0.113.9", { "x-forwarded-host": host }))?.status,
+			).toBe(403);
+		const noForwardedHost = viaProxy("203.0.113.9", {
+			host: "box.tail1234.ts.net.:8443",
+		});
+		delete (noForwardedHost as Record<string, string>)["x-forwarded-host"];
+		expect(check(noForwardedHost)?.status).toBe(403);
+	});
+	test("the refusal shows a host with its port (review L3)", async () => {
+		const res = check(
+			viaProxy("203.0.113.9", { "x-forwarded-host": "x.test" }),
+		);
+		expect(await res?.text()).toContain(
+			"MFW_ALLOWED_HOSTS=mybox.tail1234.ts.net:8443",
+		);
+	});
 	test("without X-Forwarded-Host the Host header is the external host", () => {
 		const h = viaProxy("203.0.113.9");
 		delete (h as Record<string, string>)["x-forwarded-host"];

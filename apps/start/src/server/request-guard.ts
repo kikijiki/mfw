@@ -42,7 +42,7 @@ const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 const FIX =
-	"Open the app through localhost or 127.0.0.1, or add this host to MFW_ALLOWED_HOSTS (comma separated, for example MFW_ALLOWED_HOSTS=mybox.tail1234.ts.net) and restart the server.";
+	"Open the app through localhost or 127.0.0.1, or add this host to MFW_ALLOWED_HOSTS (comma separated, for example MFW_ALLOWED_HOSTS=mybox.tail1234.ts.net:8443, with the port unless it is 443) and restart the server.";
 
 const PROXY_FIX =
 	"Reach it through a TLS proxy named in MFW_TRUSTED_PROXIES, or configure TLS on the server.";
@@ -112,7 +112,10 @@ function computeContext(
 	const hostHeader = req.headers.get("host") ?? url?.host ?? null;
 	if (forwarded.kind === "proxied") {
 		const authorityRaw = forwarded.host ?? hostHeader;
-		const parsed = parseAuthority(authorityRaw);
+		// Exact names only: the general parser folds a trailing dot away.
+		const parsed = /\.(:\d+)?$/.test(authorityRaw ?? "")
+			? null
+			: parseAuthority(authorityRaw);
 		return {
 			peer,
 			client: forwarded.client,

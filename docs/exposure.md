@@ -101,7 +101,10 @@ other apps: `--set-path /mfw` on a shared port gives those apps your session.
 Cookies are weaker than origins: they ignore the port. A sibling HTTPS port on the
 same name can receive the session cookie and plant its own. Neither gets it into
 mfw, because every API call also needs the key, and mfw tries each cookie value
-it receives. A separate port is therefore enough, and a separate name is better.
+it receives. A sibling can still overwrite the cookie with the same name and
+`Path=/mfw`, which signs you out but grants nothing, because the request key is
+still required. A separate port keeps the key safe, and a separate name also
+stops that sign-out.
 
 ## Threat notes
 
@@ -136,6 +139,9 @@ not change your Serve configuration itself. Then, in a browser:
       `document.cookie = "__Secure-mfw_session=AAAA; Secure; Path=/mfw/api; Max-Age=3600"`.
       mfw stays signed in.
 - [ ] That sibling port's `localStorage` does not contain the mfw key.
+- [ ] A sibling response with `Set-Cookie: __Secure-mfw_session=AAAA; Secure;
+      Path=/mfw` signs you out at most. It never grants access, and signing in
+      again works.
 - [ ] Failed sign-ins from one device do not lock out a second device, tested
       over both IPv4 and IPv6. Tailnet addresses (`fd7a:115c:a1e0::/48`) are
       limited per address. Other IPv6 clients are limited per /64, so devices
