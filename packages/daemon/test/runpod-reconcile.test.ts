@@ -123,6 +123,12 @@ describe("process-global RunPod reconciliation", () => {
 		const projectDb = join(root, ".mfw", "mfw.db");
 		// A valid WAL can recover a damaged main file. Remove the sidecars so this
 		// fixture reliably creates the migration failure it claims to exercise.
+		// Unlink the main file too rather than overwrite it in place: libsql never
+		// closes the connection a transaction took over, so one still holds the
+		// old inode after shutdown and a late close checkpoints its pages back
+		// over an in-place overwrite, healing the corruption (3 in 600 under load).
+		// A new inode is out of its reach.
+		await rm(projectDb, { force: true });
 		await rm(`${projectDb}-wal`, { force: true });
 		await rm(`${projectDb}-shm`, { force: true });
 		await writeFile(projectDb, "not a sqlite database");
