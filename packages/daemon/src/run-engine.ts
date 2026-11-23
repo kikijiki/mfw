@@ -15,6 +15,7 @@ import {
 	type DispatchPreflightDeps,
 	DispatchPreflightError,
 	preflightDispatch,
+	preflightRemoteAutonomy,
 } from "./dispatch-preflight.ts";
 import type { SecretEnvironment } from "./execution-environment.ts";
 import {
@@ -630,6 +631,10 @@ export class RunEngine {
 		taskId?: string,
 		actor?: StatusActor,
 	): Promise<void> {
+		preflightRemoteAutonomy(
+			target.kind,
+			this.deps.defaults.approvalMode ?? "autonomous",
+		);
 		if (taskId) {
 			const task = await this.deps.tasks.get(taskId);
 			const route = await this.routeTask(task, {
