@@ -25,6 +25,8 @@ import {
 	inferenceForProvider,
 } from "./brain.ts";
 import { brainSocketFor } from "./brain-runtime/brain-socket.ts";
+import { chatInferenceFor } from "./brain-runtime/chat.ts";
+import { ChatBudget, chatBudgetPath } from "./brain-runtime/chat-budget.ts";
 import { BrainRuntime, resolveBrainConfig } from "./brain-runtime/runtime.ts";
 import { BudgetService } from "./budgets.ts";
 import { ClarifyService, continuationTerminalError } from "./clarify.ts";
@@ -1231,6 +1233,11 @@ export async function attachProject(
 		projectName: cfg.name,
 		bootId,
 		config: () => resolveBrainConfig(liveBrainConfig),
+		chat: {
+			inference: chatInferenceFor,
+			budget: new ChatBudget(chatBudgetPath(opts.mfwHome)),
+			inbox: () => inbox.list(),
+		},
 		exec: {
 			projectRoot: root,
 			integrationBranch,
@@ -2485,6 +2492,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 			// What a crash left half done in the brain's outbox: adopt the spawns
 			// whose runs exist, replay the other effects.
 			await svc.brainRuntime.executor.recover();
+			await svc.brainRuntime.chat.recover();
 			await svc.brain.reconcileOrphans();
 			await svc.mergeQueue.resetInFlight();
 		} catch (e) {
@@ -2518,6 +2526,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 		};
 		await attempt(() => svc.scheduler.stop());
 		await attempt(() => svc.supervisor.stop());
+		await attempt(() => svc.brainRuntime.chat.stop());
 		if (mode === "detach") {
 			// Detach must not leave provider spend behind. Ambiguous cleanup stays in the global journal for retry.
 			await attempt(() => svc.engine.drainExecutionTargets("project_detach"));
