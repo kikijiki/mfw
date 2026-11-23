@@ -1,5 +1,9 @@
 import { join } from "node:path";
 import {
+	builtinHarnessRegistry,
+	type HarnessDetectionSpec,
+} from "@mfw/plugin-api/harness-registry";
+import {
 	isolationConfigProblem,
 	isolationDispatchProblem,
 	type StoredProjectConfig,
@@ -39,8 +43,10 @@ import {
  */
 
 export interface DoctorOptions {
-	/** Opt-in: run `--version` of agent CLIs found on a trusted path. */
+	/** Opt-in: run the version command of agent CLIs found on a trusted path. */
 	harnessVersions?: boolean;
+	/** The harnesses to look for; default: every built-in manifest's detection facts. */
+	harnesses?: readonly HarnessDetectionSpec[];
 	/** Leave file names out of the report, for one that will be shared. */
 	omitFileNames?: boolean;
 }
@@ -424,21 +430,25 @@ async function harnessChecks(
 	p: DoctorProbes,
 	opts: DoctorOptions,
 ): Promise<DoctorCheck[]> {
-	const names = ["claude", "codex"] as const;
+	// The manifests say which CLIs exist and how to ask their version; the
+	// trusted-path lookup (`p.tool`) stays the doctor's own.
+	const specs = opts.harnesses ?? builtinHarnessRegistry().detectionSpecs();
+	const names = specs.map((s) => s.bin);
 	const found = await Promise.all(names.map((n) => p.tool(n)));
 	const none = found.every((f) => !f.path && !f.untrustedPath);
 	return Promise.all(
 		names.map((n, i) =>
 			guarded(`harness.${n}`, "harness", async () => {
 				const f = found[i];
+				const versionArgs = specs[i]?.versionArgs ?? ["--version"];
 				if (f?.path) {
 					if (!opts.harnessVersions) {
 						return ok(
 							`${n} is installed (not run; --harness-versions reads its version)`,
 						);
 					}
-					// Only `--version`: no model call, no home directory.
-					const v = await p.toolVersion(f.path, "--version");
+					// Only the manifest's version command: no model call, no home directory.
+					const v = await p.toolVersion(f.path, versionArgs);
 					return ok(`${n} ${v ?? "(version not readable)"}`);
 				}
 				if (f?.untrustedPath) {

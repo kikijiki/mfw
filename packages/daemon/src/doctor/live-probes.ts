@@ -409,20 +409,26 @@ export function liveDoctorProbes(o: LiveProbeOptions): DoctorProbes {
 		return { path: null };
 	};
 
-	const toolVersion = async (path: string, flag = "--version") => {
+	const toolVersion = async (
+		path: string,
+		args: string | readonly string[] = "--version",
+	) => {
 		try {
-			const res = await runProc([path, flag], {
-				cwd: "/",
-				timeoutMs: TOOL_TIMEOUT_MS,
-				maxOutputBytes: 4096,
-				// No HOME: a CLI's version flag has no reason to find its login.
-				env: {
-					PATH: dirname(path),
-					HOME: "/nonexistent",
-					NO_COLOR: "1",
-					LC_ALL: "C",
+			const res = await runProc(
+				[path, ...(typeof args === "string" ? [args] : args)],
+				{
+					cwd: "/",
+					timeoutMs: TOOL_TIMEOUT_MS,
+					maxOutputBytes: 4096,
+					// No HOME: a CLI's version flag has no reason to find its login.
+					env: {
+						PATH: dirname(path),
+						HOME: "/nonexistent",
+						NO_COLOR: "1",
+						LC_ALL: "C",
+					},
 				},
-			});
+			);
 			if (res.timedOut || res.exitCode !== 0) return undefined;
 			return /\d+\.\d+(?:\.\d+)?[a-z]?/.exec(res.stdout)?.[0];
 		} catch {
