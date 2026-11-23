@@ -17,13 +17,14 @@
  * it exists, so an unreferenced merge commit survives the seed and a crash
  * leaves a ref `sweep` can find.
  */
-import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { CheckRunner } from "../containment/check-runner.ts";
 import { git } from "../git.ts";
 import { assertRunId } from "../host-git/fetch.ts";
 import type { HostGit } from "../host-git/runner.ts";
 import type { CacheDeclaration } from "./caches.ts";
+import { removeTree } from "./remove-tree.ts";
 import { seedWorkspace } from "./seed.ts";
 
 const ID_PREFIX = "verify-";
@@ -123,8 +124,12 @@ export class VerifierClones {
 			dispose: async () => {
 				if (disposed) return;
 				disposed = true;
-				await rm(seeded.dir, { recursive: true, force: true });
+				const left = await removeTree(seeded.dir);
+				// Whatever the check did to the tree, the pin never outlives it.
 				await git(["update-ref", "-d", ref], this.opts.primaryRoot);
+				if (left.length > 0) {
+					throw new Error(`could not remove ${left.slice(0, 3).join(", ")}`);
+				}
 			},
 		};
 	}
@@ -153,8 +158,10 @@ export class VerifierClones {
 		let removed = 0;
 		for (const id of await readdir(this.root).catch(() => [] as string[])) {
 			if (!isVerifierCloneId(id)) continue;
-			await rm(join(this.root, id), { recursive: true, force: true });
-			removed++;
+			// One clone that cannot be removed must not stop the others or the refs.
+			const left = await removeTree(join(this.root, id));
+			if (left.length === 0) removed++;
+			else this.opts.log?.(`verifier clone ${id} not removed: ${left[0]}`);
 		}
 		const refs = await git(
 			["for-each-ref", "--format=%(refname)", REF_PREFIX],
