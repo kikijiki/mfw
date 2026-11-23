@@ -10,7 +10,15 @@
  * The files are read with `git config --file`, which neither follows includes
  * nor runs anything. An unreadable config counts as a refusal.
  */
-import { lstatSync, readFileSync } from "node:fs";
+import {
+	closeSync,
+	constants,
+	fstatSync,
+	lstatSync,
+	openSync,
+	readSync,
+	statSync,
+} from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { runProc } from "../proc.ts";
 import { requireHostTool } from "../sandbox.ts";
@@ -97,10 +105,23 @@ function isDir(path: string): boolean {
 }
 
 function readTrimmed(path: string): string | null {
+	// Non-blocking and bounded: a repository can put a FIFO or a device here, and
+	// this runs on the event loop before every host git call.
+	let fd: number;
 	try {
-		return readFileSync(path, "utf8").slice(0, 8192).trim();
+		fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
 	} catch {
 		return null;
+	}
+	try {
+		if (!fstatSync(fd).isFile()) return null;
+		const buffer = Buffer.alloc(8192);
+		const n = readSync(fd, buffer, 0, buffer.length, 0);
+		return buffer.toString("utf8", 0, n).trim();
+	} catch {
+		return null;
+	} finally {
+		closeSync(fd);
 	}
 }
 
@@ -152,6 +173,12 @@ function stampOf(path: string): string {
 async function keysOf(path: string): Promise<string[] | null> {
 	const stamp = stampOf(path);
 	if (stamp === "absent") return [];
+	// `git config --file` would block on a FIFO until its timeout.
+	try {
+		if (!statSync(path).isFile()) return null;
+	} catch {
+		return null;
+	}
 	const hit = audits.get(path);
 	if (hit?.stamp === stamp) return hit.keys;
 	const r = await runProc(

@@ -64,6 +64,29 @@ const TOOL_TIMEOUT_MS = 3_000;
 const GIT_TIMEOUT_MS = 5_000;
 const MAX_LIST_BYTES = 2 * 1024 * 1024;
 const SAMPLE = 5;
+const PROJECT_DEADLINE_MS = 10_000;
+
+/** Reject when `work` has not settled in time, so one hostile repository cannot stall the report. */
+export async function withDeadline<T>(
+	work: Promise<T>,
+	ms: number,
+	what: string,
+): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			work,
+			new Promise<never>((_, reject) => {
+				timer = setTimeout(
+					() => reject(new Error(`${what} did not finish in ${ms} ms`)),
+					ms,
+				);
+			}),
+		]);
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
+}
 
 export interface LiveProbeOptions {
 	env: Record<string, string | undefined>;
@@ -73,6 +96,8 @@ export interface LiveProbeOptions {
 	exposure?: DoctorProbes["exposure"];
 	/** Test seam: directories treated as agent-writable. */
 	writableRoots?: readonly string[];
+	/** How long one project's probe may take. */
+	projectDeadlineMs?: number;
 	/** Test seam: how ownership of a binary and its parents is read. */
 	trust?: PathTrustIo;
 }
@@ -398,7 +423,9 @@ export function liveDoctorProbes(o: LiveProbeOptions): DoctorProbes {
 		}
 	};
 
-	const project = async (entry: StoredProjectConfig): Promise<ProjectFacts> => {
+	const readProject = async (
+		entry: StoredProjectConfig,
+	): Promise<ProjectFacts> => {
 		const root = entry.root;
 		const rootExists = existsSync(root);
 		const isGit = rootExists && existsSync(join(root, ".git"));
@@ -483,6 +510,11 @@ export function liveDoctorProbes(o: LiveProbeOptions): DoctorProbes {
 			}
 			return { available: true, paths: [...paths] };
 		},
-		project,
+		project: (entry) =>
+			withDeadline(
+				readProject(entry),
+				o.projectDeadlineMs ?? PROJECT_DEADLINE_MS,
+				"the project probe",
+			),
 	};
 }
