@@ -3,6 +3,8 @@
 #           systemctl --user daemon-reload
 #           systemctl --user enable --now mfw-server
 # Logs:     journalctl --user -u mfw-server -f
+# First run: the setup token is in $MFW_HOME/setup-token (never in the log), or
+#           run `mfw auth setup-token`. Recovery: `mfw auth --help`.
 [Unit]
 Description=mfw: local autonomous project orchestrator
 After=network.target

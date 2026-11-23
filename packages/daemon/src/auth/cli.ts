@@ -121,6 +121,10 @@ export async function runAuthCommand(
 	d: AuthCliDeps,
 ): Promise<number> {
 	switch (args[0]) {
+		case "--help":
+		case "-h":
+			d.out(AUTH_USAGE);
+			return 0;
 		case "unlock":
 			return withStore(d, async (auth) => {
 				await auth.unlock();
