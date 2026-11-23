@@ -721,6 +721,14 @@ describe("crash recovery", () => {
 		expect(answers).toHaveLength(1);
 	});
 
+	test("a failed recovery never rejects into boot", async () => {
+		await ready([], { model: false });
+		u.runtime.chat.thread.open = async () => {
+			throw new Error("database is locked");
+		};
+		expect(await u.runtime.chat.recover()).toBe(0);
+	});
+
 	test("a late writer after recovery adds nothing", async () => {
 		await ready([], { model: false });
 		const { question } = await u.runtime.chat.thread.appendQuestion(

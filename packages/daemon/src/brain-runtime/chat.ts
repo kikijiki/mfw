@@ -183,12 +183,18 @@ export class BrainChat {
 
 	/** Boot: a question a crash left open gets a records answer, once. */
 	async recover(): Promise<number> {
-		const open = (await this.thread.open()).filter(
-			(q) => !this.inflight.has(q.id),
-		);
-		for (const q of open) this.start(q, "interrupted");
-		await this.settled();
-		return open.length;
+		// Boot runs other reconciliation after this: chat must never block it.
+		try {
+			const open = (await this.thread.open()).filter(
+				(q) => !this.inflight.has(q.id),
+			);
+			for (const q of open) this.start(q, "interrupted");
+			await this.settled();
+			return open.length;
+		} catch (err) {
+			this.deps.log.error({ err }, "chat recovery failed");
+			return 0;
+		}
 	}
 
 	async view(): Promise<ChatThreadView> {
