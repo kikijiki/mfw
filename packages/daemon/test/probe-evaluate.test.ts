@@ -498,14 +498,17 @@ const row = (items: Attestation["items"]): Attestation => ({
 });
 
 const gate = (r: Attestation | null) =>
-	judgeAttestation(r, {
-		runId: "r1",
-		flags: ["yolo"],
-		profile,
-		compiled,
-		bwrapVersion: "0.13.1",
-		now: new Date(2_000),
-	});
+	judgeAttestation(
+		r,
+		{
+			runId: "r1",
+			flags: ["yolo"],
+			profile,
+			compiled,
+			bwrapVersion: "0.13.1",
+		},
+		{ now: 2_000, maxAgeMs: 3_600_000 },
+	);
 
 describe("probe evaluation", () => {
 	test("the honest fixture passes every item and the gate", () => {
@@ -675,6 +678,28 @@ describe("autonomy gate", () => {
 				expect(d.code).toBe(code as never);
 				expect(d.fix.length).toBeGreaterThan(0);
 			}
+		});
+	}
+
+	for (const [name, now, maxAgeMs] of [
+		["an invalid clock", Number.NaN, 3_600_000],
+		["a NaN maximum age", 172_800_000, Number.NaN],
+		["an infinite maximum age", 172_800_000, Number.POSITIVE_INFINITY],
+	] as const) {
+		test(`a two-day-old record is refused with ${name}`, () => {
+			const d = judgeAttestation(
+				passing(),
+				{
+					runId: "r1",
+					flags: ["yolo"],
+					profile,
+					compiled,
+					bwrapVersion: "0.13.1",
+				},
+				{ now, maxAgeMs },
+			);
+			expect(d.ok).toBe(false);
+			if (!d.ok) expect(d.code).toBe("attestation_stale");
 		});
 	}
 

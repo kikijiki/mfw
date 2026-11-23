@@ -64,8 +64,9 @@ export async function latestAttestation(
 		.select()
 		.from(sandboxAttestations)
 		.where(eq(sandboxAttestations.runId, runId))
-		// rowid breaks a tie between records written in the same millisecond.
-		.orderBy(desc(sandboxAttestations.createdAt), desc(sql`rowid`))
+		// Insertion order only. A wall clock that steps back must not let an
+		// older pass outrank a newer failure.
+		.orderBy(desc(sql`rowid`))
 		.limit(1);
 	if (!row) return null;
 	const parsed = RowSchema.safeParse(row);

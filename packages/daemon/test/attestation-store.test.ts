@@ -75,6 +75,24 @@ describe("attestation store", () => {
 		expect((await latestAttestation(handle.db, "run-3"))?.outcome).toBe("fail");
 	});
 
+	test("a failure written after a clock step back still revokes the pass", async () => {
+		await recordAttestation(
+			handle.db,
+			input({ runId: "run-clock", createdAt: new Date(600_000) }),
+		);
+		await recordAttestation(
+			handle.db,
+			input({
+				runId: "run-clock",
+				outcome: "fail",
+				createdAt: new Date(300_000),
+			}),
+		);
+		expect((await latestAttestation(handle.db, "run-clock"))?.outcome).toBe(
+			"fail",
+		);
+	});
+
 	test("a run with no record has no attestation", async () => {
 		expect(await latestAttestation(handle.db, "missing")).toBeNull();
 	});

@@ -52,8 +52,12 @@ export interface GateRequest {
 	profile: SandboxProfile;
 	compiled: CompiledSandbox;
 	bwrapVersion: string;
-	now?: Date;
-	maxAgeMs?: number;
+}
+
+/** When the judgement happens. Production always uses the real clock. */
+export interface GateClock {
+	now: number;
+	maxAgeMs: number;
 }
 
 const REPROBE = "re-run the sandbox probe for this run (see `mfw doctor`)";
@@ -62,6 +66,7 @@ const REPROBE = "re-run the sandbox probe for this run (see `mfw doctor`)";
 export function judgeAttestation(
 	row: Attestation | null,
 	req: GateRequest,
+	clock: GateClock = { now: Date.now(), maxAgeMs: ATTESTATION_MAX_AGE_MS },
 ): GateDecision {
 	const refuse = (
 		code: GateRefusalCode,
@@ -106,9 +111,9 @@ export function judgeAttestation(
 			"run on a host with a systemd user manager and delegated controllers",
 		);
 	}
-	const now = req.now ?? new Date();
-	const age = now.getTime() - row.createdAt.getTime();
-	if (age < 0 || age > (req.maxAgeMs ?? ATTESTATION_MAX_AGE_MS)) {
+	const age = clock.now - row.createdAt.getTime();
+	// Written so NaN refuses: every comparison with it is false.
+	if (!(Number.isFinite(clock.maxAgeMs) && age >= 0 && age <= clock.maxAgeMs)) {
 		return refuse("attestation_stale", "the attestation is out of date");
 	}
 	const f = sandboxFingerprint(req.profile, req.compiled);
