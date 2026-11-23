@@ -295,6 +295,61 @@ describe.skipIf(skip !== null)("the autonomy requirement", () => {
 	});
 });
 
+describe.skipIf(skip !== null)("the launch binaries and scope", () => {
+	const fingerprintWith = (over: Partial<CompileHost>) => {
+		const r = compileBwrap(profile(), ["sh", "-c", "true"], {
+			...compileHost(),
+			...over,
+		});
+		if (!r.ok) throw new Error(r.reason);
+		return sandboxFingerprint(profile(), r).optionsHash;
+	};
+
+	test("another bwrap or env binary changes the fingerprint", () => {
+		const base = fingerprintWith({});
+		expect(fingerprintWith({ bwrapPath: "/tmp/not-bwrap" })).not.toBe(base);
+		expect(fingerprintWith({ envPath: "/tmp/not-env" })).not.toBe(base);
+	});
+
+	test("the command itself stays out of the fingerprint", () => {
+		const other = compile("touch /work/other");
+		expect(sandboxFingerprint(profile(), other)).toEqual(
+			sandboxFingerprint(profile(), compile()),
+		);
+	});
+
+	test("an authorized launch cannot drop the scope", async () => {
+		const c = compile();
+		await record(c);
+		const authorization = await authorized(c);
+		expect(
+			codeOf(() =>
+				launchSandbox(c, {
+					approvalMode: "autonomous",
+					authorization,
+					scope: "none",
+				}),
+			),
+		).toBe("scope_required");
+		expect(existsSync(join(work, "ran"))).toBe(false);
+	});
+
+	test("an authorized launch really goes through the scope binary", async () => {
+		const marker = join(root, "scope-ran");
+		writeFileSync(
+			scopeStub,
+			`#!${SH}\n: > ${marker}\nwhile [ "$1" != "--" ]; do shift; done\nshift\nexec "$@"\n`,
+			{ mode: 0o755 },
+		);
+		const c = compile();
+		await record(c);
+		const child = launchAutonomous(c, await authorized(c));
+		(child.stdin as unknown as { end(): void }).end();
+		expect(await child.exited).toBe(0);
+		expect(existsSync(marker)).toBe(true);
+	});
+});
+
 describe.skipIf(skip !== null)("single-use attestations", () => {
 	test("one attestation authorizes one launch", async () => {
 		const c = compile();

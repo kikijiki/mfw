@@ -20,8 +20,9 @@
  * The seccomp program and options live in `O_TMPFILE` files. The options carry
  * env values, and an unnamed file cannot be opened by path.
  *
- * There is no fallback. The scope is dropped only when a caller asks for
- * `scope: "none"`, which also drops the resource limits.
+ * There is no fallback. The scope is dropped only when an interactive caller
+ * asks for `scope: "none"`, which also drops the resource limits. An autonomous
+ * launch cannot ask for that.
  *
  * With `"pipe"`, Bun hands the child a unix socketpair rather than a FIFO. Only
  * a caller's numeric descriptor is checked to be a real pipe.
@@ -86,6 +87,7 @@ export type LaunchRequest = LaunchOptions & LaunchApproval;
 export type LaunchRefusalCode =
 	| "invalid_approval_mode"
 	| "not_authorized"
+	| "scope_required"
 	| "stdio_tty"
 	| "stdio_not_pipe"
 	| "invalid_compiled"
@@ -251,6 +253,12 @@ export function launchSandbox(
 	checkStdio("stderr", stderr);
 	const argv = launchArgv(compiled, scope);
 	checkPinNumbers(compiled);
+	if (options.approvalMode === "autonomous" && scope !== "systemd") {
+		throw new SandboxLaunchError(
+			"scope_required",
+			"an autonomous launch must run under the systemd scope and its limits",
+		);
+	}
 	const expectPins = approvedPins(compiled, options);
 
 	const opened = openSandboxFds(compiled, options.tmpDir);

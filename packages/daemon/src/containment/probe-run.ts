@@ -178,8 +178,9 @@ export interface SandboxFingerprint {
 
 /**
  * What ties an attestation to a launch. The command is left out, because the
- * probe and the agent run different commands in the same sandbox. Bind sources
- * are included, since `--bind-fd` options carry only a descriptor number.
+ * probe and the agent run different commands in the same sandbox. The `env` and
+ * bwrap paths and the fixed argv up to the command are in. Bind sources are
+ * included, since `--bind-fd` options carry only a descriptor number.
  * Credential values are redacted, so a low-entropy secret cannot be guessed
  * from a stored hash.
  */
@@ -211,10 +212,17 @@ export function sandboxFingerprint(
 	const scope = compiled.argv
 		.slice(0, split)
 		.filter((a) => !a.startsWith("--unit="));
+	// `env -i <bwrap> --args 4 --`: which binaries enforce all of the above.
+	const launcher = compiled.argv.slice(split + 1, split + 7);
 	return {
 		profileHash: sha256(canonical(redactedProfile)),
 		optionsHash: sha256(
-			canonical({ options: redacted, pins: compiled.pinnedBinds, scope }),
+			canonical({
+				options: redacted,
+				pins: compiled.pinnedBinds,
+				scope,
+				launcher,
+			}),
 		),
 		seccompHash: sha256(compiled.seccomp),
 	};
