@@ -146,5 +146,7 @@ describe("the engine", () => {
 		const err = thrown as DispatchPreflightError;
 		expect(err.code).toBe("sandbox_role_unavailable");
 		expect(err.fix.text).toContain("session");
+		// Review P7, m2: a refusal never advises turning the sandbox off.
+		expect(err.fix.text).not.toContain("agentIsolation");
 	});
 });
