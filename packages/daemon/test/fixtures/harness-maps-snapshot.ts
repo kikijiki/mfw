@@ -4,6 +4,8 @@
  * hand-written maps, so `harness-equivalence.test.ts` compares against the old
  * code and not against itself.
  */
+import { stripAutonomyFlags } from "@mfw/plugin-api/harness-autonomy";
+import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 import { profileFor } from "../../src/agents/acp-translate.ts";
 import {
 	AdapterRegistry,
@@ -24,7 +26,6 @@ import {
 import {
 	autonomyFlags,
 	TEMPORARY_FLEET_WRITABLE,
-	withoutAutonomyFlags,
 } from "../../src/containment/agent-profile.ts";
 import { BRAIN_TRANSCRIPT_DIR } from "../../src/containment/brain-transcript.ts";
 import {
@@ -171,7 +172,7 @@ export function captureHarnessMaps(): Record<string, unknown> {
 		return {
 			argv,
 			flags: autonomyFlags(argv),
-			without: withoutAutonomyFlags(argv),
+			without: stripAutonomyFlags(builtinHarnessRegistry().autonomy, argv),
 		};
 	});
 

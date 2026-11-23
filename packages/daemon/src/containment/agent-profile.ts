@@ -10,10 +10,7 @@
 import { lstatSync, mkdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { UNATTESTED_CONFIG_MARKER } from "@mfw/plugin-api/harness";
-import {
-	findAutonomyFlags,
-	stripAutonomyFlags,
-} from "@mfw/plugin-api/harness-autonomy";
+import { findAutonomyFlags } from "@mfw/plugin-api/harness-autonomy";
 import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 import type { PinnedBind } from "./pinned-binds.ts";
 import { parseSandboxProfile, type SandboxProfile } from "./profile.ts";
@@ -333,8 +330,4 @@ export function findLaunchSecret(check: LaunchSecretCheck): string | null {
  */
 export function autonomyFlags(argv: readonly string[]): string[] {
 	return findAutonomyFlags(builtinHarnessRegistry().autonomy, argv);
-}
-
-export function withoutAutonomyFlags(argv: readonly string[]): string[] {
-	return stripAutonomyFlags(builtinHarnessRegistry().autonomy, argv);
 }

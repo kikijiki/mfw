@@ -6,6 +6,7 @@ import {
 	installPath,
 	TOOLS,
 } from "@mfw/board/commands/skill-targets";
+import { stripAutonomyFlags } from "@mfw/plugin-api/harness-autonomy";
 import { BUILTIN_HARNESS_MANIFESTS } from "@mfw/plugin-api/harness-builtins";
 import {
 	builtinHarnessRegistry,
@@ -13,10 +14,7 @@ import {
 } from "@mfw/plugin-api/harness-registry";
 import { CAPABILITIES } from "../src/agents/acp-translate.ts";
 import { isHostExecutedPath } from "../src/brain-runtime/decision-rights.ts";
-import {
-	autonomyFlags,
-	withoutAutonomyFlags,
-} from "../src/containment/agent-profile.ts";
+import { autonomyFlags } from "../src/containment/agent-profile.ts";
 import { buildAllowlist } from "../src/containment/egress-policy.ts";
 import {
 	isAllowedEnvName,
@@ -320,7 +318,9 @@ describe("the review's bypass cases against the frozen old detector", () => {
 				// Not a bypass then or now: nothing about it may change.
 				expect(row.flags).toEqual([]);
 				expect(now).toEqual([]);
-				expect(withoutAutonomyFlags(row.argv)).toEqual(row.without);
+				expect(
+					stripAutonomyFlags(builtinHarnessRegistry().autonomy, row.argv),
+				).toEqual(row.without);
 			} else {
 				expect(now.length).toBeGreaterThan(0);
 			}

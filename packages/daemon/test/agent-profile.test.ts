@@ -9,6 +9,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { launchArgvProblem } from "@mfw/plugin-api/harness-launch";
+import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 import {
 	AgentProfileError,
 	autonomyFlags,
@@ -18,7 +20,6 @@ import {
 	findWritableBindParent,
 	TEMPORARY_FLEET_WRITABLE,
 	UNATTESTED_CONFIG_MARKER,
-	withoutAutonomyFlags,
 } from "../src/containment/agent-profile.ts";
 import type { PinnedBind } from "../src/containment/pinned-binds.ts";
 import { parseSandboxProfile } from "../src/containment/profile.ts";
@@ -232,7 +233,9 @@ describe("autonomy flags", () => {
 	test("are found and stripped", () => {
 		const argv = ["claude", "--print", "--dangerously-skip-permissions"];
 		expect(autonomyFlags(argv)).toEqual(["--dangerously-skip-permissions"]);
-		expect(withoutAutonomyFlags(argv)).toEqual(["claude", "--print"]);
+		// The launch check is positive: the same argv is not one mfw generates.
+		const claude = builtinHarnessRegistry().byFleetCli("claude");
+		expect(launchArgvProblem(claude, argv, "task")).not.toBeNull();
 	});
 
 	test("cover codex's bypass flag", () => {
@@ -257,7 +260,11 @@ describe("autonomy flags", () => {
 		[["codex", "--full-auto"]],
 	])("m3: %j is an autonomy override, removed whole", (argv) => {
 		expect(autonomyFlags(argv).length).toBeGreaterThan(0);
-		expect(withoutAutonomyFlags(argv)).toEqual([argv[0] as string]);
+		const m = builtinHarnessRegistry().byFleetCli(
+			argv[0] === "claude" ? "claude" : "codex",
+		);
+		// An autonomy override is never in an argv mfw would launch.
+		expect(launchArgvProblem(m, argv, "task")).not.toBeNull();
 	});
 
 	test.each([
@@ -267,7 +274,6 @@ describe("autonomy flags", () => {
 		[["codex", "-c", "model=gpt"]],
 	])("m3: %j is not an autonomy override", (argv) => {
 		expect(autonomyFlags(argv)).toEqual([]);
-		expect(withoutAutonomyFlags(argv)).toEqual(argv);
 	});
 
 	test("cover the inline form of a flag", () => {
