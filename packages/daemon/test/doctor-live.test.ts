@@ -15,8 +15,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+	buildMigrations,
+	verifyBuiltMigrations,
+} from "@mfw/db/migration-source";
+import pino from "pino";
 import { AuthService, authDbPath } from "../src/auth/service.ts";
 import { loadConfig } from "../src/config.ts";
+import { buildExecPin } from "../src/containment/exec-pin.ts";
 import {
 	runDoctorCommand,
 	runInitCommand,
@@ -26,6 +32,8 @@ import { fileList, liveDoctorProbes } from "../src/doctor/live-probes.ts";
 import { withReadOnlyDb } from "../src/doctor/readonly-db.ts";
 import { DoctorReportSchema } from "../src/doctor/report.ts";
 import { runDoctor } from "../src/doctor/run.ts";
+import { ArmingStore } from "../src/triggers/arming.ts";
+import { loadTriggerDefs } from "../src/triggers/def.ts";
 
 const dirs: string[] = [];
 function tmp(): string {
@@ -155,6 +163,79 @@ describe("the live doctor on a real install", () => {
 		const c = report.checks.find((x) => x.id === "install.config");
 		expect(c?.severity).toBe("blocker");
 		expect(JSON.stringify(report)).not.toContain("hunter2");
+	});
+});
+
+describe("build and trigger state", () => {
+	test("a build without manifests is a blocker", async () => {
+		const i = await install();
+		mkdirSync(join(i.base, "apps/start/.output/server"), { recursive: true });
+		const report = await runDoctor(
+			liveDoctorProbes({
+				env: { PATH: i.bin },
+				home: i.home,
+				installRoot: i.base,
+			}),
+		);
+		const c = report.checks.find((x) => x.id === "install.build");
+		expect([c?.status, c?.severity]).toEqual(["problem", "blocker"]);
+		expect(c?.detail).toContain("host script manifest");
+		expect(c?.detail).toContain("migration manifest");
+	});
+
+	test("built migrations verify, and a changed one is refused", () => {
+		const output = join(tmp(), "apps/start/.output");
+		mkdirSync(output, { recursive: true });
+		const source = join(import.meta.dir, "../../db/migrations");
+		const manifest = buildMigrations(source, output);
+		expect(() => verifyBuiltMigrations(output)).not.toThrow();
+		const name = Object.keys(manifest.files).find((f) => f.endsWith(".sql"));
+		const file = join(output, "server/migrations", name as string);
+		chmodSync(file, 0o644);
+		writeFileSync(file, "DROP TABLE tasks;");
+		expect(() => verifyBuiltMigrations(output)).toThrow("manifest hash");
+	});
+
+	test("an armed script is current until its pinned file changes", async () => {
+		const i = await install();
+		const script = join(i.repo, "deploy.sh");
+		writeFileSync(script, "#!/bin/sh\necho deployed\n");
+		chmodSync(script, 0o755);
+		git(i.repo, "add", "deploy.sh");
+		git(i.repo, "commit", "-q", "-m", "deploy");
+		const dir = join(i.repo, ".mfw", "triggers");
+		mkdirSync(dir);
+		writeFileSync(
+			join(dir, "deploy.md"),
+			"---\nid: deploy\non: merge.completed\naction: script\nrun: ./deploy.sh\n---\n",
+		);
+		const { defs } = await loadTriggerDefs(dir, pino({ level: "silent" }));
+		const def = defs[0];
+		if (!def) throw new Error("the trigger did not load");
+		const built = await buildExecPin({ root: i.repo, run: "./deploy.sh" });
+		if (!built.ok) throw new Error(built.reason);
+		await ArmingStore.at(i.home, "demo").arm(def.id, def.hash, {
+			execPin: built.pin,
+		});
+		const probes = () =>
+			liveDoctorProbes({
+				env: { PATH: i.bin },
+				home: i.home,
+				installRoot: i.base,
+			});
+		const triggers = async () =>
+			(await runDoctor(probes())).checks.find(
+				(c) => c.id === "project.triggers",
+			);
+
+		const before = snapshot(i.base);
+		expect((await triggers())?.detail).toContain("1 armed and current");
+		expect(snapshot(i.base)).toEqual(before);
+
+		writeFileSync(script, "#!/bin/sh\necho tampered\n");
+		const drifted = await triggers();
+		expect(drifted?.status).toBe("problem");
+		expect(drifted?.detail).toContain("deploy");
 	});
 });
 
