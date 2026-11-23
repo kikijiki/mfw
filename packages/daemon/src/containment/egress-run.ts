@@ -65,6 +65,25 @@ const IndexSchema = z.strictObject({
 	startTicks: z.string().optional(),
 });
 
+/**
+ * Proxied runs on this machine. Each proxy is its own process, so the
+ * per-process connection cap does not bound the machine; this does, at 64
+ * connections and one Bun process per run.
+ */
+export const MAX_PROXIED_RUNS = 32;
+
+/** The proxy's descriptor limit: its 64 connections, two sockets each, and room. */
+export const PROXY_MAX_OPEN_FILES = 512;
+
+export class EgressCapacityError extends Error {
+	constructor(max: number) {
+		super(
+			`this machine already runs ${max} proxied agent runs, the most it allows`,
+		);
+		this.name = "EgressCapacityError";
+	}
+}
+
 export interface RunEgressPaths {
 	socketDir: string;
 	socketPath: string;
@@ -120,10 +139,15 @@ export function prepareRunEgress(input: {
 	allow: readonly { host: string; port: number }[];
 	/** Either limit left out takes its default. */
 	uploadBudget?: Partial<UploadBudget>;
+	maxRuns?: number;
 }): RunEgressPaths {
 	const paths = runEgressPaths(input.mfwHome, input.runDir, input.runId);
 	for (const dir of [dirname(paths.socketDir), indexRoot(input.mfwHome)]) {
 		ensurePrivateDir(dir);
+	}
+	const max = input.maxRuns ?? MAX_PROXIED_RUNS;
+	if (countProxiedRuns(input.mfwHome, input.runId) >= max) {
+		throw new EgressCapacityError(max);
 	}
 	rmSync(paths.socketDir, { recursive: true, force: true });
 	ensurePrivateDir(paths.socketDir);
@@ -143,6 +167,32 @@ export function prepareRunEgress(input: {
 		JSON.stringify({ runId: input.runId, socketDir: paths.socketDir }),
 	);
 	return paths;
+}
+
+/**
+ * Runs holding a proxy, other than `except`: a process that still matches its
+ * start time, or an entry from a launch still inside its grace period.
+ */
+function countProxiedRuns(mfwHome: string, except: string): number {
+	const root = indexRoot(mfwHome);
+	const now = Date.now();
+	let count = 0;
+	for (const name of readdirSync(root)) {
+		if (!/^[0-9a-f]{12}\.json$/.test(name)) continue;
+		const path = join(root, name);
+		try {
+			const entry = IndexSchema.parse(JSON.parse(readFileSync(path, "utf8")));
+			if (entry.runId === except) continue;
+			const live =
+				entry.pid && entry.startTicks
+					? processStartTicks(entry.pid) === entry.startTicks
+					: now - lstatSync(path).mtimeMs < EGRESS_SWEEP_GRACE_MS;
+			if (live) count++;
+		} catch {
+			// Damaged or just removed: the sweep's to deal with.
+		}
+	}
+	return count;
 }
 
 function writePrivate(path: string, content: string): void {

@@ -31,7 +31,11 @@ import {
 	harnessEgressEnv,
 	usesApiKeyAuth,
 } from "./containment/egress-allowlists.ts";
-import { prepareRunEgress } from "./containment/egress-run.ts";
+import {
+	EgressCapacityError,
+	PROXY_MAX_OPEN_FILES,
+	prepareRunEgress,
+} from "./containment/egress-run.ts";
 import {
 	driverRunPaths,
 	ensureRunDirLayout,
@@ -253,6 +257,18 @@ function usesHostBridge(spec: LaunchSpec): boolean {
 		spec.isolation !== undefined &&
 		(spec.runKind === "task" || spec.runKind === "repair")
 	);
+}
+
+/** A machine at its proxy cap refuses the launch like any missing sandbox. */
+function refuseOverEgressCapacity<T>(prepare: () => T): T {
+	try {
+		return prepare();
+	} catch (err) {
+		if (err instanceof EgressCapacityError) {
+			throw new SandboxUnavailableError(err.message);
+		}
+		throw err;
+	}
 }
 
 export class AgentHost {
@@ -665,7 +681,9 @@ export class AgentHost {
 			'  [ "$1" != Z ] || return 1',
 			`  printf '%s' "$\{20}"`,
 			"}",
-			`exec 8> >(exec ${proxy} >/dev/null 2>&1)`,
+			// No memory or task limit: `ulimit -v` breaks bun, and a host without a
+			// user manager has no scope to give it. See docs/egress.md.
+			`exec 8> >(ulimit -n ${PROXY_MAX_OPEN_FILES}; exec ${proxy} >/dev/null 2>&1)`,
 			"mfw_egress_pid=$!",
 			'mfw_egress_ticks=$(mfw_proc_ticks "$mfw_egress_pid")',
 			"mfw_egress_wait=0",
@@ -728,21 +746,24 @@ export class AgentHost {
 		if ("MFW_REPORT_PATH" in env) {
 			env.MFW_REPORT_PATH = `${SANDBOX_PATHS.workspace}/MFW_REPORT.json`;
 		}
-		const egress = prepareRunEgress({
-			mfwHome: await realpath(mfwHome),
-			runDir,
-			runId: spec.runId,
-			allow: harnessAllowlist(cli, {
-				...egressOptions,
-				apiKeyAuth: usesApiKeyAuth(cli, [
-					...Object.keys(spec.env ?? {}),
-					...secretEnvironment.names(),
-				]),
+		const egressHome = await realpath(mfwHome);
+		const egress = refuseOverEgressCapacity(() =>
+			prepareRunEgress({
+				mfwHome: egressHome,
+				runDir,
+				runId: spec.runId,
+				allow: harnessAllowlist(cli, {
+					...egressOptions,
+					apiKeyAuth: usesApiKeyAuth(cli, [
+						...Object.keys(spec.env ?? {}),
+						...secretEnvironment.names(),
+					]),
+				}),
+				...(spec.isolation?.egressUploadBudget
+					? { uploadBudget: spec.isolation.egressUploadBudget }
+					: {}),
 			}),
-			...(spec.isolation?.egressUploadBudget
-				? { uploadBudget: spec.isolation.egressUploadBudget }
-				: {}),
-		});
+		);
 		const request: AgentLaunchRequest = {
 			version: 1,
 			runId: spec.runId,

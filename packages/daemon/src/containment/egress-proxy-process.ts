@@ -26,7 +26,7 @@ const SHUTDOWN_DEADLINE_MS = 2_000;
 /** Enforced by the kernel, for a proxy whose event loop no longer runs. */
 const HARD_EXIT_SECONDS = 3;
 
-/** Its own process, so the cap protects this process's descriptors. */
+/** Per run, because each proxy is its own process. See `MAX_PROXIED_RUNS`. */
 const MAX_CONNECTIONS = 64;
 
 /** How stale the host's view of a live run's traffic can be. */

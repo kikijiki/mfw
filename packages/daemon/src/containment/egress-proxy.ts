@@ -157,8 +157,10 @@ export interface EgressProxyOptions {
 	onBytes?: (host: string, port: number, up: number, down: number) => void;
 	limits?: Partial<EgressLimits>;
 	/**
-	 * The global connection cap, shared by every run's proxy. Required: a proxy
-	 * with no global cap is a way to exhaust the daemon's file descriptors.
+	 * The connection cap across every proxy sharing this gate. Required. The
+	 * production proxy is one process per run, so its gate covers that run only;
+	 * the machine is bounded by `MAX_PROXIED_RUNS` and each process's descriptor
+	 * limit (`egress-run.ts`).
 	 */
 	gate: ConnectionGate;
 	/** Rule 11: the ClientHello SNI must equal the CONNECT host. Off by default. */

@@ -14,6 +14,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+	EgressCapacityError,
 	type EgressSweepReport,
 	prepareRunEgress,
 	processStartTicks,
@@ -247,5 +248,86 @@ describe("recovery sweep", () => {
 		expect(a.socketDir).not.toBe(b.socketDir);
 		expect(a.stateDir).not.toBe(b.stateDir);
 		expect(a.indexPath).not.toBe(b.indexPath);
+	});
+});
+
+describe("the machine-wide cap on proxied runs", () => {
+	const fill = (runId: string, pid?: number) => {
+		const paths = prepareRunEgress({
+			mfwHome,
+			runDir: join(root, "runs", runId),
+			runId,
+			allow: [],
+			maxRuns: 100,
+		});
+		if (pid) {
+			writeFileSync(
+				paths.indexPath,
+				JSON.stringify({
+					runId,
+					socketDir: paths.socketDir,
+					pid,
+					startTicks: processStartTicks(pid),
+				}),
+			);
+		}
+		return paths;
+	};
+
+	test("a run over the cap is refused", () => {
+		const a = Bun.spawn(["sleep", "30"]);
+		const b = Bun.spawn(["sleep", "30"]);
+		children.push(a, b);
+		fill("a", a.pid);
+		fill("b", b.pid);
+		expect(() =>
+			prepareRunEgress({
+				mfwHome,
+				runDir: join(root, "runs/c"),
+				runId: "c",
+				allow: [],
+				maxRuns: 2,
+			}),
+		).toThrow(EgressCapacityError);
+		expect(
+			existsSync(runEgressPaths(mfwHome, join(root, "runs/c"), "c").indexPath),
+		).toBe(false);
+	});
+
+	test("a relaunch of a counted run is not a new run", () => {
+		const a = Bun.spawn(["sleep", "30"]);
+		children.push(a);
+		fill("a", a.pid);
+		expect(() =>
+			prepareRunEgress({
+				mfwHome,
+				runDir: join(root, "runs/a"),
+				runId: "a",
+				allow: [],
+				maxRuns: 1,
+			}),
+		).not.toThrow();
+	});
+
+	test("what a dead proxy left does not use up the cap", () => {
+		const paths = fill("gone");
+		writeFileSync(
+			paths.indexPath,
+			JSON.stringify({
+				runId: "gone",
+				socketDir: paths.socketDir,
+				pid: 999_999_9,
+				startTicks: "1",
+			}),
+		);
+		expect(() =>
+			prepareRunEgress({
+				mfwHome,
+				runDir: join(root, "runs/c"),
+				runId: "c",
+				allow: [],
+				maxRuns: 1,
+			}),
+		).not.toThrow();
 	});
 });

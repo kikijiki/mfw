@@ -174,6 +174,10 @@ describe("the proxy through the real run script", () => {
 		const run = await launch();
 		expect(existsSync(run.paths.socketPath)).toBe(true);
 		expect(readFileSync(`/proc/${run.proxy}/environ`).length).toBe(0);
+		// Its own descriptor limit, whatever the launching shell had.
+		expect(readFileSync(`/proc/${run.proxy}/limits`, "utf8")).toMatch(
+			/Max open files\s+512\s+512/,
+		);
 		expect(await ask(run.paths.socketPath)).toContain("X-Mfw-Egress: denied");
 		writeFileSync(join(base, "release"), "");
 		await until(() => existsSync(join(control, `exit-${runId}`)));
