@@ -1,0 +1,233 @@
+/**
+ * The SandboxProfile of a task or repair run, and the checks on what a launch
+ * is about to expose (design "Bridge on the host", "Agent config").
+ *
+ * Other roles are P7. There is no `$HOME` bind: the agent gets the synthetic
+ * home, its clone, the run's control and outbox, and its fleet config dir.
+ * Egress exists only when the caller hands in a proxy socket directory.
+ */
+
+import { lstatSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import type { PinnedBind } from "./pinned-binds.ts";
+import { parseSandboxProfile, type SandboxProfile } from "./profile.ts";
+
+/** Printed wherever the temporary fleet allowlist below is in force. */
+export const UNATTESTED_CONFIG_MARKER = "unattested-config";
+
+/**
+ * TEMPORARY, until P4 supplies the versioned per-CLI allowlist. These are the
+ * provisional directories from the sandbox experiments and are not attested
+ * for an authenticated CLI. Files in the config root (`.claude.json`,
+ * `auth.json`, Codex's sqlite state) stay read-only, so a CLI that must rewrite
+ * them fails rather than gaining a writable config root.
+ */
+export const TEMPORARY_FLEET_WRITABLE = {
+	claude: ["backups", "plugins/store", "projects", "sessions"],
+	codex: ["cache", "sessions", "shell_snapshots", "thread-writer-locks", "tmp"],
+} as const;
+
+export type FleetCli = keyof typeof TEMPORARY_FLEET_WRITABLE;
+
+/** Limits of a task or repair run. */
+const RUN_LIMITS = { tasksMax: 4096, memoryMax: "8G" } as const;
+
+export type AgentProfileCode = "workspace_not_clone";
+
+export class AgentProfileError extends Error {
+	readonly code: AgentProfileCode;
+	readonly fix: string;
+	constructor(code: AgentProfileCode, message: string, fix: string) {
+		super(message);
+		this.name = "AgentProfileError";
+		this.code = code;
+		this.fix = fix;
+	}
+}
+
+export interface CloneLayout {
+	root: string;
+	tree: string;
+	gitDir: string;
+}
+
+const CLONE_FIX =
+	'set "runWorkspace": "clone" for this project: a sandboxed run needs a private clone';
+
+function isRealDir(path: string): boolean {
+	try {
+		return lstatSync(path).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+function isRealFile(path: string): boolean {
+	try {
+		return lstatSync(path).isFile();
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * The clone around a work tree: `<root>/{tree,git,mfw-workspace.json}`. A linked
+ * worktree is refused, because its gitdir lives in the primary repository.
+ */
+export function cloneLayout(tree: string): CloneLayout {
+	const root = dirname(tree);
+	const gitDir = join(root, "git");
+	if (
+		basename(tree) !== "tree" ||
+		!isRealDir(tree) ||
+		!isRealDir(gitDir) ||
+		!isRealFile(join(root, "mfw-workspace.json"))
+	) {
+		throw new AgentProfileError(
+			"workspace_not_clone",
+			`${tree} is not a private run clone`,
+			CLONE_FIX,
+		);
+	}
+	return { root, tree, gitDir };
+}
+
+export interface RunProfileInput {
+	role: "task" | "repair";
+	tree: string;
+	runDir: string;
+	cli: FleetCli;
+	fleetDir: string;
+	/** Everything the sandbox must be able to execute, including `bun` for the probe. */
+	binaries: readonly string[];
+	env: Record<string, string>;
+	/** The run's own proxy socket directory. Absent means no network at all. */
+	egressSocketDir?: string;
+	deny?: readonly string[];
+}
+
+export function buildRunProfile(input: RunProfileInput): SandboxProfile {
+	const clone = cloneLayout(input.tree);
+	return parseSandboxProfile({
+		version: 1,
+		role: input.role,
+		home: "synthetic",
+		filesystem: {
+			workspace: { source: clone.tree, gitDir: clone.gitDir, access: "rw" },
+			runDir: { source: input.runDir, outbox: "rw" },
+			scratch: "tmpfs",
+			toolchain: { binaries: [...new Set(input.binaries)] },
+			fleetConfig: {
+				cli: input.cli,
+				source: input.fleetDir,
+				writable: [...TEMPORARY_FLEET_WRITABLE[input.cli]],
+			},
+			...(input.deny?.length ? { deny: [...input.deny] } : {}),
+		},
+		process: {
+			env: input.env,
+			userns: "disabled",
+			seccomp: "denylist",
+			terminal: "none",
+		},
+		network: input.egressSocketDir
+			? { mode: "proxy", socketDir: input.egressSocketDir }
+			: { mode: "none" },
+		resources: RUN_LIMITS,
+		lifecycle: { dieWithParent: true, newSession: true },
+	});
+}
+
+const inside = (path: string, dir: string) => path.startsWith(`${dir}/`);
+
+/**
+ * A writable bind that holds another bind's source, or null. Whoever can write
+ * a source's parent can rename the source and swap what a later launch mounts.
+ */
+export function findWritableBindParent(
+	binds: readonly PinnedBind[],
+): { parent: PinnedBind; child: PinnedBind } | null {
+	for (const parent of binds) {
+		if (!parent.writable) continue;
+		const child = binds.find((b) => inside(b.source, parent.source));
+		if (child) return { parent, child };
+	}
+	return null;
+}
+
+/** Credential shapes that must never travel in a command line or public env. */
+const TOKEN_SHAPES = [
+	/\bsk-[A-Za-z0-9_-]{16,}/,
+	/\bgh[pousr]_[A-Za-z0-9]{20,}/,
+	/\bgithub_pat_[A-Za-z0-9_]{20,}/,
+	/\bxox[abprs]-[A-Za-z0-9-]{10,}/,
+	/\bAKIA[0-9A-Z]{16}\b/,
+	/-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+];
+
+export interface LaunchSecretCheck {
+	argv: readonly string[];
+	env: Readonly<Record<string, string>>;
+	/** Values of the run's granted secrets. */
+	secretValues: readonly string[];
+	/** The real home, `$MFW_HOME` and other host paths, in every spelling. */
+	forbiddenPaths: readonly string[];
+	/** The resolved agent binary, which may live in a home toolchain root. */
+	allowedArgv0?: string;
+}
+
+function mentionsPath(value: string, path: string): boolean {
+	let at = value.indexOf(path);
+	while (at >= 0) {
+		const next = value[at + path.length];
+		if (next === undefined || !/[A-Za-z0-9._-]/.test(next)) return true;
+		at = value.indexOf(path, at + 1);
+	}
+	return false;
+}
+
+/**
+ * Where a secret or a protected host path appears in the agent's argv or
+ * public env, or null. The answer names the place and never the value.
+ */
+export function findLaunchSecret(check: LaunchSecretCheck): string | null {
+	const leak = (value: string): string | null => {
+		if (check.secretValues.some((s) => s !== "" && value.includes(s))) {
+			return "a granted secret";
+		}
+		if (TOKEN_SHAPES.some((shape) => shape.test(value))) {
+			return "a credential-shaped value";
+		}
+		return check.forbiddenPaths.some((p) => mentionsPath(value, p))
+			? "a protected host path"
+			: null;
+	};
+	for (const [i, arg] of check.argv.entries()) {
+		if (i === 0 && arg === check.allowedArgv0) continue;
+		const what = leak(arg);
+		if (what) return `argv[${i}] holds ${what}`;
+	}
+	for (const [name, value] of Object.entries(check.env)) {
+		const what = leak(value);
+		if (what) return `env ${name} holds ${what}`;
+	}
+	return null;
+}
+
+/** Flags that make a CLI act without asking. Only an authorized launch may carry them. */
+const AUTONOMY_FLAGS = [
+	"--dangerously-skip-permissions",
+	"--dangerously-bypass-approvals-and-sandbox",
+	"--yolo",
+];
+
+const isAutonomyFlag = (arg: string) =>
+	AUTONOMY_FLAGS.some((f) => arg === f || arg.startsWith(`${f}=`));
+
+export function autonomyFlags(argv: readonly string[]): string[] {
+	return argv.filter(isAutonomyFlag);
+}
+
+export function withoutAutonomyFlags(argv: readonly string[]): string[] {
+	return argv.filter((a) => !isAutonomyFlag(a));
+}
