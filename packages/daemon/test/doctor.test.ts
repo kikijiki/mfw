@@ -272,6 +272,17 @@ describe("host checks", () => {
 		expect(c.fix).toBe("loginctl enable-linger owner");
 	});
 
+	test("an unknown user name never produces a wrong linger command", async () => {
+		const host: HostReaders = {
+			...fixtureHost({ existing: [] }),
+			user: "unknown",
+		};
+		const c = await check({ host }, "host.linger");
+		expect([c.status, c.severity]).toEqual(["problem", "warn"]);
+		expect(c.detail).toContain("could not tell");
+		expect(c.fix).toBe("loginctl enable-linger $USER");
+	});
+
 	test("no cgroup v2 is a blocker", async () => {
 		const base = fixtureHost();
 		const host: HostReaders = {

@@ -635,9 +635,17 @@ export async function runDoctor(
 		guarded("host.systemd", "host", async () =>
 			fromHostCheck(await detectSystemdUser(p.host)),
 		),
-		guarded("host.linger", "host", async () =>
-			fromHostCheck(await detectLinger(p.host)),
-		),
+		guarded("host.linger", "host", async () => {
+			// Without a real name the path is wrong and so would be the command.
+			if (!p.host.user || p.host.user === "unknown") {
+				return problem(
+					"warn",
+					"could not tell whether linger is on: this process has no user name",
+					"loginctl enable-linger $USER",
+				);
+			}
+			return fromHostCheck(await detectLinger(p.host));
+		}),
 		guarded("host.cgroup", "host", () => cgroupCheck(p)),
 		guarded("host.tiocsti", "host", async () =>
 			fromHostCheck(await detectTiocsti(p.host)),
