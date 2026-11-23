@@ -166,6 +166,27 @@ describe("the live doctor on a real install", () => {
 	});
 });
 
+describe("running a trusted CLI", () => {
+	test("gets only its version flag, no home and no inherited secrets", async () => {
+		const i = await install();
+		const seen = join(i.base, "seen");
+		writeFileSync(
+			join(i.bin, "claude"),
+			`#!/bin/sh\nprintf '%s|%s|%s' "$*" "$HOME" "$ANTHROPIC_API_KEY" > ${seen}\necho "claude 2.3.4 raw-output-not-for-the-report"\n`,
+		);
+		const probes = liveDoctorProbes({
+			env: { PATH: i.bin, ANTHROPIC_API_KEY: "inherited-secret-value" },
+			home: i.home,
+			installRoot: i.base,
+			writableRoots: [join(i.base, "nothing-is-writable-here")],
+		});
+		const found = await probes.tool("claude");
+		expect(found.path).toBe(join(i.bin, "claude"));
+		expect(await probes.toolVersion(found.path as string)).toBe("2.3.4");
+		expect(readFileSync(seen, "utf8")).toBe("--version|/nonexistent|");
+	});
+});
+
 describe("build and trigger state", () => {
 	test("a build without manifests is a blocker", async () => {
 		const i = await install();
