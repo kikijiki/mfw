@@ -185,6 +185,8 @@ export const runsRouter = createTRPCRouter({
 				nativeSessionId: row.nativeSessionId,
 				route: routeOf(row),
 				taskTitle: row.taskId ? (titles.get(row.taskId) ?? null) : null,
+				/** Who vouches for the run's exit: the host, or only the agent. */
+				provenance: await ctx.svc.registry.provenance(row.id),
 			};
 		}),
 

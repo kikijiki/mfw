@@ -11,8 +11,8 @@
  * stdin so the agent completes one-shot.
  */
 import { appendFileSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { FileSink } from "bun";
+import { driverRunPaths } from "../../containment/run-dir.ts";
 import { isAllowedStatus } from "../rate-limit-claude.ts";
 
 const runDir = process.argv[2];
@@ -21,7 +21,8 @@ if (!runDir) {
 	process.exit(2);
 }
 
-const cfg = JSON.parse(readFileSync(join(runDir, "driver.json"), "utf8")) as {
+const paths = driverRunPaths(runDir);
+const cfg = JSON.parse(readFileSync(paths.config, "utf8")) as {
 	argv: string[];
 	cwd: string;
 	env?: Record<string, string>;
@@ -31,8 +32,8 @@ const cfg = JSON.parse(readFileSync(join(runDir, "driver.json"), "utf8")) as {
 	/** How long to wait after a result for a late steer before closing (default 1500). */
 	steerGraceMs?: number;
 };
-const steerPath = join(runDir, "steer.jsonl");
-const eventsPath = join(runDir, "events.jsonl");
+const steerPath = paths.steer;
+const eventsPath = paths.events;
 
 let seq = 0;
 function emit(event: Record<string, unknown>): void {

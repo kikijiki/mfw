@@ -1,5 +1,5 @@
-import { readFile } from "node:fs/promises";
 import { parseAgentEventLine } from "./agents/events.ts";
+import { readRegularFile } from "./containment/safe-file.ts";
 
 /**
  * What survives of a run once its transcript directory is garbage collected:
@@ -94,16 +94,14 @@ export function summarizeTranscriptText(
 	};
 }
 
+const MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
+
 /** Summarize the transcript file; a missing file reads as an empty one. */
 export async function summarizeTranscript(
 	eventsPath: string,
 	prunedAt = Date.now(),
 ): Promise<TranscriptSummary> {
-	let text = "";
-	try {
-		text = await readFile(eventsPath, "utf8");
-	} catch {
-		// no transcript: the summary then says so with zero events
-	}
-	return summarizeTranscriptText(text, prunedAt);
+	// The agent owns this path: a link or FIFO reads as no transcript (zero events).
+	const read = await readRegularFile(eventsPath, MAX_TRANSCRIPT_BYTES);
+	return summarizeTranscriptText(read?.buffer.toString("utf8") ?? "", prunedAt);
 }

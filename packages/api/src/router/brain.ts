@@ -1,4 +1,8 @@
 import {
+	ChatError,
+	type ChatErrorCode,
+} from "@mfw/daemon/brain-runtime/chat-thread";
+import {
 	DirectionError,
 	type DirectionErrorCode,
 } from "@mfw/daemon/brain-runtime/directions";
@@ -18,6 +22,33 @@ const DIRECTION_CODES: Record<DirectionErrorCode, TRPCError["code"]> = {
 	rate_limited: "TOO_MANY_REQUESTS",
 	no_brain: "PRECONDITION_FAILED",
 };
+
+const CHAT_CODES: Record<ChatErrorCode, TRPCError["code"]> = {
+	invalid: "BAD_REQUEST",
+	key_reused: "CONFLICT",
+	rate_limited: "TOO_MANY_REQUESTS",
+	not_found: "NOT_FOUND",
+	no_offer: "PRECONDITION_FAILED",
+};
+
+/** The typed refusals of chat and of the direction it can hand off to. */
+function chatRefusal(e: unknown): TRPCError {
+	if (e instanceof ChatError) {
+		return new TRPCError({
+			code: CHAT_CODES[e.code],
+			message: e.message,
+			cause: e,
+		});
+	}
+	if (e instanceof DirectionError) {
+		return new TRPCError({
+			code: DIRECTION_CODES[e.code],
+			message: e.message,
+			cause: e,
+		});
+	}
+	throw e;
+}
 
 /**
  * The project brain. The four plain queries (`session`, `turns`, `decisions`,
@@ -164,6 +195,47 @@ export const brainRouter = createTRPCRouter({
 	directions: projectProcedure.query(({ ctx }) =>
 		ctx.svc.brainRuntime.directions.list(),
 	),
+
+	/** The chat thread, oldest first, with how many questions are still open. */
+	chatThread: projectProcedure.query(({ ctx }) =>
+		ctx.svc.brainRuntime.chat.view(),
+	),
+
+	/**
+	 * Ask the brain a question. Read-only: the answer arrives in `chatThread`.
+	 * `key` makes a double submit one question.
+	 */
+	chatAsk: projectProcedure
+		.input(
+			z.object({
+				text: z.string().min(1).max(2000),
+				key: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			try {
+				return await ctx.svc.brainRuntime.chat.ask({
+					text: input.text,
+					key: input.key,
+				});
+			} catch (e) {
+				throw chatRefusal(e);
+			}
+		}),
+
+	/**
+	 * The owner accepts a chat answer's offer. The text is the stored question,
+	 * so the input names only the answer; it goes through `giveDirection`'s path.
+	 */
+	chatGiveDirection: projectProcedure
+		.input(z.object({ answerId: z.string().min(1).max(64) }))
+		.mutation(async ({ ctx, input }) => {
+			try {
+				return await ctx.svc.brainRuntime.chat.giveOffer(input.answerId);
+			} catch (e) {
+				throw chatRefusal(e);
+			}
+		}),
 
 	/** A person fixed the cause of an open circuit and presses retry. */
 	resetCircuit: projectProcedure.mutation(async ({ ctx }) => {

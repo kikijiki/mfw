@@ -1579,6 +1579,8 @@ export class BrainService implements BrainPort {
 		const term = RUN_TERMINAL[status];
 		await this.deps.registry.transition(entry.runId, term.state, {
 			outcome: term.outcome,
+			// The host ran this call and timed or aborted it itself.
+			evidence: { provenance: "host-observed", source: "brain-call" },
 			...(status === "timeout" ? { killReason: "watchdog-wall" as const } : {}),
 			...(status === "aborted" ? { killReason: "manual" as const } : {}),
 			note: reason.slice(0, 400) || status,

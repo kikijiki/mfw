@@ -39,6 +39,7 @@ import {
 	shownActivity,
 } from "../agents/activity";
 import { activityAttention } from "../agents/attention";
+import { ProvenanceChips } from "../agents/ProvenanceChips";
 import { RouteBadge } from "../agents/RouteBadge";
 import { RunMoves } from "../agents/RunMoves";
 import { StopRunDialog, useRunControls } from "../agents/useRunControls";
@@ -447,6 +448,7 @@ export function RunPage({
 									{killReasonLabel(run.killReason)}
 								</Chip>
 							) : null}
+							<ProvenanceChips provenance={run.provenance} />
 						</>
 					) : null
 				}

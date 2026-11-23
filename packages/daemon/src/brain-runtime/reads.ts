@@ -425,10 +425,7 @@ export class BrainReadService {
 
 	/** Ready tasks, most unblocking first (the number of tasks that depend on each). */
 	/** Who wrote what this read tool returns. */
-	private async provenanceOf(
-		tool: ReadTool,
-		args: unknown,
-	): Promise<Provenance[]> {
+	async provenanceOf(tool: ReadTool, args: unknown): Promise<Provenance[]> {
 		switch (tool) {
 			case "capacity":
 				return ["host"];

@@ -692,7 +692,10 @@ export class RunEngine {
 		const run = await this.deps.registry.get(runId);
 		if (run) {
 			if (run.state === "starting") {
-				await this.deps.registry.recordExit(runId, { outcome: "start_failed" });
+				await this.deps.registry.recordExit(runId, {
+					outcome: "start_failed",
+					evidence: { provenance: "host-observed", source: "finalize" },
+				});
 			}
 		}
 		const task = await this.deps.tasks.get(taskId);
@@ -1126,7 +1129,10 @@ export class RunEngine {
 				} catch (error) {
 					errors.push(error);
 				}
-				await this.deps.registry.recordExit(run.id, { outcome: "interrupted" });
+				await this.deps.registry.recordExit(run.id, {
+					outcome: "interrupted",
+					evidence: { provenance: "host-observed", source: "finalize" },
+				});
 			}
 			try {
 				const result = await this.finalizeExecutionTarget(run.id);
@@ -1366,6 +1372,7 @@ export class RunEngine {
 				.catch(() => {});
 			await this.deps.registry.recordExit(spec.runId, {
 				outcome: "start_failed",
+				evidence: { provenance: "host-observed", source: "finalize" },
 			});
 			throw e;
 		}
@@ -1434,6 +1441,10 @@ export class RunEngine {
 				secretEnvironment?.names() ?? [],
 				workloadSecrets?.binding ?? null,
 			);
+			// Before the launch: a crash after it must still find the marker.
+			if (target.kind === "local" && this.deps.isolation) {
+				await this.deps.registry.markRunDirSplit(run.id);
+			}
 			await target.launch({
 				owner,
 				runDir: ref.runDir,
@@ -1491,6 +1502,7 @@ export class RunEngine {
 				if (observation.state === "absent") {
 					await this.deps.registry.recordExit(run.id, {
 						outcome: "start_failed",
+						evidence: { provenance: "host-observed", source: "finalize" },
 					});
 				} else {
 					await this.deps.registry.transition(run.id, "ended", {
@@ -1542,7 +1554,10 @@ export class RunEngine {
 					detail: { code: "launch_failed" },
 				})
 				.catch(() => {});
-			await this.deps.registry.recordExit(run.id, { outcome: "start_failed" });
+			await this.deps.registry.recordExit(run.id, {
+				outcome: "start_failed",
+				evidence: { provenance: "host-observed", source: "finalize" },
+			});
 			throw e;
 		}
 	}

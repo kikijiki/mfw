@@ -1,7 +1,7 @@
 /** Shared mfw.app-server/v1 run driver. Provider bridges own vendor protocols. */
 import { appendFileSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { FileSink } from "bun";
+import { driverRunPaths } from "../../containment/run-dir.ts";
 import {
 	type ApprovalDecision,
 	type AppServerEnvelope,
@@ -17,7 +17,8 @@ if (!runDir) {
 	process.exit(2);
 }
 
-const cfg = JSON.parse(readFileSync(join(runDir, "driver.json"), "utf8")) as {
+const paths = driverRunPaths(runDir);
+const cfg = JSON.parse(readFileSync(paths.config, "utf8")) as {
 	bridgeArgv: string[];
 	providerArgv: string[];
 	cwd: string;
@@ -30,8 +31,8 @@ const cfg = JSON.parse(readFileSync(join(runDir, "driver.json"), "utf8")) as {
 	/** The pause between a finished turn and the next queued one (default 1500). */
 	steerGraceMs?: number;
 };
-const eventsPath = join(runDir, "events.jsonl");
-const controlsPath = join(runDir, "control.jsonl");
+const eventsPath = paths.events;
+const controlsPath = paths.controls;
 let seq = 0;
 let terminal = false;
 let fatal = false;

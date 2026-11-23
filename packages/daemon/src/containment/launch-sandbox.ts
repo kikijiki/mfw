@@ -20,18 +20,16 @@
  * The seccomp program and options live in `O_TMPFILE` files. The options carry
  * env values, and an unnamed file cannot be opened by path.
  *
- * There is no fallback. The scope is dropped only when a caller asks for
- * `scope: "none"`, which also drops the resource limits.
+ * There is no fallback. The scope is dropped only when an interactive caller
+ * asks for `scope: "none"`, which also drops the resource limits. An autonomous
+ * launch cannot ask for that.
  *
- * Not wired into the engine yet. Before it is, the P3 in-child probe must check:
- * - `/proc/1/cmdline` holds no secret;
- * - the writable mount set is exactly the expected one;
- * - the open descriptors are exactly 0-2;
- * - `/dev/console` is absent;
- * - no bound path holds a socket, other than the run's egress socket;
- * - the real home is absent, allowing for toolchain roots that recreate part
- *   of its path;
- * - cgroup limits are confirmed from the host side, since `/sys` is not mounted.
+ * With `"pipe"`, Bun hands the child a unix socketpair rather than a FIFO. Only
+ * a caller's numeric descriptor is checked to be a real pipe.
+ *
+ * Not wired into the engine yet. The in-child probe (probe-run.ts) verifies
+ * this contract from inside each sandbox, and attestation-gate.ts refuses
+ * autonomous flags without a passing record.
  */
 
 import { closeSync, constants, fstatSync, openSync, writeSync } from "node:fs";
@@ -43,10 +41,18 @@ import {
 	FIRST_PINNED_FD,
 } from "./compile-bwrap.ts";
 import {
+	type LaunchAuthorization,
+	redeemLaunchAuthorization,
+} from "./launch-authorization.ts";
+import {
 	type OpenPins,
 	openPinnedBinds,
+	type PinIdentity,
 	PinnedBindError,
+	pinIdentities,
+	samePins,
 } from "./pinned-binds.ts";
+import { RunDirLayoutError, verifyRunDirLayout } from "./run-dir.ts";
 
 const O_TMPFILE = 0o20000000 | constants.O_DIRECTORY;
 
@@ -64,13 +70,30 @@ export interface LaunchOptions {
 	scope?: "systemd" | "none";
 	/** Where the unnamed option files are created. */
 	tmpDir?: string;
+	/** Told which directories were opened, before anything runs. */
+	observePins?: (pins: PinIdentity[]) => void;
 }
 
+/**
+ * Whether the command may act without a human, stated by every caller. There is
+ * no default, because the agent host's own default is autonomous. An autonomous
+ * launch needs the gate's authorization.
+ */
+export type LaunchApproval =
+	| { approvalMode: "interactive" }
+	| { approvalMode: "autonomous"; authorization: LaunchAuthorization };
+
+export type LaunchRequest = LaunchOptions & LaunchApproval;
+
 export type LaunchRefusalCode =
+	| "invalid_approval_mode"
+	| "not_authorized"
+	| "scope_required"
 	| "stdio_tty"
 	| "stdio_not_pipe"
 	| "invalid_compiled"
 	| "pin_failed"
+	| "pin_changed"
 	| "launch_failed";
 
 export class SandboxLaunchError extends Error {
@@ -158,6 +181,8 @@ function anonymousFile(dir: string, bytes: Buffer): number {
 export interface SandboxFds {
 	/** Parent descriptors for the child's 3, 4, 5, and so on. */
 	fds: number[];
+	/** The identity of each pinned bind source, in `pinnedBinds` order. */
+	pins: PinIdentity[];
 	/** Close them. Only valid while no successful spawn has taken them. */
 	close(): void;
 	/** Forget them, because a successful spawn now owns them. */
@@ -171,9 +196,14 @@ export function openSandboxFds(
 ): SandboxFds {
 	let pins: OpenPins;
 	try {
+		// The pins prove which directories are mounted; this proves no other
+		// user can write the run root that holds them.
+		if (compiled.runDirRoot) verifyRunDirLayout(compiled.runDirRoot);
 		pins = openPinnedBinds(compiled.pinnedBinds);
 	} catch (err) {
-		if (!(err instanceof PinnedBindError)) throw err;
+		if (!(err instanceof PinnedBindError || err instanceof RunDirLayoutError)) {
+			throw err;
+		}
 		throw new SandboxLaunchError("pin_failed", err.message);
 	}
 	const files: number[] = [];
@@ -193,6 +223,7 @@ export function openSandboxFds(
 	}
 	return {
 		fds: [...files, ...pins.parentFds],
+		pins: pinIdentities(compiled.pinnedBinds, pins.parentFds),
 		close,
 		release: () => {
 			files.length = 0;
@@ -217,7 +248,7 @@ function scopeEnv(scope: "systemd" | "none"): Record<string, string> {
  */
 export function launchSandbox(
 	compiled: CompiledSandbox,
-	options: LaunchOptions = {},
+	options: LaunchRequest,
 ) {
 	const scope = options.scope ?? "systemd";
 	const stdin = options.stdin ?? "pipe";
@@ -228,8 +259,23 @@ export function launchSandbox(
 	checkStdio("stderr", stderr);
 	const argv = launchArgv(compiled, scope);
 	checkPinNumbers(compiled);
+	if (options.approvalMode === "autonomous" && scope !== "systemd") {
+		throw new SandboxLaunchError(
+			"scope_required",
+			"an autonomous launch must run under the systemd scope and its limits",
+		);
+	}
+	const expectPins = approvedPins(compiled, options);
 
 	const opened = openSandboxFds(compiled, options.tmpDir);
+	if (expectPins && !samePins(expectPins, opened.pins)) {
+		opened.close();
+		throw new SandboxLaunchError(
+			"pin_changed",
+			"a bind source is not the directory the probe attested",
+		);
+	}
+	options.observePins?.(opened.pins);
 	let child: ReturnType<typeof spawnWithFds>;
 	try {
 		child = spawnWithFds(argv, scope, [stdin, stdout, stderr, ...opened.fds]);
@@ -243,6 +289,28 @@ export function launchSandbox(
 	}
 	opened.release();
 	return child;
+}
+
+/** The attested pins of an autonomous launch, null for an interactive one. */
+function approvedPins(
+	compiled: CompiledSandbox,
+	options: LaunchApproval,
+): readonly PinIdentity[] | null {
+	if (options.approvalMode === "interactive") return null;
+	if (options.approvalMode !== "autonomous") {
+		throw new SandboxLaunchError(
+			"invalid_approval_mode",
+			"approvalMode must be stated as interactive or autonomous",
+		);
+	}
+	const pins = redeemLaunchAuthorization(options.authorization, compiled);
+	if (!pins) {
+		throw new SandboxLaunchError(
+			"not_authorized",
+			"an autonomous launch needs an unused authorization for this sandbox",
+		);
+	}
+	return pins;
 }
 
 function spawnWithFds(

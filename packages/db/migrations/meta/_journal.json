@@ -134,6 +134,20 @@
       "when": 1791795371103,
       "tag": "0019_run_subagents",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1795407474529,
+      "tag": "0020_sandbox_attestations",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1795407475529,
+      "tag": "0021_run_provenance",
+      "breakpoints": true
     }
   ]
 }

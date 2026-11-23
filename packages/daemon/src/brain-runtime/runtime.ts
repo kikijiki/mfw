@@ -43,6 +43,7 @@ import {
 	mfwHome as configuredMfwHome,
 	type StoredBrainConfig,
 } from "../config.ts";
+import { ensureRunDirLayout } from "../containment/run-dir.ts";
 import { HumanOverrideService } from "../human-override.ts";
 import type { Logger } from "../log.ts";
 import type { ProviderHold, RoutingDecision } from "../routing.ts";
@@ -51,6 +52,7 @@ import type { TaskService } from "../task-service.ts";
 import { BrainActionService } from "./actions.ts";
 import { pruneAwaiting } from "./awaiting.ts";
 import { type BrainSocket, brainSocketFor } from "./brain-socket.ts";
+import { BrainChat, type BrainChatDeps } from "./chat.ts";
 import {
 	type DigestInput,
 	type DigestRunFact,
@@ -184,6 +186,8 @@ export interface BrainRuntimeDeps {
 		BrainExecutorDeps,
 		"handle" | "bus" | "tasks" | "registry" | "log" | "now"
 	>;
+	/** Chat's model transport, budget and inbox. Without them chat answers from the records. */
+	chat?: Pick<BrainChatDeps, "inference" | "budget" | "inbox" | "caps">;
 	/** Raised once when the circuit opens. */
 	notifyStuck?: (detail: {
 		sessionId: string;
@@ -231,6 +235,8 @@ export class BrainRuntime {
 	readonly human: HumanOverrideService;
 	/** The owner's one-sentence directions, and how each is going. */
 	readonly directions: BrainDirections;
+	/** Read-only chat turns: their own budget, no session, no event cursor. */
+	readonly chat: BrainChat;
 	private readonly now: () => number;
 	private readonly host: string;
 	private inflight: Promise<TickOutcome> | null = null;
@@ -298,6 +304,21 @@ export class BrainRuntime {
 			handle: deps.handle,
 			bus: deps.bus,
 			taskStatus: async (id) => (await deps.tasks.get(id))?.status ?? null,
+			...(deps.now ? { now: deps.now } : {}),
+		});
+		this.chat = new BrainChat({
+			...deps.chat,
+			handle: deps.handle,
+			tasks: deps.tasks,
+			registry: deps.registry,
+			reads: this.reads,
+			directions: this.directions,
+			engine: deps.engine,
+			log: deps.log,
+			projectName: deps.projectName,
+			config: deps.config,
+			session: () => this.currentSession(),
+			latestPlan: () => this.latestPlan(),
 			...(deps.now ? { now: deps.now } : {}),
 		});
 	}
@@ -790,7 +811,11 @@ export class BrainRuntime {
 			const scratchDir = join(this.deps.mfwDir, "brain", session.id);
 			await mkdir(scratchDir, { recursive: true });
 			const mcp = await this.mcpServer(session.id, runId);
-			const mcpConfigPath = join(runDir, "mcp.json");
+			// Read by the agent inside the sandbox, which sees only control/ and outbox/.
+			const mcpConfigPath = join(
+				ensureRunDirLayout(runDir).control,
+				"mcp.json",
+			);
 			await writeFile(
 				mcpConfigPath,
 				`${JSON.stringify({ mcpServers: { [mcp.name]: { command: mcp.command, args: mcp.args, env: mcp.env } } }, null, "\t")}\n`,

@@ -66,6 +66,28 @@ class UndurableDatabase extends Database {
 const cached = require.cache[libsqlPath];
 if (cached) cached.exports = UndurableDatabase;
 
+// `agent-host.ts` reads `MFW_TMUX_SOCKET` once, at module load, and the import
+// below is that load: it happens before any test file's own socket import can
+// run. Without a private socket here a lone `bun test <file>` would have the
+// daemon launch into the default `mfw` socket (the running service's) while the
+// test looks at another one. `bun run test` sets the variable for every shard;
+// this makes a lone file equally self-contained, and reaps the server on exit.
+const ambientSocket = process.env.MFW_TMUX_SOCKET;
+if (!ambientSocket || ambientSocket === "mfw") {
+	const own = `mfw-test-preload-${process.pid}`;
+	process.env.MFW_TMUX_SOCKET = own;
+	process.on("exit", () => {
+		try {
+			Bun.spawnSync(["tmux", "-L", own, "kill-server"], {
+				stdout: "ignore",
+				stderr: "ignore",
+			});
+		} catch {
+			// no tmux on this machine: nothing was launched either
+		}
+	});
+}
+
 // The drivers wait a fixed 1.5 s after each turn for a late steer; scripted
 // agents never send one, and the tests that exercise the window set their own.
 const { driverTimings } = await import("../packages/daemon/src/agent-host.ts");
