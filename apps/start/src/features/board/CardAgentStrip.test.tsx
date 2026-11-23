@@ -70,9 +70,9 @@ describe("card agent strip", () => {
 				{ ref: "run:B", glyph: "ok" },
 			],
 		});
-		expect(html).toContain("verified · 2 runs");
+		expect(html).toContain("finished · 2 runs");
 		expect(html).toContain('aria-label="failed: run:A"');
-		expect(html).toContain('aria-label="verified: run:B"');
+		expect(html).toContain('aria-label="finished: run:B"');
 		expect(html).not.toContain(">CC<");
 	});
 

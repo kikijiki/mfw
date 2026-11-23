@@ -144,3 +144,18 @@ describe("badges", () => {
 		expect(shortModel(null)).toBe("");
 	});
 });
+
+describe("neutral words for a run that merely completed", () => {
+	test("completed says finished, never merged or verified", () => {
+		expect(STATE_LOOK.completed.label).toBe("finished");
+		expect(PIP_LOOK.ok.label).toBe("finished");
+		for (const l of [
+			...Object.values(STATE_LOOK),
+			...Object.values(PIP_LOOK),
+		]) {
+			expect(l.label).not.toMatch(
+				/verified|merged|deployed|healthy|passing|fixed/,
+			);
+		}
+	});
+});
