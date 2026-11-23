@@ -26,6 +26,7 @@ import {
 	type MergeJobView,
 	MergeQueue,
 	type MergeQueueDeps,
+	type PushSettings,
 } from "../src/merge-queue.ts";
 import { MFW_EXCLUDE } from "./fixtures/board.ts";
 
@@ -38,6 +39,8 @@ interface Fixture {
 	reclaimed: MergeJobView[];
 	sentToReady: MergeJobView[];
 	queue: MergeQueue;
+	/** What the owner does at setup: approve this URL as the push destination. */
+	approvePush: (url: string) => void;
 	makeBranchRun: (
 		name: string,
 		file: string,
@@ -53,7 +56,7 @@ async function fixture(
 	) => Promise<{ passed: boolean; detail?: string }> = async () => ({
 		passed: true,
 	}),
-	push?: { enabled: boolean; remote: string },
+	push?: PushSettings,
 	/** Runs inside `onMerged` before the job is recorded; stands in for the board commit `tasks.release` makes. */
 	onMergedTail?: (job: MergeJobView, sha: string) => Promise<void>,
 	selfRepairMainRed?: () => boolean,
@@ -95,6 +98,7 @@ async function fixture(
 			sentToReady.push(job);
 		},
 		push,
+		landingRoot: join(root, ".git", "mfw-landing"),
 		selfRepairMainRed,
 		...(verifyMerge ? { verifyMerge } : {}),
 		...(rebaseClone ? { rebaseClone } : {}),
@@ -143,6 +147,9 @@ async function fixture(
 		reclaimed,
 		sentToReady,
 		queue,
+		approvePush: (url) => {
+			if (push) Object.assign(push, { url, allowLocalUrl: true });
+		},
 		makeBranchRun,
 		jobIdFor,
 		cleanup: async () => {
@@ -187,6 +194,7 @@ describe("MergeQueue v2, real git matrix", () => {
 		const remote = await mkdtemp(join(tmpdir(), "mfw-remote-"));
 		await git(["init", "-q", "--bare", "-b", "main"], remote);
 		await gitOk(["remote", "add", "origin", remote], f.root);
+		f.approvePush(remote);
 
 		const runId = await f.makeBranchRun("mfw/t1", "a.txt", "hello\n");
 		await f.queue.enqueue({
@@ -210,6 +218,7 @@ describe("MergeQueue v2, real git matrix", () => {
 		const canary = join(remote, "..", `${remote.split("/").pop()}-canary`);
 		await git(["init", "-q", "--bare", "-b", "main"], remote);
 		await gitOk(["remote", "add", "origin", remote], f.root);
+		f.approvePush(remote);
 		await writeFile(
 			join(f.root, ".git/hooks/pre-push"),
 			`#!/bin/sh\ntouch "${canary}"\n`,
@@ -271,6 +280,7 @@ describe("MergeQueue v2, real git matrix", () => {
 		const remote = await mkdtemp(join(tmpdir(), "mfw-remote-"));
 		await git(["init", "-q", "--bare", "-b", "main"], remote);
 		await gitOk(["remote", "add", "origin", remote], f.root);
+		f.approvePush(remote);
 
 		const runId = await f.makeBranchRun("mfw/t1", "a.txt", "hello\n");
 		await f.queue.enqueue({
@@ -363,6 +373,7 @@ describe("MergeQueue v2, real git matrix", () => {
 			},
 		);
 		await gitOk(["remote", "add", "origin", remote], f.root);
+		f.approvePush(remote);
 
 		const runId = await f.makeBranchRun("mfw/t1", "a.txt", "hello\n");
 		await f.queue.enqueue({
@@ -419,6 +430,7 @@ describe("MergeQueue v2, real git matrix", () => {
 		const remote = await mkdtemp(join(tmpdir(), "mfw-remote-"));
 		await git(["init", "-q", "--bare", "-b", "main"], remote);
 		await gitOk(["remote", "add", "origin", remote], f.root);
+		f.approvePush(remote);
 
 		await writeFile(join(f.root, "board.txt"), "moved\n");
 		await gitOk(["add", "-A"], f.root);
@@ -441,6 +453,7 @@ describe("MergeQueue v2, real git matrix", () => {
 		const remote = await mkdtemp(join(tmpdir(), "mfw-remote-"));
 		await git(["init", "-q", "--bare", "-b", "main"], remote);
 		await gitOk(["remote", "add", "origin", remote], f.root);
+		f.approvePush(remote);
 
 		await f.queue.publishBranch("main");
 

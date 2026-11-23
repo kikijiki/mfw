@@ -1,15 +1,18 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readdir,
+	readFile,
+	realpath,
+	rm,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isDangerousGitKey } from "../src/containment/git-config-scan.ts";
 import { git, gitOk } from "../src/git.ts";
-import {
-	hardenedPush,
-	pushEnv,
-	repoControlledExecKeys,
-} from "../src/host-git/push.ts";
+import { hardenedPush, pushEnv, pushUrlRefusal } from "../src/host-git/push.ts";
 
 let base: string;
 let root: string;
@@ -30,8 +33,9 @@ async function plantProgram(): Promise<string> {
 const push = () =>
 	hardenedPush({
 		projectRoot: root,
-		remote: "origin",
 		branch: "main",
+		target: { url: remote, allowLocal: true },
+		landingRoot: join(base, "landing"),
 		environment,
 	});
 
@@ -128,7 +132,7 @@ describe("hardenedPush", () => {
 		expect(existsSync(canary)).toBe(false);
 	});
 
-	test("a global includeIf reaching a file inside the project refuses the push", async () => {
+	test("a global includeIf aimed at the project is not reached by the push", async () => {
 		const planted = join(root, "planted.gitconfig");
 		await writeFile(
 			planted,
@@ -138,9 +142,7 @@ describe("hardenedPush", () => {
 			join(home, ".gitconfig"),
 			`[includeIf "gitdir:${root}/"]\n\tpath = ${planted}\n`,
 		);
-		const r = await push();
-		expect(r.status).toBe("refused");
-		expect(r.status === "refused" && r.reason).toContain("core.sshcommand");
+		expect((await push()).status).toBe("pushed");
 		expect(existsSync(canary)).toBe(false);
 	});
 
@@ -152,20 +154,24 @@ describe("hardenedPush", () => {
 		expect((await push()).status).toBe("pushed");
 	});
 
-	test("an ext:: remote url is not executed", async () => {
-		await gitOk(
-			["remote", "set-url", "origin", `ext::sh -c "touch ${canary}"`],
-			root,
-		);
-		expect((await push()).status).toBe("error");
+	test("an ext:: approved url is refused and not executed", async () => {
+		const r = await hardenedPush({
+			projectRoot: root,
+			branch: "main",
+			target: { url: `ext::sh -c "touch ${canary}"`, allowLocal: true },
+			landingRoot: join(base, "landing"),
+			environment,
+		});
+		expect(r.status).toBe("refused");
 		expect(existsSync(canary)).toBe(false);
 	});
 
-	test("a remote or branch that parses as an option is refused", async () => {
+	test("a branch that parses as an option is refused", async () => {
 		const r = await hardenedPush({
 			projectRoot: root,
-			remote: "--receive-pack=/bin/false",
-			branch: "main",
+			branch: "--receive-pack=/bin/false",
+			target: { url: remote, allowLocal: true },
+			landingRoot: join(base, "landing"),
 			environment,
 		});
 		expect(r.status).toBe("refused");
@@ -183,31 +189,105 @@ describe("hardenedPush", () => {
 	});
 });
 
-describe("repoControlledExecKeys", () => {
-	const row = (scope: string, origin: string, kv: string) =>
-		`${scope}\0${origin}\0${kv}\0`;
+describe("the push destination", () => {
+	let evil: string;
 
-	test("ignores inert keys and neutralized hook settings", () => {
-		const listing =
-			row("local", "file:.git/config", "remote.origin.url\n/x") +
-			row("local", "file:.git/config", "core.hookspath\n/x") +
-			row("local", "file:.git/config", "core.fsmonitor\n/x");
-		expect(repoControlledExecKeys(listing, "/p")).toEqual([]);
+	beforeEach(async () => {
+		evil = join(base, "evil.git");
+		await gitOk(["init", "-q", "--bare", "-b", "main", evil], base);
+		await writeFile(
+			join(evil, "hooks/pre-receive"),
+			`#!/bin/sh\ntouch "${canary}"\n`,
+			{ mode: 0o755 },
+		);
 	});
 
-	test("reports local keys, and keeps global ones outside the project", () => {
-		const listing =
-			row("local", "file:.git/config", "core.sshcommand\n/x") +
-			row("global", "file:/h/.gitconfig", "credential.helper\nstore");
-		expect(repoControlledExecKeys(listing, "/p")).toEqual(["core.sshcommand"]);
+	test("a rewritten remote url is ignored: the approved URL gets the push", async () => {
+		await gitOk(["remote", "set-url", "origin", evil], root);
+		expect((await push()).status).toBe("pushed");
+		expect(existsSync(canary)).toBe(false);
+		expect(await gitOk(["rev-parse", "main"], remote)).toBe(
+			await gitOk(["rev-parse", "main"], root),
+		);
+		expect(
+			(await git(["rev-parse", "--verify", "-q", "main"], evil)).exitCode,
+		).not.toBe(0);
 	});
 
-	test("an unreadable listing throws instead of reading as clean", () => {
-		expect(() => repoControlledExecKeys("local\0oops\0", "/p")).toThrow();
+	for (const key of [
+		"remote.origin.pushurl",
+		"url.EVIL.insteadOf",
+		"url.EVIL.pushInsteadOf",
+	]) {
+		test(`repository ${key} refuses the push and runs no remote hook`, async () => {
+			const name = key.replace("EVIL", evil);
+			const value = key.startsWith("url.") ? remote : evil;
+			await gitOk(["config", name, value], root);
+			const r = await push();
+			expect(r.status).toBe("refused");
+			expect(existsSync(canary)).toBe(false);
+			expect(
+				(await git(["rev-parse", "--verify", "-q", "main"], evil)).exitCode,
+			).not.toBe(0);
+		});
+	}
+
+	test("no approved URL refuses, with the fix", async () => {
+		const r = await hardenedPush({
+			projectRoot: root,
+			branch: "main",
+			target: null,
+			landingRoot: join(base, "landing"),
+			environment,
+		});
+		expect(r.status).toBe("refused");
+		expect(r.status === "refused" && r.reason).toContain("pushUrl");
 	});
 
-	test("isDangerousGitKey handles subsections with dots", () => {
-		expect(isDangerousGitKey("credential.https://a.b/c.helper")).toBe(true);
-		expect(isDangerousGitKey("remote.origin.url")).toBe(false);
+	test("a local path needs the owner's explicit approval", async () => {
+		const r = await hardenedPush({
+			projectRoot: root,
+			branch: "main",
+			target: { url: evil },
+			landingRoot: join(base, "landing"),
+			environment,
+		});
+		expect(r.status).toBe("refused");
+		expect(existsSync(canary)).toBe(false);
+	});
+
+	test("the URL classifier", () => {
+		for (const url of [
+			"https://example.test/a.git",
+			"ssh://git@example.test/a.git",
+			"git@example.test:a/b.git",
+		]) {
+			expect(pushUrlRefusal({ url })).toBeNull();
+		}
+		for (const url of [
+			"/srv/a.git",
+			"file:///srv/a.git",
+			"../a.git",
+			'ext::sh -c "id"',
+			"fd::3",
+			"http://example.test/a.git",
+			"--upload-pack=/bin/false",
+			"https://a\nb",
+		]) {
+			expect(pushUrlRefusal({ url })).not.toBeNull();
+		}
+	});
+
+	test("the landing repository's config has no remote, hook or url key", async () => {
+		await gitOk(["config", "hook.x.event", "pre-push"], root).catch(() => {});
+		await gitOk(["config", "--unset", "hook.x.event"], root);
+		expect((await push()).status).toBe("pushed");
+		const landing = join(base, "landing");
+		const [dir] = await readdir(landing);
+		const config = await readFile(
+			join(landing, dir as string, "config"),
+			"utf8",
+		);
+		expect(config).not.toMatch(/remote|hook|url|include/i);
 	});
 });

@@ -320,6 +320,14 @@ const projectSchema = z.object({
 	/** Remote to push to when `pushOnMerge` is set. Defaults to `origin`. */
 	pushRemote: z.string().min(1).optional(),
 	/**
+	 * The one URL merges may be pushed to. Stored here, in the daemon home, because
+	 * a repository's own `remote.*.url` can be rewritten by anything that reaches
+	 * its config. Without it, a project with a remote has its pushes refused.
+	 */
+	pushUrl: z.string().min(1).optional(),
+	/** Allow `pushUrl` to be a local path, whose receive hooks run on this host. */
+	pushAllowLocalUrl: z.boolean().optional(),
+	/**
 	 * Isolate agent runs from the daemon's home (trigger arming store,
 	 * `credentials.json`), its environment and the tmux sockets via `bwrap`.
 	 * Defaults to `bwrap`. `none` is allowed only with `approvalMode:

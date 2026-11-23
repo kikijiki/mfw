@@ -248,6 +248,8 @@ export interface ProjectConfig {
 	selfRepairMainRed?: boolean;
 	/** Push the integration branch after every merge. Default on; no remote means no push and no error. */
 	pushOnMerge?: boolean;
+	pushUrl?: string;
+	pushAllowLocalUrl?: boolean;
 	/** Remote to push to. Defaults to `origin`. */
 	pushRemote?: string;
 	/** Filesystem-isolate agent runs via `bwrap`. Defaults and fallback: see `config.ts`. */
@@ -926,6 +928,8 @@ export async function attachProject(
 		push: {
 			enabled: cfg.pushOnMerge !== false,
 			remote: cfg.pushRemote ?? "origin",
+			...(cfg.pushUrl ? { url: cfg.pushUrl } : {}),
+			...(cfg.pushAllowLocalUrl ? { allowLocalUrl: true } : {}),
 		},
 		selfRepairMainRed: () => scheduler.selfRepairMainRed,
 		// `triggers` is built later; this only runs once a merge lands.

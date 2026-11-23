@@ -18,7 +18,7 @@ import { runs } from "@mfw/db/schema";
 import { git, gitOk } from "../src/git.ts";
 import { InboxService } from "../src/inbox.ts";
 import { silentLogger } from "../src/log.ts";
-import { MergeQueue } from "../src/merge-queue.ts";
+import { MergeQueue, type PushSettings } from "../src/merge-queue.ts";
 import {
 	type TriggerActionHandler,
 	TriggerActionRegistry,
@@ -238,7 +238,7 @@ describe("tampering", () => {
 });
 
 describe("merges", () => {
-	function queue(push?: { enabled: boolean; remote: string }): MergeQueue {
+	function queue(push?: PushSettings): MergeQueue {
 		return new MergeQueue({
 			handle,
 			bus,
@@ -248,6 +248,7 @@ describe("merges", () => {
 			onMerged: async () => {},
 			onParked: async () => {},
 			onLandedPaths: (paths) => svc.disarmForMergedPaths(paths),
+			landingRoot: join(base, "landing"),
 			...(push ? { push } : {}),
 		});
 	}
@@ -331,7 +332,12 @@ describe("merges", () => {
 		const remote = join(base, "remote.git");
 		await gitOk(["init", "-q", "--bare", "-b", "main", remote], base);
 		await gitOk(["remote", "add", "origin", remote], root);
-		const q = queue({ enabled: false, remote: "origin" });
+		const q = queue({
+			enabled: false,
+			remote: "origin",
+			url: remote,
+			allowLocalUrl: true,
+		});
 		const tasks = await makeTasks(handle, bus, join(root, ".mfw"));
 		const box = new InboxService({ handle, project: "demo", tasks });
 

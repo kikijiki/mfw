@@ -122,7 +122,9 @@ export interface MergeQueueDeps {
 	onLandedPaths?: (paths: readonly string[] | null) => Promise<unknown>;
 	/** Publish the target branch after each merge lands. Absent or disabled
 	 *  leaves the branch local, which is the default. */
-	push?: { enabled: boolean; remote: string };
+	push?: PushSettings;
+	/** Where the host-owned landing repositories live. Default: the daemon home. */
+	landingRoot?: string;
 	/**
 	 * Live self-repair setting. A callback because the queue is built before the
 	 * scheduler and the setting can change without a restart. When enabled, a
@@ -130,6 +132,15 @@ export interface MergeQueueDeps {
 	 * before a run is recorded); other jobs stay queued.
 	 */
 	selfRepairMainRed?: () => boolean;
+}
+
+export interface PushSettings {
+	enabled: boolean;
+	remote: string;
+	/** The owner-approved destination, from the daemon home. Never read from the repository. */
+	url?: string;
+	/** Allow `url` to be a local path, whose receive hooks then run on this host. */
+	allowLocalUrl?: boolean;
 }
 
 const IN_FLIGHT = ["merging", "rebasing", "reverifying"] as const;
@@ -140,7 +151,7 @@ export const PUSH_REFUSED_KEY = "push_refused";
 export class MergeQueue {
 	/** Mutable so settings can flip publishing without a restart; affects only
 	 *  what happens after a merge. */
-	private push: { enabled: boolean; remote: string };
+	private push: PushSettings;
 
 	constructor(private readonly deps: MergeQueueDeps) {
 		this.push = deps.push ?? { enabled: false, remote: "origin" };
@@ -761,13 +772,24 @@ export class MergeQueue {
 				reason: `git remote: ${tail(remotes.stderr || remotes.stdout, 300)}`,
 			};
 		}
-		if (!remotes.stdout.split("\n").includes(this.push.remote)) {
+		// Only says whether this project publishes at all. The destination is
+		// the approved URL, whatever the remote's own URL says.
+		if (
+			!this.push.url &&
+			!remotes.stdout.split("\n").includes(this.push.remote)
+		) {
 			return { status: "no-remote" };
 		}
 		const r = await hardenedPush({
 			projectRoot: this.deps.projectRoot,
-			remote: this.push.remote,
 			branch,
+			target: this.push.url
+				? {
+						url: this.push.url,
+						...(this.push.allowLocalUrl ? { allowLocal: true } : {}),
+					}
+				: null,
+			...(this.deps.landingRoot ? { landingRoot: this.deps.landingRoot } : {}),
 		});
 		if (r.status === "refused") await this.recordPushRefusal(branch, r.reason);
 		if (r.status === "pushed") {
