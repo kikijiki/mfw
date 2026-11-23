@@ -19,11 +19,7 @@ import {
 	relocateLegacyBoard,
 } from "./board-relocate.ts";
 import { getBoardTemplate } from "./board-templates.ts";
-import {
-	BrainService,
-	type InferenceClient,
-	inferenceForProvider,
-} from "./brain.ts";
+import { BrainService, type InferenceClient } from "./brain.ts";
 import { brainSocketFor } from "./brain-runtime/brain-socket.ts";
 import { chatInferenceFor } from "./brain-runtime/chat.ts";
 import { ChatBudget, chatBudgetPath } from "./brain-runtime/chat-budget.ts";
@@ -48,6 +44,7 @@ import { runDirLayout } from "./containment/run-dir.ts";
 import { assertRunDead } from "./containment/run-liveness.ts";
 import { ensureSocketRoot } from "./containment/socket-root.ts";
 import { CredentialStore, WorkloadSecretGrantStore } from "./credentials.ts";
+import { criticInferenceFor } from "./critic-inference.ts";
 import { ensureBoardConfig } from "./default-board-config.ts";
 import { readMemAvailable } from "./dispatch-preflight.ts";
 import { DocsService } from "./docs.ts";
@@ -699,7 +696,11 @@ export async function attachProject(
 	const brainInference = (): InferenceClient => {
 		const endpoint = liveRouting.provider.endpoint;
 		if (!endpoint)
-			return inferenceForProvider(liveRouting.provider, { cwd: root });
+			return criticInferenceFor(liveRouting.provider, {
+				projectRoot: root,
+				mfwHome: opts.mfwHome,
+				stateDir: mfwDir,
+			});
 		const grant = liveRouting.routing?.endpoints?.[endpoint.id]?.grant;
 		return new OpenAICompatibleInference({
 			baseUrl: endpoint.baseUrl,

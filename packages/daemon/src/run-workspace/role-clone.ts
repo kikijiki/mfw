@@ -104,6 +104,46 @@ export async function createRoleClone(
 	}
 }
 
+/**
+ * The same layout with nothing in it, for a role that must not see the
+ * project at all (the critic). Swept like any other role clone.
+ */
+export async function createEmptyRoleTree(
+	projectRoot: string,
+	runId: string,
+): Promise<Pick<RoleClone, "tree" | "root">> {
+	const primaryRoot = resolve(projectRoot);
+	const workspaceRoot = workspaceRootOf(primaryRoot);
+	if (!workspaceRoot) {
+		throw new Error(`project ${primaryRoot} has no run workspace settings`);
+	}
+	const id = roleCloneId(runId);
+	assertRunId(id);
+	const dir = join(workspaceRoot, id);
+	MAKING.add(id);
+	try {
+		await mkdir(join(dir, "tree"), { recursive: true, mode: 0o700 });
+		await mkdir(join(dir, "git"), { mode: 0o700 });
+		await writeFile(
+			join(dir, MARKER),
+			`${JSON.stringify({
+				version: 1,
+				runId: id,
+				role: "read-only",
+				baseSha: null,
+				primaryRoot,
+				owner: ownCloneOwner(),
+				createdAt: new Date().toISOString(),
+			})}\n`,
+			{ mode: 0o600 },
+		);
+		const tree = await realpath(join(dir, "tree"));
+		return { tree, root: dirname(tree) };
+	} finally {
+		MAKING.delete(id);
+	}
+}
+
 export interface RoleCloneSweepOptions {
 	/** How long this process's own clone is kept while its session may not be up. Default 10 minutes. */
 	launchGraceMs?: number;

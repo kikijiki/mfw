@@ -41,7 +41,8 @@ export async function runAcpOneShot(
 ): Promise<AcpOneShotResult> {
 	const proc = Bun.spawn(opts.argv, {
 		cwd: opts.cwd,
-		env: { ...process.env, ...opts.env },
+		// Exactly this: the prompt is agent-written, the daemon's env is not for it.
+		env: opts.env,
 		detached: true,
 		stdin: "pipe",
 		stdout: "pipe",

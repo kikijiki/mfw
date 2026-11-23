@@ -17,6 +17,7 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { runAcpOneShot } from "./agents/acp-inference.ts";
 import { acpInferenceLaunch, type ProviderConfig } from "./agents/adapter.ts";
+import { inferenceEnv } from "./agents/inference-env.ts";
 import type {
 	BrainCallCtx,
 	BrainPort,
@@ -158,6 +159,7 @@ export class ClaudeCliInference implements InferenceClient {
 			],
 			{
 				cwd,
+				env: inferenceEnv("claude-cli"),
 				timeoutMs: opts.timeoutMs,
 				maxOutputBytes: CLI_MAX_OUTPUT_BYTES,
 				...(opts.signal ? { signal: opts.signal } : {}),
@@ -172,19 +174,24 @@ export class ClaudeCliInference implements InferenceClient {
 				}`,
 			);
 		}
-		try {
-			const o = JSON.parse(r.stdout) as Record<string, unknown>;
-			if (typeof o.result === "string") {
-				const usage = claudeEnvelopeUsage(o);
-				return Object.keys(usage).length > 0
-					? { text: o.result, usage }
-					: { text: o.result };
-			}
-		} catch {
-			// best-effort: a non-JSON envelope is still usable raw text
-		}
-		return { text: r.stdout };
+		return parseClaudeReply(r.stdout);
 	}
+}
+
+/** A `--output-format json` envelope; anything else is usable raw text. */
+export function parseClaudeReply(stdout: string): InferenceReply {
+	try {
+		const o = JSON.parse(stdout) as Record<string, unknown>;
+		if (typeof o.result === "string") {
+			const usage = claudeEnvelopeUsage(o);
+			return Object.keys(usage).length > 0
+				? { text: o.result, usage }
+				: { text: o.result };
+		}
+	} catch {
+		// best-effort: a non-JSON envelope is still usable raw text
+	}
+	return { text: stdout };
 }
 
 /** Ephemeral Codex decision in a read-only sandbox (brain prompts only classify facts). */
@@ -211,6 +218,7 @@ export class CodexCliInference implements InferenceClient {
 			],
 			{
 				cwd: this.opts.cwd,
+				env: inferenceEnv("codex-cli"),
 				timeoutMs: opts.timeoutMs,
 				maxOutputBytes: CLI_MAX_OUTPUT_BYTES,
 				...(opts.signal ? { signal: opts.signal } : {}),
@@ -253,7 +261,11 @@ export class AcpInference implements InferenceClient {
 					...(this.opts.providerArgv ?? launch.providerArgv),
 				],
 				cwd,
-				env: { ...launch.env, ...(this.opts.env ?? {}) },
+				env: {
+					...inferenceEnv(this.providerId),
+					...launch.env,
+					...(this.opts.env ?? {}),
+				},
 				model: opts.model,
 				...(opts.reasoningEffort
 					? { reasoningEffort: opts.reasoningEffort }
