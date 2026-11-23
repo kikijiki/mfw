@@ -616,6 +616,21 @@ export const EventSchema = z.discriminatedUnion("type", [
 	}),
 	z.object({ type: z.literal("main.green"), payload: z.object({}) }),
 	/**
+	 * A deployment or health probe the host itself performed: the only record
+	 * that can back "deployed" or "healthy" (`claims.ts`). Never written from
+	 * anything an agent reports.
+	 */
+	z.object({
+		type: z.literal("deployment.probed"),
+		payload: z.object({
+			target: z.string().min(1),
+			probe: z.enum(["deploy", "health"]),
+			ok: z.boolean(),
+			sha: z.string().optional(),
+			detail: z.string().optional(),
+		}),
+	}),
+	/**
 	 * A regression survived `ESCALATE_AFTER_SWEEPS` sweeps. Fires once, on the
 	 * sweep that first crosses the threshold: self-repair is no longer admitted
 	 * through the red-main gate and a human is needed.

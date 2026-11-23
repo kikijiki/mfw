@@ -39,6 +39,7 @@ import {
 import { mcpMainScript } from "../agents/adapter.ts";
 import { parseAgentEvents } from "../agents/events.ts";
 import { nativeSessionUuid } from "../agents/native-session.ts";
+import { guardDecisionRows, guardWithRecords } from "../claims-evidence.ts";
 import {
 	mfwHome as configuredMfwHome,
 	type StoredBrainConfig,
@@ -1573,12 +1574,16 @@ export class BrainRuntime {
 			...(opts.turnRunId ? [eq(decisions.turnRunId, opts.turnRunId)] : []),
 			...(opts.beforeId ? [lte(decisions.id, opts.beforeId - 1)] : []),
 		];
-		return this.deps.handle.db
-			.select()
-			.from(decisions)
-			.where(and(...conds))
-			.orderBy(desc(decisions.id))
-			.limit(Math.min(opts.limit ?? 50, 200));
+		// What a person reads; the stored row keeps what was written.
+		return guardDecisionRows(
+			this.deps.handle.db,
+			await this.deps.handle.db
+				.select()
+				.from(decisions)
+				.where(and(...conds))
+				.orderBy(desc(decisions.id))
+				.limit(Math.min(opts.limit ?? 50, 200)),
+		);
 	}
 
 	async latestPlan() {
@@ -1593,7 +1598,11 @@ export class BrainRuntime {
 					decisionId: d.id,
 					ts: d.ts.getTime(),
 					turnRunId: d.turnRunId,
-					markdown: d.reason ?? "",
+					markdown: (
+						await guardWithRecords(this.deps.handle.db, d.reason ?? "", {
+							author: "brain",
+						})
+					).text,
 				}
 			: null;
 	}

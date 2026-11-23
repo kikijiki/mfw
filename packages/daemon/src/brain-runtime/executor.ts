@@ -14,6 +14,7 @@ import {
 	runGroups,
 } from "@mfw/db/schema";
 import { and, asc, eq, inArray } from "drizzle-orm";
+import { guardWithRecords } from "../claims-evidence.ts";
 import { DispatchPreflightError } from "../dispatch-preflight.ts";
 import type { Logger } from "../log.ts";
 import { AdmissionHeldError } from "../project-dispatch-admission.ts";
@@ -1007,10 +1008,24 @@ export class BrainActionExecutor {
 		// them (or move them to `blocked` with an "fyi: ..." reason).
 		const taskIds =
 			a.kind === "fyi" ? [] : ((a.blocking as string[] | undefined) ?? []);
+		// The page leaves the machine, so it is guarded here; `args` keeps the original.
+		const about =
+			taskIds.length === 1 && taskIds[0]
+				? ({ kind: "task", id: taskIds[0] } as const)
+				: null;
+		const guard = (text: string) =>
+			guardWithRecords(this.deps.handle.db, text, {
+				author: "brain",
+				subject: about,
+			});
+		const [title, body] = await Promise.all([
+			guard(String(a.title)),
+			guard(String(a.body)),
+		]);
 		await this.deps.notifyHuman?.({
 			kind: String(a.kind),
-			title: String(a.title),
-			body: String(a.body),
+			title: title.text,
+			body: body.text,
 			taskIds,
 		});
 		if (taskIds.length > 0) {
@@ -1018,7 +1033,7 @@ export class BrainActionExecutor {
 			for (const id of taskIds) {
 				holds[id] = {
 					by: "awaiting_human",
-					reason: String(a.title),
+					reason: title.text,
 					actionId: row.id,
 					at: this.now(),
 				};

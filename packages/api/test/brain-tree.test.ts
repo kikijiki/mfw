@@ -287,7 +287,8 @@ describe("brain.intents", () => {
 			tool: "spawn",
 			state: "proposed",
 			confidence: "high",
-			rationale: "deps merged; owns free",
+			// No merge record backs the brain's "merged" for this task.
+			rationale: "deps merged (brain's claim, no host record); owns free",
 		});
 	});
 });
