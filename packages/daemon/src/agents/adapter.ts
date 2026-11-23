@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
 	BrainMcpServer,
@@ -141,13 +141,21 @@ function findUp(start: string, relFromRoot: string): string | null {
 	}
 }
 
+const isBundled = (moduleUrl: string) =>
+	fileURLToPath(moduleUrl).includes(`${sep}apps${sep}start${sep}.output${sep}`);
+
 export function resolveScript(
 	colocatedUrl: string,
 	relFromRoot: string,
 	envVar: string,
 ): string {
 	const override = process.env[envVar];
-	if (override) {
+	// These choose what runs on the host: for running from source only.
+	if (override && isBundled(colocatedUrl)) {
+		console.error(
+			`[mfw] ignoring ${envVar}: the production build does not take script overrides. Fix: unset it`,
+		);
+	} else if (override) {
 		if (existsSync(override)) return override;
 		throw new Error(
 			`${envVar}="${override}" does not exist: unset it or point it at the real script`,
