@@ -805,6 +805,11 @@ export async function attachProject(
 		bus,
 		projectRoot: root,
 		log: plog,
+		// The same lookup `reverify` makes, so "has checks" means it runs them.
+		hasChecks: async (job) => {
+			const task = job.taskId ? await tasks.get(job.taskId) : null;
+			return tasks.effectiveDod(task?.dod ?? null) !== null;
+		},
 		reverify: async (job, baseSha, tipSha) => {
 			const task = job.taskId ? await tasks.get(job.taskId) : null;
 			const dod = tasks.effectiveDod(task?.dod ?? null);

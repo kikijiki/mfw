@@ -65,6 +65,7 @@ async function gate(): Promise<Gate> {
 		projectRoot: root,
 		log: silentLogger(),
 		reverify: async () => ({ passed: true }),
+		hasChecks: async () => true,
 		onMerged: async (_job, sha) => {
 			merged.push(sha);
 		},

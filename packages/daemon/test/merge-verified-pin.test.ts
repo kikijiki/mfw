@@ -20,7 +20,9 @@ interface Pin {
 	queue: MergeQueue;
 	merged: string[];
 	reverified: string[];
+	reclaimed: string[];
 	setReverify(fn: Reverify): void;
+	setHasChecks(value: boolean): void;
 	run(name: string, file: string, content: string): Promise<string>;
 	verify(runId: string, name: string): Promise<string>;
 	enqueue(runId: string, name: string): Promise<void>;
@@ -45,6 +47,8 @@ async function pin(): Promise<Pin> {
 	const merged: string[] = [];
 	const reverified: string[] = [];
 	let reverifyImpl: Reverify = async () => ({ passed: true });
+	let hasChecks = true;
+	const reclaimed: string[] = [];
 	const queue = new MergeQueue({
 		handle,
 		bus: new EventBus(),
@@ -56,6 +60,10 @@ async function pin(): Promise<Pin> {
 		},
 		onMerged: async (_job, sha) => {
 			merged.push(sha);
+		},
+		hasChecks: async () => hasChecks,
+		reclaimTask: async (job) => {
+			reclaimed.push(job.runId);
 		},
 		onParked: async () => {},
 		landingRoot: join(root, ".git", "mfw-landing"),
@@ -76,6 +84,10 @@ async function pin(): Promise<Pin> {
 		setReverify: (fn) => {
 			reverifyImpl = fn;
 		},
+		setHasChecks: (value) => {
+			hasChecks = value;
+		},
+		reclaimed,
 		run: async (name, file, content) => {
 			await git(["worktree", "add", "-q", "-b", name, wt(name), "main"], root);
 			await commit(name, file, content);
@@ -306,6 +318,87 @@ describe("the merge queue lands only the verified commit", () => {
 		expect((await p.job(runId)).verifiedSha).toBe(tip);
 		await p.commit("mfw/a", "evil.txt", "later\n");
 		expect(await p.queue.tick()).toBe("parked");
+		expect(await p.main()).toBe(before);
+	});
+	const MOVED =
+		"the tip moved since it was verified; re-run the task so it is verified again";
+
+	test("an operator's retry of a moved tip with no checks is refused and stays parked", async () => {
+		const p = await pin();
+		const before = await p.main();
+		const runId = await p.run("mfw/a", "a.txt", "a\n");
+		await p.queue.enqueue({
+			runId,
+			taskId: "T-1",
+			branch: "mfw/a",
+			targetBranch: "main",
+		});
+		await p.commit("mfw/a", "evil.txt", "unverified\n");
+		p.setHasChecks(false);
+		expect(await p.queue.tick()).toBe("parked");
+		expect((await p.job(runId)).error).toContain(MOVED);
+		const { id } = await p.job(runId);
+
+		await expect(p.queue.retry(id)).rejects.toThrow(MOVED);
+
+		const job = await p.job(runId);
+		expect(job.state).toBe("parked");
+		expect(job.error).toContain(MOVED);
+		expect(job.rebasedSha).toBeNull();
+		expect(p.reclaimed).toEqual([]);
+		expect(await p.queue.tick()).toBe("idle");
+		// The automatic sweep cannot land it either.
+		await p.queue.retryParked();
+		expect(await p.queue.tick()).toBe("parked");
+		expect((await p.job(runId)).error).toContain(MOVED);
+		expect(p.reverified).toEqual([]);
+		expect(p.merged).toEqual([]);
+		expect(await p.main()).toBe(before);
+	});
+
+	test("if the checks cannot be read, the retry of a moved tip is refused", async () => {
+		const p = await pin();
+		const runId = await p.run("mfw/a", "a.txt", "a\n");
+		await p.verify(runId, "mfw/a");
+		await p.enqueue(runId, "mfw/a");
+		await p.commit("mfw/a", "evil.txt", "unverified\n");
+		expect(await p.queue.tick()).toBe("parked");
+		p.setHasChecks(false);
+		const { id } = await p.job(runId);
+		await expect(p.queue.retry(id)).rejects.toThrow(MOVED);
+		expect((await p.job(runId)).state).toBe("parked");
+	});
+
+	test("an operator's retry of a moved tip with checks re-verifies that tip, then lands", async () => {
+		const p = await pin();
+		const runId = await p.run("mfw/a", "a.txt", "a\n");
+		await p.verify(runId, "mfw/a");
+		await p.enqueue(runId, "mfw/a");
+		const moved = await p.commit("mfw/a", "fix.txt", "fixed by hand\n");
+		expect(await p.queue.tick()).toBe("parked");
+		const { id } = await p.job(runId);
+
+		await p.queue.retry(id);
+
+		expect(p.reclaimed).toEqual([runId]);
+		expect(await p.queue.tick()).toBe("merged");
+		expect(p.reverified).toEqual([moved]);
+		expect((await p.job(runId)).verifiedSha).toBe(moved);
+	});
+
+	test("a moved tip whose re-verification fails on retry does not land", async () => {
+		const p = await pin();
+		const before = await p.main();
+		const runId = await p.run("mfw/a", "a.txt", "a\n");
+		await p.verify(runId, "mfw/a");
+		await p.enqueue(runId, "mfw/a");
+		await p.commit("mfw/a", "bad.txt", "bad\n");
+		expect(await p.queue.tick()).toBe("parked");
+		p.setReverify(async () => ({ passed: false, detail: "tests" }));
+		await p.queue.retry((await p.job(runId)).id);
+
+		expect(await p.queue.tick()).toBe("parked");
+		expect(p.merged).toEqual([]);
 		expect(await p.main()).toBe(before);
 	});
 });
