@@ -19,6 +19,7 @@ import { wipControlLine } from "../src/run-workspace/wip-helper.ts";
 import {
 	helperBundleArgs,
 	wipHelperScript,
+	wipSupervisorArgv,
 } from "../src/run-workspace/wip-helper-install.ts";
 
 const dirs: string[] = [];
@@ -56,23 +57,17 @@ function repo() {
 	return { root, tree, outbox, control, env, script };
 }
 
-const start = (r: ReturnType<typeof repo>, agent: string[]) =>
-	Bun.spawn(
-		[
-			process.execPath,
-			"--config=/dev/null",
-			"--no-env-file",
-			r.script,
-			"exec",
-			"--run",
-			"r1",
-			"--control",
-			r.control,
-			"--outbox",
-			r.outbox,
-			"--",
-			...agent,
-		],
+/** The real entry command, with the sandbox paths pointed at this fixture. */
+const start = (r: ReturnType<typeof repo>, agent: string[]) => {
+	const paths: Record<string, string> = {
+		"/mfw-run/control/control.jsonl": r.control,
+		"/mfw-run/outbox": r.outbox,
+		"/mfw-run/control/wip-helper.js": r.script,
+	};
+	return Bun.spawn(
+		wipSupervisorArgv("sh", process.execPath, "r1", agent).map(
+			(v) => paths[v] ?? v,
+		),
 		{
 			cwd: r.tree,
 			env: r.env,
@@ -81,6 +76,7 @@ const start = (r: ReturnType<typeof repo>, agent: string[]) =>
 			stderr: "pipe",
 		},
 	);
+};
 
 describe("the installed helper", () => {
 	test("is one file with node builtins only", () => {

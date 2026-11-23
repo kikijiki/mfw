@@ -18,6 +18,11 @@ import { dirname, join } from "node:path";
 import type { ProjectDb } from "@mfw/db/client";
 import { z } from "zod";
 import {
+	installWipHelper,
+	wipSnapshotArgv,
+	wipSupervisorArgv,
+} from "../run-workspace/wip-helper-install.ts";
+import {
 	AgentProfileError,
 	agentToolCandidates,
 	autonomyFlags,
@@ -30,10 +35,15 @@ import {
 	UNATTESTED_CONFIG_MARKER,
 } from "./agent-profile.ts";
 import { authorizeAutonomousLaunch } from "./attestation-gate.ts";
-import { type CompileHost, compileBwrap } from "./compile-bwrap.ts";
+import {
+	type CompileHost,
+	compileBwrap,
+	SANDBOX_PATHS,
+} from "./compile-bwrap.ts";
 import { launchSandbox } from "./launch-sandbox.ts";
 import { attestSandbox } from "./probe-run.ts";
 import { ProfileRejectedError, type SandboxProfile } from "./profile.ts";
+import { runDirLayout } from "./run-dir.ts";
 
 const AbsolutePath = z.string().startsWith("/").max(4096);
 
@@ -53,6 +63,8 @@ export const AgentLaunchRequestSchema = z.strictObject({
 	/** Names read from the launcher's own environment; values never touch a file. */
 	secretNames: z.array(z.string()),
 	egressSocketDir: AbsolutePath.optional(),
+	/** A host-started one-shot: the WIP helper alone, with no agent, secret or network. */
+	purpose: z.literal("wip-snapshot").optional(),
 });
 
 export type AgentLaunchRequest = z.infer<typeof AgentLaunchRequestSchema>;
@@ -135,9 +147,12 @@ export type AgentLaunchResult =
 /** Run the whole path for one launch. Each launch needs its own passing probe. */
 export async function launchAgentSandbox(
 	req: AgentLaunchRequest,
-	argv: readonly string[],
+	requestedArgv: readonly string[],
 	deps: AgentLaunchDeps,
 ): Promise<AgentLaunchResult> {
+	// A snapshot launch runs only the helper, whatever argv the caller passed.
+	const snapshot = req.purpose === "wip-snapshot";
+	const argv = snapshot ? ["bun"] : requestedArgv;
 	const command = argv[0];
 	if (!command) {
 		return refuse("profile_rejected", "no agent command", "pass an agent argv");
@@ -163,7 +178,7 @@ export async function launchAgentSandbox(
 		secrets[name] = value;
 	}
 
-	const required = ["bun", "git", command];
+	const required = ["bun", "git", "sh", command];
 	let host: CompileHost;
 	let profile: SandboxProfile;
 	try {
@@ -197,6 +212,12 @@ export async function launchAgentSandbox(
 			binaries,
 			env: {
 				...req.env,
+				...(snapshot
+					? {
+							MFW_WIP_RUN_ID: req.runId,
+							MFW_WIP_OUTBOX: SANDBOX_PATHS.runOutbox,
+						}
+					: {}),
 				...(req.cli === "claude"
 					? { CLAUDE_CODE_PROJECT_DIR_NAME: `mfw-run-${req.runId}` }
 					: {}),
@@ -247,7 +268,23 @@ export async function launchAgentSandbox(
 		);
 	}
 
-	const compiled = compileBwrap(profile, finalArgv, host);
+	// The helper starts beside the agent, in the same sandbox.
+	const toolPath = (name: string) =>
+		host.toolchain.resolved.find((b) => b.name === name)?.path;
+	const bunPath = toolPath("bun");
+	const shPath = toolPath("sh");
+	if (!bunPath || !shPath) {
+		return refuse(
+			"compile_refused",
+			"bun or sh is not in the sandbox toolchain, so the WIP helper cannot run",
+			"install them on the daemon PATH",
+		);
+	}
+	installWipHelper(runDirLayout(req.runDir).control);
+	const sandboxArgv = snapshot
+		? wipSnapshotArgv(bunPath)
+		: wipSupervisorArgv(shPath, bunPath, req.runId, finalArgv);
+	const compiled = compileBwrap(profile, sandboxArgv, host);
 	if (!compiled.ok) {
 		return refuse(
 			"compile_refused",

@@ -34,6 +34,7 @@ import {
 	runEventsPath,
 } from "../src/containment/run-dir.ts";
 import { SecretEnvironment } from "../src/execution-environment.ts";
+import { installWipHelper } from "../src/run-workspace/wip-helper-install.ts";
 import { type CageConfig, cagedSteps } from "./support/caged-launch.ts";
 import { runShTmux } from "./support/run-sh-tmux.ts";
 
@@ -149,6 +150,7 @@ async function makeFixture(
 	const stateDir = join(project, ".mfw");
 	const runDir = join(stateDir, "runs", runId);
 	ensureRunDirLayout(runDir);
+	installWipHelper(join(runDir, "control"));
 	writeFileSync(join(runDir, "control/steer.jsonl"), "");
 	writeFileSync(join(runDir, "meta.json"), "{}\n");
 	const handle = await openProjectDb(stateDir);
@@ -234,6 +236,7 @@ function secondRun(x: Fixture, runId = `${x.runId}-b`): Fixture {
 	]);
 	const runDir = join(x.stateDir, "runs", runId);
 	ensureRunDirLayout(runDir);
+	installWipHelper(join(runDir, "control"));
 	return { ...x, runId, tree, gitDir, runDir };
 }
 

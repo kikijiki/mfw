@@ -18,6 +18,11 @@
  * sandbox, so nothing in it is trusted. The host re-derives every fact from
  * the verified bundle.
  *
+ * The sandbox entry starts `watch` in the background and then execs the agent
+ * (`wipSupervisorArgv`), so the agent keeps its pid, stdio and exit code. A
+ * helper the agent kills costs only live snapshots: the host still recovers
+ * the work from a fresh sandbox after the run.
+ *
  * Run as `bun wip-helper.ts watch` (tail the control file) or
  * `bun wip-helper.ts snapshot` (one snapshot, no control file). Settings come
  * from `MFW_WIP_RUN_ID`, `MFW_WIP_OUTBOX` and `MFW_WIP_CONTROL`, plus the
@@ -277,12 +282,13 @@ export function writeAck(outbox: string, ack: WipAck): void {
 export async function watchWip(
 	env: WipHelperEnv,
 	controlPath: string,
-	opts: { pollMs?: number; signal?: AbortSignal } = {},
+	opts: { pollMs?: number; signal?: AbortSignal; parentPid?: number } = {},
 ): Promise<void> {
 	let offset = 0;
 	let rest = "";
 	const answered = new Set<string>();
 	while (!opts.signal?.aborted) {
+		if (opts.parentPid !== undefined && process.ppid !== opts.parentPid) return;
 		let text = "";
 		try {
 			text = readFileSync(controlPath, "utf8");
@@ -310,46 +316,6 @@ export async function watchWip(
 	}
 }
 
-/**
- * The sandbox's entry process: run the agent with this process's stdio, answer
- * snapshot requests beside it, and exit with the agent's code. It holds no
- * privilege the agent lacks. If the agent kills it the sandbox ends, and the
- * host recovers the work from a fresh sandbox.
- */
-export async function superviseAgent(
-	env: WipHelperEnv,
-	controlPath: string,
-	argv: string[],
-): Promise<number> {
-	const child = Bun.spawn(argv, {
-		cwd: env.workTree,
-		env: process.env,
-		stdin: "inherit",
-		stdout: "inherit",
-		stderr: "inherit",
-	});
-	for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
-		process.on(signal, () => child.kill(signal));
-	}
-	const stop = new AbortController();
-	const watcher = watchWip(env, controlPath, {
-		pollMs: 100,
-		signal: stop.signal,
-	}).catch(() => {});
-	const code = await child.exited;
-	stop.abort();
-	// A snapshot in flight may finish; a hung one must not hold the exit.
-	await Promise.race([watcher, Bun.sleep(2_000)]);
-	return code;
-}
-
-function flag(args: string[], name: string): string {
-	const i = args.indexOf(name);
-	const value = i >= 0 ? args[i + 1] : undefined;
-	if (!value) throw new Error(`${name} is required`);
-	return value;
-}
-
 function envFromProcess(): WipHelperEnv {
 	const need = (k: string): string => {
 		const v = process.env[k];
@@ -368,38 +334,6 @@ function envFromProcess(): WipHelperEnv {
 // `import.meta.main` as true for its own entry, which must never run the helper (it exits when its env is unset).
 if (import.meta.main && /wip-helper\.[cm]?[jt]s$/.test(process.argv[1] ?? "")) {
 	const cmd = process.argv[2];
-	if (cmd === "exec") {
-		const args = process.argv.slice(3);
-		const split = args.indexOf("--");
-		const argv = split >= 0 ? args.slice(split + 1) : [];
-		const own = split >= 0 ? args.slice(0, split) : args;
-		if (argv.length === 0) {
-			process.stderr.write(
-				"usage: wip-helper exec --run <id> --control <path> --outbox <dir> -- <argv...>\n",
-			);
-			process.exit(2);
-		}
-		const gitDir = process.env.GIT_DIR;
-		const workTree = process.env.GIT_WORK_TREE;
-		if (!gitDir || !workTree) {
-			process.stderr.write(
-				"wip-helper: GIT_DIR and GIT_WORK_TREE are required\n",
-			);
-			process.exit(2);
-		}
-		process.exit(
-			await superviseAgent(
-				{
-					runId: flag(own, "--run"),
-					gitDir,
-					workTree,
-					outbox: flag(own, "--outbox"),
-				},
-				flag(own, "--control"),
-				argv,
-			),
-		);
-	}
 	const env = envFromProcess();
 	if (cmd === "snapshot") {
 		const ack = await snapshotWip(env, process.argv[3] ?? "manual");
@@ -408,7 +342,9 @@ if (import.meta.main && /wip-helper\.[cm]?[jt]s$/.test(process.argv[1] ?? "")) {
 	} else if (cmd === "watch") {
 		const control = process.env.MFW_WIP_CONTROL;
 		if (!control) throw new Error("MFW_WIP_CONTROL is not set");
-		await watchWip(env, control);
+		// The parent is the agent (the entry shell exec'd it): stop when it does.
+		await watchWip(env, control, { parentPid: process.ppid });
+		process.exit(0);
 	} else {
 		process.stderr.write("usage: wip-helper.ts snapshot [id] | watch\n");
 		process.exit(2);
