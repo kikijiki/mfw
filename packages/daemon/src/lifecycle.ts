@@ -5,10 +5,7 @@ import type { Logger } from "./log.ts";
 import type { RefusalFix } from "./refusal-fix.ts";
 import type { RunRegistry, RunRow } from "./run-registry.ts";
 import { workspaceForRun } from "./run-workspace/factory.ts";
-import type {
-	RunWorkspace,
-	WipArchive,
-} from "./run-workspace/run-workspace.ts";
+import type { WipArchive } from "./run-workspace/run-workspace.ts";
 import { runHoldsClaim, type TaskService } from "./task-service.ts";
 
 /**

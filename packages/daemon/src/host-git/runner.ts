@@ -19,8 +19,8 @@
  * The only operation meant to touch a clone is a fetch run from a host-owned
  * repository; see `fetch.ts`.
  */
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { lstatSync, readFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { type ProcResult, runProc } from "../proc.ts";
 import { isUnder, resolveReal } from "./paths.ts";
 
