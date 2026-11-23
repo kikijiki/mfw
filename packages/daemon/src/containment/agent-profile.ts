@@ -38,7 +38,10 @@ export type FleetCli = keyof typeof TEMPORARY_FLEET_WRITABLE;
 /**
  * Ordinary tools an agent's shell commands expect. PATH is built only from
  * declared binaries, and on NixOS each lives in its own store directory, so an
- * undeclared `rm` or `cat` would simply not exist. Used when present.
+ * undeclared `rm` or `cat` is not found by name. Used when present.
+ *
+ * This is a convenience and not a boundary: on NixOS all of `/nix/store` is
+ * bound, so an undeclared binary still runs by its absolute path (toolchain.ts).
  */
 export const AGENT_BASE_TOOLS = [
 	"awk",

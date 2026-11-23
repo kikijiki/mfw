@@ -3,7 +3,10 @@
  * R4). Resolves the declared binaries (git, bun, node, agent CLIs, project
  * tools) into read-only binds, so a synthetic HOME does not hide them:
  *
- * - NixOS: `/nix/store` whole (a per-binary closure is a later refinement);
+ * - NixOS: `/nix/store` whole. The declared list therefore limits `PATH`, not
+ *   what can run: anything in the store is readable and runs by absolute path.
+ *   Binding the computed closure of the declared binaries is required before
+ *   P6 adds egress;
  * - FHS distros: `/usr`, `/bin`, `/sbin`, `/lib*`;
  * - HOME-installed toolchains: `~/.local/bin`, `~/.bun`, `~/.rustup`,
  *   `~/.cargo/bin`, `~/.nvm`, uv, and the Claude native installer;
