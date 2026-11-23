@@ -8,7 +8,7 @@
 	"scripts": {
 		"dev": "vite dev",
 		"build": "NITRO_PRESET=bun vite build",
-		"start": "bun run .output/server/index.mjs",
+		"start": "HOST=${HOST:-127.0.0.1} bun run .output/server/index.mjs",
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {

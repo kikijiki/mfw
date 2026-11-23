@@ -175,9 +175,21 @@ describe("mfw: other subcommands", () => {
 				cwd: "/repo",
 			},
 		]);
+		expect(t.d.env.HOST).toBe("127.0.0.1");
 		const u = deps();
 		expect(await dispatch(["server"], u.d)).toBe(1);
 		expect(u.err.join("\n")).toContain("bun run build");
+	});
+
+	test("server keeps an explicit bind address", async () => {
+		for (const env of [{ HOST: "100.64.0.1" }, { NITRO_HOST: "::1" }]) {
+			const t = deps({
+				serverEntry: "/repo/apps/start/.output/server/index.mjs",
+				env: { ...env },
+			});
+			await dispatch(["server"], t.d);
+			expect(t.d.env).toEqual(env);
+		}
 	});
 
 	test("version reports mfw and mfw-board", async () => {
