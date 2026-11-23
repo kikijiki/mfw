@@ -112,8 +112,18 @@ const FleetConfigSection = z.strictObject({
 	writable: z.array(RelativeDir).max(64),
 });
 
+/**
+ * The run directory (`run-dir.ts`). Only its `control/` (always read-only) and
+ * `outbox/` are mounted; `source` itself is never bound.
+ */
+const RunDirSection = z.strictObject({
+	source: AbsolutePath,
+	outbox: Access,
+});
+
 const FilesystemSection = z.strictObject({
 	workspace: WorkspaceSection.optional(),
+	runDir: RunDirSection.optional(),
 	scratch: z.literal("tmpfs").optional(),
 	caches: z
 		.array(CacheSection)
@@ -226,6 +236,9 @@ export const SandboxProfileSchema = z
 		if (fs?.workspace?.access === "rw") {
 			deny(["workspace", "access"], "a writable workspace");
 		}
+		if (fs?.runDir?.outbox === "rw") {
+			deny(["runDir", "outbox"], "a writable outbox");
+		}
 		fs?.caches?.forEach((cache, i) => {
 			if (cache.access === "rw") {
 				deny(["caches", i, "access"], "a writable cache");
@@ -241,6 +254,7 @@ export type SandboxProfile = z.infer<typeof SandboxProfileSchema>;
 /** Project config: every field can only remove access. */
 export const ProfileNarrowingSchema = z.strictObject({
 	workspaceAccess: z.literal("ro").optional(),
+	outboxAccess: z.literal("ro").optional(),
 	dropScratch: z.literal(true).optional(),
 	/** The caches to keep; any other is dropped. */
 	keepCaches: z.array(z.string()).optional(),
@@ -313,6 +327,7 @@ export function narrowProfile(
 	const fs = out.filesystem;
 
 	if (n.workspaceAccess && fs?.workspace) fs.workspace.access = "ro";
+	if (n.outboxAccess && fs?.runDir) fs.runDir.outbox = "ro";
 	if (n.dropScratch && fs) delete fs.scratch;
 
 	const cacheNames = new Set((fs?.caches ?? []).map((c) => c.name));
