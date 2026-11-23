@@ -22,6 +22,8 @@ import type { ProviderHold } from "../routing.ts";
 import type { RunRegistry, RunRow } from "../run-registry.ts";
 import type { TaskService, TaskWithRefs } from "../task-service.ts";
 import type { UsageSubscription } from "../usage-monitor.ts";
+import type { Provenance } from "./decision-rights.ts";
+import { taskProvenance } from "./provenance.ts";
 
 /**
  * The brain's read tools (design §2.2): no audit row, rate-limited. They are
@@ -103,6 +105,11 @@ export interface BrainReadDeps {
 	now?: () => number;
 	/** Reads per turn before `rate_limited`. */
 	maxReadsPerTurn?: number;
+	/** Record what a turn is about to read; awaited before the content is returned. */
+	noteProvenance?: (
+		turnRunId: string,
+		tags: readonly Provenance[],
+	) => Promise<void>;
 }
 
 const LIVE_STATES = ["starting", "running", "ended", "finalizing"] as const;
@@ -291,6 +298,13 @@ export class BrainReadService {
 				);
 			}
 		}
+		// Recorded before the content is returned: a read the model saw is never unrecorded.
+		if (opts.turnRunId) {
+			await this.deps.noteProvenance?.(
+				opts.turnRunId,
+				await this.provenanceOf(tool as ReadTool, args),
+			);
+		}
 		const refs = this.track(opts.turnRunId);
 		const parse = <T extends z.ZodType>(schema: T): z.infer<T> => {
 			const r = schema.safeParse(args ?? {});
@@ -408,6 +422,36 @@ export class BrainReadService {
 	}
 
 	/** Ready tasks, most unblocking first (the number of tasks that depend on each). */
+	/** Who wrote what this read tool returns. */
+	private async provenanceOf(
+		tool: ReadTool,
+		args: unknown,
+	): Promise<Provenance[]> {
+		switch (tool) {
+			case "capacity":
+				return ["host"];
+			case "outcomes":
+			case "decisions":
+				// Decision rows quote rationales, which can repeat what a turn read.
+				return ["host", "agent"];
+			case "runs":
+			case "run_report":
+			case "run_log":
+			case "diff":
+				return ["agent", "external"];
+			case "task": {
+				const id = (args as { id?: unknown } | null)?.id;
+				const t = typeof id === "string" ? await this.deps.tasks.get(id) : null;
+				return [t ? taskProvenance(t) : "agent", "host"];
+			}
+			case "board":
+			case "frontier": {
+				const all = await this.deps.tasks.list();
+				return ["host", ...new Set(all.map(taskProvenance))];
+			}
+		}
+	}
+
 	async frontier(
 		limit: number,
 		refs?: ReturnType<BrainReadService["track"]>,

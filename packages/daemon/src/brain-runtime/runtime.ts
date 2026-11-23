@@ -57,6 +57,11 @@ import {
 	renderDigest,
 } from "./digest.ts";
 import { BrainActionExecutor, type BrainExecutorDeps } from "./executor.ts";
+import {
+	memoryTainted,
+	recordProvenance,
+	taskProvenance,
+} from "./provenance.ts";
 import { BrainReadService, type BrainWorld } from "./reads.ts";
 import type { BrainMcpServer, BrainTurnLaunch } from "./turn-run.ts";
 import {
@@ -235,6 +240,16 @@ export class BrainRuntime {
 		this.now = deps.now ?? (() => Date.now());
 		this.host = deps.hostname ?? osHostname();
 		this.reads = new BrainReadService({
+			noteProvenance: async (turnRunId, tags) => {
+				const sessionId = await this.executor.sessionOf(turnRunId);
+				if (!sessionId) return;
+				await recordProvenance(
+					deps.handle,
+					sessionId,
+					tags,
+					(deps.now ?? Date.now)(),
+				);
+			},
 			handle: deps.handle,
 			tasks: deps.tasks,
 			registry: deps.registry,
@@ -701,7 +716,9 @@ export class BrainRuntime {
 			now,
 			cfg,
 		});
-		const { markdown } = renderDigest(input);
+		const { markdown, provenance } = renderDigest(input);
+		// Before the turn exists: a crash here over-records, it never under-records.
+		await recordProvenance(this.deps.handle, session.id, provenance, now);
 
 		// Intent before effect: the turn row, the session's native id and the
 		// `brain.turn_started` event commit together, before anything launches.
@@ -1114,6 +1131,12 @@ export class BrainRuntime {
 			capacity,
 			reminders,
 			...(rehydration ? { rehydration } : {}),
+			untrustedTasks: new Set(
+				(await this.deps.tasks.list())
+					.filter((t) => taskProvenance(t) !== "owner_board")
+					.map((t) => t.id),
+			),
+			memoryTainted: await memoryTainted(this.deps.handle),
 		};
 	}
 
