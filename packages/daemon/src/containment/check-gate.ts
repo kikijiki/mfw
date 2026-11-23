@@ -21,8 +21,7 @@
  */
 import { lstat } from "node:fs/promises";
 import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
-import { runProc } from "../proc.ts";
-import { requireHostTool } from "../sandbox.ts";
+import { git } from "../git.ts";
 import { analyzeShell, committedBlobs, gitBlobId } from "./exec-pin.ts";
 import { readRegularFile } from "./safe-file.ts";
 
@@ -148,16 +147,9 @@ async function candidateBlob(
 }
 
 async function baseFile(gate: CheckGate, rel: string): Promise<string | null> {
-	const r = await runProc(
-		[
-			requireHostTool("git"),
-			"-c",
-			"core.fsmonitor=false",
-			"cat-file",
-			"blob",
-			`${gate.baseRev}:${rel}`,
-		],
-		{ cwd: gate.primaryRoot },
+	const r = await git(
+		["cat-file", "blob", `${gate.baseRev}:${rel}`],
+		gate.primaryRoot,
 	);
 	return r.exitCode === 0 ? r.stdout : null;
 }

@@ -1,14 +1,15 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import {
 	type SealedExec,
 	sealShellEntry,
 	verifyExecPin,
 } from "../containment/exec-pin.ts";
 import { headSha } from "../git.ts";
+import { type SealedCheckout, sealCheckout } from "../host-git/landing.ts";
 import type { Logger } from "../log.ts";
 import { runProc } from "../proc.ts";
-import { createRunWorkspace } from "../run-workspace/factory.ts";
-import type { RunWorkspaceHandle } from "../run-workspace/run-workspace.ts";
-import { requireHostTool } from "../sandbox.ts";
+import { pinnedTool, requireHostTool } from "../sandbox.ts";
 import { signalOf } from "../verifier.ts";
 import type {
 	TriggerActionHandler,
@@ -23,9 +24,10 @@ import { eventRefs } from "./placeholders.ts";
  * `MFW_EVENT_JSON`; `def.ts` refuses a `run` string with placeholders
  * (shell injection).
  *
- * Nothing runs without the armed exec pin, and every file in it is re-hashed
- * in the directory the command will run in, before any secret is read
- * (`containment/exec-pin.ts`).
+ * Nothing runs without the armed exec pin. The command runs from a sealed
+ * checkout of the armed commit, never the primary, and only while the event's
+ * commit matches that tree outside the owner's may-change list. Everything is
+ * verified before any secret is read (`containment/exec-pin.ts`).
  */
 
 const STDERR_TAIL = 8 * 1024; // matches the delivery record's cap
@@ -71,7 +73,39 @@ export interface ScriptActionDeps {
 	semaphore: Semaphore;
 	/** Process environment is injectable so the security boundary is testable. */
 	environment?: Readonly<Record<string, string | undefined>>;
+	/** Builds dependencies in the sealed checkout; returns why it could not. */
+	installDeps?: (
+		dir: string,
+		env: Record<string, string>,
+	) => Promise<string | null>;
 }
+
+/**
+ * Host-built dependencies, from the pinned lockfile only: frozen, and with no
+ * package lifecycle scripts, so installing runs nothing from the packages.
+ */
+async function installFromLockfile(
+	dir: string,
+	env: Record<string, string>,
+): Promise<string | null> {
+	if (
+		!existsSync(join(dir, "bun.lock")) &&
+		!existsSync(join(dir, "bun.lockb"))
+	) {
+		return null;
+	}
+	const bun = pinnedTool("bun");
+	if (!bun) return "bun is not on a trusted PATH";
+	const r = await runProc(
+		[bun, "install", "--frozen-lockfile", "--ignore-scripts"],
+		{ cwd: dir, env, timeoutMs: 5 * 60_000 },
+	);
+	return r.exitCode === 0
+		? null
+		: r.stderr.trim().slice(-300) || "bun install failed";
+}
+
+const FULL_SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
 export function createScriptAction(
 	deps: ScriptActionDeps,
@@ -111,6 +145,17 @@ async function runScript(
 
 	const payload = (dispatch.event.payload ?? {}) as Record<string, unknown>;
 	const { taskId, runId } = eventRefs(dispatch.event);
+	if (
+		typeof payload.sha === "string" &&
+		payload.sha.length > 0 &&
+		!FULL_SHA.test(payload.sha)
+	) {
+		return {
+			ok: false,
+			detail:
+				"refusing to execute: the event's sha is not a full commit id. Fix: emit the full hash.",
+		};
+	}
 	const sha =
 		typeof payload.sha === "string" && payload.sha.length > 0
 			? payload.sha
@@ -133,26 +178,33 @@ async function runScript(
 	env.MFW_SHA = sha;
 	env.MFW_EVENT_JSON = JSON.stringify(payload);
 
-	const workspace = createRunWorkspace(dispatch.projectRoot);
-	let worktree: RunWorkspaceHandle | null = null;
-	let cwd = dispatch.projectRoot;
-	if (action.cwd === "worktree") {
-		// Hermetic, detached at the sha, but has no installed dependencies; hence
-		// `repo` (the primary checkout with `node_modules`/`.env`) is the default.
-		worktree = await workspace.seed(
-			`trigger-${dispatch.deliveryId}`,
-			sha || "HEAD",
-		);
-		cwd = worktree.path;
-	}
-
+	let checkout: SealedCheckout | null = null;
 	let sealed: SealedExec | null = null;
 	try {
+		// A repository with no commit has nothing to seal or compare.
+		const commit = gate.pin.commit;
+		if (commit) {
+			try {
+				checkout = await sealCheckout(
+					dispatch.projectRoot,
+					commit,
+					gate.sealRoot,
+					gate.landingRoot,
+				);
+			} catch (e) {
+				return {
+					ok: false,
+					detail: `refusing to execute: cannot check out the armed commit: ${(e as Error).message}. Fix: check that ${commit.slice(0, 12)} still exists, or arm the trigger again.`,
+				};
+			}
+		}
+		const cwd = checkout?.path ?? dispatch.projectRoot;
 		const verified = await verifyExecPin(gate.pin, {
 			root: cwd,
 			gitCwd: dispatch.projectRoot,
-			rev: worktree ? sha || "HEAD" : "HEAD",
+			rev: sha || "HEAD",
 			pathVar: env.PATH,
+			...(checkout ? { sealed: true } : {}),
 		});
 		if (!verified.ok) {
 			return {
@@ -163,6 +215,17 @@ async function runScript(
 					...(verified.path ? { path: verified.path } : {}),
 				},
 			};
+		}
+		if (checkout) {
+			// Before secrets are read: installing must never see them.
+			const install = deps.installDeps ?? installFromLockfile;
+			const failed = await install(checkout.path, { ...env });
+			if (failed) {
+				return {
+					ok: false,
+					detail: `refusing to execute: could not build dependencies for the armed commit: ${failed}`,
+				};
+			}
 		}
 		for (const name of dispatch.def.secrets) {
 			const value = await deps.secrets.getSecret(name);
@@ -206,7 +269,7 @@ async function runScript(
 		};
 	} finally {
 		await sealed?.dispose();
-		// Scratch worktree for one delivery: always removed, even if dirty.
-		if (worktree) await workspace.remove(worktree);
+		// One checkout per delivery: always removed, even if dirty.
+		await checkout?.dispose();
 	}
 }

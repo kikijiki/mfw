@@ -10,7 +10,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { mfwHome } from "../config.ts";
 import { runProc } from "../proc.ts";
@@ -300,6 +300,49 @@ export async function landingRestorePaths(
 			{ env: identityEnv(who) },
 		);
 		return { sha, reverted };
+	} finally {
+		await rm(index, { force: true });
+		await rm(`${index}.lock`, { force: true });
+	}
+}
+
+export interface SealedCheckout {
+	path: string;
+	dispose(): Promise<void>;
+}
+
+/**
+ * A private checkout of `commit`, written by the landing repository: no hook,
+ * filter or attribute driver from the project can run, and no `.git` is left in
+ * it. One per execution, so nothing a run writes reaches the next.
+ */
+export async function sealCheckout(
+	projectRoot: string,
+	commit: string,
+	sealRoot: string,
+	landingRoot?: string,
+): Promise<SealedCheckout> {
+	if (!/^[0-9a-f]{40,64}$/.test(commit)) {
+		throw new Error(`refusing to seal ${JSON.stringify(commit.slice(0, 80))}`);
+	}
+	const repo = await ensureLandingRepo(projectRoot, landingRoot);
+	await mkdir(sealRoot, { recursive: true, mode: 0o700 });
+	await chmod(sealRoot, 0o700);
+	const path = await mkdtemp(join(sealRoot, "co-"));
+	const dispose = () => rm(path, { recursive: true, force: true });
+	const index = join(repo.gitDir, `index-${process.pid}-${randomUUID()}`);
+	const env = { GIT_INDEX_FILE: index, GIT_WORK_TREE: path };
+	try {
+		await landingOk(repo, ["read-tree", commit], { env });
+		await landingOk(
+			repo,
+			["-c", "core.bare=false", "checkout-index", "-a", "-f"],
+			{ env },
+		);
+		return { path, dispose };
+	} catch (e) {
+		await dispose();
+		throw e;
 	} finally {
 		await rm(index, { force: true });
 		await rm(`${index}.lock`, { force: true });

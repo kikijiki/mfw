@@ -209,11 +209,18 @@ function armedScriptAction(
 			run: action.run,
 		});
 		if (!built.ok) throw new Error(built.reason);
+		// A real event names a real commit; the fixture's placeholder cannot resolve.
+		const payload = dispatch.event.payload as Record<string, unknown> | null;
 		return handler({
 			...dispatch,
+			event: {
+				...dispatch.event,
+				payload: { ...payload, sha: built.pin.commit },
+			},
 			execGate: {
 				pin: built.pin,
 				sealRoot: join(dispatch.projectRoot, ".git", "mfw-sealed"),
+				landingRoot: join(dispatch.projectRoot, ".git", "mfw-landing"),
 			},
 		});
 	};
@@ -267,7 +274,9 @@ describe("action: script", () => {
 		expect(dumped).toContain("MFW_EVENT_TYPE=merge.completed");
 		expect(dumped).toContain("MFW_TASK_ID=MFW-1");
 		expect(dumped).toContain("MFW_RUN_ID=r1");
-		expect(dumped).toContain('MFW_EVENT_JSON={"sha":"abc123","target":"main"}');
+		expect(dumped).toMatch(
+			/MFW_EVENT_JSON=\{"sha":"[0-9a-f]{40}","target":"main"\}/,
+		);
 		expect(dumped).toContain(
 			"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
 		);

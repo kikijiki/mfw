@@ -153,10 +153,11 @@ describe("buildExecPin", () => {
 		]);
 	});
 
-	test("an inline command with no repo file needs no commit", async () => {
+	test("an inline command with no repo file still pins the whole tree", async () => {
 		const pin = await pinOf('echo "$MFW_SHA"; true');
 		expect(pin.files).toEqual([]);
-		expect(pin.commit).toBeNull();
+		expect(pin.commit).toMatch(/^[0-9a-f]{40}$/);
+		expect(pin.tree).toMatch(/^[0-9a-f]{40}$/);
 	});
 
 	test("refuses an untracked script", async () => {
@@ -300,7 +301,7 @@ describe("verifyExecPin", () => {
 		await commitAll();
 		await writeFile(join(root, "scripts/lib.sh"), original);
 		const r = await check(pin);
-		expect(r.ok === false && r.code).toBe("not_at_head");
+		expect(r.ok === false && r.code).toBe("tree_changed");
 	});
 
 	test("a changed interpreter refuses", async () => {

@@ -56,11 +56,12 @@ run: ./deploy.sh
 const script = (marker: string) => `#!/bin/sh\ntouch "${marker}"\n`;
 
 async function fire(): Promise<void> {
+	const sha = await gitOk(["rev-parse", "HEAD"], root);
 	const stored = await handle.withTx((tx) =>
 		appendEvent(tx, {
 			type: "merge.completed",
 			runId: "r1",
-			payload: { sha: "HEAD", target: "main" },
+			payload: { sha, target: "main" },
 		} as never),
 	);
 	bus.publish([stored]);
@@ -201,16 +202,31 @@ describe("tampering", () => {
 		);
 	});
 
-	test("a change after the pass began is caught at execution", async () => {
+	test("a change after the pass began never runs: the sealed armed bytes do", async () => {
 		await svc.arm("deploy");
 		beforeAction = async () => {
 			await writeFile(join(root, "deploy.sh"), script(evil));
 		};
 		await fire();
 		expect(existsSync(evil)).toBe(false);
+		expect(existsSync(ran)).toBe(true);
+		// The next reconcile sees the edit and disarms.
+		await svc.list();
 		expect((await arming.load()).deploy?.disarmed?.reason).toBe(
 			"exec-pin-drift",
 		);
+	});
+
+	test("a commit after arming refuses at execution", async () => {
+		await svc.arm("deploy");
+		const sha = await gitOk(["rev-parse", "HEAD"], root);
+		await writeFile(join(root, "planted.ts"), "evil\n");
+		await commit("agent commit");
+		const moved = await gitOk(["rev-parse", "HEAD"], root);
+		expect(moved).not.toBe(sha);
+		await fire();
+		expect(existsSync(ran)).toBe(false);
+		expect((await arming.load()).deploy?.disarmed).toBeDefined();
 	});
 
 	test("an operator retry of a disarmed trigger does not run", async () => {
@@ -314,8 +330,18 @@ describe("merges", () => {
 		);
 	});
 
-	test("a merge not touching armed files leaves the trigger armed", async () => {
+	test("a merge touching any other file disarms, new files included", async () => {
 		await svc.arm("deploy");
+		await landBranch(queue(), "mfw/new", "brand-new.ts", "evil\n");
+		expect((await arming.load()).deploy?.disarmed?.foundHash).toBe(
+			"merged:brand-new.ts",
+		);
+		await fire();
+		expect(existsSync(ran)).toBe(false);
+	});
+
+	test("a merge inside the owner's may-change list leaves the trigger armed", async () => {
+		await svc.arm("deploy", { mayChange: ["other.txt"] });
 		await landBranch(queue(), "mfw/ok", "other.txt", "changed\n");
 		expect((await arming.load()).deploy?.disarmed).toBeUndefined();
 		expect((await stateOf())?.state).toBe("armed");

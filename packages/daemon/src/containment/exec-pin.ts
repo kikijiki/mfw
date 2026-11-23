@@ -13,14 +13,16 @@
  * A single shell-script command is executed from a sealed private copy of the
  * verified bytes, so there is no window between hash and exec.
  *
+ * Static reference-chasing cannot find everything a command loads (Makefile
+ * recipes, `bunfig.toml`, a new `lib.tsx` beside `lib.ts`), so the pin also holds
+ * the armed commit's whole tree. Any later difference refuses, except paths on
+ * the owner's explicit may-change list, and the command runs from a sealed
+ * checkout of that commit (`host-git/landing.ts`), never from the primary.
+ *
  * Residuals, stated so nobody assumes more:
- *  - Static analysis: a file reached only at run time (computed paths, `curl |
- *    sh`, a tool reading its own config, non-relative imports) is not pinned.
- *    Command substitution and shell control flow in the armed string are refused
- *    for this reason, but a pinned script can still do anything it likes.
- *  - Only a sealed entry is free of the race. Sourced files, imports and non-shell
- *    entries are verified just before spawn and re-read by the interpreter.
- *  - Bare tools on PATH are checked for location, not content.
+ *  - A pinned script can still do anything it likes, and tools on PATH are
+ *    checked for location, not content.
+ *  - The sealed checkout is writable by the command it runs.
  */
 import { createHash } from "node:crypto";
 import { constants, createReadStream } from "node:fs";
@@ -46,8 +48,7 @@ import {
 	sep,
 } from "node:path";
 import { z } from "zod";
-import { runProc } from "../proc.ts";
-import { requireHostTool } from "../sandbox.ts";
+import { git, gitComplete, gitOk } from "../git.ts";
 
 const MAX_PINNED_FILES = 256;
 const MAX_PINNED_BYTES = 8 * 1024 * 1024;
@@ -58,6 +59,10 @@ const READ_FLAGS =
 export const ExecPinSchema = z.object({
 	/** The commit the repo files were tracked at; null when none are involved. */
 	commit: z.string().nullable(),
+	/** The commit's whole tree. Any later difference refuses, except `mayChange`. */
+	tree: z.string().nullable().default(null),
+	/** Owner-maintained paths that may differ: exact, or a `dir/` prefix. */
+	mayChange: z.array(z.string()).default([]),
 	files: z.array(
 		z.object({
 			/** Relative to the repository root. */
@@ -99,7 +104,11 @@ export type ExecRefusalCode =
 	| "missing"
 	| "not_at_head"
 	| "interpreter_changed"
-	| "tool_in_repo";
+	| "tool_in_repo"
+	/** The tree differs from the armed commit outside the owner's list. */
+	| "tree_changed"
+	/** Git could not answer. Says nothing about drift, so it never disarms. */
+	| "git_error";
 
 export interface ExecRefusal {
 	ok: false;
@@ -172,7 +181,17 @@ const KEYWORDS = new Set([
 ]);
 /** Assignments that change what a later command resolves to or loads. */
 const LOADER_VAR =
-	/^(PATH|IFS|ENV|BASH_ENV|LD_[A-Z_]+|NODE_OPTIONS|PYTHONPATH|PYTHONSTARTUP|BUN_OPTIONS)=/;
+	/^(PATH|IFS|ENV|BASH_ENV|LD_[A-Z_]+|NODE_OPTIONS|NODE_PATH|PYTHONPATH|PYTHONHOME|PYTHONSTARTUP|PERL5OPT|PERL5LIB|RUBYOPT|RUBYLIB|BUN_OPTIONS|GIT_[A-Z_]+)=/;
+/** Builtins whose arguments assign variables. */
+const DECLARERS = new Set([
+	"export",
+	"readonly",
+	"declare",
+	"typeset",
+	"local",
+]);
+/** `set` flags that change no variable and load nothing. */
+const SAFE_SET = /^[-+][euxo]+$|^pipefail$/;
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 /**
@@ -273,6 +292,17 @@ export function analyzeShell(run: string): ShellAnalysis {
 			let j = i + 1;
 			for (; j < run.length && run[j] !== '"'; j++) {
 				if (run[j] === "\\") {
+					const escaped = run[j + 1];
+					// Inside double quotes a shell keeps the backslash before anything else.
+					if (
+						escaped !== "$" &&
+						escaped !== "`" &&
+						escaped !== '"' &&
+						escaped !== "\\" &&
+						escaped !== "\n"
+					) {
+						flag("it has a backslash inside double quotes");
+					}
 					j++;
 					word += run[j] ?? "";
 				} else if (run[j] === "`" || (run[j] === "$" && run[j + 1] === "(")) {
@@ -340,6 +370,22 @@ export function analyzeShell(run: string): ShellAnalysis {
 		}
 	}
 	endCommand();
+	for (const { words: argv } of commands) {
+		const name = argv[0];
+		if (typeof name !== "string") continue;
+		if (DECLARERS.has(name)) {
+			for (const arg of argv.slice(1)) {
+				if (arg === null || LOADER_VAR.test(arg)) {
+					flag(`it uses \`${name}\` on a variable that changes what runs`);
+				}
+			}
+		} else if (
+			name === "set" &&
+			argv.slice(1).some((arg) => arg === null || !SAFE_SET.test(arg))
+		) {
+			flag("it uses `set` with flags that change how commands run");
+		}
+	}
 	const simple =
 		unanalyzable === null &&
 		separators === 0 &&
@@ -377,6 +423,44 @@ const BUILTINS = new Set([
 const WRAPPERS = new Set(["exec", "command", "env", "nohup"]);
 const PACKAGE_RUNNERS = new Set(["bun", "npm", "pnpm", "yarn"]);
 const SHELLS = new Set(["sh", "bash", "dash"]);
+/** Tools whose arguments are data: they never load or run a named file. */
+const DATA_TOOLS = new Set([
+	"cat",
+	"ls",
+	"date",
+	"sleep",
+	"touch",
+	"mkdir",
+	"cp",
+	"mv",
+	"rm",
+	"ln",
+	"chmod",
+	"grep",
+	"head",
+	"tail",
+	"wc",
+	"sort",
+	"tee",
+	"curl",
+	"git",
+	"systemctl",
+	"uname",
+	"id",
+]);
+/** Tools that run the file they are given; a named file must be pinned. */
+const SCRIPT_RUNNERS = new Set([
+	...PACKAGE_RUNNERS,
+	...SHELLS,
+	"node",
+	"deno",
+	"python",
+	"python3",
+	"ruby",
+	"perl",
+	"make",
+	"just",
+]);
 const MAKE_FILES: Record<string, string[]> = {
 	make: ["GNUmakefile", "makefile", "Makefile"],
 	just: ["justfile", "Justfile", ".justfile"],
@@ -519,35 +603,53 @@ async function treeBlobs(
 	rev: string,
 	paths: string[],
 ): Promise<Map<string, string>> {
-	const r = await runProc(
-		[
-			requireHostTool("git"),
-			"-c",
-			"core.fsmonitor=false",
-			"-c",
-			"core.hooksPath=/dev/null",
-			"ls-tree",
-			"-z",
-			"--full-tree",
-			rev,
-			"--",
-			...paths,
-		],
-		{ cwd: gitCwd },
-	);
-	if (r.exitCode !== 0) {
+	let listing: string;
+	try {
+		listing = await gitComplete(
+			["ls-tree", "-z", "--full-tree", rev, "--", ...paths],
+			gitCwd,
+		);
+	} catch (e) {
 		fail(
-			"untracked",
-			`cannot read ${rev} from git: ${r.stderr.trim().slice(-200)}`,
-			"Commit the files the command executes, then arm it.",
+			"git_error",
+			`cannot read ${rev} from git: ${(e as Error).message.slice(-200)}`,
+			"Check the repository, then try again.",
 		);
 	}
 	const out = new Map<string, string>();
-	for (const row of r.stdout.split("\0")) {
+	for (const row of listing.split("\0")) {
 		const m = /^(\d+) blob ([0-9a-f]+)\t([\s\S]+)$/.exec(row);
 		if (m && m[1] !== "120000") out.set(m[3] as string, m[2] as string);
 	}
 	return out;
+}
+
+/** True when the owner's list covers `path`: an exact entry or a `dir/` prefix. */
+export function pathMayChange(path: string, list: readonly string[]): boolean {
+	return list.some((entry) =>
+		entry.endsWith("/") ? path.startsWith(entry) : path === entry,
+	);
+}
+
+/** Paths that differ between two commits, renames listed on both sides. */
+async function changedPaths(
+	gitCwd: string,
+	from: string,
+	to: string,
+): Promise<string[]> {
+	try {
+		const out = await gitComplete(
+			["diff-tree", "-r", "-z", "--name-only", "--no-renames", from, to],
+			gitCwd,
+		);
+		return out.split("\0").filter(Boolean);
+	} catch (e) {
+		fail(
+			"git_error",
+			`cannot compare ${to} with the armed commit: ${(e as Error).message.slice(-200)}`,
+			"Check the repository, then try again.",
+		);
+	}
 }
 
 /** Path to blob id at `rev`; null when git cannot read the revision. */
@@ -614,6 +716,8 @@ export interface BuildPinOptions {
 	run: string;
 	/** `PATH` the command will see. */
 	pathVar?: string;
+	/** Paths the owner allows to differ from the armed commit. */
+	mayChange?: readonly string[];
 }
 
 export type BuildPinResult = { ok: true; pin: ExecPin } | ExecRefusal;
@@ -748,6 +852,31 @@ class PinBuilder {
 		for (const arg of words.slice(1)) {
 			if (typeof arg !== "string" || arg.startsWith("-")) continue;
 			const abs = resolve(baseDir, arg);
+			if (
+				!head.includes("/") &&
+				!BUILTINS.has(head) &&
+				!DATA_TOOLS.has(head) &&
+				(arg.includes("/") ||
+					arg.startsWith(".") ||
+					(await existsNoFollow(abs)))
+			) {
+				if (!SCRIPT_RUNNERS.has(head)) {
+					fail(
+						"unanalyzable",
+						`the command cannot be pinned because \`${head}\` is given the path ${arg} and mfw does not know whether it runs it`,
+						"Put the command in a tracked script and run that script.",
+						arg,
+					);
+				}
+				if (!(await existsNoFollow(abs))) {
+					fail(
+						"missing",
+						`${arg} does not exist at arming`,
+						"Commit the file, then arm the trigger.",
+						arg,
+					);
+				}
+			}
 			if (
 				isInside(abs, this.root) &&
 				abs !== this.root &&
@@ -961,20 +1090,29 @@ export async function buildExecPin(
 		const files = [...builder.files.values()].sort((a, b) =>
 			a.path.localeCompare(b.path),
 		);
-		let commit: string | null = null;
-		if (files.length > 0) {
-			const head = await runProc(
-				[requireHostTool("git"), "rev-parse", "--verify", "HEAD^{commit}"],
-				{ cwd: root },
-			);
-			if (head.exitCode !== 0) {
+		const mayChange = [...new Set(opts.mayChange ?? [])].sort();
+		for (const file of files) {
+			if (pathMayChange(file.path, mayChange)) {
 				return refusal(
-					"untracked",
-					"the repository has no commit to pin against",
-					"Commit the files the command executes, then arm it.",
+					"unanalyzable",
+					`${file.path} is executed by the command, so it cannot be on the may-change list`,
+					"Remove it from the list.",
+					file.path,
 				);
 			}
-			commit = head.stdout.trim();
+		}
+		const head = await git(["rev-parse", "--verify", "HEAD^{commit}"], root);
+		if (head.exitCode !== 0 && files.length > 0) {
+			return refusal(
+				"untracked",
+				"the repository has no commit to pin against",
+				"Commit the files the command executes, then arm it.",
+			);
+		}
+		const commit = head.exitCode === 0 ? head.stdout.trim() : null;
+		let tree: string | null = null;
+		if (commit) {
+			tree = await gitOk(["rev-parse", `${commit}^{tree}`], root);
 			const blobs = await treeBlobs(
 				root,
 				commit,
@@ -1004,6 +1142,8 @@ export async function buildExecPin(
 			ok: true,
 			pin: {
 				commit,
+				tree,
+				mayChange,
 				files,
 				external: [...builder.external.values()].sort((a, b) =>
 					a.path.localeCompare(b.path),
@@ -1027,6 +1167,11 @@ export interface VerifyPinOptions {
 	/** Revision the tree should hold. Omitted skips the committed-blob check. */
 	rev?: string;
 	pathVar?: string;
+	/**
+	 * `root` is a sealed checkout: git wrote it under this process's umask, so
+	 * only the executable bit is meaningful.
+	 */
+	sealed?: boolean;
 	/** Test seam for the time between verifying and executing. */
 	afterVerify?: () => Promise<void>;
 }
@@ -1053,7 +1198,10 @@ export async function verifyExecPin(
 					file.path,
 				);
 			}
-			if (read.mode !== file.mode) {
+			const sameMode = opts.sealed
+				? (read.mode & 0o100) === (file.mode & 0o100)
+				: read.mode === file.mode;
+			if (!sameMode) {
 				fail(
 					"mode_changed",
 					`the permissions of ${file.path} changed since it was armed`,
@@ -1063,6 +1211,29 @@ export async function verifyExecPin(
 			}
 			if (file.role === "entry")
 				entry = { path: file.path, bytes: read.bytes, mode: read.mode };
+		}
+		if (pin.commit && opts.rev && opts.gitCwd) {
+			if (!pin.tree) {
+				fail(
+					"tree_changed",
+					"this trigger was armed before whole-tree pins existed",
+					REARM,
+				);
+			}
+			for (const path of await changedPaths(
+				opts.gitCwd,
+				pin.commit,
+				opts.rev,
+			)) {
+				if (!pathMayChange(path, pin.mayChange)) {
+					fail(
+						"tree_changed",
+						`${path} differs from the armed commit ${pin.commit.slice(0, 12)}`,
+						`${REARM} If this path is safe to change, add it to the trigger's may-change list.`,
+						path,
+					);
+				}
+			}
 		}
 		if (pin.files.length > 0 && opts.rev && opts.gitCwd) {
 			const blobs = await treeBlobs(

@@ -15,6 +15,7 @@ import {
 	buildExecPin,
 	type ExecPin,
 	type ExecRefusal,
+	pathMayChange,
 	verifyExecPin,
 } from "../containment/exec-pin.ts";
 import type { QuarantinedDefinition } from "../definitions.ts";
@@ -254,8 +255,7 @@ export class TriggerService {
 				record?.execPin &&
 				record.hash === def.hash &&
 				!record.disarmed &&
-				def.action.kind === "script" &&
-				def.action.cwd === "repo"
+				def.action.kind === "script"
 					? await this.pinRefusal(record.execPin)
 					: null;
 			const granted = record?.secrets ?? [];
@@ -283,6 +283,10 @@ export class TriggerService {
 				state = "drifted";
 				reason =
 					"armed before exec pins existed, so it will not run (review it and arm it again)";
+			} else if (pinRefusal?.code === "git_error") {
+				// Git could not answer: nothing fires this pass, and nothing is disarmed.
+				state = "drifted";
+				reason = `${pinRefusal.reason}. ${pinRefusal.fix}`;
 			} else if (pinRefusal) {
 				await this.raiseDrift(
 					def.id,
@@ -402,15 +406,18 @@ export class TriggerService {
 		const disarmed: string[] = [];
 		for (const [defId, record] of Object.entries(records)) {
 			if (record.disarmed) continue;
-			const pinned = record.execPin?.files.map((f) => f.path) ?? [];
+			const definition = `.mfw/triggers/${defId}.md`;
+			const allowed = record.execPin?.mayChange ?? [];
 			const hit =
 				touched === null
 					? record.execPin
 						? "unknown"
 						: undefined
-					: [`.mfw/triggers/${defId}.md`, ...pinned].find((p) =>
-							touched.has(p),
-						);
+					: touched.has(definition)
+						? definition
+						: record.execPin
+							? [...touched].find((p) => !pathMayChange(p, allowed))
+							: undefined;
 			if (!hit) continue;
 			await this.raiseDrift(
 				defId,
@@ -494,7 +501,13 @@ export class TriggerService {
 	 */
 	async arm(
 		defId: string,
-		opts: { by?: string; secrets?: string[]; expectedHash?: string } = {},
+		opts: {
+			by?: string;
+			secrets?: string[];
+			expectedHash?: string;
+			/** Paths that may differ from the armed commit. Omitted keeps the current list. */
+			mayChange?: string[];
+		} = {},
 	): Promise<TriggerView> {
 		const { defs } = await this.reconcile();
 		const def = defs.find((d) => d.id === defId);
@@ -508,9 +521,12 @@ export class TriggerService {
 		}
 		let execPin: ExecPin | undefined;
 		if (def.action.kind === "script") {
+			const current = (await this.arming.load())[defId]?.execPin?.mayChange;
+			const mayChange = opts.mayChange ?? current;
 			const built = await buildExecPin({
 				root: this.deps.projectRoot,
 				run: def.action.run,
+				...(mayChange ? { mayChange } : {}),
 			});
 			if (!built.ok) throw new TriggerPinRefusedError(defId, built);
 			execPin = built.pin;
@@ -954,6 +970,7 @@ export class TriggerService {
 						execGate: {
 							pin: armedRecord.execPin,
 							sealRoot: join(this.deps.mfwHome, "triggers", "sealed"),
+							landingRoot: join(this.deps.mfwHome, "landing"),
 						},
 					}
 				: {}),
@@ -969,7 +986,11 @@ export class TriggerService {
 			};
 		}
 
-		if (result.execRefusal && armedRecord) {
+		if (
+			result.execRefusal &&
+			result.execRefusal.code !== "git_error" &&
+			armedRecord
+		) {
 			await this.raiseDrift(
 				def.id,
 				"exec-pin-drift",

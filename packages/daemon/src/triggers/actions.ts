@@ -26,7 +26,7 @@ export interface TriggerDispatch {
 	 * for execution (an operator retry of a disarmed trigger), and a script
 	 * refuses to run.
 	 */
-	execGate?: { pin: ExecPin; sealRoot: string };
+	execGate?: { pin: ExecPin; sealRoot: string; landingRoot?: string };
 }
 
 export interface TriggerActionResult {
