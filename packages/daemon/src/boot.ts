@@ -21,7 +21,10 @@ import {
 import { getBoardTemplate } from "./board-templates.ts";
 import { BrainService, type InferenceClient } from "./brain.ts";
 import { brainSocketFor } from "./brain-runtime/brain-socket.ts";
-import { chatInferenceFor } from "./brain-runtime/chat.ts";
+import {
+	chatInferenceFor,
+	chatTransportRefused,
+} from "./brain-runtime/chat.ts";
 import { ChatBudget, chatBudgetPath } from "./brain-runtime/chat-budget.ts";
 import { BrainRuntime, resolveBrainConfig } from "./brain-runtime/runtime.ts";
 import { BudgetService } from "./budgets.ts";
@@ -1332,6 +1335,7 @@ export async function attachProject(
 		config: () => resolveBrainConfig(liveBrainConfig),
 		chat: {
 			inference: chatInferenceFor,
+			refusesTransport: chatTransportRefused,
 			budget: new ChatBudget(chatBudgetPath(opts.mfwHome)),
 			inbox: () => inbox.list(),
 		},

@@ -187,7 +187,10 @@ export interface BrainRuntimeDeps {
 		"handle" | "bus" | "tasks" | "registry" | "log" | "now"
 	>;
 	/** Chat's model transport, budget and inbox. Without them chat answers from the records. */
-	chat?: Pick<BrainChatDeps, "inference" | "budget" | "inbox" | "caps">;
+	chat?: Pick<
+		BrainChatDeps,
+		"inference" | "refusesTransport" | "budget" | "inbox" | "caps"
+	>;
 	/** Raised once when the circuit opens. */
 	notifyStuck?: (detail: {
 		sessionId: string;

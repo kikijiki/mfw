@@ -80,6 +80,8 @@ export interface BrainChatDeps {
 	latestPlan: () => Promise<{ markdown: string } | null>;
 	/** A client with no tools for this route; null when the route has none. */
 	inference?: (route: RoutingDecision) => InferenceClient | null;
+	/** Tells a refused transport from a missing one, for the owner's answer. */
+	refusesTransport?: (route: RoutingDecision) => boolean;
 	/** The machine-level budget. Without one the model is never called. */
 	budget?: ChatBudget | null;
 	inbox?: FallbackSources["inbox"];
@@ -354,7 +356,11 @@ export class BrainChat {
 		}
 		if (!route) return "unavailable";
 		const client = deps.inference(route);
-		if (!client) return "unavailable";
+		if (!client) {
+			return deps.refusesTransport?.(route)
+				? "unsandboxed_transport"
+				: "unavailable";
+		}
 		// Claimed with no await since the check; `answer` releases it.
 		if (this.modelTurn) return "busy";
 		this.modelTurn = true;
@@ -527,9 +533,11 @@ export class BrainChat {
 }
 
 /**
- * Only transports that run the model with no tools at all. Codex's one-shot
+ * Only the transport that runs the model with no tools at all. Codex's one-shot
  * mode keeps a shell in a read-only sandbox, which can still read the machine,
- * so a Codex or endpoint route answers from the records instead.
+ * and an ACP agent may run a read it was never asked for, so neither carries a
+ * chat turn: there is no sandboxed one-shot route for them yet. An endpoint
+ * route answers from the records too.
  */
 export function chatInferenceFor(
 	route: Pick<RoutingDecision, "provider" | "endpoint">,
@@ -537,11 +545,24 @@ export function chatInferenceFor(
 	if (route.endpoint) return null;
 	try {
 		const provider = providerConfigFor(route.provider);
-		return provider.type === "claude-cli" || provider.type === "acp"
+		return provider.type === "claude-cli"
 			? inferenceForProvider(provider)
 			: null;
 	} catch {
 		return null;
+	}
+}
+
+/** Whether chat declined this route because it would run outside the sandbox. */
+export function chatTransportRefused(
+	route: Pick<RoutingDecision, "provider" | "endpoint">,
+): boolean {
+	if (route.endpoint) return false;
+	try {
+		const { type } = providerConfigFor(route.provider);
+		return type === "codex-cli" || type === "acp";
+	} catch {
+		return false;
 	}
 }
 

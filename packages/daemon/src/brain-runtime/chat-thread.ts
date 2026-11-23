@@ -40,6 +40,7 @@ export class ChatError extends Error {
 export type ChatFallbackReason =
 	| "off"
 	| "unavailable"
+	| "unsandboxed_transport"
 	| "breaker_open"
 	| "over_budget"
 	| "busy"
