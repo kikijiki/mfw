@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import type { AppRouter } from "@mfw/api";
-import { createTRPCClient, httpBatchStreamLink } from "@trpc/client";
+import { createTRPCClient, httpBatchStreamLink, httpLink } from "@trpc/client";
 import SuperJSON from "superjson";
 
 /**
@@ -55,7 +55,8 @@ export interface BrainSocketEnv {
 export function makeBrainSocketClient(env: BrainSocketEnv) {
 	return createTRPCClient<AppRouter>({
 		links: [
-			httpBatchStreamLink({
+			// One call per request: the socket refuses batches.
+			httpLink({
 				transformer: SuperJSON,
 				url: SOCKET_URL,
 				fetch: async (input, init) => {
@@ -84,13 +85,21 @@ export function makeBrainSocketClient(env: BrainSocketEnv) {
 						} as unknown as RequestInit,
 					);
 					if (res.status === 401 || res.status === 403 || res.status === 400) {
-						const body = (await res.json().catch(() => null)) as {
-							error?: string;
+						const body = (await res
+							.clone()
+							.json()
+							.catch(() => null)) as {
+							error?: string | { json?: { message?: string } };
 						} | null;
-						throw new BrainSocketRefused(
-							body?.error ?? `HTTP ${res.status}`,
-							res.status,
-						);
+						// The socket's own refusals carry a string. A tRPC 400 is an
+						// ordinary tool error and goes back to the brain as one.
+						if (typeof body?.error === "string" || res.status !== 400)
+							throw new BrainSocketRefused(
+								typeof body?.error === "string"
+									? body.error
+									: (body?.error?.json?.message ?? `HTTP ${res.status}`),
+								res.status,
+							);
 					}
 					// Bun's Response is a real one; tRPC's FetchEsque typing is narrower.
 					return res as never;

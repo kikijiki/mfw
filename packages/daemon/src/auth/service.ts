@@ -17,7 +17,13 @@ import { type AuthDb, openAuthDb } from "./store.ts";
 /** Who is acting. Later scoped tokens add kinds; audit attributes by `id`. */
 export type Principal =
 	| { kind: "owner"; id: string; sessionId: string }
-	| { kind: "brain"; id: string; runId: string }
+	| {
+			kind: "brain";
+			id: string;
+			runId: string;
+			project: string;
+			sessionId: string;
+	  }
 	/** In-process callers only (`createCaller`); never built from a request. */
 	| { kind: "internal"; id: "internal" };
 

@@ -6,6 +6,7 @@ import { brainIntents, summarizeBrain } from "@mfw/daemon/brain-view";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
+	brainTurnBound,
 	createTRPCRouter,
 	projectProcedure,
 	publicProcedure,
@@ -213,6 +214,7 @@ export const brainRouter = createTRPCRouter({
 				turnRunId: z.string().optional(),
 			}),
 		)
+		.use(brainTurnBound)
 		.query(({ ctx, input }) =>
 			ctx.svc.brainRuntime.reads.read(input.tool, input.args, {
 				...(input.turnRunId ? { turnRunId: input.turnRunId } : {}),
@@ -228,5 +230,6 @@ export const brainRouter = createTRPCRouter({
 				args: z.record(z.string(), z.unknown()).default({}),
 			}),
 		)
+		.use(brainTurnBound)
 		.mutation(({ ctx, input }) => ctx.svc.brainRuntime.actions.act(input)),
 });

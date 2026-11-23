@@ -52,18 +52,23 @@ async function rig() {
 	};
 	const orchestrator = {
 		get: (name: string) => {
-			if (name !== "alpha") throw new Error(`unknown project '${name}'`);
+			if (name !== "alpha" && name !== "beta")
+				throw new Error(`unknown project '${name}'`);
 			return svc;
 		},
 	};
-	socket.setHandler((req) =>
+	socket.setHandler((req, binding) =>
 		fetchRequestHandler({
 			endpoint: BRAIN_SOCKET_ENDPOINT,
 			router: appRouter,
 			req,
 			createContext: () => ({
 				orchestrator: orchestrator as never,
-				principal: { kind: "internal" as const, id: "internal" as const },
+				principal: {
+					kind: "brain" as const,
+					id: `brain:${binding.runId}`,
+					...binding,
+				},
 			}),
 		}),
 	);
@@ -181,6 +186,64 @@ describe("brain tools over the socket", () => {
 		await expect(
 			client.brain.setPaused.mutate({ project: "alpha", paused: true }),
 		).rejects.toThrow();
+	});
+});
+
+describe("the token's binding holds on the parsed input (reviewer M2)", () => {
+	async function exploit(path: string, body: unknown) {
+		const { home, socket, acts } = await rig();
+		const env = await turnEnv(home, socket, "R1");
+		const token = (
+			await Bun.file(env.MFW_BRAIN_TOKEN_FILE as string).text()
+		).trim();
+		const res = await fetch(`http://mfw-brain/trpc/${path}`, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${token}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify(body),
+			unix: env.MFW_SOCKET,
+		} as RequestInit);
+		await res.text();
+		return { status: res.status, acts };
+	}
+	const honest = { project: "alpha", turnRunId: "R1", tool: "t", args: {} };
+	const other = { project: "beta", turnRunId: "R2", tool: "t", args: {} };
+
+	test("a batch with an honest decoy does not reach brain.act", async () => {
+		const r = await exploit("brain.act?batch=1", {
+			json: honest,
+			"0": { json: other },
+		});
+		expect(r.acts).toEqual([]);
+		expect(r.status).toBe(400);
+	});
+
+	test("any batch is refused on this socket", async () => {
+		const r = await exploit("brain.act?batch=1", { "0": { json: honest } });
+		expect(r.acts).toEqual([]);
+		expect(r.status).toBe(400);
+	});
+
+	test("superjson metadata cannot rewrite the project and turn", async () => {
+		const r = await exploit("brain.act", {
+			json: { ...honest, args: { p: "beta", r: "R2" } },
+			meta: {
+				referentialEqualities: {
+					"args.p": ["project"],
+					"args.r": ["turnRunId"],
+				},
+			},
+		});
+		expect(r.acts).toEqual([]);
+		expect(r.status).toBe(403);
+	});
+
+	test("an honest single call still reaches brain.act", async () => {
+		const r = await exploit("brain.act", { json: honest });
+		expect(r.status).toBe(200);
+		expect(r.acts).toHaveLength(1);
 	});
 });
 
