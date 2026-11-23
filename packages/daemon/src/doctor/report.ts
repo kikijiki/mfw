@@ -64,14 +64,10 @@ export type DoctorGroup = (typeof DOCTOR_GROUPS)[number];
 export type DoctorCheck = z.infer<typeof DoctorCheckSchema>;
 export type DoctorReport = z.infer<typeof DoctorReportSchema>;
 
-/** Remove `user:secret@` from a URL. */
-export function stripUrlCredentials(text: string): string {
-	return text.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi, "$1");
-}
-
 /**
- * Safe to print: no terminal control sequences from a file name or a tool's
- * output, and no credential that found its way into a URL or a message.
+ * Safe to print: no terminal control sequences or bidi overrides from a file
+ * name or a tool's output, and no credential in a recognisable form. It cannot
+ * recognise every secret, so `redactText` is what makes a report shareable.
  */
 export function sanitizeText(text: string): string {
 	return (
@@ -79,10 +75,89 @@ export function sanitizeText(text: string): string {
 			.replace(/[\t\n\r]+/g, " ")
 			// biome-ignore lint/suspicious/noControlCharactersInRegex: removing them is the point
 			.replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
-			.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi, "$1***@")
+			.replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+			// Up to the last `@`, because a password can hold `/` or `@`.
+			.replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s'"]*@/gi, "$1***@")
+			.replace(
+				/([?&](?:access_token|token|api_key|apikey|auth|password|secret)=)[^&\s'"]+/gi,
+				"$1***",
+			)
 			.replace(/mfwt_[A-Za-z0-9_-]+/g, "mfwt_***")
 			.replace(/\bsk-[A-Za-z0-9_-]{8,}/g, "sk-***")
+			.replace(/\bgh[pousr]_[A-Za-z0-9]{20,}/g, "gh_***")
+			.replace(/\bgithub_pat_[A-Za-z0-9_]{20,}/g, "github_pat_***")
+			.replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, "AKIA***")
+			.replace(/\bxox[abeoprs]-[A-Za-z0-9-]{8,}/g, "xox-***")
+			.replace(
+				/\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
+				"jwt_***",
+			)
 	);
+}
+
+/** What identifies this machine in a report that will be shared. */
+export interface RedactContext {
+	home?: string;
+	mfwHome?: string;
+	user?: string;
+	/** Given only when project names should be hidden too. */
+	projects?: readonly string[];
+}
+
+const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\/-]/g, "\\$&");
+const PATH_END = "(?=$|[/\\s'\":,;)\\]])";
+
+function replacePath(
+	text: string,
+	path: string | undefined,
+	to: string,
+): string {
+	if (!path || path === "/") return text;
+	const trimmed = path.replace(/\/+$/, "");
+	return text.replace(
+		new RegExp(`${escapeRegex(trimmed)}${PATH_END}`, "g"),
+		() => to,
+	);
+}
+
+/** For pasting into a public issue: no home paths, user name, URL paths or tokens. */
+export function redactText(text: string, ctx: RedactContext): string {
+	let s = sanitizeText(text)
+		// Scheme and host only: a path or query can name a private repository.
+		.replace(
+			/\b([a-z][a-z0-9+.-]*):\/\/(?:\*\*\*@)?([^/\s:?#'"]+)[^\s'"]*/gi,
+			"$1://$2",
+		)
+		.replace(/\b[\w.-]+@([\w-]+(?:\.[\w-]+)+):[^\s'"]+/g, "$1");
+	// Longest first: $MFW_HOME is usually inside the home directory.
+	s = replacePath(s, ctx.mfwHome, "$MFW_HOME");
+	s = replacePath(s, ctx.home, "~");
+	s = s.replace(/\/(?:home|Users)\/[^/\s'":,;)]+/g, "~");
+	s = s.replace(new RegExp(`/root${PATH_END}`, "g"), "~");
+	if (ctx.user && ctx.user.length >= 2 && ctx.user !== "unknown") {
+		s = s.replace(new RegExp(`\\b${escapeRegex(ctx.user)}\\b`, "g"), "<user>");
+	}
+	for (const name of ctx.projects ?? []) {
+		if (name) {
+			s = s.replace(new RegExp(`\\b${escapeRegex(name)}\\b`, "g"), "<project>");
+		}
+	}
+	return s;
+}
+
+export function redactReport(
+	report: DoctorReport,
+	ctx: RedactContext,
+): DoctorReport {
+	return {
+		...report,
+		checks: report.checks.map((c) => ({
+			...c,
+			detail: redactText(c.detail, ctx),
+			...(c.fix ? { fix: redactText(c.fix, ctx) } : {}),
+			...(c.project ? { project: redactText(c.project, ctx) } : {}),
+		})),
+	};
 }
 
 export function buildReport(checks: readonly DoctorCheck[]): DoctorReport {

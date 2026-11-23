@@ -19,10 +19,12 @@ import type { DoctorProbes } from "./probes.ts";
 import {
 	type DoctorReport,
 	doctorExitCode,
+	redactReport,
+	redactText,
 	renderDoctorReport,
 	sanitizeText,
 } from "./report.ts";
-import { isPublicForgeUrl, runDoctor } from "./run.ts";
+import { isPublicForgeUrl, redactContextFor, runDoctor } from "./run.ts";
 
 /**
  * `mfw doctor` and `mfw init`.
@@ -34,10 +36,13 @@ import { isPublicForgeUrl, runDoctor } from "./run.ts";
  */
 
 export const DOCTOR_USAGE = [
-	"usage: mfw doctor [--json] [--harness-versions] [--first-run]",
+	"usage: mfw doctor [--json] [--redact|--no-redact] [--redact-projects] [--harness-versions] [--first-run]",
 	"",
 	"  Read-only host and install check. It prints fixes and never applies them.",
-	"  --json             the report as JSON (schemaVersion 1)",
+	"  --json             the report as JSON (schemaVersion 1), redacted by default",
+	"  --redact           safe to paste: no home paths, user name, URL paths, file names or tokens",
+	"  --no-redact        keep local detail in --json",
+	"  --redact-projects  also hide project names",
 	"  --harness-versions  also run `claude --version` and `codex --version`",
 	"  --first-run        the guided first-run flow (same as mfw init)",
 	"",
@@ -45,7 +50,7 @@ export const DOCTOR_USAGE = [
 ].join("\n");
 
 export const INIT_USAGE = [
-	"usage: mfw init [--project <dir>] [--name <name>] [--branch <branch>] [--write] [--json] [--harness-versions]",
+	"usage: mfw init [--project <dir>] [--name <name>] [--branch <branch>] [--write] [--json] [--no-redact] [--harness-versions]",
 	"",
 	"  Runs the doctor, shows where the setup token is and what to do next.",
 	"  With --project it prints a minimal project entry. Only --write adds it",
@@ -107,7 +112,13 @@ export async function runDoctorCommand(
 			d,
 		);
 	}
-	const known = new Set(["--json", "--harness-versions"]);
+	const known = new Set([
+		"--json",
+		"--harness-versions",
+		"--redact",
+		"--no-redact",
+		"--redact-projects",
+	]);
 	const bad = args.find((a) => !known.has(a));
 	if (bad) {
 		d.err(`mfw doctor: unknown option '${bad}'\n${DOCTOR_USAGE}`);
@@ -115,9 +126,28 @@ export async function runDoctorCommand(
 	}
 	const refused = refuseInSandbox("doctor", d);
 	if (refused !== null) return refused;
-	const report = await runDoctor(probesFor(d), {
+	if (
+		args.includes("--no-redact") &&
+		(args.includes("--redact") || args.includes("--redact-projects"))
+	) {
+		d.err(`mfw doctor: --no-redact conflicts with redaction\n${DOCTOR_USAGE}`);
+		return 2;
+	}
+	const redacting =
+		args.includes("--redact") ||
+		args.includes("--redact-projects") ||
+		(args.includes("--json") && !args.includes("--no-redact"));
+	const probes = probesFor(d);
+	const full = await runDoctor(probes, {
 		harnessVersions: args.includes("--harness-versions"),
+		omitFileNames: redacting,
 	});
+	const report = redacting
+		? redactReport(
+				full,
+				await redactContextFor(probes, args.includes("--redact-projects")),
+			)
+		: full;
 	d.out(
 		args.includes("--json")
 			? JSON.stringify(report, null, 2)
@@ -132,15 +162,22 @@ interface InitArgs {
 	branch?: string;
 	write: boolean;
 	json: boolean;
+	noRedact: boolean;
 	harnessVersions: boolean;
 }
 
 function parseInit(args: readonly string[]): InitArgs | string {
-	const out: InitArgs = { write: false, json: false, harnessVersions: false };
+	const out: InitArgs = {
+		write: false,
+		json: false,
+		noRedact: false,
+		harnessVersions: false,
+	};
 	for (let i = 0; i < args.length; i++) {
 		const a = args[i];
 		if (a === "--write") out.write = true;
 		else if (a === "--json") out.json = true;
+		else if (a === "--no-redact") out.noRedact = true;
 		else if (a === "--harness-versions") out.harnessVersions = true;
 		else if (a === "--project" || a === "--name" || a === "--branch") {
 			const value = args[++i];
@@ -319,8 +356,10 @@ export async function runInitCommand(
 	if (refused !== null) return refused;
 
 	const probes = probesFor(d);
+	const redacting = parsed.json && !parsed.noRedact;
 	const report = await runDoctor(probes, {
 		harnessVersions: parsed.harnessVersions,
+		omitFileNames: redacting,
 	});
 	// The path only. The token itself is never opened here.
 	const tokenPath = join(d.home, "setup-token");
@@ -384,14 +423,16 @@ export async function runInitCommand(
 
 	const steps = nextSteps(report, tokenPath);
 	if (parsed.json) {
+		const ctx = redacting ? await redactContextFor(probes) : null;
+		const shown = (text: string) => (ctx ? redactText(text, ctx) : text);
 		d.out(
 			JSON.stringify(
 				{
 					schemaVersion: 1,
-					doctor: report,
-					setupTokenPath: tokenPath,
-					steps,
-					projectEntry: entry,
+					doctor: ctx ? redactReport(report, ctx) : report,
+					setupTokenPath: shown(tokenPath),
+					steps: steps.map(shown),
+					projectEntry: entry && { ...entry, root: shown(entry.root) },
 					notes,
 					wrote,
 				},

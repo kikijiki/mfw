@@ -1,6 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Chip, Panel } from "~/components/Page";
 import { Button } from "~/components/ui/button";
+import { useToast } from "~/lib/toast";
 import { useTRPC } from "~/lib/trpc";
 import {
 	healthHeadline,
@@ -22,18 +23,44 @@ export function HealthPanel({ active }: { active: boolean }) {
 		refetchOnWindowFocus: false,
 	});
 	const report = doctor.data;
+	const queryClient = useQueryClient();
+	const { toast } = useToast();
+	// Always a fresh redacted report from the server, never the one on screen.
+	const copyRedacted = async () => {
+		try {
+			const shareable = await queryClient.fetchQuery({
+				...trpc.system.doctor.queryOptions({ redact: true }),
+				staleTime: 0,
+				gcTime: 0,
+			});
+			await navigator.clipboard.writeText(JSON.stringify(shareable, null, 2));
+			toast({ tone: "success", title: "Redacted report copied" });
+		} catch {
+			toast({ tone: "error", title: "Could not copy the report" });
+		}
+	};
 	return (
 		<Panel
 			title="Health"
 			actions={
-				<Button
-					size="xs"
-					variant="outline"
-					disabled={doctor.isFetching}
-					onClick={() => void doctor.refetch()}
-				>
-					{doctor.isFetching ? "Checking" : "Check again"}
-				</Button>
+				<div className="flex items-center gap-1">
+					<Button
+						size="xs"
+						variant="outline"
+						disabled={!report}
+						onClick={() => void copyRedacted()}
+					>
+						Copy redacted
+					</Button>
+					<Button
+						size="xs"
+						variant="outline"
+						disabled={doctor.isFetching}
+						onClick={() => void doctor.refetch()}
+					>
+						{doctor.isFetching ? "Checking" : "Check again"}
+					</Button>
+				</div>
 			}
 		>
 			{doctor.isError ? (

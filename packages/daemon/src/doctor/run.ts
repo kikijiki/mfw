@@ -29,6 +29,7 @@ import {
 	type DoctorCheck,
 	type DoctorGroup,
 	type DoctorReport,
+	type RedactContext,
 	sanitizeText,
 } from "./report.ts";
 
@@ -40,6 +41,8 @@ import {
 export interface DoctorOptions {
 	/** Opt-in: run `--version` of agent CLIs found on a trusted path. */
 	harnessVersions?: boolean;
+	/** Leave file names out of the report, for one that will be shared. */
+	omitFileNames?: boolean;
 }
 
 type Outcome = Pick<DoctorCheck, "severity" | "status" | "detail"> & {
@@ -563,7 +566,7 @@ function projectEgressCheck(entry: StoredProjectConfig): Outcome {
 	return ok("egress settings are consistent");
 }
 
-function untrackedCheck(f: ProjectFacts): Outcome {
+function untrackedCheck(f: ProjectFacts, omitNames: boolean): Outcome {
 	const pub = f.remotes.filter((r) => isPublicForgeUrl(r.url));
 	if (pub.length === 0) return skipped("no remote on a public forge");
 	if (!f.untracked || !f.ignoredState) {
@@ -576,7 +579,7 @@ function untrackedCheck(f: ProjectFacts): Outcome {
 	}
 	const count = (l: typeof u) => `${l.count}${l.truncated ? "+" : ""}`;
 	const names = (l: typeof u) =>
-		l.sample.length ? ` (${l.sample.join(", ")})` : "";
+		!omitNames && l.sample.length ? ` (${l.sample.join(", ")})` : "";
 	const reports =
 		f.boardPush === "with-code"
 			? " Board reports are also pushed with the code."
@@ -591,6 +594,7 @@ function untrackedCheck(f: ProjectFacts): Outcome {
 async function projectChecks(
 	p: DoctorProbes,
 	entry: StoredProjectConfig,
+	omitFileNames: boolean,
 ): Promise<DoctorCheck[]> {
 	let facts: ProjectFacts;
 	try {
@@ -657,11 +661,27 @@ async function projectChecks(
 		at("push", () => pushCheck(entry, facts)),
 		at("triggers", () => triggersCheck(facts)),
 		at("egress", () => projectEgressCheck(entry)),
-		at("untracked", () => untrackedCheck(facts)),
+		at("untracked", () => untrackedCheck(facts, omitFileNames)),
 	]);
 }
 
 // -------------------------------------------------------------------- run
+
+/** What to strip from a report of this machine before it is shared. */
+export async function redactContextFor(
+	p: DoctorProbes,
+	withProjects = false,
+): Promise<RedactContext> {
+	const loaded = withProjects ? await p.config().catch(() => null) : null;
+	return {
+		home: p.env.HOME,
+		mfwHome: p.home,
+		user: p.env.USER || p.host.user,
+		...(loaded?.ok
+			? { projects: loaded.config.projects.map((e) => e.name) }
+			: {}),
+	};
+}
 
 export async function runDoctor(
 	p: DoctorProbes,
@@ -787,7 +807,9 @@ export async function runDoctor(
 	const harness = await harnessChecks(p, opts);
 	const egress = await guarded("egress.allowlist", "egress", allowlistCheck);
 	const perProject = await Promise.all(
-		projects.map((entry) => projectChecks(p, entry)),
+		projects.map((entry) =>
+			projectChecks(p, entry, opts.omitFileNames === true),
+		),
 	);
 	return buildReport([...fixed, ...harness, egress, ...perProject.flat()]);
 }
