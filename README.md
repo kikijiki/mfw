@@ -197,7 +197,8 @@ clears it.
 To change the password, use Settings > Session. It asks for the current password
 and signs out every other session.
 
-`mfw auth reset` refuses while the server or any agent session is running, because
+`mfw auth reset` refuses while the server or any agent session is running (it finds
+tmux sockets itself, whatever your shell's environment says, and refuses if unsure), because
 a surviving agent could otherwise claim the owner account during setup. Do not
 delete `auth.db` by hand: that skips this check.
 

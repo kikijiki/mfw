@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { acquireDaemonLock } from "../host-resources/daemon-lock.ts";
 import { pinnedTool } from "../sandbox.ts";
 import { AuthService, authDbPath, isAuthRefused } from "./service.ts";
@@ -28,35 +29,102 @@ export interface AuthCliDeps {
 	listAgentSessions?: () => Promise<string[]>;
 }
 
+const socketDir = (root: string, uid: number) => join(root, `tmux-${uid}`);
+
 /**
- * The sessions on mfw's dedicated tmux socket. Agents outlive a server stop, so
- * this is the check that matters. Anything but a clear answer throws: a reset
- * must never proceed on a guess.
+ * Every tmux socket of this user, from the kernel's table of listening unix
+ * sockets, so a server started with another `TMUX_TMPDIR` or socket name is
+ * still found. The configured and default paths are always included.
+ */
+export function discoverTmuxSockets(
+	unixTable: string,
+	uid: number,
+	env: Record<string, string | undefined>,
+): string[] {
+	const found = new Set<string>();
+	const marker = `/tmux-${uid}/`;
+	for (const line of unixTable.split("\n")) {
+		const path = /\s(\/.*)$/.exec(line)?.[1];
+		if (!path) continue;
+		const at = path.lastIndexOf(marker);
+		if (at >= 0 && !path.slice(at + marker.length).includes("/"))
+			found.add(path);
+	}
+	const roots = [
+		"/tmp",
+		...(env.TMUX_TMPDIR?.startsWith("/") ? [env.TMUX_TMPDIR] : []),
+	];
+	const names = ["mfw", ...(env.MFW_TMUX_SOCKET ? [env.MFW_TMUX_SOCKET] : [])];
+	for (const root of roots)
+		for (const name of names) found.add(join(socketDir(root, uid), name));
+	return [...found];
+}
+
+/**
+ * Live agent sessions on these sockets. On an mfw socket every session counts;
+ * on any other (the owner's own tmux) only sessions with an agent's `mfw_` name.
+ * Anything but a clear answer throws: a reset must never proceed on a guess.
  */
 export async function liveAgentSessions(
 	tmux: string,
-	socket: string,
+	sockets: readonly string[],
+	ownSocket?: string,
 ): Promise<string[]> {
-	const p = Bun.spawn([tmux, "-L", socket, "list-sessions", "-F", "#S"], {
-		stdin: "ignore",
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	const [stdout, stderr, exit] = await Promise.all([
-		new Response(p.stdout).text(),
-		new Response(p.stderr).text(),
-		p.exited,
-	]);
-	if (exit === 0) return stdout.split("\n").filter(Boolean);
-	if (/no server running|error connecting to .*No such file/i.test(stderr))
-		return [];
-	throw new Error(`tmux list-sessions failed: ${stderr.trim() || exit}`);
+	const sessions: string[] = [];
+	for (const socket of sockets) {
+		const p = Bun.spawn([tmux, "-S", socket, "list-sessions", "-F", "#S"], {
+			stdin: "ignore",
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, exit] = await Promise.all([
+			new Response(p.stdout).text(),
+			new Response(p.stderr).text(),
+			p.exited,
+		]);
+		if (exit !== 0) {
+			if (
+				/no server running|error connecting to .*(No such file|Connection refused)/i.test(
+					stderr,
+				)
+			)
+				continue;
+			throw new Error(
+				`tmux list-sessions on ${socket} failed: ${stderr.trim() || exit}`,
+			);
+		}
+		const name = basename(socket);
+		const isMfwSocket = name.startsWith("mfw") || name === ownSocket;
+		for (const session of stdout.split("\n").filter(Boolean))
+			if (isMfwSocket || session.startsWith("mfw_")) sessions.push(session);
+	}
+	return sessions;
 }
 
-function defaultAgentSessions(): Promise<string[]> {
+export async function findAgentSessions(o: {
+	tmux: string;
+	readUnixTable: () => string;
+	uid: number;
+	env: Record<string, string | undefined>;
+}): Promise<string[]> {
+	return liveAgentSessions(
+		o.tmux,
+		discoverTmuxSockets(o.readUnixTable(), o.uid, o.env),
+		o.env.MFW_TMUX_SOCKET,
+	);
+}
+
+async function defaultAgentSessions(): Promise<string[]> {
 	const tmux = pinnedTool("tmux");
 	if (!tmux) throw new Error("tmux is not on a trusted PATH");
-	return liveAgentSessions(tmux, process.env.MFW_TMUX_SOCKET || "mfw");
+	const uid = process.getuid?.();
+	if (uid === undefined) throw new Error("cannot determine the user id");
+	return findAgentSessions({
+		tmux,
+		readUnixTable: () => readFileSync("/proc/net/unix", "utf8"),
+		uid,
+		env: process.env,
+	});
 }
 
 async function reset(auth: AuthService, d: AuthCliDeps): Promise<number> {
@@ -83,7 +151,7 @@ async function reset(auth: AuthService, d: AuthCliDeps): Promise<number> {
 		}
 		if (sessions.length > 0) {
 			d.err(
-				`mfw auth: agent sessions are still alive: ${sessions.join(", ")}. A running agent could claim the owner account during setup. Fix: stop them (tmux -L mfw kill-server), then retry.`,
+				`mfw auth: agent sessions are still alive: ${sessions.join(", ")}. A running agent could claim the owner account during setup. Fix: stop them from the UI or with tmux kill-session, then retry.`,
 			);
 			return 1;
 		}
