@@ -829,7 +829,14 @@ export const EventSchema = z.discriminatedUnion("type", [
 		payload: z.object({
 			actionId: z.string(),
 			tool: z.string(),
-			status: z.enum(["accepted", "applied", "rejected", "failed", "proposed"]),
+			status: z.enum([
+				"accepted",
+				"applied",
+				"rejected",
+				"failed",
+				"proposed",
+				"held",
+			]),
 			decisionId: z.number().int().optional(),
 			sessionId: z.string().optional(),
 			/** Set when the executor, not the validator, failed the action. */

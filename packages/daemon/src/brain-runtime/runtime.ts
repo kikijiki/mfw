@@ -56,7 +56,13 @@ import {
 	type DigestRunFact,
 	renderDigest,
 } from "./digest.ts";
+import { BrainDirections } from "./directions.ts";
 import { BrainActionExecutor, type BrainExecutorDeps } from "./executor.ts";
+import {
+	memoryTainted,
+	recordProvenance,
+	taskProvenance,
+} from "./provenance.ts";
 import { BrainReadService, type BrainWorld } from "./reads.ts";
 import type { BrainMcpServer, BrainTurnLaunch } from "./turn-run.ts";
 import {
@@ -223,6 +229,8 @@ export class BrainRuntime {
 	readonly executor: BrainActionExecutor;
 	/** A person's levers: override a decision, message the brain. */
 	readonly human: HumanOverrideService;
+	/** The owner's one-sentence directions, and how each is going. */
+	readonly directions: BrainDirections;
 	private readonly now: () => number;
 	private readonly host: string;
 	private inflight: Promise<TickOutcome> | null = null;
@@ -235,6 +243,16 @@ export class BrainRuntime {
 		this.now = deps.now ?? (() => Date.now());
 		this.host = deps.hostname ?? osHostname();
 		this.reads = new BrainReadService({
+			noteProvenance: async (turnRunId, tags) => {
+				const sessionId = await this.executor.sessionOf(turnRunId);
+				if (!sessionId) return;
+				await recordProvenance(
+					deps.handle,
+					sessionId,
+					tags,
+					(deps.now ?? Date.now)(),
+				);
+			},
 			handle: deps.handle,
 			tasks: deps.tasks,
 			registry: deps.registry,
@@ -275,6 +293,12 @@ export class BrainRuntime {
 				? { wakeScheduler: deps.exec.wakeScheduler }
 				: {}),
 			now: deps.now,
+		});
+		this.directions = new BrainDirections({
+			handle: deps.handle,
+			bus: deps.bus,
+			taskStatus: async (id) => (await deps.tasks.get(id))?.status ?? null,
+			...(deps.now ? { now: deps.now } : {}),
 		});
 	}
 
@@ -701,7 +725,9 @@ export class BrainRuntime {
 			now,
 			cfg,
 		});
-		const { markdown } = renderDigest(input);
+		const { markdown, provenance } = renderDigest(input);
+		// Before the turn exists: a crash here over-records, it never under-records.
+		await recordProvenance(this.deps.handle, session.id, provenance, now);
 
 		// Intent before effect: the turn row, the session's native id and the
 		// `brain.turn_started` event commit together, before anything launches.
@@ -1043,6 +1069,17 @@ export class BrainRuntime {
 				`You have used ${turnsHour} of ${p.cfg.maxTurnsPerHour} turns this hour; batch your decisions.`,
 			);
 		}
+		for (const h of (await this.actions.heldActions()).slice(0, 10)) {
+			reminders.push(
+				`Waiting on the owner's decision, do not retry: ${h.tool} (${h.id}).`,
+			);
+		}
+		const breaker = await this.actions.breaker.status();
+		if (breaker.open) {
+			reminders.push(
+				`Your act tools are paused (${breaker.detail ?? "breaker open"}). Read if you must, then end your turn.`,
+			);
+		}
 		const hint = p.session.wakeHint;
 		if (hint) reminders.push(`Wake hint you left: ${JSON.stringify(hint)}`);
 		// Nothing expands a draft by itself: the brain spawns the planning run.
@@ -1114,6 +1151,12 @@ export class BrainRuntime {
 			capacity,
 			reminders,
 			...(rehydration ? { rehydration } : {}),
+			untrustedTasks: new Set(
+				(await this.deps.tasks.list())
+					.filter((t) => taskProvenance(t) !== "owner_board")
+					.map((t) => t.id),
+			),
+			memoryTainted: await memoryTainted(this.deps.handle),
 		};
 	}
 

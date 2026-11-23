@@ -1,10 +1,22 @@
+import {
+	DirectionError,
+	type DirectionErrorCode,
+} from "@mfw/daemon/brain-runtime/directions";
 import { brainIntents, summarizeBrain } from "@mfw/daemon/brain-view";
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
 	createTRPCRouter,
 	projectProcedure,
 	publicProcedure,
 } from "../trpc.ts";
+
+const DIRECTION_CODES: Record<DirectionErrorCode, TRPCError["code"]> = {
+	invalid: "BAD_REQUEST",
+	key_reused: "CONFLICT",
+	rate_limited: "TOO_MANY_REQUESTS",
+	no_brain: "PRECONDITION_FAILED",
+};
 
 /**
  * The project brain. The four plain queries (`session`, `turns`, `decisions`,
@@ -119,6 +131,39 @@ export const brainRouter = createTRPCRouter({
 			}),
 		),
 
+	/**
+	 * The owner's one-sentence direction; wakes the brain, which drafts the
+	 * work. Authorship is set by the server: the input has no field for it.
+	 * `key` makes a double submit one direction.
+	 */
+	giveDirection: projectProcedure
+		.input(
+			z.object({
+				text: z.string().min(1).max(2000),
+				key: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			try {
+				return await ctx.svc.brainRuntime.directions.give({
+					text: input.text,
+					key: input.key,
+				});
+			} catch (e) {
+				if (!(e instanceof DirectionError)) throw e;
+				throw new TRPCError({
+					code: DIRECTION_CODES[e.code],
+					message: e.message,
+					cause: e,
+				});
+			}
+		}),
+
+	/** Recent directions, newest first, each with its derived status. */
+	directions: projectProcedure.query(({ ctx }) =>
+		ctx.svc.brainRuntime.directions.list(),
+	),
+
 	/** A person fixed the cause of an open circuit and presses retry. */
 	resetCircuit: projectProcedure.mutation(async ({ ctx }) => {
 		await ctx.svc.brainRuntime.resetCircuit();
@@ -132,6 +177,32 @@ export const brainRouter = createTRPCRouter({
 			await ctx.svc.brainRuntime.setPaused(input.paused);
 			return ctx.svc.brainRuntime.view();
 		}),
+
+	/**
+	 * The owner's answer on a decision card. Idempotent: answering a card
+	 * twice runs the held action at most once.
+	 */
+	resolveDecision: projectProcedure
+		.input(
+			z.object({
+				actionId: z.string().min(1),
+				approve: z.boolean(),
+				reason: z.string().trim().max(2000).optional(),
+			}),
+		)
+		.mutation(({ ctx, input }) =>
+			ctx.svc.brainRuntime.actions.resolveHeld({
+				actionId: input.actionId,
+				approve: input.approve,
+				...(input.reason ? { reason: input.reason } : {}),
+			}),
+		),
+
+	/** The owner closes the act breaker. */
+	resetActBreaker: projectProcedure.mutation(async ({ ctx }) => {
+		await ctx.svc.brainRuntime.actions.breaker.reset();
+		return { ok: true };
+	}),
 
 	/** One read tool of the brain's MCP server. */
 	read: projectProcedure

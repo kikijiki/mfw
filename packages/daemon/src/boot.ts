@@ -1338,6 +1338,24 @@ export async function attachProject(
 				budgets.holdFor(task),
 			checkBudget: (input): ReturnType<BudgetService["checkBrainLimit"]> =>
 				budgets.checkBrainLimit(input),
+			// The same listing as the finalize scope check: from the host's repo,
+			// never from the run's agent-writable worktree.
+			changedFiles: async (run) => {
+				if (!run.branch || !run.baseSha) return null;
+				const diff = await git(
+					[
+						"diff",
+						"--name-only",
+						"--no-renames",
+						"-z",
+						`${run.baseSha}..${run.branch}`,
+					],
+					root,
+				).catch(() => null);
+				return diff?.exitCode === 0
+					? diff.stdout.split("\0").filter(Boolean)
+					: null;
+			},
 			routeHeld: async (task, pick) => {
 				const held = (await engine.routeTask(task, pick ? { brain: pick } : {}))
 					.held;

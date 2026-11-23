@@ -56,7 +56,12 @@ export function needTarget(item: InboxItem): string {
 		case "main_red":
 			return taskId ? href.task(project, taskId) : href.board(project);
 		case "brain_stuck":
+		case "brain_breaker":
 			return href.flow(project, { node: nodeRef.brain() });
+		case "brain_decision":
+			return taskId
+				? href.task(project, taskId)
+				: href.flow(project, { node: nodeRef.brain() });
 		case "brain_notice":
 			// What it blocks, when it names a task; else the brain's own decisions.
 			return taskId

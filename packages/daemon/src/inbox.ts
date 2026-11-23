@@ -11,7 +11,9 @@ import {
 	runs,
 } from "@mfw/db/schema";
 import { and, desc, eq, gte, inArray, isNull, ne } from "drizzle-orm";
+import { readActBreaker } from "./brain-runtime/act-breaker.ts";
 import { readAwaiting } from "./brain-runtime/awaiting.ts";
+import { decisionCardId } from "./brain-runtime/decision-rights.ts";
 import { TASK_QUESTION_KIND } from "./clarify.ts";
 import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
 import type { TaskRow, TaskService } from "./task-service.ts";
@@ -47,7 +49,11 @@ export type InboxKind =
 	/** The brain's circuit is open (repeated failed turns); a person resets it. */
 	| "brain_stuck"
 	/** The brain asked for a person (`notify_human`, any kind but `fyi`). */
-	| "brain_notice";
+	| "brain_notice"
+	/** A brain action is held until the owner approves or declines it (decision rights). */
+	| "brain_decision"
+	/** The brain's act tools are paused for this project (`act-breaker.ts`). */
+	| "brain_breaker";
 
 export type InboxSeverity = "critical" | "attention" | "info";
 
@@ -168,7 +174,17 @@ const SEVERITY: Record<InboxKind, InboxSeverity> = {
 	brain_stuck: "critical",
 	// Only a person can supply what the brain asked for.
 	brain_notice: "attention",
+	// Nothing runs until the owner answers; the rest of the fleet keeps going.
+	brain_decision: "attention",
+	// The brain can read but not act until this closes.
+	brain_breaker: "critical",
 };
+
+/** Only an answer clears these: a reserved decision is never hidden. */
+const UNDISMISSABLE: ReadonlySet<InboxKind> = new Set([
+	"brain_decision",
+	"brain_breaker",
+]);
 
 /** How long an un-dismissed `notify_human` stays in the queue. */
 const BRAIN_NOTICE_DAYS = 7;
@@ -244,7 +260,9 @@ export class InboxService {
 				(d) => d.itemId,
 			),
 		);
-		const items = (await this.collect()).filter((i) => !dismissed.has(i.id));
+		const items = (await this.collect()).filter(
+			(i) => !dismissed.has(i.id) || UNDISMISSABLE.has(i.kind),
+		);
 		items.sort((a, b) => RANK[a.severity] - RANK[b.severity] || b.ts - a.ts);
 		return items;
 	}
@@ -794,6 +812,41 @@ export class InboxService {
 				ts: (lastTurn?.endedAt ?? failed.createdAt).getTime(),
 			});
 		}
+		const breaker = await readActBreaker(this.deps.handle, Date.now());
+		if (breaker.open) {
+			out.push({
+				id: `brain_breaker:${breaker.trippedAt ?? 0}`,
+				project,
+				kind: "brain_breaker",
+				severity: SEVERITY.brain_breaker,
+				title: "the brain's actions are paused",
+				detail: `${breaker.detail ?? "the act breaker is open"}. It can still read; running work continues.`,
+				fix:
+					typeof breaker.until === "number"
+						? `Reset it here, or it closes by itself at ${new Date(breaker.until).toISOString()}.`
+						: "It tripped twice within a day, so only you can reset it.",
+				ts: breaker.trippedAt ?? 0,
+			});
+		}
+		const held = await db
+			.select()
+			.from(brainActions)
+			.where(eq(brainActions.status, "held"));
+		for (const h of held) {
+			const card = describeHeld(h);
+			out.push({
+				id: decisionCardId(h.id),
+				project,
+				kind: "brain_decision",
+				severity: SEVERITY.brain_decision,
+				title: card.title,
+				detail: card.detail,
+				answer: { mode: "approve", requestId: h.id },
+				requestId: h.id,
+				...(card.taskId ? { taskId: card.taskId } : {}),
+				ts: h.createdAt.getTime(),
+			});
+		}
 		const since = new Date(Date.now() - BRAIN_NOTICE_DAYS * 86_400_000);
 		const notices = await db
 			.select()
@@ -884,6 +937,50 @@ export class InboxService {
 }
 
 /**
+ * A decision card's text. It shows the exact arguments, because they are what
+ * will run, and labels the rationale as the brain's words: it may repeat
+ * untrusted text.
+ */
+export function describeHeld(row: {
+	tool: string;
+	args: Record<string, unknown>;
+	effects: Record<string, unknown> | null;
+}): { title: string; detail: string; taskId?: string } {
+	const {
+		rationale,
+		alternatives: _a,
+		confidence: _c,
+		key: _k,
+		...call
+	} = row.args;
+	const rights = row.effects?.rights as
+		| { actionClass?: string; cause?: string }
+		| undefined;
+	const what = (rights?.actionClass ?? "reserved").replace(/_/g, " ");
+	const why =
+		rights?.cause === "taint"
+			? "The brain read untrusted text (agent output, CI, repo or web) in this session, so it may have been steered."
+			: "This class of action is reserved for you.";
+	const json = JSON.stringify(call);
+	const args = json.length > 1200 ? `${json.slice(0, 1200)}…` : json;
+	const taskId =
+		typeof call.taskId === "string"
+			? call.taskId
+			: typeof call.id === "string"
+				? call.id
+				: undefined;
+	return {
+		title: `decide: ${row.tool} (${what})`,
+		detail: `${why} Would run: ${args}${
+			typeof rationale === "string" && rationale
+				? ` The brain's stated reason (unverified): ${rationale.slice(0, 400)}`
+				: ""
+		}`,
+		...(taskId ? { taskId } : {}),
+	};
+}
+
+/**
  * One table decides the class of every kind at its ordinary severity. A
  * `critical` item is always `act` (mfw is stuck), whatever its kind. The
  * `Record` makes a new `InboxKind` a compile error until it is classified.
@@ -906,6 +1003,8 @@ export const ATTENTION_BY_KIND: Record<InboxKind, AttentionClass> = {
 	auth_hold: "act",
 	brain_stuck: "act",
 	brain_notice: "act",
+	brain_decision: "act",
+	brain_breaker: "act",
 	// A run failed and was handled; read it, nothing to answer.
 	failed_run: "know",
 	followups: "know",
