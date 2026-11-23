@@ -4,7 +4,7 @@ import type {
 	HostResourceBinding,
 	HostResourceDefinition,
 	HostResourceReadModel,
-} from "./host-resources/types.ts";
+} from "./resources/host-types.ts";
 
 export interface HostResourceRecommendation {
 	id: string;

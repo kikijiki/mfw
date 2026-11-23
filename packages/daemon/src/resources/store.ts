@@ -27,8 +27,12 @@ import {
 	scopeKey,
 } from "./admission.ts";
 import { fromStored, toStored } from "./amounts.ts";
+import type { ObservationHealth, StoredObservation } from "./host-types.ts";
+import { RAM_OBSERVATION_MAX_AGE_MS } from "./quantity.ts";
 import {
 	RESOURCE_CLEANUP_SCHEMA,
+	RESOURCE_INCIDENT_SCHEMA,
+	RESOURCE_PROBE_SCHEMA,
 	RESOURCE_SCHEMA,
 	RESOURCE_SCHEMA_VERSION,
 } from "./schema.ts";
@@ -48,14 +52,18 @@ import {
 	LIVE_LEASE_STATES,
 	type PoolDefinition,
 	type PoolHold,
+	type PoolIncident,
+	type PoolIncidentKind,
 	type PoolSummary,
 	type QuotaScope,
+	REMOTE_RUN_SESSION_PREFIX,
 	ResourceError,
 	type ResourceHeld,
 	type ResourceLease,
 	type ResourceLeaseState,
 	type ResourceReconcileReport,
 	type ResourceWaiter,
+	type RunIdentity,
 } from "./types.ts";
 import { assertValidWindow, windowStart } from "./windows.ts";
 
@@ -124,6 +132,14 @@ function leaseFrom(row: Row): ResourceLease {
 		state: str(row.state, "lease state") as ResourceLeaseState,
 		fence: int(row.fence, "lease fence"),
 		runId: row.run_id === null ? null : str(row.run_id, "lease run"),
+		run:
+			row.run_json === null || row.run_json === undefined
+				? null
+				: parsed<RunIdentity>(row.run_json, "lease run identity"),
+		ownerBootId:
+			row.owner_boot_id === null || row.owner_boot_id === undefined
+				? null
+				: str(row.owner_boot_id, "lease owner boot"),
 		grantedAt: int(row.granted_at, "lease granted_at"),
 		activatedAt: intOrNull(row.activated_at, "lease activated_at"),
 		lastRenewedAt: intOrNull(row.last_renewed_at, "lease last_renewed_at"),
@@ -185,9 +201,195 @@ interface DimensionRow {
 	capacity: number;
 }
 
+export interface HostConfigRows {
+	hostId: string | null;
+	generation: number;
+	definitions: string[];
+	bindings: string[];
+}
+
+export interface ResourceAuditEntry {
+	seq: number;
+	at: number;
+	action: string;
+	actor: string;
+	poolId: string | null;
+	leaseId: string | null;
+	detail: Record<string, unknown>;
+}
+
 export interface OpenResourceStoreOptions {
 	now?: () => number;
 	busyTimeoutMs?: number;
+	/** This daemon process; a lease from another boot is recovered, not trusted. */
+	processBootId?: string;
+	kernelBootId?: string | null;
+}
+
+function canonicalJson(value: unknown): string {
+	return JSON.stringify(value ?? {}, (_key, nested) => {
+		if (typeof nested === "bigint") return nested.toString();
+		if (nested === null || typeof nested !== "object" || Array.isArray(nested))
+			return nested;
+		return Object.fromEntries(
+			Object.keys(nested as Record<string, unknown>)
+				.sort()
+				.map((key) => [key, (nested as Record<string, unknown>)[key]]),
+		);
+	});
+}
+
+function probeJson(value: unknown): string {
+	return JSON.stringify(value ?? {}, (_key, nested) =>
+		typeof nested === "bigint" ? nested.toString() : nested,
+	);
+}
+
+function probeGeneration(detail: Record<string, unknown> | null | undefined) {
+	const generation = detail?.generation as
+		| Record<string, unknown>
+		| null
+		| undefined;
+	if (
+		typeof generation?.processBootId !== "string" ||
+		(generation.kernelBootId !== null &&
+			typeof generation.kernelBootId !== "string") ||
+		typeof generation.sequence !== "string" ||
+		!/^(?:0|[1-9][0-9]*)$/.test(generation.sequence)
+	) {
+		return null;
+	}
+	return {
+		processBootId: generation.processBootId,
+		kernelBootId: generation.kernelBootId as string | null,
+		sequence: BigInt(generation.sequence),
+	};
+}
+
+/** Health detail without the fields that change on every healthy poll. */
+function meaningfulProbeDetail(
+	detail: Record<string, unknown> | null | undefined,
+): string {
+	const {
+		generation: _generation,
+		freshness: _freshness,
+		...rest
+	} = detail ?? {};
+	return canonicalJson(rest);
+}
+
+function probeSampleFrom(row: Record<string, unknown>): StoredObservation {
+	return {
+		bindingId: str(row.binding_id, "probe binding"),
+		kind: str(row.kind, "probe kind"),
+		sequence: BigInt(row.sequence as bigint),
+		result: str(row.result, "probe result") as StoredObservation["result"],
+		processBootId: str(row.process_boot_id, "probe boot"),
+		kernelBootId:
+			row.kernel_boot_id === null
+				? null
+				: str(row.kernel_boot_id, "probe kernel"),
+		observedAt: int(row.observed_at, "probe observed"),
+		durationMs: int(row.duration_ms, "probe duration"),
+		metrics: parsed<Record<string, unknown>>(row.metrics_json, "probe metrics"),
+		occupants: parsed<unknown[]>(row.occupants_json, "probe occupants"),
+		warnings: parsed<string[]>(row.warnings_json, "probe warnings"),
+		adapterVersion:
+			row.adapter_version === null
+				? null
+				: str(row.adapter_version, "probe adapter"),
+	};
+}
+
+/** The same observed facts, ignoring when and in which generation. */
+function sameProbeContent(a: StoredObservation, b: StoredObservation): boolean {
+	return (
+		a.kind === b.kind &&
+		a.result === b.result &&
+		a.processBootId === b.processBootId &&
+		a.kernelBootId === b.kernelBootId &&
+		(a.adapterVersion ?? null) === (b.adapterVersion ?? null) &&
+		canonicalJson(a.metrics) === canonicalJson(b.metrics) &&
+		canonicalJson(a.occupants) === canonicalJson(b.occupants) &&
+		canonicalJson(a.warnings) === canonicalJson(b.warnings)
+	);
+}
+
+function sameProbeSample(a: StoredObservation, b: StoredObservation): boolean {
+	return (
+		a.sequence === b.sequence &&
+		a.observedAt === b.observedAt &&
+		a.durationMs === b.durationMs &&
+		sameProbeContent(a, b)
+	);
+}
+
+async function writeProbeHealth(
+	tx: Transaction,
+	health: ObservationHealth,
+): Promise<void> {
+	await tx.execute({
+		sql: `INSERT INTO rp_probe_health(kind,result,checked_at,process_boot_id,kernel_boot_id,detail_json)
+		      VALUES(?,?,?,?,?,?) ON CONFLICT(kind) DO UPDATE SET result=excluded.result,
+		        checked_at=excluded.checked_at, process_boot_id=excluded.process_boot_id,
+		        kernel_boot_id=excluded.kernel_boot_id, detail_json=excluded.detail_json`,
+		args: [
+			health.kind,
+			health.result,
+			health.checkedAt,
+			health.processBootId,
+			health.kernelBootId,
+			probeJson(health.detail),
+		],
+	});
+}
+
+async function writeProbeSample(
+	tx: Transaction,
+	sample: StoredObservation,
+): Promise<void> {
+	await tx.execute({
+		sql: `INSERT INTO rp_probe_samples(binding_id,kind,sequence,result,observed_at,duration_ms,process_boot_id,kernel_boot_id,adapter_version,metrics_json,occupants_json,warnings_json)
+		      VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+		      ON CONFLICT(binding_id) DO UPDATE SET kind=excluded.kind, sequence=excluded.sequence,
+		        result=excluded.result, observed_at=excluded.observed_at, duration_ms=excluded.duration_ms,
+		        process_boot_id=excluded.process_boot_id, kernel_boot_id=excluded.kernel_boot_id,
+		        adapter_version=excluded.adapter_version, metrics_json=excluded.metrics_json,
+		        occupants_json=excluded.occupants_json, warnings_json=excluded.warnings_json`,
+		args: [
+			sample.bindingId,
+			sample.kind,
+			sample.sequence,
+			sample.result,
+			sample.observedAt,
+			sample.durationMs,
+			sample.processBootId,
+			sample.kernelBootId,
+			sample.adapterVersion ?? null,
+			probeJson(sample.metrics),
+			JSON.stringify(sample.occupants, (_key, nested) =>
+				typeof nested === "bigint" ? nested.toString() : nested,
+			),
+			JSON.stringify(sample.warnings),
+		],
+	});
+}
+
+/** Incident contexts carry exact byte counts, which JSON numbers cannot. */
+function encodeIncidentContext(context: Record<string, unknown>): string {
+	return JSON.stringify(context, (_key, value) =>
+		typeof value === "bigint" ? { $bigint: value.toString() } : value,
+	);
+}
+
+function decodeIncidentContext(text: string): Record<string, unknown> {
+	return JSON.parse(text, (_key, value) =>
+		value !== null &&
+		typeof value === "object" &&
+		typeof value.$bigint === "string"
+			? BigInt(value.$bigint)
+			: value,
+	);
 }
 
 export class ResourceStore {
@@ -199,6 +401,8 @@ export class ResourceStore {
 		readonly path: string,
 		private readonly now: () => number,
 		private readonly busyTimeoutMs: number,
+		readonly processBootId: string = randomUUID(),
+		readonly kernelBootId: string | null = null,
 	) {}
 
 	close(): void {
@@ -311,10 +515,17 @@ export class ResourceStore {
 			});
 			const existing = await all(
 				tx,
-				"SELECT name, kind FROM rp_dimensions WHERE pool_id=?",
+				"SELECT name, kind, spec_json FROM rp_dimensions WHERE pool_id=?",
 				[definition.id],
 			);
 			const next = new Map(dimensions.map((d) => [d.name, d]));
+			const unchanged =
+				existing.length === dimensions.length &&
+				existing.every(
+					(row) =>
+						row.spec_json ===
+						JSON.stringify(next.get(str(row.name, "dimension name"))),
+				);
 			for (const row of existing) {
 				const name = str(row.name, "dimension name");
 				const replacement = next.get(name);
@@ -339,7 +550,12 @@ export class ResourceStore {
 					],
 				});
 			}
-			await this.audit(tx, "pool.defined", "owner", { poolId: definition.id });
+			// Re-registering the same shape at boot is not an event.
+			if (!unchanged) {
+				await this.audit(tx, "pool.defined", "owner", {
+					poolId: definition.id,
+				});
+			}
 		});
 	}
 
@@ -968,14 +1184,15 @@ export class ResourceStore {
 			const now = this.now();
 			const scopesJson = JSON.stringify(waiter.scopes);
 			await tx.execute({
-				sql: `INSERT INTO rp_leases(id,waiter_id,project_id,scopes_json,state,fence,granted_at,updated_at)
-				      VALUES(?,?,?,?,'provisional',?,?,?)`,
+				sql: `INSERT INTO rp_leases(id,waiter_id,project_id,scopes_json,state,fence,owner_boot_id,granted_at,updated_at)
+				      VALUES(?,?,?,?,'provisional',?,?,?,?)`,
 				args: [
 					leaseId,
 					waiterId,
 					waiter.projectId,
 					scopesJson,
 					fence,
+					this.processBootId,
 					now,
 					now,
 				],
@@ -1024,7 +1241,7 @@ export class ResourceStore {
 			});
 			await this.audit(
 				tx,
-				"lease.granted",
+				"lease.provisional",
 				"core",
 				{ leaseId },
 				{
@@ -1083,6 +1300,63 @@ export class ResourceStore {
 		return row ? leaseFrom(row) : null;
 	}
 
+	/** Live allocations on one pool, with the units each lease holds. */
+	async allocations(
+		poolId: string,
+	): Promise<{ lease: ResourceLease; units: string[] }[]> {
+		const rows = await all(
+			this.client,
+			`SELECT l.*, a.units_json FROM rp_allocations a JOIN rp_leases l ON l.id=a.lease_id
+			 WHERE a.pool_id=? AND l.state IN (${LIVE_SQL}) ORDER BY l.fence`,
+			[poolId],
+		);
+		return rows.map((row) => ({
+			lease: leaseFrom(row),
+			units: parsed<string[]>(row.units_json, "allocation units"),
+		}));
+	}
+
+	/** Which units each lease holds, by pool. */
+	async leaseUnits(): Promise<Map<string, Map<string, string[]>>> {
+		const out = new Map<string, Map<string, string[]>>();
+		for (const row of await all(
+			this.client,
+			"SELECT lease_id,pool_id,units_json FROM rp_allocations",
+		)) {
+			const leaseId = str(row.lease_id, "allocation lease");
+			const byPool = out.get(leaseId) ?? new Map<string, string[]>();
+			byPool.set(
+				str(row.pool_id, "allocation pool"),
+				parsed<string[]>(row.units_json, "allocation units"),
+			);
+			out.set(leaseId, byPool);
+		}
+		return out;
+	}
+
+	/** Every waiter and lease, so a caller can prove a terminal state. */
+	async readLedger(): Promise<{
+		waiters: ResourceWaiter[];
+		leases: ResourceLease[];
+	}> {
+		const tx = await this.client.transaction("read");
+		try {
+			const waiters: ResourceWaiter[] = [];
+			for (const row of await all(
+				tx,
+				"SELECT * FROM rp_waiters ORDER BY sequence",
+			)) {
+				waiters.push(await this.waiterFrom(tx, row));
+			}
+			const leases = (
+				await all(tx, "SELECT * FROM rp_leases ORDER BY fence")
+			).map(leaseFrom);
+			return { waiters, leases };
+		} finally {
+			tx.close();
+		}
+	}
+
 	async liveLeases(): Promise<ResourceLease[]> {
 		const rows = await all(
 			this.client,
@@ -1096,7 +1370,11 @@ export class ResourceStore {
 		fence: number,
 		runId: string,
 		leaseMs: number,
+		run?: RunIdentity,
 	): Promise<ResourceLease> {
+		if (run && run.runId !== runId) {
+			throw new ResourceError("run identity names another run", "REFUSED");
+		}
 		if (!runId.trim()) throw new ResourceError("run id is required", "REFUSED");
 		return this.withWrite(async (tx) => {
 			const lease = await this.fenced(tx, id, fence);
@@ -1118,9 +1396,19 @@ export class ResourceStore {
 			const now = this.now();
 			const row = await one(
 				tx,
-				`UPDATE rp_leases SET state='active', run_id=?, activated_at=?, last_renewed_at=?, expires_at=?, updated_at=?
+				`UPDATE rp_leases SET state='active', run_id=?, run_json=?, owner_boot_id=?, activated_at=?, last_renewed_at=?, expires_at=?, updated_at=?
 				 WHERE id=? AND fence=? RETURNING *`,
-				[runId, now, now, now + leaseMs, now, id, fence],
+				[
+					runId,
+					JSON.stringify(run ?? { runId }),
+					this.processBootId,
+					now,
+					now,
+					now + leaseMs,
+					now,
+					id,
+					fence,
+				],
 			);
 			await this.audit(
 				tx,
@@ -1141,7 +1429,11 @@ export class ResourceStore {
 		fence: number,
 		runId: string,
 		leaseMs: number,
+		run?: RunIdentity,
 	): Promise<void> {
+		if (run && run.runId !== runId) {
+			throw new ResourceError("run identity names another run", "REFUSED");
+		}
 		await this.withWrite(async (tx) => {
 			const lease = await this.fenced(tx, id, fence);
 			if (lease.state !== "active" && lease.state !== "uncertain") {
@@ -1158,16 +1450,65 @@ export class ResourceStore {
 			}
 			const now = this.now();
 			await tx.execute({
-				sql: "UPDATE rp_leases SET state='active', last_renewed_at=?, expires_at=?, updated_at=? WHERE id=? AND fence=?",
-				args: [now, now + leaseMs, now, id, fence],
+				sql: `UPDATE rp_leases SET state='active', run_json=COALESCE(?, run_json), owner_boot_id=?,
+				      last_renewed_at=?, expires_at=?, updated_at=? WHERE id=? AND fence=?`,
+				args: [
+					run ? JSON.stringify(run) : null,
+					this.processBootId,
+					now,
+					now + leaseMs,
+					now,
+					id,
+					fence,
+				],
 			});
-			await this.audit(
-				tx,
-				lease.state === "uncertain" ? "lease.adopted" : "lease.renewed",
-				"owner",
-				{ leaseId: id },
-			);
+			// A heartbeat with an unchanged owner proof adds nothing to the trail.
+			const detail = { run: run ?? lease.run };
+			const repeated =
+				lease.state === "active" &&
+				(await one(
+					tx,
+					"SELECT 1 AS seen FROM rp_audit WHERE lease_id=? AND action='lease.renewed' AND detail_json=? LIMIT 1",
+					[id, JSON.stringify(detail)],
+				));
+			if (!repeated) {
+				await this.audit(
+					tx,
+					lease.state === "uncertain" ? "lease.adopted" : "lease.renewed",
+					"owner",
+					{ leaseId: id },
+					detail,
+				);
+			}
 		});
+	}
+
+	/**
+	 * A pool that stopped being observed: its last reading and observation
+	 * holds no longer apply. The owner chose this, and the definition audits it.
+	 */
+	async forgetObservation(poolId: string): Promise<void> {
+		await this.withWrite(async (tx) => {
+			await tx.execute({
+				sql: "DELETE FROM rp_observations WHERE pool_id=?",
+				args: [poolId],
+			});
+			await tx.execute({
+				sql: "UPDATE rp_holds SET cleared_at=?, cleared_by='core' WHERE pool_id=? AND cleared_at IS NULL AND reason LIKE 'observation-%'",
+				args: [this.now(), poolId],
+			});
+		});
+	}
+
+	/** Records that a resource stopped or resumed taking work, and why. */
+	async auditHoldTransition(
+		poolId: string,
+		action: "resource.hold.opened" | "resource.hold.resolved",
+		detail: Record<string, unknown>,
+	): Promise<void> {
+		await this.withWrite((tx) =>
+			this.audit(tx, action, "core", { poolId }, detail),
+		);
 	}
 
 	async markReleasing(
@@ -1261,6 +1602,7 @@ export class ResourceStore {
 		fence: number,
 		actor: string,
 		reason: string,
+		evidence: Record<string, unknown> = {},
 	): Promise<boolean> {
 		if (!actor.trim() || !reason.trim()) {
 			throw new ResourceError(
@@ -1278,7 +1620,59 @@ export class ResourceStore {
 				);
 			}
 			await this.settleReservations(tx, id, []);
-			await this.closeLease(tx, lease, "force_released", reason, actor);
+			await this.closeLease(
+				tx,
+				lease,
+				"force_released",
+				reason,
+				actor,
+				evidence,
+			);
+			return true;
+		});
+	}
+
+	/**
+	 * The owner's override for one claim of a live lease: the rest of the lease
+	 * keeps its capacity, because the run may still be using it.
+	 */
+	async forceReleaseClaim(
+		id: string,
+		fence: number,
+		poolId: string,
+		actor: string,
+		reason: string,
+	): Promise<boolean> {
+		if (!actor.trim() || !reason.trim()) {
+			throw new ResourceError(
+				"force release needs actor and reason",
+				"REFUSED",
+			);
+		}
+		return this.withWrite(async (tx) => {
+			const lease = await this.fenced(tx, id, fence);
+			if (!isLive(lease.state)) return false;
+			const removed = await tx.execute({
+				sql: "DELETE FROM rp_allocations WHERE lease_id=? AND pool_id=?",
+				args: [id, poolId],
+			});
+			if (removed.rowsAffected === 0) return false;
+			await this.audit(
+				tx,
+				"lease.claim_force_released",
+				actor,
+				{ poolId, leaseId: id },
+				{ reason, fence },
+			);
+			const left = await one(
+				tx,
+				"SELECT 1 AS present FROM rp_allocations WHERE lease_id=? LIMIT 1",
+				[id],
+			);
+			if (!left) {
+				await this.settleReservations(tx, id, []);
+				await this.closeLease(tx, lease, "force_released", reason, actor);
+			}
 			return true;
 		});
 	}
@@ -1289,6 +1683,7 @@ export class ResourceStore {
 		to: "released" | "reclaimed" | "force_released",
 		reason: string,
 		actor: string,
+		evidence: Record<string, unknown> = {},
 	): Promise<void> {
 		const now = this.now();
 		await tx.execute({
@@ -1303,6 +1698,8 @@ export class ResourceStore {
 			{
 				from: lease.state,
 				reason,
+				fence: lease.fence,
+				...evidence,
 			},
 		);
 	}
@@ -1512,6 +1909,66 @@ export class ResourceStore {
 		});
 	}
 
+	/**
+	 * Copies after-the-fact charges into a window in one transaction. A source
+	 * row can be corrected later, so a repeated key takes the newer amount.
+	 */
+	async syncCharges(input: {
+		poolId: string;
+		dimension: string;
+		projectId: string;
+		charges: readonly { entryKey: string; amount: number; atMs: number }[];
+	}): Promise<void> {
+		const scopes = JSON.stringify(withProjectScope(input.projectId));
+		await this.withWrite(async (tx) => {
+			const { spec } = await this.dimensionRow(
+				tx,
+				input.poolId,
+				input.dimension,
+			);
+			if (spec.kind !== "window") {
+				throw new ResourceError("charges apply to windows", "REFUSED");
+			}
+			for (const charge of input.charges) {
+				if (charge.entryKey.startsWith("lease:")) {
+					throw new ResourceError("reserved ledger key prefix", "REFUSED");
+				}
+				await tx.execute({
+					sql: `INSERT INTO rp_ledger(id,entry_key,project_id,pool_id,dimension,lease_id,scopes_json,state,amount,at_ms)
+					      VALUES(?,?,?,?,?,NULL,?,'settled',?,?)
+					      ON CONFLICT(entry_key) DO UPDATE SET amount=excluded.amount, at_ms=excluded.at_ms`,
+					args: [
+						randomUUID(),
+						charge.entryKey,
+						input.projectId,
+						input.poolId,
+						input.dimension,
+						scopes,
+						toStored("window", charge.amount),
+						charge.atMs,
+					],
+				});
+			}
+		});
+	}
+
+	/** Everything charged or still reserved to a window between two instants. */
+	async windowTotal(
+		poolId: string,
+		dimension: string,
+		startMs: number,
+		endMs: number,
+	): Promise<number> {
+		const row = await one(
+			this.client,
+			`SELECT COALESCE(SUM(amount), 0) AS total FROM rp_ledger
+			 WHERE pool_id=? AND dimension=? AND state IN ('reserved','settled','estimated')
+			   AND at_ms>=? AND at_ms<?`,
+			[poolId, dimension, startMs, endMs],
+		);
+		return fromStored("window", Number(row?.total ?? 0));
+	}
+
 	async ledger(
 		filter: { projectId?: string; leaseId?: string } = {},
 	): Promise<LedgerEntry[]> {
@@ -1555,12 +2012,34 @@ export class ResourceStore {
 			reclaimed: 0,
 			uncertain: 0,
 			unchanged: 0,
+			released: 0,
 		};
 		for (const seen of await this.liveLeases()) {
 			report.examined++;
+			const recovered = await this.recoverWithoutEvidence(seen);
+			if (recovered) {
+				report[recovered]++;
+				continue;
+			}
+			// A remote run cannot be judged from here. Once this process activated
+			// or adopted it the project renews it; only a lease from an earlier
+			// boot goes to project recovery, as uncertain.
+			if (
+				seen.state === "active" &&
+				seen.ownerBootId === this.processBootId &&
+				seen.run?.sessionId?.startsWith(REMOTE_RUN_SESSION_PREFIX)
+			) {
+				report.unchanged++;
+				continue;
+			}
 			let evidence: LeaseEvidence;
 			try {
-				evidence = await inspect(seen);
+				evidence =
+					seen.run?.kernelBootId &&
+					this.kernelBootId &&
+					seen.run.kernelBootId !== this.kernelBootId
+						? "absent"
+						: await inspect(seen);
 			} catch {
 				evidence = "unknown";
 			}
@@ -1586,8 +2065,24 @@ export class ResourceStore {
 					return "reclaimed" as const;
 				}
 				if (evidence === "live") {
-					if (lease.state !== "uncertain") return "unchanged" as const;
-					await this.transition(tx, lease, "active");
+					if (
+						lease.state === "active" &&
+						lease.ownerBootId === this.processBootId
+					) {
+						return "unchanged" as const;
+					}
+					// This process now owns the proven-live run.
+					await tx.execute({
+						sql: "UPDATE rp_leases SET state='active', owner_boot_id=?, updated_at=? WHERE id=? AND fence=?",
+						args: [this.processBootId, this.now(), lease.id, lease.fence],
+					});
+					await this.audit(
+						tx,
+						"lease.adopted",
+						"reconcile",
+						{ leaseId: lease.id },
+						{ from: lease.state },
+					);
 					return "adopted" as const;
 				}
 				if (lease.state === "active") {
@@ -1599,6 +2094,49 @@ export class ResourceStore {
 			report[outcome]++;
 		}
 		return report;
+	}
+
+	/**
+	 * The two states recovery settles from the ledger alone: a release that was
+	 * interrupted, and a grant from an earlier boot that never launched anything.
+	 * An open cleanup record blocks both, since a machine may still exist.
+	 */
+	private async recoverWithoutEvidence(
+		seen: ResourceLease,
+	): Promise<"released" | "reclaimed" | "unchanged" | null> {
+		const unlaunched =
+			seen.state === "provisional" &&
+			seen.run === null &&
+			seen.ownerBootId !== this.processBootId;
+		if (seen.state !== "releasing" && !unlaunched) return null;
+		return this.withWrite(async (tx) => {
+			const lease = await this.fenced(tx, seen.id, seen.fence);
+			if (lease.state !== seen.state) return "unchanged" as const;
+			if (await this.hasOpenCleanup(tx, lease.id)) return "unchanged" as const;
+			if (lease.state === "releasing") {
+				await this.settleReservations(tx, lease.id, []);
+				await this.closeLease(
+					tx,
+					lease,
+					"released",
+					lease.releaseReason ?? "release completed by recovery",
+					"reconcile",
+				);
+				return "released" as const;
+			}
+			await tx.execute({
+				sql: "UPDATE rp_ledger SET state='void', amount=0, at_ms=? WHERE lease_id=? AND state='reserved'",
+				args: [this.now(), lease.id],
+			});
+			await this.closeLease(
+				tx,
+				lease,
+				"reclaimed",
+				"unactivated grant from an earlier process boot",
+				"reconcile",
+			);
+			return "reclaimed" as const;
+		});
 	}
 
 	private async transition(
@@ -1780,6 +2318,486 @@ export class ResourceStore {
 		return rows.map(cleanupFrom);
 	}
 
+	// Attached projects
+
+	async registerProject(input: {
+		id: string;
+		createdAt: number;
+		root: string;
+		displayName: string;
+		metadata?: Record<string, unknown>;
+	}): Promise<void> {
+		await this.withWrite(async (tx) => {
+			const now = this.now();
+			await tx.execute({
+				sql: `INSERT INTO rp_projects(id,root,display_name,attached,metadata_json,created_at,last_attached_at)
+				      VALUES(?,?,?,1,?,?,?)
+				      ON CONFLICT(id) DO UPDATE SET root=excluded.root, display_name=excluded.display_name,
+				        attached=1, metadata_json=excluded.metadata_json, last_attached_at=excluded.last_attached_at`,
+				args: [
+					input.id,
+					input.root,
+					input.displayName,
+					JSON.stringify(input.metadata ?? {}),
+					input.createdAt,
+					now,
+				],
+			});
+			await this.audit(
+				tx,
+				"project.attached",
+				"orchestrator",
+				{},
+				{
+					projectId: input.id,
+				},
+			);
+		});
+	}
+
+	async detachProject(projectId: string): Promise<void> {
+		await this.withWrite(async (tx) => {
+			const row = await one(
+				tx,
+				"UPDATE rp_projects SET attached=0, last_detached_at=? WHERE id=? RETURNING id",
+				[this.now(), projectId],
+			);
+			if (!row) return;
+			await this.audit(
+				tx,
+				"project.detached",
+				"orchestrator",
+				{},
+				{
+					projectId,
+				},
+			);
+		});
+	}
+
+	async projects(): Promise<
+		{ id: string; root: string; displayName: string; attached: boolean }[]
+	> {
+		const rows = await all(
+			this.client,
+			"SELECT id,root,display_name,attached FROM rp_projects ORDER BY display_name",
+		);
+		return rows.map((row) => ({
+			id: str(row.id, "project id"),
+			root: str(row.root, "project root"),
+			displayName: str(row.display_name, "project name"),
+			attached: int(row.attached, "project attached") === 1,
+		}));
+	}
+
+	/** The stable identity of this host's ledger, created once. */
+	async ensureHostId(): Promise<string> {
+		return this.withWrite(async (tx) => {
+			await tx.execute({
+				sql: "INSERT INTO rp_host_meta(singleton,host_id) VALUES(1,?) ON CONFLICT(singleton) DO NOTHING",
+				args: [randomUUID()],
+			});
+			const row = await one(tx, "SELECT host_id FROM rp_host_meta");
+			return str(row?.host_id, "host id");
+		});
+	}
+
+	// Host resource definitions (the owner's confirmed configuration)
+
+	async readHostConfig(): Promise<HostConfigRows> {
+		const tx = await this.client.transaction("read");
+		try {
+			return await this.hostConfigRows(tx);
+		} finally {
+			tx.close();
+		}
+	}
+
+	private async hostConfigRows(target: Target): Promise<HostConfigRows> {
+		const meta = await one(
+			target,
+			"SELECT * FROM rp_host_meta WHERE singleton=1",
+		);
+		return {
+			hostId: meta ? str(meta.host_id, "host id") : null,
+			generation: meta ? int(meta.generation, "host generation") : 0,
+			definitions: (
+				await all(target, "SELECT * FROM rp_host_definitions ORDER BY id")
+			).map((row) => str(row.definition_json, "host definition")),
+			bindings: (
+				await all(target, "SELECT * FROM rp_host_bindings ORDER BY id")
+			).map((row) => str(row.binding_json, "host binding")),
+		};
+	}
+
+	/**
+	 * Applies one configuration change atomically and bumps the generation. The
+	 * callback sees the rows inside the write lock, so its checks cannot race.
+	 */
+	async writeHostConfig<T>(
+		actor: string,
+		action: string,
+		change: (
+			rows: HostConfigRows,
+			write: {
+				definition(id: string, version: number, json: string): Promise<void>;
+				binding(
+					id: string,
+					resourceId: string,
+					stableKey: string,
+					version: number,
+					json: string,
+				): Promise<void>;
+			},
+		) => Promise<T>,
+		detail: Record<string, unknown> = {},
+	): Promise<T> {
+		return this.withWrite(async (tx) => {
+			await tx.execute({
+				sql: "INSERT INTO rp_host_meta(singleton,host_id) VALUES(1,?) ON CONFLICT(singleton) DO NOTHING",
+				args: [randomUUID()],
+			});
+			const rows = await this.hostConfigRows(tx);
+			const result = await change(rows, {
+				definition: async (id, version, json) => {
+					await tx.execute({
+						sql: `INSERT INTO rp_host_definitions(id,version,definition_json) VALUES(?,?,?)
+						      ON CONFLICT(id) DO UPDATE SET version=excluded.version, definition_json=excluded.definition_json`,
+						args: [id, version, json],
+					});
+				},
+				binding: async (id, resourceId, stableKey, version, json) => {
+					await tx.execute({
+						sql: `INSERT INTO rp_host_bindings(id,resource_id,stable_key,version,binding_json) VALUES(?,?,?,?,?)
+						      ON CONFLICT(id) DO UPDATE SET stable_key=excluded.stable_key, version=excluded.version, binding_json=excluded.binding_json`,
+						args: [id, resourceId, stableKey, version, json],
+					});
+				},
+			});
+			await tx.execute("UPDATE rp_host_meta SET generation=generation+1");
+			await this.audit(tx, action, actor, {}, detail);
+			return result;
+		});
+	}
+
+	async auditEntries(
+		input: { after?: number; limit?: number } = {},
+	): Promise<ResourceAuditEntry[]> {
+		const limit = Math.max(1, Math.min(input.limit ?? 200, 1_000));
+		const rows =
+			input.after === undefined
+				? (
+						await all(
+							this.client,
+							"SELECT * FROM rp_audit ORDER BY seq DESC LIMIT ?",
+							[limit],
+						)
+					).reverse()
+				: await all(
+						this.client,
+						"SELECT * FROM rp_audit WHERE seq>? ORDER BY seq LIMIT ?",
+						[input.after, limit],
+					);
+		return rows.map((row) => ({
+			seq: int(row.seq, "audit seq"),
+			at: int(row.at_ms, "audit at"),
+			action: str(row.action, "audit action"),
+			actor: str(row.actor, "audit actor"),
+			poolId: row.pool_id === null ? null : str(row.pool_id, "audit pool"),
+			leaseId: row.lease_id === null ? null : str(row.lease_id, "audit lease"),
+			detail: parsed<Record<string, unknown>>(row.detail_json, "audit detail"),
+		}));
+	}
+
+	// Probe evidence
+
+	/** The last persisted evidence, whichever process wrote it. */
+	async readProbeEvidence(): Promise<{
+		health: ObservationHealth[];
+		samples: StoredObservation[];
+	}> {
+		const [health, samples] = await Promise.all([
+			all(this.client, "SELECT * FROM rp_probe_health ORDER BY kind"),
+			all(this.client, "SELECT * FROM rp_probe_samples ORDER BY binding_id"),
+		]);
+		return {
+			health: health.map((row) => ({
+				kind: str(row.kind, "probe kind"),
+				result: str(row.result, "probe result") as ObservationHealth["result"],
+				checkedAt: int(row.checked_at, "probe checked"),
+				processBootId: str(row.process_boot_id, "probe boot"),
+				kernelBootId:
+					row.kernel_boot_id === null
+						? null
+						: str(row.kernel_boot_id, "probe kernel"),
+				detail: parsed<Record<string, unknown>>(
+					row.detail_json,
+					"probe detail",
+				),
+			})),
+			samples: samples.map(probeSampleFrom),
+		};
+	}
+
+	async recordProbeHealth(health: ObservationHealth): Promise<void> {
+		await this.withWrite(async (tx) => {
+			await writeProbeHealth(tx, health);
+			await this.audit(
+				tx,
+				"observation.health",
+				"observation-service",
+				{},
+				{
+					kind: health.kind,
+					result: health.result,
+				},
+			);
+		});
+	}
+
+	async recordProbeSample(sample: StoredObservation): Promise<void> {
+		await this.withWrite(async (tx) => {
+			const current = await one(
+				tx,
+				"SELECT sequence,process_boot_id FROM rp_probe_samples WHERE binding_id=?",
+				[sample.bindingId],
+			);
+			if (
+				current &&
+				current.process_boot_id === sample.processBootId &&
+				BigInt(current.sequence as bigint) >= sample.sequence
+			) {
+				return;
+			}
+			await writeProbeSample(tx, sample);
+			await this.audit(
+				tx,
+				"observation.recorded",
+				"observation-service",
+				{},
+				{
+					kind: sample.kind,
+					result: sample.result,
+				},
+			);
+		});
+	}
+
+	/**
+	 * One adapter's health and samples in one transaction, so a reader never
+	 * sees a mix. A retry of the same batch is a no-op, an older one is
+	 * ignored, and different content under one sequence is refused.
+	 */
+	async recordProbeBatch(
+		health: ObservationHealth,
+		samples: readonly StoredObservation[],
+	): Promise<{ meaningfulChange: boolean }> {
+		const generation = probeGeneration(health.detail);
+		if (
+			!generation ||
+			generation.processBootId !== health.processBootId ||
+			generation.kernelBootId !== health.kernelBootId
+		) {
+			throw new ResourceError(
+				"observation batch health has an invalid generation envelope",
+				"REFUSED",
+			);
+		}
+		return this.withWrite(async (tx) => {
+			const previous = await one(
+				tx,
+				"SELECT * FROM rp_probe_health WHERE kind=?",
+				[health.kind],
+			);
+			const previousDetail = previous
+				? parsed<Record<string, unknown>>(previous.detail_json, "probe detail")
+				: null;
+			const healthExact =
+				previous !== null &&
+				previous !== undefined &&
+				previous.result === health.result &&
+				int(previous.checked_at, "probe checked") === health.checkedAt &&
+				previous.process_boot_id === health.processBootId &&
+				(previous.kernel_boot_id ?? null) === health.kernelBootId &&
+				canonicalJson(previousDetail) === canonicalJson(health.detail ?? {});
+			const previousGeneration = probeGeneration(previousDetail);
+			if (
+				previousGeneration?.processBootId === generation.processBootId &&
+				previousGeneration.sequence > generation.sequence
+			) {
+				return { meaningfulChange: false };
+			}
+
+			const seen = new Set<string>();
+			const pending: {
+				sample: StoredObservation;
+				exact: boolean;
+				changed: boolean;
+			}[] = [];
+			for (const sample of samples) {
+				if (
+					sample.kind !== health.kind ||
+					sample.sequence !== generation.sequence ||
+					sample.result !== health.result ||
+					sample.processBootId !== generation.processBootId ||
+					sample.kernelBootId !== generation.kernelBootId ||
+					seen.has(sample.bindingId)
+				) {
+					throw new ResourceError(
+						"observation batch contains a duplicate binding or mixed generation",
+						"REFUSED",
+					);
+				}
+				seen.add(sample.bindingId);
+				const row = await one(
+					tx,
+					"SELECT * FROM rp_probe_samples WHERE binding_id=?",
+					[sample.bindingId],
+				);
+				const current = row ? probeSampleFrom(row) : null;
+				const sameBoot = current?.processBootId === sample.processBootId;
+				if (current && sameBoot && current.sequence > sample.sequence) {
+					return { meaningfulChange: false };
+				}
+				const exact = current !== null && sameProbeSample(current, sample);
+				if (
+					current &&
+					sameBoot &&
+					current.sequence === sample.sequence &&
+					!exact
+				) {
+					throw new ResourceError(
+						`observation sequence conflict for binding '${sample.bindingId}'`,
+						"REFUSED",
+					);
+				}
+				pending.push({
+					sample,
+					exact,
+					changed: !current || !sameProbeContent(current, sample),
+				});
+			}
+			if (
+				previous &&
+				int(previous.checked_at, "probe checked") === health.checkedAt &&
+				previousGeneration?.sequence === generation.sequence &&
+				previous.process_boot_id === generation.processBootId &&
+				!healthExact
+			) {
+				throw new ResourceError(
+					`observation health timestamp conflict for kind '${health.kind}'`,
+					"REFUSED",
+				);
+			}
+			if (healthExact && pending.every((item) => item.exact)) {
+				return { meaningfulChange: false };
+			}
+
+			const meaningfulChange =
+				!previous ||
+				this.now() - int(previous.checked_at, "probe checked") >
+					RAM_OBSERVATION_MAX_AGE_MS ||
+				previous.result !== health.result ||
+				previous.process_boot_id !== health.processBootId ||
+				(previous.kernel_boot_id ?? null) !== health.kernelBootId ||
+				meaningfulProbeDetail(previousDetail) !==
+					meaningfulProbeDetail(health.detail) ||
+				pending.some((item) => item.changed);
+			await writeProbeHealth(tx, health);
+			for (const { sample, exact } of pending) {
+				if (!exact) await writeProbeSample(tx, sample);
+			}
+			if (meaningfulChange) {
+				await this.audit(
+					tx,
+					"observation.batch",
+					"observation-service",
+					{},
+					{
+						kind: health.kind,
+						result: health.result,
+						samples: samples.length,
+					},
+				);
+			}
+			return { meaningfulChange };
+		});
+	}
+
+	// Incidents
+
+	/**
+	 * Opens, updates or resolves one incident; a null context means the
+	 * condition is proven gone. Callers skip this when evidence is uncertain,
+	 * because uncertainty never proves recovery.
+	 */
+	async setIncident(input: {
+		key: string;
+		kind: PoolIncidentKind;
+		poolId: string;
+		context: Record<string, unknown> | null;
+	}): Promise<"opened" | "updated" | "resolved" | "unchanged"> {
+		return this.withWrite(async (tx) => {
+			const now = this.now();
+			const current = await one(
+				tx,
+				"SELECT state FROM rp_incidents WHERE incident_key=?",
+				[input.key],
+			);
+			const wasOpen = current?.state === "open";
+			const refs = { poolId: input.poolId };
+			if (input.context === null) {
+				if (!wasOpen) return "unchanged";
+				await tx.execute({
+					sql: "UPDATE rp_incidents SET state='resolved',updated_at=?,resolved_at=? WHERE incident_key=?",
+					args: [now, now, input.key],
+				});
+				await this.audit(tx, "incident.resolved", "core", refs, {
+					key: input.key,
+					kind: input.kind,
+				});
+				return "resolved";
+			}
+			const context = encodeIncidentContext(input.context);
+			await tx.execute({
+				sql: `INSERT INTO rp_incidents(incident_key,kind,pool_id,state,opened_at,updated_at,resolved_at,context_json)
+				      VALUES(?,?,?,'open',?,?,NULL,?)
+				      ON CONFLICT(incident_key) DO UPDATE SET state='open',
+				        opened_at=CASE WHEN rp_incidents.state='resolved' THEN excluded.opened_at ELSE rp_incidents.opened_at END,
+				        updated_at=excluded.updated_at, resolved_at=NULL,
+				        context_json=excluded.context_json`,
+				args: [input.key, input.kind, input.poolId, now, now, context],
+			});
+			if (wasOpen) return "updated";
+			await this.audit(tx, "incident.opened", "core", refs, {
+				key: input.key,
+				kind: input.kind,
+				context: JSON.parse(context),
+			});
+			return "opened";
+		});
+	}
+
+	async incidents(): Promise<PoolIncident[]> {
+		const rows = await all(
+			this.client,
+			"SELECT * FROM rp_incidents ORDER BY incident_key",
+		);
+		return rows.map((row) => ({
+			key: str(row.incident_key, "incident key"),
+			kind: str(row.kind, "incident kind") as PoolIncidentKind,
+			poolId: str(row.pool_id, "incident pool"),
+			state: str(row.state, "incident state") as PoolIncident["state"],
+			openedAt: int(row.opened_at, "incident opened"),
+			updatedAt: int(row.updated_at, "incident updated"),
+			resolvedAt:
+				row.resolved_at === null
+					? null
+					: int(row.resolved_at, "incident resolved"),
+			context: decodeIncidentContext(str(row.context_json, "incident context")),
+		}));
+	}
+
 	// Read model
 
 	async summaries(): Promise<PoolSummary[]> {
@@ -1950,6 +2968,8 @@ export async function openResourceStore(
 					if (!table) {
 						await tx.executeMultiple(RESOURCE_SCHEMA);
 						await tx.executeMultiple(RESOURCE_CLEANUP_SCHEMA);
+						await tx.executeMultiple(RESOURCE_INCIDENT_SCHEMA);
+						await tx.executeMultiple(RESOURCE_PROBE_SCHEMA);
 						await tx.execute({
 							sql: "UPDATE rp_schema SET version=? WHERE singleton=1",
 							args: [RESOURCE_SCHEMA_VERSION],
@@ -1961,6 +2981,15 @@ export async function openResourceStore(
 					);
 					let version = int(row?.version, "schema version");
 					if (version === 1) {
+						const columns = await all(tx, "PRAGMA table_info(rp_leases)");
+						if (!columns.some((c) => c.name === "run_json")) {
+							await tx.execute(
+								"ALTER TABLE rp_leases ADD COLUMN run_json TEXT",
+							);
+							await tx.execute(
+								"ALTER TABLE rp_leases ADD COLUMN owner_boot_id TEXT",
+							);
+						}
 						const cleanup = await one(
 							tx,
 							"SELECT name FROM sqlite_master WHERE type='table' AND name='rp_cleanup'",
@@ -1970,6 +2999,28 @@ export async function openResourceStore(
 							"UPDATE rp_schema SET version=2 WHERE singleton=1",
 						);
 						version = 2;
+					}
+					if (version === 2) {
+						const incidents = await one(
+							tx,
+							"SELECT name FROM sqlite_master WHERE type='table' AND name='rp_incidents'",
+						);
+						if (!incidents) await tx.executeMultiple(RESOURCE_INCIDENT_SCHEMA);
+						await tx.execute(
+							"UPDATE rp_schema SET version=3 WHERE singleton=1",
+						);
+						version = 3;
+					}
+					if (version === 3) {
+						const probes = await one(
+							tx,
+							"SELECT name FROM sqlite_master WHERE type='table' AND name='rp_probe_health'",
+						);
+						if (!probes) await tx.executeMultiple(RESOURCE_PROBE_SCHEMA);
+						await tx.execute(
+							"UPDATE rp_schema SET version=4 WHERE singleton=1",
+						);
+						version = 4;
 					}
 					if (version !== RESOURCE_SCHEMA_VERSION) {
 						throw new ResourceError(
@@ -1996,7 +3047,14 @@ export async function openResourceStore(
 				await new Promise((resolve) => setTimeout(resolve, 5));
 			}
 		}
-		return new ResourceStore(client, path, options.now ?? Date.now, timeout);
+		return new ResourceStore(
+			client,
+			path,
+			options.now ?? Date.now,
+			timeout,
+			options.processBootId,
+			options.kernelBootId ?? null,
+		);
 	} catch (error) {
 		client.close();
 		if (error instanceof ResourceError) throw error;

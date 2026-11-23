@@ -9,6 +9,7 @@ import type {
 	UsageReport,
 	UsageTarget,
 } from "../../../../plugin-api/src/resource.ts";
+import type { OpenRouterAccountReadModel } from "../../openrouter-account-service.ts";
 import type {
 	OpenRouterClientPort,
 	OpenRouterKeyUsage,
@@ -24,6 +25,37 @@ export interface OpenRouterResourceOptions {
 	/** Owner-set spend limits in USD; each one becomes a calendar window. */
 	limits?: { dailyUsd?: number; weeklyUsd?: number; monthlyUsd?: number };
 	tz?: string;
+}
+
+/**
+ * A client over the account service's last refresh, so observing this pool
+ * never adds a request to OpenRouter. What it has not read reads as unavailable.
+ */
+export function openRouterPoolClient(
+	model: () => OpenRouterAccountReadModel,
+): OpenRouterResourceOptions["client"] {
+	return {
+		credentialReady: async () => model().credential.ready,
+		getCurrentKey: async () => {
+			const { key, fresh } = model();
+			if (!key || !fresh) throw new Error("no fresh OpenRouter key usage");
+			return key;
+		},
+		getCredits: async () => {
+			const { credits } = model();
+			if (
+				!credits.available ||
+				credits.totalCredits === null ||
+				credits.totalUsage === null
+			) {
+				throw new Error("OpenRouter credits are unavailable");
+			}
+			return {
+				totalCredits: credits.totalCredits,
+				totalUsage: credits.totalUsage,
+			};
+		},
+	};
 }
 
 const PERIODS = [

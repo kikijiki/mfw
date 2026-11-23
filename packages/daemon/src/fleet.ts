@@ -8,10 +8,10 @@ import {
 	type HealthTrackEntry,
 	overallHealth,
 } from "./host-health.ts";
-import type { HostResourceReadModel } from "./host-resources/types.ts";
 import type { HostView } from "./host-service.ts";
 import type { OpenRouterAccountReadModel } from "./openrouter-account-service.ts";
 import type { StoredProviderHold } from "./provider-holds.ts";
+import type { HostResourceReadModel } from "./resources/host-types.ts";
 import { parseRoutingRecord } from "./routing.ts";
 import type { RunPodAccountReadModel } from "./runpod-account-service.ts";
 import type { Orchestrator, ProjectServices } from "./services.ts";

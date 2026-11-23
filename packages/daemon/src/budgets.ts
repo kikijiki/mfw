@@ -1,7 +1,7 @@
 import type { ProjectDb, ProjectDbHandle, ProjectDbTx } from "@mfw/db/client";
 import { appendEvent, type EventBus } from "@mfw/db/eventlog";
-import { engineKv, resourceSlots, spendLedger } from "@mfw/db/schema";
-import { and, eq, gte, like, lt, sql } from "drizzle-orm";
+import { engineKv } from "@mfw/db/schema";
+import { eq } from "drizzle-orm";
 import {
 	type BudgetEntry,
 	budgetEntrySchema,
@@ -11,6 +11,7 @@ import {
 } from "./config.ts";
 import type { Logger } from "./log.ts";
 import type { ProviderHoldStore } from "./provider-holds.ts";
+import type { BudgetWindows } from "./resources/budget-windows.ts";
 import type { RunRegistry } from "./run-registry.ts";
 
 /**
@@ -201,9 +202,13 @@ export interface BudgetServiceDeps {
 	/** Project budgets from the boot config, used until the config file has an entry for this project. */
 	stored?: StoredBudgets;
 	holds: Pick<ProviderHoldStore, "hold" | "clear" | "active">;
+	/** Where usage is counted: one core window per budget. */
+	windows: Pick<BudgetWindows, "measure">;
 	registry: Pick<RunRegistry, "list">;
 	/** Stop a live run (`RunEngine.stop`, the graceful interrupt then kill). */
 	stopRun: (runId: string) => Promise<void>;
+	/** The resources a live run's lease holds, for `liveRunPolicy`. */
+	heldResources?: (runId: string) => Promise<readonly string[]>;
 	/** Machine-scoped budgets sum these ledgers. Absent = this project's own. */
 	ledgers?: () => ProjectDbHandle[];
 	/** Pause or resume the brain for a `brain` budget. */
@@ -688,11 +693,8 @@ export class BudgetService {
 		if (run.executionTarget === "runpod" && keyMatches(key, "runpod:*"))
 			return true;
 		if (run.hostId && keyMatches(key, `host:${run.hostId}`)) return true;
-		const slots = await this.deps.handle.db
-			.select({ resourceId: resourceSlots.resourceId })
-			.from(resourceSlots)
-			.where(eq(resourceSlots.runId, run.id));
-		return slots.some((s) => keyMatches(key, s.resourceId));
+		const held = (await this.deps.heldResources?.(run.id)) ?? [];
+		return held.some((resourceId) => keyMatches(key, resourceId));
 	}
 
 	private async clearBudgetHold(key: string): Promise<void> {
@@ -716,9 +718,7 @@ export class BudgetService {
 			b.scope === "machine"
 				? (this.deps.ledgers?.() ?? [this.deps.handle])
 				: [this.deps.handle];
-		let total = 0;
-		for (const h of handles) total += await measureOne(h, b, w);
-		return total;
+		return this.deps.windows.measure(b, w, handles, this.deps.project);
 	}
 
 	// ------------------------------------------------------------------
@@ -789,35 +789,4 @@ function fmt(n: number, unit: BudgetUnit): string {
 	if (unit === "usd") return `$${n.toFixed(2)}`;
 	if (unit === "slot_hours") return `${n.toFixed(1)} slot-hours`;
 	return `${Math.round(n)} tokens`;
-}
-
-async function measureOne(
-	handle: ProjectDbHandle,
-	b: ResolvedBudget,
-	w: WindowBounds,
-): Promise<number> {
-	const where = and(
-		gte(spendLedger.ts, new Date(w.start)),
-		lt(spendLedger.ts, new Date(w.end)),
-		b.kind === "brain"
-			? eq(spendLedger.kind, "brain")
-			: b.key.endsWith("*")
-				? like(spendLedger.accountKey, `${b.key.slice(0, -1)}%`)
-				: eq(spendLedger.accountKey, b.key),
-		b.unit === "slot_hours"
-			? eq(spendLedger.source, "host_slot_time")
-			: undefined,
-	);
-	const col =
-		b.unit === "usd"
-			? sql<number>`COALESCE(SUM(${spendLedger.usd}), 0)`
-			: b.unit === "tokens"
-				? sql<number>`COALESCE(SUM(COALESCE(${spendLedger.tokensIn}, 0) + COALESCE(${spendLedger.tokensOut}, 0)), 0)`
-				: // slot time rows carry slot-seconds in `tokens_in`
-					sql<number>`COALESCE(SUM(${spendLedger.tokensIn}), 0) / 3600.0`;
-	const [row] = await handle.db
-		.select({ v: col })
-		.from(spendLedger)
-		.where(where);
-	return Number(row?.v ?? 0);
 }

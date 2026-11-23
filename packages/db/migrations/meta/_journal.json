@@ -134,6 +134,13 @@
       "when": 1791795371103,
       "tag": "0019_run_subagents",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1795409024757,
+      "tag": "0022_drop_resource_slots",
+      "breakpoints": true
     }
   ]
 }

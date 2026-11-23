@@ -11,11 +11,11 @@ import {
 	registryPinnedPolicy,
 } from "./host-registry.ts";
 import { type ProbeTransport, probeHost } from "./host-registry-probe.ts";
+import type { Logger } from "./log.ts";
 import type {
 	HostResourceDefinition,
 	HostResourceReadModel,
-} from "./host-resources/index.ts";
-import type { Logger } from "./log.ts";
+} from "./resources/host-types.ts";
 import { SshTransport } from "./ssh-transport.ts";
 
 /**

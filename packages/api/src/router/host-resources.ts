@@ -1,7 +1,7 @@
 import { availableParallelism } from "node:os";
 import type { HostProbeKind } from "@mfw/core/host-observation";
 import { detectHostResourceRecommendations } from "@mfw/daemon/host-resource-detection";
-import { HostStoreError } from "@mfw/daemon/host-resources/store";
+import { ResourceError } from "@mfw/daemon/resources/types";
 import { z } from "zod";
 import { createTRPCRouter, publicProcedure } from "../trpc.ts";
 
@@ -78,7 +78,7 @@ export const hostResourcesRouter = createTRPCRouter({
 				),
 			);
 			if (probedKinds.length === 0) {
-				throw new HostStoreError(
+				throw new ResourceError(
 					"Fresh host probe refresh is unavailable; no resource recommendations were produced",
 					"INVALID_TRANSITION",
 				);
@@ -122,9 +122,9 @@ export const hostResourcesRouter = createTRPCRouter({
 			const coordinator = ctx.orchestrator.hostResources;
 			const model = coordinator.readModel();
 			if (model.generation !== input.expectedGeneration) {
-				throw new HostStoreError(
+				throw new ResourceError(
 					"Host state changed after detection; review a fresh proposal",
-					"STALE_VERSION",
+					"CONFLICT",
 				);
 			}
 			const detected = detectHostResourceRecommendations(
@@ -133,24 +133,24 @@ export const hostResourcesRouter = createTRPCRouter({
 			);
 			const requested = new Set(input.recommendations.map((item) => item.id));
 			if (requested.size !== input.recommendations.length) {
-				throw new HostStoreError("Detected resources must be unique");
+				throw new ResourceError("Detected resources must be unique", "REFUSED");
 			}
 			const recommendations = input.recommendations.map((reviewed) => {
 				const recommendation = detected.find((item) => item.id === reviewed.id);
 				if (!recommendation) {
-					throw new HostStoreError(
+					throw new ResourceError(
 						"A detected resource is no longer available",
 						"NOT_FOUND",
 					);
 				}
 				if (recommendation.fingerprint !== reviewed.fingerprint) {
-					throw new HostStoreError(
+					throw new ResourceError(
 						"Detected resources changed after review; review a fresh proposal",
-						"STALE_VERSION",
+						"CONFLICT",
 					);
 				}
 				if (!recommendation.canApply) {
-					throw new HostStoreError(
+					throw new ResourceError(
 						"A detected resource is already configured or conflicts with existing host state",
 						"INVALID_TRANSITION",
 					);

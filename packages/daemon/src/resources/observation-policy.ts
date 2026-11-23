@@ -1,9 +1,3 @@
-import {
-	checkedQuantitySum,
-	MAX_HOST_QUANTITY,
-	RAM_OBSERVATION_FUTURE_SKEW_MS,
-	RAM_OBSERVATION_MAX_AGE_MS,
-} from "./quantity.ts";
 import type {
 	CpuPressureDiagnostic,
 	CpuPressurePolicy,
@@ -11,7 +5,13 @@ import type {
 	ObservationAdmissionDiagnostic,
 	ObservationHealth,
 	StoredObservation,
-} from "./types.ts";
+} from "./host-types.ts";
+import {
+	checkedQuantitySum,
+	MAX_HOST_QUANTITY,
+	RAM_OBSERVATION_FUTURE_SKEW_MS,
+	RAM_OBSERVATION_MAX_AGE_MS,
+} from "./quantity.ts";
 
 export interface CurrentHostIdentity {
 	processBootId: string;

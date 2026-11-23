@@ -9,7 +9,7 @@ import type {
 } from "@mfw/core/host-observation";
 import { createProductionHostProbeRuntime } from "./host-probe-runtime.ts";
 import { AmdSmiProbeAdapter } from "./host-probes.ts";
-import { readKernelBootId } from "./host-resources/identity.ts";
+import { readKernelBootId } from "./resources/identity.ts";
 
 // discover: version + two bounded five-command capture attempts; sample reuses
 // the version and may perform two more attempts. Dividing the caller's budget

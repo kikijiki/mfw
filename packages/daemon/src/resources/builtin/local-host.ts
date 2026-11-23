@@ -5,7 +5,7 @@ import type {
 	PoolProposal,
 	ResourcePlugin,
 } from "../../../../plugin-api/src/resource.ts";
-import { evaluateRamFormula } from "../../host-resources/quantity.ts";
+import { evaluateRamFormula } from "../quantity.ts";
 
 const MIB = 1024n * 1024n;
 
@@ -28,9 +28,20 @@ export interface GpuFact {
 	unit: string;
 	state: "idle" | "occupied" | "unknown";
 	/** A null start time cannot be matched to a run, so it never reads as ours. */
-	occupants: readonly { pid: number; processStartTime: string | null }[];
-	/** Device-level use that no listed process explains. */
-	unexplainedDeviceUse: boolean;
+	occupants: readonly {
+		pid: number;
+		processStartTime: string | null;
+		/** Admission-bearing device memory this process explains. */
+		blockingResidentBytes: bigint;
+	}[];
+	/** Admission-bearing device memory reported without a process. */
+	blockingDeviceBytes: bigint;
+	/** Admission-bearing device evidence that memory cannot explain. */
+	blockingDeviceContext: boolean;
+	/** The probe's own verdict that the device is in exclusive use. */
+	blocksExclusive: boolean;
+	/** A partial sample: its absence of occupants proves nothing. */
+	degraded: boolean;
 }
 
 /** What the probes report; a null section is an unavailable probe. */
@@ -47,12 +58,42 @@ export interface LocalHostLedgerView {
 	ramManagedBytes: bigint;
 	/** `pid:startTime` of processes proven to belong to live leases. */
 	managedProcesses: ReadonlySet<string>;
+	/**
+	 * The same evidence per GPU unit. When present it is authoritative: a run
+	 * leased on one device never explains a process seen on another.
+	 */
+	managedByUnit?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 export interface LocalHostOptions {
 	config: LocalHostConfig;
+	/** Pool ids, when the owner named these resources differently. */
+	poolIds?: { cpu?: string; ram?: string; gpu?: string };
 	probe(): Promise<LocalHostFacts>;
 	ledger(): Promise<LocalHostLedgerView>;
+}
+
+/** Whether this sample can prove anything about who is using the device. */
+export function isConclusiveGpuFact(gpu: GpuFact): boolean {
+	return !gpu.degraded && gpu.state !== "unknown";
+}
+
+/** Whether a conclusive sample shows use that `owned` processes do not explain. */
+export function hasUnexplainedGpuUse(
+	gpu: GpuFact,
+	owned: ReadonlySet<string>,
+): boolean {
+	const isManaged = (o: GpuFact["occupants"][number]) =>
+		o.processStartTime !== null && owned.has(`${o.pid}:${o.processStartTime}`);
+	if (!gpu.occupants.every(isManaged)) return true;
+	if (gpu.blockingDeviceContext) return true;
+	// Compared in aggregate, so one managed process cannot explain two claims.
+	const explained = gpu.occupants.reduce(
+		(total, o) => total + o.blockingResidentBytes,
+		0n,
+	);
+	if (gpu.blockingDeviceBytes > explained) return true;
+	return gpu.blocksExclusive && gpu.occupants.length === 0;
 }
 
 const CPU_POOL = "local.cpu";
@@ -65,7 +106,15 @@ const GPU_POOL = "local.gpu";
  * pool `down`, which holds it, so unknown is never free capacity.
  */
 export class LocalHostResource implements ResourcePlugin {
-	constructor(private readonly options: LocalHostOptions) {}
+	private readonly cpuPool: string;
+	private readonly ramPool: string;
+	private readonly gpuPool: string;
+
+	constructor(private readonly options: LocalHostOptions) {
+		this.cpuPool = options.poolIds?.cpu ?? CPU_POOL;
+		this.ramPool = options.poolIds?.ram ?? RAM_POOL;
+		this.gpuPool = options.poolIds?.gpu ?? GPU_POOL;
+	}
 
 	async discover(
 		_params: Record<string, never>,
@@ -75,7 +124,7 @@ export class LocalHostResource implements ResourcePlugin {
 		const out: PoolProposal[] = [];
 		if (cpu) {
 			out.push({
-				poolId: CPU_POOL,
+				poolId: this.cpuPool,
 				title: "Local CPU",
 				providerHardLimit: false,
 				dimensions: [
@@ -90,7 +139,7 @@ export class LocalHostResource implements ResourcePlugin {
 		}
 		if (ram) {
 			out.push({
-				poolId: RAM_POOL,
+				poolId: this.ramPool,
 				title: "Local memory",
 				providerHardLimit: false,
 				dimensions: [
@@ -100,7 +149,7 @@ export class LocalHostResource implements ResourcePlugin {
 		}
 		if (gpuUnits && gpuUnits.length > 0) {
 			out.push({
-				poolId: GPU_POOL,
+				poolId: this.gpuPool,
 				title: "Local GPUs",
 				providerHardLimit: false,
 				dimensions: [
@@ -122,9 +171,9 @@ export class LocalHostResource implements ResourcePlugin {
 	): Promise<Observation> {
 		const { cpu, ram, gpuUnits } = this.options.config;
 		const known =
-			(params.poolId === CPU_POOL && cpu) ||
-			(params.poolId === RAM_POOL && ram) ||
-			(params.poolId === GPU_POOL && gpuUnits?.length);
+			(params.poolId === this.cpuPool && cpu) ||
+			(params.poolId === this.ramPool && ram) ||
+			(params.poolId === this.gpuPool && gpuUnits?.length);
 		if (!known) throw new Error(`unknown pool ${params.poolId}`);
 		const facts = await this.options.probe();
 		const observedAt = ctx.host.clock.now();
@@ -140,7 +189,7 @@ export class LocalHostResource implements ResourcePlugin {
 			...(detail ? { detail } : {}),
 		});
 
-		if (params.poolId === CPU_POOL && cpu) {
+		if (params.poolId === this.cpuPool && cpu) {
 			if (!facts.cpu) return result("down", [], "CPU probe is unavailable");
 			const blocked =
 				(cpu.maxBusyFraction !== undefined &&
@@ -157,7 +206,7 @@ export class LocalHostResource implements ResourcePlugin {
 			]);
 		}
 
-		if (params.poolId === RAM_POOL && ram) {
+		if (params.poolId === this.ramPool && ram) {
 			if (facts.memAvailableBytes === null) {
 				return result("down", [], "memory probe is unavailable");
 			}
@@ -185,19 +234,16 @@ export class LocalHostResource implements ResourcePlugin {
 		}
 
 		if (!facts.gpus) return result("down", [], "GPU probe is unavailable");
-		const { managedProcesses } = await this.options.ledger();
+		const { managedProcesses, managedByUnit } = await this.options.ledger();
 		const units = gpuUnits ?? [];
 		const occupied = units.filter((unit) => {
 			const gpu = facts.gpus?.find((item) => item.unit === unit);
 			// A configured device the probe did not report is not known to be idle.
-			if (!gpu || gpu.state === "unknown" || gpu.unexplainedDeviceUse) {
-				return true;
-			}
-			return gpu.occupants.some(
-				(o) =>
-					o.processStartTime === null ||
-					!managedProcesses.has(`${o.pid}:${o.processStartTime}`),
-			);
+			if (!gpu || !isConclusiveGpuFact(gpu)) return true;
+			const owned = managedByUnit
+				? (managedByUnit.get(unit) ?? new Set<string>())
+				: managedProcesses;
+			return hasUnexplainedGpuUse(gpu, owned);
 		});
 		return result(occupied.length > 0 ? "degraded" : "ok", [
 			{ kind: "slot", name: "slot", total: units.length, occupied },

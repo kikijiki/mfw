@@ -12,6 +12,7 @@ import { machineContract } from "../../plugin-api/src/machine.ts";
 import { resourceContract } from "../../plugin-api/src/resource.ts";
 import type { OpenRouterKeyUsage } from "../src/openrouter-client.ts";
 import {
+	type GpuFact,
 	type LocalHostConfig,
 	type LocalHostFacts,
 	type LocalHostLedgerView,
@@ -48,7 +49,15 @@ const facts = (over: Partial<LocalHostFacts> = {}): LocalHostFacts => ({
 	cpu: { busyFraction: 0.1, runnableProcesses: 1 },
 	memAvailableBytes: 12n * GIB,
 	gpus: [
-		{ unit: "gpu0", state: "idle", occupants: [], unexplainedDeviceUse: false },
+		{
+			unit: "gpu0",
+			state: "idle",
+			occupants: [],
+			blockingDeviceBytes: 0n,
+			blockingDeviceContext: false,
+			blocksExclusive: false,
+			degraded: false,
+		},
 	],
 	...over,
 });
@@ -193,23 +202,33 @@ describe("local-host", () => {
 		expect(seen.dimensions[0]).toMatchObject({ total: 0 });
 	});
 
+	const gpuFact = (over: Partial<GpuFact> = {}): GpuFact => ({
+		unit: "gpu0",
+		state: "idle",
+		occupants: [],
+		blockingDeviceBytes: 0n,
+		blockingDeviceContext: false,
+		blocksExclusive: false,
+		degraded: false,
+		...over,
+	});
+	const mine = { ...emptyLedger, managedProcesses: new Set(["42:1000"]) };
+	const occupant = {
+		pid: 42,
+		processStartTime: "1000",
+		blockingResidentBytes: GIB,
+	};
+
 	test("a GPU process owned by a live lease does not block its unit", async () => {
 		const gpus = [
-			{
-				unit: "gpu0",
-				state: "occupied" as const,
-				occupants: [{ pid: 42, processStartTime: "1000" }],
-				unexplainedDeviceUse: false,
-			},
+			gpuFact({
+				state: "occupied",
+				occupants: [occupant],
+				blockingDeviceBytes: GIB,
+			}),
 		];
-		const mine = await observe(
-			localHost(
-				{ gpus },
-				{ ...emptyLedger, managedProcesses: new Set(["42:1000"]) },
-			),
-			"local.gpu",
-		);
-		expect(mine.dimensions[0]).toMatchObject({ occupied: [] });
+		const seen = await observe(localHost({ gpus }, mine), "local.gpu");
+		expect(seen.dimensions[0]).toMatchObject({ occupied: [] });
 		const reused = await observe(
 			localHost(
 				{ gpus },
@@ -220,11 +239,40 @@ describe("local-host", () => {
 		expect(reused.dimensions[0]).toMatchObject({ occupied: ["gpu0"] });
 	});
 
-	test("unknown GPU state, unexplained use and a missing device all block", async () => {
-		const base = { unit: "gpu0", occupants: [], unexplainedDeviceUse: false };
+	test("a run leased on one GPU never explains a process on another", async () => {
+		const gpus = [gpuFact({ state: "occupied", occupants: [occupant] })];
+		const seen = await observe(
+			localHost(
+				{ gpus },
+				{
+					...emptyLedger,
+					managedProcesses: new Set(["42:1000"]),
+					managedByUnit: new Map([["gpu1", new Set(["42:1000"])]]),
+				},
+			),
+			"local.gpu",
+		);
+		expect(seen.dimensions[0]).toMatchObject({ occupied: ["gpu0"] });
+	});
+
+	test("one managed process cannot explain more device memory than it holds", async () => {
+		const gpus = [
+			gpuFact({
+				state: "occupied",
+				occupants: [occupant],
+				blockingDeviceBytes: 2n * GIB,
+			}),
+		];
+		const seen = await observe(localHost({ gpus }, mine), "local.gpu");
+		expect(seen.dimensions[0]).toMatchObject({ occupied: ["gpu0"] });
+	});
+
+	test("unknown, partial, contextual and missing GPUs all block", async () => {
 		for (const gpus of [
-			[{ ...base, state: "unknown" as const }],
-			[{ ...base, state: "idle" as const, unexplainedDeviceUse: true }],
+			[gpuFact({ state: "unknown" })],
+			[gpuFact({ degraded: true })],
+			[gpuFact({ blockingDeviceContext: true })],
+			[gpuFact({ blocksExclusive: true })],
 			[],
 		]) {
 			const seen = await observe(localHost({ gpus }), "local.gpu");
@@ -576,5 +624,130 @@ describe("machine lifecycle and cleanup records", () => {
 		await lifecycle.teardown(made.ownershipToken);
 		const second = await store.reconcile(async () => "absent");
 		expect(second.reclaimed).toBe(1);
+	});
+});
+
+describe("crash recovery of core leases", () => {
+	let home: string;
+	const POOL_ID = "local.cpu";
+	const open = (processBootId: string, kernelBootId = "kernel-1") =>
+		openResourceStore(home, { processBootId, kernelBootId });
+
+	beforeEach(async () => {
+		home = await mkdtemp(join(tmpdir(), "mfw-lease-recovery-"));
+		const store = await open("boot-1");
+		await store.definePool({
+			id: POOL_ID,
+			title: "CPU",
+			dimensions: [
+				{ kind: "quantity", name: "permits", unit: "permit", total: 1 },
+			],
+		});
+		store.close();
+	});
+
+	afterEach(async () => {
+		await rm(home, { recursive: true, force: true });
+	});
+
+	async function grant(store: ResourceStore, key: string) {
+		const waiter = await store.putWaiter({
+			requestKey: key,
+			projectId: "p",
+			claims: [{ poolId: POOL_ID, dimension: "permits", amount: 1 }],
+		});
+		const lease = await store.tryGrant(waiter.id);
+		if ("kind" in lease) throw new Error("expected a grant");
+		return lease;
+	}
+
+	const neverAsked = async () => {
+		throw new Error("recovery must not need liveness evidence here");
+	};
+
+	test("a grant that never launched is reclaimed after a daemon crash", async () => {
+		const before = await open("boot-1");
+		const lease = await grant(before, "unlaunched");
+		before.close();
+		const after = await open("boot-2");
+		const report = await after.reconcile(neverAsked);
+		expect(report.reclaimed).toBe(1);
+		expect((await after.lease(lease.id))?.state).toBe("reclaimed");
+		after.close();
+	});
+
+	test("this boot's own in-flight grant is left alone", async () => {
+		const store = await open("boot-1");
+		const lease = await grant(store, "in-flight");
+		const report = await store.reconcile(async () => "unknown");
+		expect(report.reclaimed).toBe(0);
+		expect((await store.lease(lease.id))?.state).toBe("provisional");
+		store.close();
+	});
+
+	test("an interrupted release finishes on recovery", async () => {
+		const before = await open("boot-1");
+		const lease = await grant(before, "half-released");
+		await before.activate(lease.id, lease.fence, "run-1", 60_000);
+		await before.markReleasing(lease.id, lease.fence, "run ended");
+		before.close();
+		const after = await open("boot-2");
+		const report = await after.reconcile(neverAsked);
+		expect(report.released).toBe(1);
+		expect((await after.lease(lease.id))?.state).toBe("released");
+		after.close();
+	});
+
+	test("a kernel reboot proves a local run absent", async () => {
+		const before = await open("boot-1", "kernel-1");
+		const lease = await grant(before, "rebooted");
+		await before.activate(lease.id, lease.fence, "run-1", 60_000, {
+			runId: "run-1",
+			pid: 42,
+			processStartTime: "1000",
+			kernelBootId: "kernel-1",
+		});
+		before.close();
+		const after = await open("boot-2", "kernel-2");
+		const report = await after.reconcile(neverAsked);
+		expect(report.reclaimed).toBe(1);
+		after.close();
+	});
+
+	test("the run identity survives a restart for liveness checks", async () => {
+		const before = await open("boot-1");
+		const lease = await grant(before, "identity");
+		await before.activate(lease.id, lease.fence, "run-1", 60_000, {
+			runId: "run-1",
+			sessionId: "session-1",
+			pid: 42,
+			processStartTime: "1000",
+		});
+		before.close();
+		const after = await open("boot-2");
+		const seen: (string | null | undefined)[] = [];
+		await after.reconcile(async (l) => {
+			seen.push(l.run?.sessionId);
+			return "live";
+		});
+		expect(seen).toEqual(["session-1"]);
+		after.close();
+	});
+
+	test("an unproven run keeps its capacity across a restart", async () => {
+		const before = await open("boot-1");
+		const lease = await grant(before, "unproven");
+		await before.activate(lease.id, lease.fence, "run-1", 60_000);
+		before.close();
+		const after = await open("boot-2");
+		await after.reconcile(async () => "unknown");
+		expect((await after.lease(lease.id))?.state).toBe("uncertain");
+		const next = await after.putWaiter({
+			requestKey: "behind-it",
+			projectId: "p",
+			claims: [{ poolId: POOL_ID, dimension: "permits", amount: 1 }],
+		});
+		expect(await after.tryGrant(next.id)).toMatchObject({ kind: "held" });
+		after.close();
 	});
 });

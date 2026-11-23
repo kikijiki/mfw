@@ -110,6 +110,24 @@ export interface ResourceWaiter {
 	claims: Claim[];
 }
 
+/** Marks a run on another machine: local evidence never frees its capacity. */
+export const REMOTE_RUN_SESSION_PREFIX = "remote:";
+
+/** How a run is found again after a crash; PID reuse is rejected by start time. */
+export interface RunIdentity {
+	runId: string;
+	runDir?: string;
+	sessionId?: string | null;
+	pid?: number | null;
+	processStartTime?: string | null;
+	kernelBootId?: string | null;
+	processTree?: {
+		pid: number;
+		processStartTime: string;
+		kernelBootId?: string | null;
+	}[];
+}
+
 export interface ResourceLease {
 	id: string;
 	waiterId: string;
@@ -117,6 +135,9 @@ export interface ResourceLease {
 	state: ResourceLeaseState;
 	fence: number;
 	runId: string | null;
+	run: RunIdentity | null;
+	/** The daemon process that granted or last adopted this lease. */
+	ownerBootId: string | null;
 	grantedAt: number;
 	activatedAt: number | null;
 	lastRenewedAt: number | null;
@@ -166,12 +187,22 @@ export interface Actual {
 
 export type LeaseEvidence = "live" | "absent" | "unknown";
 
+/** What a liveness check saw and when, for an override that must rest on it. */
+export interface LeaseEvidenceReport {
+	status: LeaseEvidence;
+	checkedAt: number;
+	kernelBootId?: string | null;
+	detail?: string;
+}
+
 export interface ResourceReconcileReport {
 	examined: number;
 	adopted: number;
 	reclaimed: number;
 	uncertain: number;
 	unchanged: number;
+	/** Half-finished releases completed by recovery. */
+	released: number;
 }
 
 export interface DimensionSummary {
@@ -196,6 +227,23 @@ export interface PoolSummary {
 	parked: number;
 	oldestWaitMs: number | null;
 	observedAt: number | null;
+}
+
+export type PoolIncidentKind =
+	| "ram-low-headroom"
+	| "gpu-occupancy-conflict"
+	| "cpu-pressure";
+
+/** A durable condition on a pool, opened and resolved once per occurrence. */
+export interface PoolIncident {
+	key: string;
+	kind: PoolIncidentKind;
+	poolId: string;
+	state: "open" | "resolved";
+	openedAt: number;
+	updatedAt: number;
+	resolvedAt: number | null;
+	context: Record<string, unknown>;
 }
 
 /** Written before `provision`; closed only when an inventory proves absence. */
