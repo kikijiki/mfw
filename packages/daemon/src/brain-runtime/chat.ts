@@ -9,6 +9,8 @@ import {
 	type InferenceClient,
 	inferenceForProvider,
 } from "../brain.ts";
+import { CLAIM_INSTRUCTION, type ClaimSubject } from "../claims.ts";
+import { guardWithRecords } from "../claims-evidence.ts";
 import type { Logger } from "../log.ts";
 import type { RoutingDecision } from "../routing.ts";
 import type { RunRegistry } from "../run-registry.ts";
@@ -301,10 +303,25 @@ export class BrainChat {
 							this.fallbackSources(),
 						);
 		}
+		const cited = draft.citations.filter((c) => c.kind === "task");
+		const subject: ClaimSubject | null =
+			cited.length === 1 && cited[0] ? { kind: "task", id: cited[0].id } : null;
+		const guarded = await guardWithRecords(this.deps.handle.db, draft.text, {
+			author: reason ? "records" : "brain",
+			subject,
+		});
 		await this.thread.appendAnswer(
 			{
 				questionId: q.id,
-				text: draft.text,
+				text: guarded.text,
+				...(guarded.changed
+					? {
+							originalText: draft.text,
+							unbackedClaims: guarded.findings.filter(
+								(f) => f.outcome === "annotated",
+							).length,
+						}
+					: {}),
 				source: reason ? "records" : "brain",
 				...(reason ? { reason } : {}),
 				citations: draft.citations,
@@ -554,6 +571,7 @@ export function chatPrompt(
 		'{"answer":{"text":"plain text","citations":[{"kind":"task|run|decision|view","id":"..."}],"wants_action":false}}',
 		`Read tools: ${CHAT_READ_TOOLS.join(", ")}. Reads left: ${o.readsLeft}.`,
 		"Cite only ids you saw in a read result. If no record backs the answer, cite nothing and say so.",
+		CLAIM_INSTRUCTION,
 		...(o.last ? ["This is your last step: answer now."] : []),
 		"",
 		context,

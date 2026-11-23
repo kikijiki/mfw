@@ -14,6 +14,8 @@ import { and, desc, eq, gte, inArray, isNull, ne } from "drizzle-orm";
 import { readActBreaker } from "./brain-runtime/act-breaker.ts";
 import { readAwaiting } from "./brain-runtime/awaiting.ts";
 import { decisionCardId } from "./brain-runtime/decision-rights.ts";
+import { guardText, HostEvidence } from "./claims.ts";
+import { loadHostEvidence } from "./claims-evidence.ts";
 import { TASK_QUESTION_KIND } from "./clarify.ts";
 import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
 import type { TaskRow, TaskService } from "./task-service.ts";
@@ -861,6 +863,17 @@ export class InboxService {
 					gte(brainActions.createdAt, since),
 				),
 			);
+		const noticeArgs = notices.map(
+			(n) => n.args as { title?: string; body?: string; blocking?: string[] },
+		);
+		// One read for all of them; a failed read marks every strong word.
+		const noticeEvidence = await loadHostEvidence(
+			db,
+			noticeArgs.flatMap((a) => [a.title ?? "", a.body ?? ""]),
+			noticeArgs.flatMap((a) =>
+				a.blocking?.[0] ? [{ kind: "task" as const, id: a.blocking[0] }] : [],
+			),
+		).catch(() => HostEvidence.empty());
 		for (const n of notices) {
 			if (n.status === "rejected" || n.status === "failed") continue;
 			const args = n.args as {
@@ -871,13 +884,19 @@ export class InboxService {
 				blocking?: string[];
 			};
 			if (args.kind === "fyi") continue;
+			const about = args.blocking?.[0]
+				? ({ kind: "task", id: args.blocking[0] } as const)
+				: null;
+			const guard = (text: string) =>
+				guardText(text, noticeEvidence, { author: "brain", subject: about })
+					.text;
 			out.push({
 				id: `brain_notice:${n.id}`,
 				project,
 				kind: "brain_notice",
 				severity: SEVERITY.brain_notice,
-				title: `brain: ${args.title ?? "needs you"}`,
-				detail: args.body ?? "",
+				title: `brain: ${guard(args.title ?? "needs you")}`,
+				detail: guard(args.body ?? ""),
 				...(args.blocking?.[0] ? { taskId: args.blocking[0] } : {}),
 				ts: n.createdAt.getTime(),
 			});

@@ -1,4 +1,5 @@
 import type { WakeClass } from "@mfw/core/events";
+import { CLAIM_INSTRUCTION } from "../claims.ts";
 import { isTainting, type Provenance } from "./decision-rights.ts";
 import type { WakeEvent } from "./wake-table.ts";
 
@@ -191,11 +192,11 @@ function runFactLine(f: DigestRunFact): string {
 	if (f.costUsd != null) parts.push(`cost $${f.costUsd.toFixed(2)}`);
 	const lines = [`- ${parts.join(", ")}`];
 	if (f.settle) lines.push(`  - settled: ${f.settle}`);
-	if (f.verify) lines.push(`  - verify: ${f.verify}`);
+	if (f.verify) lines.push(`  - verify [host-observed]: ${f.verify}`);
 	if (f.scope) lines.push(`  - scope: ${f.scope}`);
-	if (f.verdict) lines.push(`  - review: ${f.verdict}`);
-	if (f.question) lines.push(`  - question: ${f.question}`);
-	if (f.report) lines.push(`  - report: ${f.report}`);
+	if (f.verdict) lines.push(`  - review [agent-reported]: ${f.verdict}`);
+	if (f.question) lines.push(`  - question [agent-reported]: ${f.question}`);
+	if (f.report) lines.push(`  - report [agent-reported]: ${f.report}`);
 	if (f.error) lines.push(`  - error: ${f.error}`);
 	return lines.join("\n");
 }
@@ -288,6 +289,8 @@ export function renderDigest(input: DigestInput): {
 		`Turn ${input.turnSeq}, generation ${input.generation}, ${input.resumed ? "resumed session" : "fresh session"}. ` +
 			`${input.lastTurnAt ? `${mins(input.now - input.lastTurnAt)} since your last turn.` : "This is your first turn."} ` +
 			`Events #${input.eventsFrom}..#${input.eventsTo}.`,
+		// Here, not the charter: a resumed session never sees a new charter.
+		CLAIM_INSTRUCTION,
 		...input.capacity.map((c) => `- ${c}`),
 	];
 

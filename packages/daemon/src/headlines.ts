@@ -2,6 +2,7 @@ import type { ProjectDbHandle } from "@mfw/db/client";
 import { events } from "@mfw/db/schema";
 import { and, eq, gte, sql } from "drizzle-orm";
 import type { ReviewDebt } from "./act-budget.ts";
+import type { ClaimClass } from "./claims.ts";
 import type { InboxItem } from "./inbox.ts";
 import { startOfLocalDay } from "./project-summary.ts";
 
@@ -22,6 +23,8 @@ export interface HeadlinePart {
 	key: "landed" | "needs_you" | "main" | "spend" | "held_back" | "review_debt";
 	text: string;
 	link: HeadlineLink;
+	/** Who vouches for this part. */
+	claimClass: ClaimClass;
 }
 
 export interface Headline {
@@ -82,15 +85,33 @@ export function buildHeadline(input: HeadlineInputs): Headline {
 	const spendFraction = spendFractionOf(input.budgets);
 
 	const parts: HeadlinePart[] = [
-		{ key: "landed", text: `Landed ${input.landedToday}`, link: "landed" },
-		{ key: "needs_you", text: `needs you ${needsYou}`, link: "needs_you" },
-		{ key: "main", text: mainRed ? "main red" : "main green", link: "main" },
+		{
+			key: "landed",
+			text: `Landed ${input.landedToday}`,
+			link: "landed",
+			claimClass: "host-observed",
+		},
+		{
+			key: "needs_you",
+			text: `needs you ${needsYou}`,
+			link: "needs_you",
+			claimClass: "inference",
+		},
+		{
+			key: "main",
+			text: mainRed ? "main red" : "main green",
+			link: "main",
+			// "green" is only the absence of a red record, not a passing sweep.
+			claimClass: mainRed ? "host-observed" : "inference",
+		},
 	];
 	if (spendFraction !== null) {
 		parts.push({
 			key: "spend",
 			text: `spend ${Math.round(spendFraction * 100)}%`,
 			link: "budgets",
+			// The ledger adds up the usage agents reported.
+			claimClass: "agent-reported",
 		});
 	}
 	const heldBack = input.attention?.heldBack ?? 0;
@@ -100,6 +121,7 @@ export function buildHeadline(input: HeadlineInputs): Headline {
 			key: "held_back",
 			text: `${heldBack} held back`,
 			link: "needs_you",
+			claimClass: "inference",
 		});
 	}
 	if (reviewDebt.count > 0) {
@@ -111,6 +133,7 @@ export function buildHeadline(input: HeadlineInputs): Headline {
 			key: "review_debt",
 			text: `review debt ${reviewDebt.count}${age}`,
 			link: "needs_you",
+			claimClass: "inference",
 		});
 	}
 	// "Landed 7, needs you 1; main green; spend 62%"

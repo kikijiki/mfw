@@ -119,3 +119,33 @@ describe("request guard: Origin and Sec-Fetch-Site", () => {
 		expect(checkRequest(r, {})?.status).toBe(403);
 	});
 });
+
+describe("request guard: Origin scheme (reviewer m1)", () => {
+	test("an https Origin is refused for a plain-HTTP loopback request", () => {
+		expect(
+			run({ host: "localhost:7777", origin: "https://localhost:7777" }),
+		).not.toBeNull();
+	});
+
+	test("the matching scheme passes", () => {
+		expect(
+			run({ host: "localhost:7777", origin: "http://localhost:7777" }),
+		).toBeNull();
+	});
+
+	test("an http Origin is refused on a TLS request", () => {
+		const r = new Request("https://localhost:7777/api/trpc/x", {
+			headers: { host: "localhost:7777", origin: "http://localhost:7777" },
+		});
+		expect(checkRequest(r, {})).not.toBeNull();
+	});
+
+	test("behind a proxy the external scheme is not known yet, so https passes", () => {
+		expect(
+			run(
+				{ host: "box.example", origin: "https://box.example" },
+				{ MFW_ALLOWED_HOSTS: "box.example" },
+			),
+		).toBeNull();
+	});
+});

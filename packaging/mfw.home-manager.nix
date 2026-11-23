@@ -15,6 +15,9 @@
 #   tailscale serve --bg --set-path /mfw http://127.0.0.1:7777/mfw
 # The target repeats the prefix on purpose, Serve strips the mount path.
 #
+# First run: the setup token is in $MFW_HOME/setup-token (never in the log), or
+# run `mfw auth setup-token`.
+#
 # Safety: it starts with the scheduler OFF (no task dispatch until you enable it
 # in the UI; that choice is persisted + restored on reboot) and binds the HTTP
 # listener to your TAILNET IP ONLY, mfw runs agents with

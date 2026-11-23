@@ -170,10 +170,34 @@ Both keep the scheduler off until you enable it in the UI.
 | `PORT` / `HOST` | `7777` / runtime default | the address the server listens on |
 | `MFW_BASE_PATH` | `/mfw/` | the URL prefix, fixed when you run `bun run build` (`/` for the root) |
 | `MFW_URL` | `http://localhost:7777/mfw/api/trpc` | where the MCP server finds the app |
+| `MFW_ALLOWED_HOSTS` | none | extra host names the UI may be reached on (comma separated); loopback is always allowed |
 
-Provider keys, if you use any, are stored in a private file
-(`~/.local/share/mfw/credentials.json`, readable only by you), never in the
-database. mfw never edits your `.gitignore`.
+### Signing in
+
+Auth is always on, including on loopback. On first start the server writes a
+one-time **setup token** to `$MFW_HOME/setup-token` (readable only by you) and
+logs only that path; the token itself never goes to a log. Open the UI, enter
+the token and choose the owner password. `mfw auth setup-token` prints a new
+one, and a token expires after an hour.
+
+Run these on the host, outside any agent sandbox:
+
+| Command | What it does |
+| --- | --- |
+| `mfw auth unlock` | clear failed sign-in attempts, if you are locked out |
+| `mfw auth sign-out-everywhere` | revoke every session, including a stolen one |
+| `mfw auth setup-token` | issue a new first-run token (before an owner exists) |
+| `mfw auth reset --yes` | forget the password and all sessions, then repeat setup |
+
+To change the password, use Settings > Session. It asks for the current password
+and signs out every other session.
+
+`mfw auth reset` refuses while the server or any agent session is running, because
+a surviving agent could otherwise claim the owner account during setup. Do not
+delete `auth.db` by hand: that skips this check.
+
+`mfw mcp` over HTTP has no way to sign in yet and is refused until scoped tokens
+land. The project brain is unaffected: it uses its own unix socket.
 
 ## How it is built
 

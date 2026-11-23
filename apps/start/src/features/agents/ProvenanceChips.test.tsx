@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { RunProvenanceView } from "@mfw/daemon/run-provenance-view";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ProvenanceChips } from "./ProvenanceChips";
+import { ClaimChips, ProvenanceChips } from "./ProvenanceChips";
 
 const view = (
 	exit: RunProvenanceView["exit"],
@@ -71,5 +71,40 @@ describe("ProvenanceChips", () => {
 		expect(
 			render(view({ observed: null, agentSays: null, disagree: false })),
 		).toBe("");
+	});
+});
+
+describe("claim chips", () => {
+	test("a run's host-backed claim reads as the host's", () => {
+		const html = render({
+			...view({ observed: null, agentSays: null, disagree: false }),
+			claims: [
+				{
+					class: "host-observed",
+					text: "merged",
+					word: "merged",
+					subject: { kind: "run", id: "r" },
+					weakened: false,
+					records: [{ kind: "merge", seq: 1 }],
+				},
+			],
+		});
+		expect(html).toContain("host saw merged");
+	});
+
+	test("weaker headline parts are named, host parts need no chip", () => {
+		const html = renderToStaticMarkup(
+			<ClaimChips
+				parts={[
+					{ key: "landed", text: "Landed 1", claimClass: "host-observed" },
+					{ key: "needs_you", text: "needs you 1", claimClass: "inference" },
+					{ key: "main", text: "main green", claimClass: "inference" },
+					{ key: "spend", text: "spend 5%", claimClass: "agent-reported" },
+				]}
+			/>,
+		);
+		expect(html).toContain("inferred: needs you, main");
+		expect(html).toContain("agent says: spend");
+		expect(html).not.toContain("landed");
 	});
 });

@@ -73,7 +73,7 @@ describe("rendered markdown", () => {
 		expect(html).toContain("<h1");
 		expect(html).toContain("Title");
 		expect(html).toContain(
-			'src="/api/files/demo/docs/img/shot.png?ref=feature%2Fx"',
+			'data-asset-src="/api/files/demo/docs/img/shot.png?ref=feature%2Fx"',
 		);
 		expect(html).toContain("<table");
 		expect(html).toContain("https://example.com");
@@ -90,7 +90,7 @@ describe("rendered markdown", () => {
 				text="![x](p.png)"
 			/>,
 		);
-		expect(html).toContain('src="/api/files/demo/p.png?run=R9"');
+		expect(html).toContain('data-asset-src="/api/files/demo/p.png?run=R9"');
 	});
 });
 

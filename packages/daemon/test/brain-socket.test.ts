@@ -53,16 +53,16 @@ function call(
 	} = {},
 ) {
 	const input = over.input ?? {
-		"0": { json: { project: "alpha", turnRunId: "R1" } },
+		json: { project: "alpha", turnRunId: "R1" },
 	};
 	const headers: Record<string, string> = { ...over.headers };
 	if (token !== null) headers.authorization = `Bearer ${token}`;
 	const procedure = over.procedure ?? "brain.read";
 	const method = over.method ?? "POST";
-	const url = `http://x/trpc/${procedure}?batch=1`;
+	const url = `http://x/trpc/${procedure}`;
 	return fetch(
 		method === "GET"
-			? `${url}&input=${encodeURIComponent(JSON.stringify(input))}`
+			? `${url}?input=${encodeURIComponent(JSON.stringify(input))}`
 			: url,
 		{
 			method,
@@ -135,19 +135,27 @@ describe("brain socket", () => {
 		const token = await tokenOf(access);
 		const claims = [
 			{ headers: { [BRAIN_TURN_HEADER]: "R2" } },
-			{ input: { "0": { json: { project: "alpha", turnRunId: "R2" } } } },
-			{ input: { "0": { json: { project: "beta", turnRunId: "R1" } } } },
-			{ input: { "0": { json: { project: "alpha" } } } },
-			// One honest call in a batch does not cover a dishonest one.
-			{
-				input: {
-					"0": { json: { project: "alpha", turnRunId: "R1" } },
-					"1": { json: { project: "alpha", turnRunId: "R2" } },
-				},
-			},
+			{ input: { json: { project: "alpha", turnRunId: "R2" } } },
+			{ input: { json: { project: "beta", turnRunId: "R1" } } },
+			{ input: { json: { project: "alpha" } } },
 		];
 		for (const c of claims)
 			expect((await call(access, token, c)).status).toBe(403);
+		expect(seen).toHaveLength(0);
+	});
+
+	test("a batch is refused, even with only honest calls in it", async () => {
+		const { socket, seen } = await setup();
+		const access = await socket.issue(binding);
+		const res = await fetch("http://x/trpc/brain.read?batch=1", {
+			method: "POST",
+			headers: { authorization: `Bearer ${await tokenOf(access)}` },
+			body: JSON.stringify({
+				"0": { json: { project: "alpha", turnRunId: "R1" } },
+			}),
+			unix: access.socketPath,
+		} as RequestInit);
+		expect(res.status).toBe(400);
 		expect(seen).toHaveLength(0);
 	});
 
@@ -162,7 +170,7 @@ describe("brain socket", () => {
 		expect(
 			(
 				await call(a, tb, {
-					input: { "0": { json: { project: "alpha", turnRunId: "R1" } } },
+					input: { json: { project: "alpha", turnRunId: "R1" } },
 				})
 			).status,
 		).toBe(403);
@@ -171,7 +179,7 @@ describe("brain socket", () => {
 		expect(
 			(
 				await call(b, tb, {
-					input: { "0": { json: { project: "alpha", turnRunId: "R2" } } },
+					input: { json: { project: "alpha", turnRunId: "R2" } },
 				})
 			).status,
 		).toBe(200);
@@ -194,14 +202,14 @@ describe("brain socket", () => {
 		);
 		expect(
 			(await call(access, token, { procedure: "brain.read,brain.act" })).status,
-		).toBe(200);
-		expect(seen).toHaveLength(2);
+		).toBe(400);
+		expect(seen).toHaveLength(1);
 	});
 
 	test("unparseable input is a 400, not a pass-through", async () => {
 		const { socket, seen } = await setup();
 		const access = await socket.issue(binding);
-		const res = await fetch("http://x/trpc/brain.read?batch=1", {
+		const res = await fetch("http://x/trpc/brain.read", {
 			method: "POST",
 			headers: { authorization: `Bearer ${await tokenOf(access)}` },
 			body: "{not json",

@@ -8,7 +8,7 @@ import { delimiter, join, resolve } from "node:path";
  * usable without the server) or a module run in this process (`mcp`).
  */
 
-const SUBCOMMANDS = ["board", "mcp", "server", "version"] as const;
+const SUBCOMMANDS = ["auth", "board", "mcp", "server", "version"] as const;
 
 export interface Deps {
 	env: Record<string, string | undefined>;
@@ -27,11 +27,14 @@ export interface Deps {
 	run: (argv: string[], cwd?: string) => Promise<number>;
 	/** Runs the MCP stdio server in this process (resolves when it is set up). */
 	runMcp: (args: string[]) => Promise<void>;
+	/** Runs `mfw auth ...` against this install's auth store. */
+	runAuth: (args: string[]) => Promise<number>;
 }
 
 export const USAGE = [
 	"usage: mfw <command> [args]",
 	"",
+	"  auth ...      owner recovery: unlock, setup-token, sign-out-everywhere, reset",
 	"  board ...     the markdown board (runs mfw-board; no server needed)",
 	"  mcp [--brain <sessionId>]   MCP server over stdio (no server process needed)",
 	"  server        run the orchestrator + web UI in the foreground",
@@ -88,6 +91,8 @@ export async function dispatch(argv: string[], d: Deps): Promise<number> {
 		return 0;
 	}
 	switch (cmd) {
+		case "auth":
+			return d.runAuth(rest);
 		case "board": {
 			const exe = findBoardExecutable(d.env, d.selfDir);
 			if (exe) return d.run([exe, ...rest]);
@@ -163,6 +168,17 @@ function realDeps(): Deps {
 			// The MCP entry reads process.argv itself; present it as its own script.
 			process.argv = [process.argv[0] ?? "bun", "mfw mcp", ...args];
 			await import("@mfw/mcp");
+		},
+		runAuth: async (args) => {
+			const [{ runAuthCommand }, { mfwHome }] = await Promise.all([
+				import("../../daemon/src/auth/cli.ts"),
+				import("../../daemon/src/config.ts"),
+			]);
+			return runAuthCommand(args, {
+				home: mfwHome(),
+				out: (l) => console.log(l),
+				err: (l) => console.error(l),
+			});
 		},
 	};
 }

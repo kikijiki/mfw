@@ -286,6 +286,8 @@ export interface BwrapCoreOptions {
 	/** Paths bound read-only AFTER the writable binds (the reviewer's checkouts). */
 	readOnly?: readonly string[];
 	masks?: readonly string[];
+	/** Replaces `JOURNAL_DIRS` (tests). */
+	journalDirs?: readonly string[];
 	/**
 	 * Mount a split run dir: `control/` read-only, `outbox/` writable, and the
 	 * rest of the run root hidden. When the run sits in a project's `.mfw`, all
@@ -294,6 +296,15 @@ export interface BwrapCoreOptions {
 	 */
 	splitRunDir?: boolean;
 }
+
+/**
+ * The system journal. `/` is bound read-only, so without this a run can read
+ * every service's log, including anything sensitive a service printed.
+ */
+export const JOURNAL_DIRS: readonly string[] = [
+	"/var/log/journal",
+	"/run/log/journal",
+];
 
 /** The bwrap flags shared by the driver sandbox and the reviewer: no env, no command. */
 export function bwrapCore(o: BwrapCoreOptions): string[] {
@@ -342,6 +353,10 @@ export function bwrapCore(o: BwrapCoreOptions): string[] {
 	// After every writable bind, so a masked path under one overlays it.
 	for (const p of new Set([...(o.masks ?? []), ...o.isolation.hidePaths])) {
 		tokens.push("--tmpfs", p);
+	}
+	// Only where it exists: bwrap cannot create a mount point under a read-only `/`.
+	for (const p of o.journalDirs ?? JOURNAL_DIRS) {
+		if (existsSync(p)) tokens.push("--tmpfs", p);
 	}
 	// Last: every mount point inside exists, and the tmpfs holding them can no
 	// longer be written, so `control` and `outbox` cannot be renamed or shadowed.

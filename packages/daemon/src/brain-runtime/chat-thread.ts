@@ -61,6 +61,10 @@ export interface ChatAnswer {
 	at: number;
 	questionId: string;
 	text: string;
+	/** What was written before the claim guard marked it. Absent when unchanged. */
+	originalText?: string;
+	/** Strong words the guard marked as having no host record. */
+	unbackedClaims?: number;
 	source: "brain" | "records";
 	reason?: ChatFallbackReason;
 	citations: ChatCitation[];
