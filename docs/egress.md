@@ -2,7 +2,9 @@
 
 A sandboxed task or repair run has no network of its own. Its only way out is
 a proxy on the host, one per run, reached through a unix socket that only that
-run can see. Other run kinds do not use this path yet.
+run can see. Every other isolated launch is bridged the same way or refused;
+none has a network path of its own. An unsandboxed run (`agentIsolation:
+"none"`) has no proxy and uses the host network.
 
 ## What a run can reach
 
