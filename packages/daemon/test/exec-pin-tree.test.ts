@@ -133,6 +133,17 @@ describe("the whole tree is pinned at the armed commit", () => {
 		});
 	}
 
+	test("refs/replace cannot hide a changed commit from the tree check", async () => {
+		await commit({ "run.sh": "#!/bin/sh\nexit 0\n" });
+		const pin = await pinOf("./run.sh");
+		const armed = pin.commit as string;
+		await commit({ "planted.ts": "evil\n" });
+		const head = await gitOk(["rev-parse", "HEAD"], root);
+		await gitOk(["replace", head, armed], root);
+		const verified = await verifyAtHead(pin);
+		expect(!verified.ok && verified.code).toBe("tree_changed");
+	});
+
 	test("a path on the owner's list may change", async () => {
 		await commit({ "run.sh": "#!/bin/sh\nexit 0\n" });
 		const pin = await pinOf("./run.sh", ["docs/", "CHANGELOG.md"]);

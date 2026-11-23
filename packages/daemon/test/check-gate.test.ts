@@ -245,6 +245,25 @@ describe("the check gate", () => {
 		expect(refused).not.toBeNull();
 	});
 
+	test("refs/replace cannot forge the trusted base", async () => {
+		// The reviewer's exploit: replace the base with a commit holding the
+		// candidate's script, so the "base" reads back as the candidate.
+		const evilScript = `#!/bin/sh\ntouch "${canary}"\n`;
+		await gitOk(["checkout", "-q", "-b", "forged"], root);
+		await writeFile(join(root, "scripts/check.sh"), evilScript);
+		await gitOk(["add", "-A"], root);
+		await gitOk(["commit", "-q", "-m", "forged"], root);
+		const forged = await gitOk(["rev-parse", "HEAD"], root);
+		await gitOk(["checkout", "-q", "main"], root);
+		await gitOk(["replace", baseSha, forged], root);
+		await writeFile(join(candidate, "scripts/check.sh"), evilScript);
+		const r = await verify(candidate, dod("./scripts/check.sh"), baseSha, {
+			gate: gate(),
+		});
+		expect(r.checks[0]?.classification).toBe("refused");
+		expect(existsSync(canary)).toBe(false);
+	});
+
 	test("without a gate the verifier behaves as before", async () => {
 		await writeFile(
 			join(candidate, "scripts/check.sh"),

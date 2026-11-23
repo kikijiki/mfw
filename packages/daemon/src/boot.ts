@@ -780,7 +780,7 @@ export async function attachProject(
 		bus,
 		projectRoot: root,
 		log: plog,
-		reverify: async (job) => {
+		reverify: async (job, baseSha) => {
 			const task = job.taskId ? await tasks.get(job.taskId) : null;
 			const dod = tasks.effectiveDod(task?.dod ?? null);
 			if (!dod) return { passed: true }; // nothing to re-check
@@ -792,7 +792,7 @@ export async function attachProject(
 			const opts = {
 				checkPrefix: cfg.checkPrefix,
 				envPolicy: cfg.envPolicy,
-				gate: { primaryRoot: root, baseRev: `refs/heads/${job.targetBranch}` },
+				gate: { primaryRoot: root, baseRev: baseSha },
 			};
 			const runClones = createVerifierClones(root, run);
 			const result = await verification.foreground(() =>

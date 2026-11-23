@@ -80,6 +80,8 @@ export interface MergeQueueDeps {
 	 */
 	reverify: (
 		job: MergeJobView,
+		/** The target's tip as a commit id: a ref could move before the gate reads it. */
+		baseSha: string,
 	) => Promise<{ passed: boolean; detail?: string; crashed?: boolean }>;
 	/**
 	 * Verify the merge commit itself (after the board restore) before it lands, in a disposable host-owned clone.
@@ -432,7 +434,7 @@ export class MergeQueue {
 		}
 
 		await this.setState(job.id, "reverifying");
-		const verdict = await this.deps.reverify(job);
+		const verdict = await this.deps.reverify(job, baseSha);
 		if (!verdict.passed) {
 			// A crashed re-verify says nothing about the rebase; word it so a human
 			// is not told the rebase broke something.
