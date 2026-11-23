@@ -152,6 +152,28 @@ const PROTECTED_NAMES = new Set([
 	".lfsconfig",
 ]);
 
+/**
+ * A path component as a case-insensitive filesystem would see it: no case, no
+ * characters HFS+ ignores, no NTFS stream suffix or trailing dots and spaces.
+ */
+function normalizedName(name: string): string {
+	return name
+		.replace(/[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g, "")
+		.split(":")[0]
+		?.replace(/[ .]+$/, "")
+		.toLowerCase() as string;
+}
+
+function isProtectedName(name: string): boolean {
+	const n = normalizedName(name);
+	return PROTECTED_NAMES.has(n) || /^(?:gitmod|gitatt|lfscon)~\d+$/.test(n);
+}
+
+function isDotGit(name: string): boolean {
+	const n = normalizedName(name);
+	return n === ".git" || /^git~\d+$/.test(n);
+}
+
 /** A result changing more paths than this is refused rather than half-read. */
 export const MAX_RESULT_ENTRIES = 20_000;
 /** A whole tree may be far larger than a change; only its symlinks are kept. */
@@ -187,7 +209,7 @@ export async function validateRunResult(
 			const newMode = meta[1] ?? "";
 			const newSha = meta[3] ?? "";
 			const status = (meta[4] ?? "").slice(0, 1);
-			if (PROTECTED_NAMES.has(basename(path))) {
+			if (path.split("/").some(isProtectedName)) {
 				throw new HostGitError(
 					"validation",
 					`the run changed ${JSON.stringify(path.slice(0, 120))}, which an imported result may not`,
@@ -282,7 +304,7 @@ async function assertLinksStayInTree(
 				if (at.pop() === undefined) refuse("leaves the tree");
 				continue;
 			}
-			if (part.toLowerCase() === ".git") refuse("points into .git");
+			if (isDotGit(part)) refuse("points into .git");
 			at.push(part);
 			const here = at.join("/");
 			if (!blobs.has(here)) continue;

@@ -414,3 +414,47 @@ describe("M2: symlink targets resolve against the result tree", () => {
 		).toBeNull();
 	});
 });
+
+describe("L3: protected names are matched as a checkout would see them", () => {
+	test.each([
+		".GitAttributes",
+		".GITMODULES",
+		".LfsConfig",
+		".gitattributes.",
+		".gitattributes ",
+		".gitattributes::$DATA",
+		"GITATT~1",
+		"gitmod~1",
+		"sub/.GITATTRIBUTES",
+		".git‌attributes",
+		".gitmodules/inner.txt",
+	])("%j is refused", async (path) => {
+		const b = await bare();
+		await b.commit(
+			[
+				[EMPTY_MODE, "a.txt", b.one],
+				[EMPTY_MODE, path, b.one],
+			],
+			b.ctx.headRef,
+			b.base,
+		);
+		expect(await refusal(validateRunResult(b.ctx, b.base))).toBe("validation");
+	});
+
+	test.each([
+		"gitattributes.md",
+		"docs/my.gitmodules",
+		"x.lfsconfig",
+	])("%j is an ordinary file", async (path) => {
+		const b = await bare();
+		await b.commit(
+			[
+				[EMPTY_MODE, "a.txt", b.one],
+				[EMPTY_MODE, path, b.one],
+			],
+			b.ctx.headRef,
+			b.base,
+		);
+		expect(await refusal(validateRunResult(b.ctx, b.base))).toBeNull();
+	});
+});
