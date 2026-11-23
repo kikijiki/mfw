@@ -10,6 +10,7 @@ const GATED_ELSEWHERE = [
 	"check-sandbox-live",
 	"clone-wip-e2e",
 	"compile-bwrap-live",
+	"critic-sandbox-live",
 	"agent-bridge-conformance",
 	"egress-live",
 	"launch-sandbox-live",

@@ -17,6 +17,7 @@ import {
 	configureRunWorkspace,
 } from "../src/run-workspace/factory.ts";
 import { type CageConfig, cagedSteps } from "./support/caged-launch.ts";
+import { liveGate } from "./support/live-gate.ts";
 
 /**
  * Wave 2 exit review, B2: the critic's CLI ran on the host, with the daemon's
@@ -49,11 +50,7 @@ function skipReason(): string | null {
 	]);
 	return r.exitCode === 0 ? null : "bwrap cannot run here";
 }
-const skip = skipReason();
-if (skip && process.env.MFW_REQUIRE_LIVE_SANDBOX === "1") {
-	throw new Error(`live sandbox required but unavailable: ${skip}`);
-}
-if (skip) console.log(`[critic-sandbox-live] skipped: ${skip}`);
+const skip = liveGate("critic-sandbox-live", skipReason());
 
 /** What a CLI legitimately shares with the host by name. */
 const NEUTRAL = new Set([
