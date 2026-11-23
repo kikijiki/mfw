@@ -153,6 +153,7 @@ export interface BrainExecutorDeps {
 			taskId?: string | null;
 			branch: string;
 			targetBranch: string;
+			requireVerified?: boolean;
 		}): Promise<void>;
 		settleDeclinedHostMerge?(actionId: string): Promise<void>;
 	};
@@ -1121,6 +1122,7 @@ export class BrainActionExecutor {
 			taskId: task.id,
 			branch: run.branch,
 			targetBranch,
+			requireVerified: this.hasChecks(task),
 		});
 		return { approved: true, enqueued: true, targetBranch };
 	}
@@ -1237,6 +1239,7 @@ export class BrainActionExecutor {
 			taskId,
 			branch: winner.branch,
 			targetBranch,
+			requireVerified: this.hasChecks(task),
 		});
 		return { enqueued: true, targetBranch };
 	}

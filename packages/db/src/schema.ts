@@ -315,6 +315,9 @@ export const runs = sqliteTable(
 		approvalMode: text("approval_mode").$type<
 			"autonomous" | "interactive" | null
 		>(),
+		// The commit the verifier passed, read by the host. Cleared when a later
+		// verification fails; the merge queue lands only this commit.
+		verifiedSha: text("verified_sha"),
 	},
 	(t) => [
 		index("ix_runs_state").on(t.state),
@@ -448,6 +451,11 @@ export const mergeJobs = sqliteTable(
 		// Automatic park retries. Below the threshold `MergeQueue.retryParked()`
 		// requeues; at it, `onParked` escalates to a human once (`MergeQueue.park()`).
 		parkRetries: integer("park_retries").notNull().default(0),
+		// The only commit this job may land, set at enqueue. A tip that differs is
+		// refused; null (a job from before the pin existed) is refused too.
+		verifiedSha: text("verified_sha"),
+		// The tip the queue's own rebase produced, awaiting re-verification.
+		rebasedSha: text("rebased_sha"),
 		error: text("error"),
 		enqueuedAt: integer("enqueued_at", { mode: "timestamp_ms" }).notNull(),
 		updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),

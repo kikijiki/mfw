@@ -102,6 +102,8 @@ export interface MergeQueueDeps {
 		job: MergeJobView,
 		/** The target's tip as a commit id: a ref could move before the gate reads it. */
 		baseSha: string,
+		/** The exact rebased commit to check; a pass pins the job to it. */
+		tipSha: string,
 	) => Promise<{ passed: boolean; detail?: string; crashed?: boolean }>;
 	/**
 	 * Verify the merge commit itself (after the board restore) before it lands, in a disposable host-owned clone.
@@ -195,13 +197,29 @@ export class MergeQueue {
 		return ensureLandingRepo(this.deps.projectRoot, this.deps.landingRoot);
 	}
 
-	/** Idempotent by runId (UNIQUE). */
+	/**
+	 * Idempotent by runId (UNIQUE). The job is pinned to the commit the verifier
+	 * passed. A run with no checks has none, so it is pinned to its tip as read
+	 * here; `requireVerified` (set whenever the run has checks) refuses that.
+	 */
 	async enqueue(job: {
 		runId: string;
 		taskId?: string | null;
 		branch: string;
 		targetBranch: string;
+		requireVerified?: boolean;
 	}): Promise<void> {
+		const [run] = await this.deps.handle.db
+			.select({ verifiedSha: runs.verifiedSha })
+			.from(runs)
+			.where(eq(runs.id, job.runId));
+		const verified = run?.verifiedSha ?? null;
+		if (!verified && job.requireVerified) {
+			throw new Error(
+				`run ${job.runId} has no verified commit recorded, so it cannot be queued to merge`,
+			);
+		}
+		const pinned = verified ?? (await this.sourceTip(job));
 		await this.deps.handle.withTx(async (tx) => {
 			await tx
 				.insert(mergeJobs)
@@ -210,6 +228,7 @@ export class MergeQueue {
 					taskId: job.taskId ?? null,
 					branch: job.branch,
 					targetBranch: job.targetBranch,
+					verifiedSha: pinned,
 					enqueuedAt: new Date(),
 					updatedAt: new Date(),
 				})
@@ -394,6 +413,21 @@ export class MergeQueue {
 			return "parked";
 		}
 
+		// Before anything else touches the branch: a rebase must not launder a
+		// commit nobody verified. A tip the queue's own rebase produced is the one
+		// exception, and it is verified again before it can land.
+		const tip = await this.sourceTip(job);
+		if (tip) {
+			const pin = await this.pinOf(job.id);
+			if (tip !== pin.verifiedSha) {
+				if (tip === pin.rebasedSha) {
+					return this.verifyRebasedAndLand(job, baseSha, tip);
+				}
+				await this.park(job, pinRefusal(tip, pin.verifiedSha), "reverify");
+				return "parked";
+			}
+		}
+
 		await this.setState(job.id, "merging");
 		const first = await this.tryMerge(job, baseSha);
 		if (first) {
@@ -456,8 +490,58 @@ export class MergeQueue {
 			}
 		}
 
+		const rebased = await this.sourceTip(job);
+		if (!rebased) {
+			await this.park(job, "the rebased branch cannot be read", "conflict");
+			return "parked";
+		}
+		// Recorded first, so a crash or a failed check retries the verification
+		// of this tip instead of refusing the queue's own rebase.
+		await this.deps.handle.db
+			.update(mergeJobs)
+			.set({ rebasedSha: rebased, updatedAt: new Date() })
+			.where(eq(mergeJobs.id, job.id));
+		return this.verifyRebasedAndLand(job, baseSha, rebased);
+	}
+
+	/** The commit a job may land, and the tip its own rebase left to verify. */
+	private async pinOf(
+		jobId: number,
+	): Promise<{ verifiedSha: string | null; rebasedSha: string | null }> {
+		const [row] = await this.deps.handle.db
+			.select({
+				verifiedSha: mergeJobs.verifiedSha,
+				rebasedSha: mergeJobs.rebasedSha,
+			})
+			.from(mergeJobs)
+			.where(eq(mergeJobs.id, jobId));
+		return row ?? { verifiedSha: null, rebasedSha: null };
+	}
+
+	/** The commit the job's source points at now; null when it cannot be read. */
+	private async sourceTip(job: {
+		runId: string;
+		branch: string;
+	}): Promise<string | null> {
+		const source = await this.mergeSource(job);
+		const tip = await git(
+			["rev-parse", "--verify", `${source}^{commit}`],
+			this.deps.projectRoot,
+		);
+		return tip.exitCode === 0 ? tip.stdout.trim() : null;
+	}
+
+	/**
+	 * A rebased tip is a new commit: it lands only after the checks pass on that
+	 * exact SHA and the branch still points at it. The pin then moves to it.
+	 */
+	private async verifyRebasedAndLand(
+		job: MergeJobView,
+		baseSha: string,
+		rebased: string,
+	): Promise<"merged" | "parked" | "deferred" | "held"> {
 		await this.setState(job.id, "reverifying");
-		const verdict = await this.deps.reverify(job, baseSha);
+		const verdict = await this.deps.reverify(job, baseSha, rebased);
 		if (!verdict.passed) {
 			// A crashed re-verify says nothing about the rebase; word it so a human
 			// is not told the rebase broke something.
@@ -471,6 +555,25 @@ export class MergeQueue {
 			);
 			return "parked";
 		}
+		const after = await this.sourceTip(job);
+		if (after !== rebased) {
+			await this.park(
+				job,
+				pinRefusal(after ?? "(unreadable)", rebased),
+				"reverify",
+			);
+			return "parked";
+		}
+		await this.deps.handle.withTx(async (tx) => {
+			await tx
+				.update(mergeJobs)
+				.set({ verifiedSha: rebased, rebasedSha: null, updatedAt: new Date() })
+				.where(eq(mergeJobs.id, job.id));
+			await tx
+				.update(runs)
+				.set({ verifiedSha: rebased })
+				.where(eq(runs.id, job.runId));
+		});
 
 		await this.setState(job.id, "merging", { attempt: job.attempt + 1 });
 		// The queue is the only mover of the target ref, so baseSha is still current.
@@ -552,7 +655,10 @@ export class MergeQueue {
 	 * host-verified quarantine ref (`refs/mfw/quarantine/<runId>`), so that is
 	 * read when it exists; a worktree run's branch lives in the primary itself.
 	 */
-	private async mergeSource(job: MergeJobView): Promise<string> {
+	private async mergeSource(job: {
+		runId: string;
+		branch: string;
+	}): Promise<string> {
 		const ref = quarantineRef(job.runId);
 		const found = await git(
 			["rev-parse", "--verify", "-q", `${ref}^{commit}`],
@@ -726,10 +832,17 @@ export class MergeQueue {
 		if (sourceSha.exitCode !== 0) {
 			throw new Error(`merge source ${source} missing: ${sourceSha.stderr}`);
 		}
+		// The last read before the merge: a move since the check requeues the
+		// job, and the next pass refuses it.
+		const candidate = sourceSha.stdout.trim();
+		const { verifiedSha } = await this.pinOf(job.id);
+		if (candidate !== verifiedSha) {
+			throw new Error(pinRefusal(candidate, verifiedSha));
+		}
 		return landingMerge(
 			await this.landing(),
 			baseSha,
-			sourceSha.stdout.trim(),
+			candidate,
 			`Merge branch '${job.branch}' into ${job.targetBranch}`,
 			await this.identity(),
 		);
@@ -1118,6 +1231,17 @@ export class MergeQueue {
 	async retry(jobId: number): Promise<void> {
 		const job = await this.requireParked(jobId);
 		if (job.taskId) await this.deps.reclaimTask?.(job);
+		// A tip changed by hand (a resolved conflict) is not refused outright on
+		// an operator's retry, and it is not trusted either: it runs the same
+		// re-verification as the queue's own rebase before it can land.
+		const tip = await this.sourceTip(job);
+		const { verifiedSha } = await this.pinOf(jobId);
+		if (tip && verifiedSha && tip !== verifiedSha) {
+			await this.deps.handle.db
+				.update(mergeJobs)
+				.set({ rebasedSha: tip, updatedAt: new Date() })
+				.where(eq(mergeJobs.id, jobId));
+		}
 		await this.setState(jobId, "queued", { error: null });
 		const stored = await this.deps.handle.withTx(async (tx) =>
 			appendEvent(tx, {
@@ -1210,6 +1334,12 @@ export class MergeQueue {
 			.where(and(inArray(mergeJobs.state, [...IN_FLIGHT])));
 		return rows.length;
 	}
+}
+
+function pinRefusal(tip: string, verified: string | null): string {
+	return verified
+		? `the branch tip ${tip.slice(0, 12)} is not the commit that was verified (${verified.slice(0, 12)}): it must be verified again before it can merge`
+		: `this job has no verified commit recorded (tip ${tip.slice(0, 12)}): send the task back to ready to run it again`;
 }
 
 function tail(s: string, n = 400): string {

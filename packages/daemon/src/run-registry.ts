@@ -989,6 +989,17 @@ export class RunRegistry {
 		return runProvenanceView(this.handle.db, runId);
 	}
 
+	/**
+	 * The commit the verifier passed, as read by the host; null clears it after
+	 * a failed verification. The merge queue lands only this commit.
+	 */
+	async recordVerifiedSha(runId: string, sha: string | null): Promise<void> {
+		await this.handle.db
+			.update(runs)
+			.set({ verifiedSha: sha })
+			.where(eq(runs.id, runId));
+	}
+
 	/** The agent's MFW_REPORT, as a claim. */
 	async recordReportFact(runId: string, report: unknown): Promise<void> {
 		await recordRunFact(this.handle.db, {

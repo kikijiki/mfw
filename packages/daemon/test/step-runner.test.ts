@@ -58,6 +58,7 @@ interface MergeJob {
 	taskId?: string | null;
 	branch: string;
 	targetBranch: string;
+	requireVerified?: boolean;
 }
 
 interface Env {
@@ -460,10 +461,70 @@ describe("StepRunner v2: finalization end to end", () => {
 		expect(row?.state).toBe("merging");
 		expect(row?.outcome).toBe("completed");
 		expect(env.merges).toEqual([
-			{ runId: run.id, taskId, branch: wt.branch, targetBranch: "main" },
+			{
+				runId: run.id,
+				taskId,
+				branch: wt.branch,
+				targetBranch: "main",
+				requireVerified: true,
+			},
 		]);
 		// The merge queue owns the task from here.
 		expect((await env.tasks.get(taskId))?.status).toBe("in_progress");
+		await env.cleanup();
+	});
+
+	test("verification records the exact commit it passed", async () => {
+		const env = await makeEnv();
+		const wt = await addWorktree(env.root, "t-pin");
+		await commitIn(wt.path, "a.txt", "work\n");
+		const head = (await git(["rev-parse", "HEAD"], wt.path)).stdout.trim();
+		const runId = ulid();
+		const taskId = await claimedTask(env, runId, {
+			title: "pinned work",
+			dod: PASSING_DOD,
+		});
+		const run = await seedRun(env, {
+			kind: "task",
+			runId,
+			taskId,
+			wt,
+			events: doneEvent("all done"),
+			exit: "exit:0",
+			report: { summary: "did the work" },
+		});
+
+		await env.runner.finalize(run.id);
+
+		expect((await env.registry.get(run.id))?.verifiedSha).toBe(head);
+		expect(env.merges).toHaveLength(1);
+		await env.cleanup();
+	});
+
+	test("checks that passed on files the commit lacks verify nothing and queue nothing", async () => {
+		const env = await makeEnv();
+		const wt = await addWorktree(env.root, "t-uncommitted");
+		await commitIn(wt.path, "a.txt", "work\n");
+		await writeFile(join(wt.path, "only-on-disk.txt"), "not committed\n");
+		const runId = ulid();
+		const taskId = await claimedTask(env, runId, {
+			title: "uncommitted work",
+			dod: PASSING_DOD,
+		});
+		const run = await seedRun(env, {
+			kind: "task",
+			runId,
+			taskId,
+			wt,
+			events: doneEvent("all done"),
+			exit: "exit:0",
+			report: { summary: "did the work" },
+		});
+
+		await env.runner.finalize(run.id);
+
+		expect((await env.registry.get(run.id))?.verifiedSha).toBeNull();
+		expect(env.merges).toEqual([]);
 		await env.cleanup();
 	});
 
@@ -1527,7 +1588,13 @@ describe("the task-level review gate (requireReview, T11)", () => {
 		]);
 		expect((await env.registry.get(run.id))?.state).toBe("merging");
 		expect(env.merges).toEqual([
-			{ runId: run.id, taskId, branch: wt.branch, targetBranch: "main" },
+			{
+				runId: run.id,
+				taskId,
+				branch: wt.branch,
+				targetBranch: "main",
+				requireVerified: false,
+			},
 		]);
 		await env.cleanup();
 	});
@@ -1761,7 +1828,13 @@ describe("MFW-48: a project default DoD stands in for a task with none", () => {
 		]);
 		expect((await env.registry.get(run.id))?.state).toBe("merging");
 		expect(env.merges).toEqual([
-			{ runId: run.id, taskId, branch: wt.branch, targetBranch: "main" },
+			{
+				runId: run.id,
+				taskId,
+				branch: wt.branch,
+				targetBranch: "main",
+				requireVerified: true,
+			},
 		]);
 		// The default is resolved at verification time, never written to the file.
 		expect((await env.tasks.get(taskId))?.dod).toBeNull();

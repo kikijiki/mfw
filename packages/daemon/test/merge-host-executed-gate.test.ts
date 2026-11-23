@@ -203,6 +203,16 @@ describe("a merge of host-executed files waits for the owner", () => {
 		await git(["commit", "-q", "-m", "swap"], wt);
 		const before = await g.tip();
 
+		// The moved tip is not the commit that was queued.
+		expect(await g.queue.tick()).toBe("parked");
+		expect(await g.tip()).toBe(before);
+		// An operator's retry verifies it again, and the old approval still does
+		// not cover the new content.
+		const [job] = await g.handle.db
+			.select({ id: mergeJobs.id })
+			.from(mergeJobs)
+			.where(eq(mergeJobs.runId, runId));
+		await g.queue.retry(job?.id as number);
 		expect(await g.queue.tick()).toBe("held");
 		expect(await g.tip()).toBe(before);
 		const second = await g.card();
