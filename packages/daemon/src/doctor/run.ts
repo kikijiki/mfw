@@ -304,13 +304,34 @@ async function authFilesCheck(p: DoctorProbes): Promise<Outcome> {
 		"auth.db-shm",
 		"setup-token",
 		"mcp-token",
+		"credentials.json",
+		"config.json",
 	];
 	const open: string[] = [];
+	const notRegular: string[] = [];
+	const foreign: string[] = [];
 	for (const name of names) {
 		const path = join(p.home, name);
-		// Metadata only: these files hold secrets and are never opened here.
+		// Metadata only, without following links: these are never opened here.
 		const st = await p.stat(path);
-		if (st?.kind === "file" && st.mode & 0o077) open.push(path);
+		if (!st) continue;
+		if (st.kind !== "file") notRegular.push(path);
+		else if (st.uid !== p.uid) foreign.push(path);
+		else if (st.mode & 0o077) open.push(path);
+	}
+	if (notRegular.length > 0) {
+		return problem(
+			"blocker",
+			`not a regular file: ${notRegular.join(", ")}. A link can expose a secret through its target`,
+			"replace each with a regular file you own, mode 600, after checking what it points to",
+		);
+	}
+	if (foreign.length > 0) {
+		return problem(
+			"blocker",
+			`owned by another user: ${foreign.join(", ")}`,
+			"check who created them, then restore them as regular files you own, mode 600",
+		);
 	}
 	if (open.length > 0) {
 		return problem(

@@ -283,3 +283,49 @@ describe("fixes that were harmful if followed blindly", () => {
 		);
 	});
 });
+
+describe("auth.files covers every secret file", () => {
+	const at = (name: string, st: PathStat) =>
+		fixture({
+			home: "/srv/h",
+			stat: async (p) =>
+				p === "/srv/h" ? dirStat(0o700) : p === `/srv/h/${name}` ? st : null,
+		});
+	const check = async (name: string, st: PathStat) => {
+		const report = await runDoctor(at(name, st));
+		const c = report.checks.find((x) => x.id === "auth.files");
+		if (!c) throw new Error("no auth.files");
+		return c;
+	};
+
+	for (const name of ["credentials.json", "config.json", "mcp-token"]) {
+		test(`the reviewer's case: a 0644 ${name} is a blocker`, async () => {
+			const c = await check(name, { kind: "file", mode: 0o644, uid: 1000 });
+			expect([c.status, c.severity]).toEqual(["problem", "blocker"]);
+			expect(c.fix).toBe(`chmod 600 -- '/srv/h/${name}'`);
+		});
+
+		test(`${name} as a symlink is a blocker, with no chmod through it`, async () => {
+			const c = await check(name, { kind: "other", mode: 0o777, uid: 1000 });
+			expect([c.status, c.severity]).toEqual(["problem", "blocker"]);
+			expect(c.detail).toContain("not a regular file");
+			expect(c.fix).not.toContain("chmod");
+		});
+
+		test(`${name} as a directory is a blocker`, async () => {
+			const c = await check(name, { kind: "dir", mode: 0o700, uid: 1000 });
+			expect(c.severity).toBe("blocker");
+		});
+
+		test(`${name} owned by another user is a blocker`, async () => {
+			const c = await check(name, { kind: "file", mode: 0o600, uid: 0 });
+			expect(c.severity).toBe("blocker");
+			expect(c.status).toBe("problem");
+		});
+
+		test(`a private ${name} passes`, async () => {
+			const c = await check(name, { kind: "file", mode: 0o600, uid: 1000 });
+			expect(c.status).toBe("ok");
+		});
+	}
+});
