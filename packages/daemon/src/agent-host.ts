@@ -13,7 +13,6 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { EGRESS_PROXY, hostScript } from "./containment/host-script.ts";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
 import type { AgentLaunchRequest } from "./containment/agent-launch.ts";
 import {
@@ -37,6 +36,7 @@ import {
 	PROXY_MAX_OPEN_FILES,
 	prepareRunEgress,
 } from "./containment/egress-run.ts";
+import { EGRESS_PROXY, hostScript } from "./containment/host-script.ts";
 import {
 	driverRunPaths,
 	ensureRunDirLayout,

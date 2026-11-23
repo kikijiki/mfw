@@ -122,7 +122,10 @@ async function main(): Promise<number> {
 			["passes-proto", "X-Forwarded-Proto"],
 		] as const) {
 			const bad = await rehearse(mode, tls, scratch);
-			if (bad.exit === 0 || !bad.lines.some((l) => l.startsWith("FAIL") && l.includes(name)))
+			if (
+				bad.exit === 0 ||
+				!bad.lines.some((l) => l.startsWith("FAIL") && l.includes(name))
+			)
 				failures.push(`a proxy passing a client's ${name} was not detected`);
 		}
 		console.log(`serve-check: ${failures.length ? "failed" : "passed"}`);

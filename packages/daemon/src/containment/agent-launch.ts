@@ -24,7 +24,6 @@ import {
 	wipSupervisorArgv,
 } from "../run-workspace/wip-helper-install.ts";
 import { HOST_BUN_FLAGS } from "./agent-launch-argv.ts";
-import { EGRESS_RELAY, hostScript } from "./host-script.ts";
 import {
 	AgentProfileError,
 	agentToolCandidates,
@@ -44,6 +43,7 @@ import {
 	SANDBOX_PATHS,
 } from "./compile-bwrap.ts";
 import { EGRESS_SOCKET_NAME } from "./egress-run.ts";
+import { EGRESS_RELAY, hostScript } from "./host-script.ts";
 import { launchSandbox } from "./launch-sandbox.ts";
 import { attestSandbox } from "./probe-run.ts";
 import { ProfileRejectedError, type SandboxProfile } from "./profile.ts";

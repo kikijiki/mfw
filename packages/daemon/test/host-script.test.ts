@@ -23,7 +23,10 @@ describe("host-side scripts in the bundled server (review F5)", () => {
 	};
 	const url = (rel: string) => pathToFileURL(join(root, rel)).href;
 	const CHUNK = "repo/apps/start/.output/server/chunks/_/router.mjs";
-	const script = { file: "x-main.ts", fromRoot: "packages/daemon/src/x-main.ts" };
+	const script = {
+		file: "x-main.ts",
+		fromRoot: "packages/daemon/src/x-main.ts",
+	};
 
 	beforeEach(() => {
 		root = mkdtempSync(join(tmpdir(), "mfw-host-script-"));
