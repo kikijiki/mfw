@@ -6,6 +6,7 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +18,7 @@ import {
 } from "../src/agent-host.ts";
 import { HOST_BRIDGE_MARKER } from "../src/containment/run-dir.ts";
 import { SecretEnvironment } from "../src/execution-environment.ts";
+import { wipLaunchRequestPath } from "../src/run-workspace/wip-snapshot.ts";
 import { controlRootPath, SandboxUnavailableError } from "../src/sandbox.ts";
 
 /** What the agent host generates for a task or repair run. Nothing is started. */
@@ -156,6 +158,28 @@ describe("a host-bridged launch", () => {
 		expect(JSON.stringify(request())).not.toContain(canary);
 		expect(JSON.stringify(driver(s))).not.toContain(canary);
 		expect(script()).not.toContain(canary);
+	});
+
+	test("the end-of-run snapshot request is stored host-only, with no secret or agent env", async () => {
+		const canary = "bridge-snapshot-secret-canary";
+		const s = spec({
+			secretEnvironment: new SecretEnvironment({ ANTHROPIC_API_KEY: canary }),
+		});
+		await new AgentHost(undefined, {
+			tmuxRunner: runner,
+			secretHandoffTimeoutMs: 20,
+		})
+			.launch(s)
+			.catch(() => {});
+		const path = wipLaunchRequestPath(realpathSync(s.runDir));
+		expect(statSync(path).mode & 0o077).toBe(0);
+		const text = readFileSync(path, "utf8");
+		expect(text).not.toContain(canary);
+		expect(JSON.parse(text)).toMatchObject({
+			purpose: "wip-snapshot",
+			env: {},
+			secretNames: [],
+		});
 	});
 
 	test("the launcher's env name is reserved", async () => {
