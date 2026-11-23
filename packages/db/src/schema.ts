@@ -548,10 +548,24 @@ export const sandboxAttestations = sqliteTable(
 		items: text("items", { mode: "json" })
 			.$type<{ id: string; status: "pass" | "fail"; detail: string }[]>()
 			.notNull(),
+		/** The identity of each bind source the probe saw, for the launcher to compare. */
+		pins: text("pins", { mode: "json" })
+			.$type<{ dest: string; dev: string; ino: string }[]>()
+			.notNull(),
 		createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
 	},
 	(t) => [index("ix_sandbox_attestations_run").on(t.runId, t.createdAt)],
 );
+
+/**
+ * One row per attestation a launch has used. The primary key is what makes an
+ * attestation single-use. Append-only, by the triggers in migration 0020.
+ */
+export const sandboxAttestationUses = sqliteTable("sandbox_attestation_uses", {
+	attestationId: text("attestation_id").primaryKey(),
+	runId: text("run_id").notNull(),
+	usedAt: integer("used_at", { mode: "timestamp_ms" }).notNull(),
+});
 
 // ---------- comments ----------
 

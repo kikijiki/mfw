@@ -993,7 +993,7 @@ describe.skipIf(skip !== null)("forged results", () => {
 			compiled,
 			bwrapVersion: "0.13.1",
 		});
-		expect(d).toEqual({ ok: true, attestationId: null });
+		expect(d).toEqual({ ok: true, attestationId: null, pins: [] });
 	});
 
 	test("a profile without bun cannot be attested", async () => {

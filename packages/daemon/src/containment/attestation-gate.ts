@@ -6,6 +6,9 @@
  * {@link authorizeAutonomousLaunch} where it spawns the agent. A launch with no
  * autonomous flag does not need an attestation.
  *
+ * Each attestation authorizes one launch: the sandbox may hold anything after
+ * an agent has run in it, so every launch needs a fresh probe.
+ *
  * The attestation must be the run's newest, from this probe version, passing
  * on every current item, launched under the systemd scope, recent, and for the
  * same sandbox the agent is about to get: same profile, compiled options and
@@ -20,9 +23,11 @@ import type { ProjectDb } from "@mfw/db/client";
 import {
 	ATTESTATION_VERSION,
 	type Attestation,
+	consumeAttestation,
 	latestAttestation,
 } from "./attestation-store.ts";
 import type { CompiledSandbox } from "./compile-bwrap.ts";
+import type { PinIdentity } from "./pinned-binds.ts";
 import { PROBE_ITEMS } from "./probe-evaluate.ts";
 import { sandboxFingerprint } from "./probe-run.ts";
 import type { SandboxProfile } from "./profile.ts";
@@ -39,10 +44,16 @@ export type GateRefusalCode =
 	| "attestation_incomplete"
 	| "attestation_no_scope"
 	| "attestation_stale"
+	| "attestation_consumed"
 	| "attestation_mismatch";
 
 export type GateDecision =
-	| { ok: true; attestationId: string | null }
+	| {
+			ok: true;
+			attestationId: string | null;
+			/** The directories the probe covered; the launcher must open exactly these. */
+			pins: readonly PinIdentity[];
+	  }
 	| { ok: false; code: GateRefusalCode; reason: string; fix: string };
 
 export interface GateRequest {
@@ -129,7 +140,17 @@ export function judgeAttestation(
 			`the launch differs from the attested sandbox: ${differs.join(", ")}`,
 		);
 	}
-	return { ok: true, attestationId: row.id };
+	const dests = req.compiled.pinnedBinds.map((p) => p.dest);
+	if (
+		row.pins.length !== dests.length ||
+		row.pins.some((p, i) => p.dest !== dests[i])
+	) {
+		return refuse(
+			"attestation_mismatch",
+			"the launch binds different directories from the attested sandbox",
+		);
+	}
+	return { ok: true, attestationId: row.id, pins: row.pins };
 }
 
 /** The seam P5b calls before launching an agent with autonomous flags. */
@@ -137,6 +158,17 @@ export async function authorizeAutonomousLaunch(
 	db: ProjectDb,
 	req: GateRequest,
 ): Promise<GateDecision> {
-	if (req.flags.length === 0) return { ok: true, attestationId: null };
-	return judgeAttestation(await latestAttestation(db, req.runId), req);
+	if (req.flags.length === 0) {
+		return { ok: true, attestationId: null, pins: [] };
+	}
+	const row = await latestAttestation(db, req.runId);
+	const decision = judgeAttestation(row, req);
+	if (!decision.ok || !row) return decision;
+	if (await consumeAttestation(db, row, new Date())) return decision;
+	return {
+		ok: false,
+		code: "attestation_consumed",
+		reason: `run ${req.runId}: this attestation was already used or superseded`,
+		fix: "probe the sandbox again: each launch needs its own attestation",
+	};
 }

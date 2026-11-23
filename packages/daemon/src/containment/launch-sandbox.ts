@@ -42,7 +42,10 @@ import {
 import {
 	type OpenPins,
 	openPinnedBinds,
+	type PinIdentity,
 	PinnedBindError,
+	pinIdentities,
+	samePins,
 } from "./pinned-binds.ts";
 
 const O_TMPFILE = 0o20000000 | constants.O_DIRECTORY;
@@ -61,6 +64,10 @@ export interface LaunchOptions {
 	scope?: "systemd" | "none";
 	/** Where the unnamed option files are created. */
 	tmpDir?: string;
+	/** Refuse unless the opened bind sources are exactly these directories. */
+	expectPins?: readonly PinIdentity[];
+	/** Told which directories were opened, before anything runs. */
+	observePins?: (pins: PinIdentity[]) => void;
 }
 
 export type LaunchRefusalCode =
@@ -68,6 +75,7 @@ export type LaunchRefusalCode =
 	| "stdio_not_pipe"
 	| "invalid_compiled"
 	| "pin_failed"
+	| "pin_changed"
 	| "launch_failed";
 
 export class SandboxLaunchError extends Error {
@@ -155,6 +163,8 @@ function anonymousFile(dir: string, bytes: Buffer): number {
 export interface SandboxFds {
 	/** Parent descriptors for the child's 3, 4, 5, and so on. */
 	fds: number[];
+	/** The identity of each pinned bind source, in `pinnedBinds` order. */
+	pins: PinIdentity[];
 	/** Close them. Only valid while no successful spawn has taken them. */
 	close(): void;
 	/** Forget them, because a successful spawn now owns them. */
@@ -190,6 +200,7 @@ export function openSandboxFds(
 	}
 	return {
 		fds: [...files, ...pins.parentFds],
+		pins: pinIdentities(compiled.pinnedBinds, pins.parentFds),
 		close,
 		release: () => {
 			files.length = 0;
@@ -227,6 +238,14 @@ export function launchSandbox(
 	checkPinNumbers(compiled);
 
 	const opened = openSandboxFds(compiled, options.tmpDir);
+	if (options.expectPins && !samePins(options.expectPins, opened.pins)) {
+		opened.close();
+		throw new SandboxLaunchError(
+			"pin_changed",
+			"a bind source is not the directory the probe attested",
+		);
+	}
+	options.observePins?.(opened.pins);
 	let child: ReturnType<typeof spawnWithFds>;
 	try {
 		child = spawnWithFds(argv, scope, [stdin, stdout, stderr, ...opened.fds]);

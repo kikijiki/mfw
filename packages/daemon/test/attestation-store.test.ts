@@ -46,6 +46,7 @@ const input = (over: Partial<AttestationInput> = {}): AttestationInput => ({
 	scope: "systemd",
 	outcome: "pass",
 	items: [{ id: "caps_empty", status: "pass", detail: "no capabilities" }],
+	pins: [{ dest: "/work", dev: "1", ino: "2" }],
 	createdAt: new Date(1_000),
 	...over,
 });
@@ -155,9 +156,9 @@ describe("attestation store", () => {
 					handle.db.run(
 						sql`INSERT OR REPLACE INTO sandbox_attestations
 						(id, run_id, version, profile_hash, options_hash, seccomp_hash,
-						 bwrap_version, scope, outcome, items, created_at)
+						 bwrap_version, scope, outcome, items, pins, created_at)
 						SELECT id, run_id, version, profile_hash, options_hash, seccomp_hash,
-						 bwrap_version, scope, 'pass', items, created_at
+						 bwrap_version, scope, 'pass', items, pins, created_at
 						FROM sandbox_attestations WHERE id = ${id}`,
 					),
 				),
@@ -180,6 +181,7 @@ describe("attestation store", () => {
 			scope: "systemd",
 			outcome: "pass",
 			items: "not-a-list" as never,
+			pins: [],
 			createdAt: new Date(1_000),
 		});
 		expect(await latestAttestation(handle.db, "run-4")).toBeNull();

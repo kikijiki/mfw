@@ -12,7 +12,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { ProjectDb } from "@mfw/db/client";
-import { sandboxAttestations } from "@mfw/db/schema";
+import { sandboxAttestations, sandboxAttestationUses } from "@mfw/db/schema";
 import { desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 
@@ -23,6 +23,12 @@ const ItemSchema = z.strictObject({
 	id: z.string().min(1),
 	status: z.enum(["pass", "fail"]),
 	detail: z.string(),
+});
+
+const PinSchema = z.strictObject({
+	dest: z.string().min(1),
+	dev: z.string().regex(/^\d+$/),
+	ino: z.string().regex(/^\d+$/),
 });
 
 const RowSchema = z.object({
@@ -36,6 +42,7 @@ const RowSchema = z.object({
 	scope: z.enum(["systemd", "none"]),
 	outcome: z.enum(["pass", "fail"]),
 	items: z.array(ItemSchema).min(1),
+	pins: z.array(PinSchema),
 	createdAt: z.date(),
 });
 
@@ -71,4 +78,30 @@ export async function latestAttestation(
 	if (!row) return null;
 	const parsed = RowSchema.safeParse(row);
 	return parsed.success ? parsed.data : null;
+}
+
+/**
+ * Use an attestation for one launch. True for the one caller that wins.
+ *
+ * A single statement, so it is atomic without a transaction: it inserts only if
+ * this record is still the run's newest and has not been used. A failure
+ * recorded after the caller judged the row therefore also stops the launch.
+ */
+export async function consumeAttestation(
+	db: ProjectDb,
+	attestation: Pick<Attestation, "id" | "runId">,
+	usedAt: Date,
+): Promise<boolean> {
+	const { id, runId } = attestation;
+	const result = await db.run(sql`
+		INSERT INTO sandbox_attestation_uses (attestation_id, run_id, used_at)
+		SELECT ${id}, ${runId}, ${usedAt.getTime()}
+		WHERE ${id} = (
+			SELECT id FROM sandbox_attestations
+			WHERE run_id = ${runId} ORDER BY rowid DESC LIMIT 1
+		)
+		AND NOT EXISTS (
+			SELECT 1 FROM sandbox_attestation_uses WHERE attestation_id = ${id}
+		)`);
+	return result.rowsAffected === 1;
 }

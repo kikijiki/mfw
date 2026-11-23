@@ -559,6 +559,7 @@ const row = (items: Attestation["items"]): Attestation => ({
 	scope: "systemd",
 	outcome: probeOutcome(items as never),
 	items,
+	pins: [],
 	createdAt: new Date(1_000),
 });
 

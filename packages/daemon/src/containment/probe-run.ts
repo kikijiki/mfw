@@ -35,6 +35,7 @@ import {
 	SANDBOX_PATHS,
 } from "./compile-bwrap.ts";
 import { launchSandbox } from "./launch-sandbox.ts";
+import type { PinIdentity } from "./pinned-binds.ts";
 import {
 	PROBE_READY,
 	PROBE_RESULT,
@@ -439,6 +440,7 @@ export interface CollectOptions {
 	timeoutMs?: number;
 	readCgroup?: (pid: number) => CgroupObservation | null;
 	tmpDir?: string;
+	observePins?: (pins: PinIdentity[]) => void;
 }
 
 /** Launch, speak the protocol, and judge. Never throws for a bad child. */
@@ -452,6 +454,7 @@ export async function collectProbe(
 		child = launchSandbox(compiled, {
 			scope: opts.scope,
 			tmpDir: opts.tmpDir,
+			observePins: opts.observePins,
 		});
 	} catch (err) {
 		return failAll(`the probe did not launch: ${(err as Error).message}`);
@@ -611,6 +614,7 @@ export async function attestSandbox(
 	if (!result.ok) return compileRefused(result);
 	const compiled = req.weaken ? req.weaken(result) : result;
 	const scope = req.scope ?? "systemd";
+	let pins: PinIdentity[] = [];
 	const items = await withLoopbackCanary((loopbackPort) =>
 		collectProbe(
 			compiled,
@@ -633,6 +637,9 @@ export async function attestSandbox(
 				timeoutMs: req.timeoutMs,
 				readCgroup: req.readCgroup,
 				tmpDir: req.tmpDir,
+				observePins: (seen) => {
+					pins = seen;
+				},
 			},
 		),
 	);
@@ -646,6 +653,7 @@ export async function attestSandbox(
 		scope,
 		outcome,
 		items,
+		pins,
 		createdAt: (req.now ?? (() => new Date()))(),
 	});
 	return { ok: true, attestationId, outcome, items, fingerprint };
