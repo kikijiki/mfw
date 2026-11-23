@@ -1,3 +1,4 @@
+import type { Principal } from "@mfw/daemon/auth/service";
 import type { Orchestrator, ProjectServices } from "@mfw/daemon/services";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
@@ -11,6 +12,8 @@ import { ZodError, z } from "zod";
 
 export interface Context {
 	orchestrator: Orchestrator;
+	/** Who is calling. Null means unauthenticated, and every procedure refuses it. */
+	principal: Principal | null;
 }
 
 function refusalFix(
@@ -133,7 +136,22 @@ const mapErrors = t.middleware(async ({ next }) => {
 
 export const createTRPCRouter = t.router;
 export const createCallerFactory = t.createCallerFactory;
-export const publicProcedure = t.procedure.use(mapErrors);
+
+/**
+ * The second lock behind the HTTP guard: a call with no principal fails here
+ * even if a route forgot its guard. Every procedure derives from this one, so
+ * despite the historical name nothing on the router is anonymous.
+ */
+const requirePrincipal = t.middleware(({ ctx, next }) => {
+	if (!ctx.principal)
+		throw new TRPCError({
+			code: "UNAUTHORIZED",
+			message: "sign in to use the mfw API",
+		});
+	return next({ ctx: { ...ctx, principal: ctx.principal } });
+});
+
+export const publicProcedure = t.procedure.use(requirePrincipal).use(mapErrors);
 
 /** Input shared by every project-scoped procedure. */
 export const projectInput = z.object({ project: z.string().min(1) });

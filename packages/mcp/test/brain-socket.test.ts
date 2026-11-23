@@ -61,7 +61,10 @@ async function rig() {
 			endpoint: BRAIN_SOCKET_ENDPOINT,
 			router: appRouter,
 			req,
-			createContext: () => ({ orchestrator: orchestrator as never }),
+			createContext: () => ({
+				orchestrator: orchestrator as never,
+				principal: { kind: "internal" as const, id: "internal" as const },
+			}),
 		}),
 	);
 	return { home, socket, reads, acts };

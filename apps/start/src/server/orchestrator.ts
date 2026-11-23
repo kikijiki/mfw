@@ -1,8 +1,10 @@
 import { resolve } from "node:path";
 import { appRouter } from "@mfw/api";
+import type { Principal } from "@mfw/daemon/auth/service";
 import { boot } from "@mfw/daemon/boot";
 import {
 	BRAIN_SOCKET_ENDPOINT,
+	BRAIN_TURN_HEADER,
 	brainSocketFor,
 } from "@mfw/daemon/brain-runtime/brain-socket";
 import {
@@ -27,6 +29,10 @@ const KEY = Symbol.for("mfw.orchestrator");
 
 type Holder = { [KEY]?: Promise<Orchestrator> };
 
+function brainPrincipal(runId: string | null): Principal | null {
+	return runId ? { kind: "brain", id: `brain:${runId}`, runId } : null;
+}
+
 export function getOrchestrator(): Promise<Orchestrator> {
 	const holder = globalThis as unknown as Holder;
 	holder[KEY] ??= (async () => {
@@ -41,6 +47,8 @@ export function getOrchestrator(): Promise<Orchestrator> {
 				req,
 				createContext: async () => ({
 					orchestrator: await getOrchestrator(),
+					// The socket verified the turn token and set this header from it.
+					principal: brainPrincipal(req.headers.get(BRAIN_TURN_HEADER)),
 				}),
 				onError({ error, path }) {
 					console.error(
