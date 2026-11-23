@@ -333,6 +333,17 @@ const projectSchema = z.object({
 	 */
 	agentEgressTelemetry: z.boolean().optional(),
 	/**
+	 * What one sandboxed run may upload through its egress proxy, in bytes, per
+	 * destination and in total. Defaults: 1 GiB and 2 GiB. On breach the run's
+	 * tunnels close, new ones are refused and an inbox item is raised.
+	 */
+	agentEgressUploadBudget: z
+		.strictObject({
+			perDestinationBytes: z.number().int().positive().optional(),
+			totalBytes: z.number().int().positive().optional(),
+		})
+		.optional(),
+	/**
 	 * Where a run's files live: a git `worktree` under the project (default),
 	 * or a private `clone` under `$MFW_HOME/workspaces` whose result the host
 	 * imports as a verified bundle (`run-workspace/clone-impl.ts`). Experimental

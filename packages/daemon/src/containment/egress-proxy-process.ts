@@ -73,6 +73,13 @@ export async function runEgressProxyProcess(
 		// never reaches the upstream, so a shared CDN address stays one site.
 		sni: true,
 		gate: createConnectionGate(MAX_CONNECTIONS),
+		uploadBudget: config.uploadBudget,
+		uploadedBefore: counters.uploadedBytes(),
+		breachedBefore: counters.breached,
+		onUploadBreach: (breach) => {
+			counters.recordBreach(breach);
+			flush();
+		},
 		log: (entry) => counters.record(entry),
 		onBytes: (host, port, up, down) => counters.addBytes(host, port, up, down),
 	});

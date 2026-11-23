@@ -657,12 +657,12 @@ export class AgentHost {
 			"mfw_proc_ticks() {",
 			"  local line fields",
 			'  { IFS= read -r line < "/proc/$1/stat"; } 2>/dev/null || return 1',
-			"  fields=${line##*) }",
+			`  fields=$\{line##*) }`,
 			"  set -f",
 			"  set -- $fields",
 			"  set +f",
 			'  [ "$1" != Z ] || return 1',
-			"  printf '%s' \"${20}\"",
+			`  printf '%s' "$\{20}"`,
 			"}",
 			`exec 8> >(exec ${proxy} >/dev/null 2>&1)`,
 			"mfw_egress_pid=$!",
@@ -732,6 +732,9 @@ export class AgentHost {
 			runDir,
 			runId: spec.runId,
 			allow: harnessAllowlist(cli, egressOptions),
+			...(spec.isolation?.egressUploadBudget
+				? { uploadBudget: spec.isolation.egressUploadBudget }
+				: {}),
 		});
 		const request: AgentLaunchRequest = {
 			version: 1,

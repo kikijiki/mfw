@@ -38,6 +38,7 @@ describe("attention classes", () => {
 		"verify_infra",
 		"admission",
 		"draft_failed",
+		"egress_budget",
 		"ownership_conflict",
 		"followups",
 		"needs_answer",

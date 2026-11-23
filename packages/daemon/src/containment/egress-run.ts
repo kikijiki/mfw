@@ -30,7 +30,11 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
-import { egressSocketPath } from "./egress-proxy.ts";
+import {
+	DEFAULT_UPLOAD_BUDGET,
+	egressSocketPath,
+	type UploadBudget,
+} from "./egress-proxy.ts";
 
 export const EGRESS_SOCKET_NAME = "e.sock";
 
@@ -46,6 +50,10 @@ export const RunEgressConfigSchema = z.strictObject({
 	statsPath: z.string().startsWith("/"),
 	indexPath: z.string().startsWith("/"),
 	allow: z.array(AllowEntrySchema).max(256),
+	uploadBudget: z.strictObject({
+		perDestinationBytes: z.number().int().positive(),
+		totalBytes: z.number().int().positive(),
+	}),
 });
 
 export type RunEgressConfig = z.infer<typeof RunEgressConfigSchema>;
@@ -110,6 +118,8 @@ export function prepareRunEgress(input: {
 	runDir: string;
 	runId: string;
 	allow: readonly { host: string; port: number }[];
+	/** Either limit left out takes its default. */
+	uploadBudget?: Partial<UploadBudget>;
 }): RunEgressPaths {
 	const paths = runEgressPaths(input.mfwHome, input.runDir, input.runId);
 	for (const dir of [dirname(paths.socketDir), indexRoot(input.mfwHome)]) {
@@ -125,6 +135,7 @@ export function prepareRunEgress(input: {
 		statsPath: paths.statsPath,
 		indexPath: paths.indexPath,
 		allow: input.allow.map((a) => ({ host: a.host, port: a.port })),
+		uploadBudget: { ...DEFAULT_UPLOAD_BUDGET, ...input.uploadBudget },
 	};
 	writePrivate(paths.configPath, JSON.stringify(config));
 	writePrivate(

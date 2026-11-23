@@ -34,6 +34,13 @@ const AllowedSchema = z.strictObject({
 });
 const DeniedSchema = z.strictObject({ count: Count, lastReason: Reason });
 
+const UploadBreachSchema = z.strictObject({
+	scope: z.enum(["destination", "total"]),
+	destination: Destination,
+	limitBytes: Count,
+	at: Count,
+});
+
 export const EgressStatsSchema = z.strictObject({
 	version: z.literal(1),
 	allowed: z
@@ -42,6 +49,8 @@ export const EgressStatsSchema = z.strictObject({
 	denied: z
 		.record(Destination, DeniedSchema)
 		.refine((r) => Object.keys(r).length <= MAX_DENIED_HOSTS + 2),
+	/** Set once, by the first breach of the run's upload budget. */
+	uploadBreach: UploadBreachSchema.optional(),
 	updatedAt: Count,
 });
 
@@ -107,6 +116,22 @@ export class EgressCounters {
 		row.lastReason = entry.reason;
 		this.stats.denied[key] = row;
 		this.dirty = true;
+	}
+
+	recordBreach(breach: NonNullable<EgressStats["uploadBreach"]>): void {
+		this.stats.uploadBreach ??= breach;
+		this.dirty = true;
+	}
+
+	/** Bytes sent so far per destination, to carry a budget across a relaunch. */
+	uploadedBytes(): Record<string, number> {
+		return Object.fromEntries(
+			Object.entries(this.stats.allowed).map(([k, v]) => [k, v.bytesUp]),
+		);
+	}
+
+	get breached(): boolean {
+		return this.stats.uploadBreach !== undefined;
 	}
 
 	/** Write the counters if they changed. Atomic, so a reader never sees half a file. */

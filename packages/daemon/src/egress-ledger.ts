@@ -1,6 +1,8 @@
 import { join } from "node:path";
 import type { ProjectDb } from "@mfw/db/client";
+import { appendEvent, type EventBus, type StoredEvent } from "@mfw/db/eventlog";
 import { type RunEgressRow, recordRunEgress } from "@mfw/db/run-egress";
+import { engineKv } from "@mfw/db/schema";
 import {
 	type EgressStats,
 	MAX_EGRESS_STATS_BYTES,
@@ -47,6 +49,7 @@ export async function ingestRunEgress(
 	runId: string,
 	runDir: string,
 	observedAt: Date,
+	bus?: EventBus,
 ): Promise<number> {
 	const read = await readRegularFile(
 		join(runDir, "egress", "stats.json"),
@@ -61,5 +64,50 @@ export async function ingestRunEgress(
 	if (!stats) return 0;
 	const rows = egressRows(stats);
 	await recordRunEgress(db, runId, rows, observedAt);
+	if (stats.uploadBreach) {
+		await recordEgressBreach(db, runId, stats.uploadBreach, observedAt, bus);
+	}
 	return rows.length;
+}
+
+/** The durable record of a run's breach, which the inbox reads. */
+export const EGRESS_BREACH_KEY_PREFIX = "egress_breach:";
+
+/** Once per run: the row is the guard, and the event commits with it. */
+async function recordEgressBreach(
+	db: ProjectDb,
+	runId: string,
+	breach: NonNullable<EgressStats["uploadBreach"]>,
+	observedAt: Date,
+	bus?: EventBus,
+): Promise<void> {
+	const stored = await db.transaction(
+		async (tx): Promise<StoredEvent | null> => {
+			const inserted = await tx
+				.insert(engineKv)
+				.values({
+					key: `${EGRESS_BREACH_KEY_PREFIX}${runId}`,
+					value: { runId, ...breach },
+					updatedAt: observedAt,
+				})
+				.onConflictDoNothing()
+				.returning({ key: engineKv.key });
+			if (inserted.length === 0) return null;
+			return appendEvent(
+				tx,
+				{
+					type: "run.egress_budget_exceeded",
+					runId,
+					payload: {
+						provenance: "host-observed",
+						scope: breach.scope,
+						destination: breach.destination,
+						limitBytes: breach.limitBytes,
+					},
+				},
+				observedAt.getTime(),
+			);
+		},
+	);
+	if (stored) bus?.publish([stored]);
 }

@@ -68,6 +68,7 @@ const KIND_ICON: Record<InboxKind, LucideIcon> = {
 	brain_notice: BrainCircuit,
 	brain_decision: ShieldAlert,
 	brain_breaker: ShieldAlert,
+	egress_budget: ShieldAlert,
 };
 
 const SEVERITY_RANK: Record<InboxSeverity, number> = {

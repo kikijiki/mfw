@@ -54,6 +54,8 @@ export interface BwrapIsolation {
 	mfwHome?: string;
 	/** Owner opt-in: let task and repair runs reach their CLI's telemetry hosts. */
 	egressTelemetry?: boolean;
+	/** Per-run upload limits; a limit left out takes the proxy's default. */
+	egressUploadBudget?: { perDestinationBytes?: number; totalBytes?: number };
 }
 
 /**

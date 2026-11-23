@@ -2,6 +2,7 @@ import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { RunActivity } from "@mfw/core/activity";
 import type { ProjectDbHandle } from "@mfw/db/client";
+import type { EventBus } from "@mfw/db/eventlog";
 import { engineKv } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
 import type { AgentHost } from "./agent-host.ts";
@@ -101,6 +102,8 @@ export interface SupervisorDeps {
 	ownedElsewhere?: (runId: string) => Promise<boolean>;
 	/** `$MFW_HOME`, to clear what dead runs left of their egress proxies. */
 	egressHome?: string;
+	/** Where a run's upload-budget breach is published. */
+	egressEvents?: EventBus;
 	log: Logger;
 	projectRoot: string;
 	bootId: string;
@@ -270,6 +273,7 @@ export class Supervisor {
 			runId,
 			this.deps.registry.runDir(runId),
 			new Date(now),
+			this.deps.egressEvents,
 		).catch((err) =>
 			this.log.warn({ err, runId }, "recording the run's egress failed"),
 		);

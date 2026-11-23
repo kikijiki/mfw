@@ -250,6 +250,11 @@ export interface ProjectConfig {
 	agentIsolation?: "none" | "bwrap";
 	/** Let sandboxed runs reach their CLI's telemetry hosts; see `config.ts`. */
 	agentEgressTelemetry?: boolean;
+	/** Per-run upload limits through the egress proxy; see `config.ts`. */
+	agentEgressUploadBudget?: {
+		perDestinationBytes?: number;
+		totalBytes?: number;
+	};
 	/** Where run files live; see `config.ts`. Defaults to `worktree`. */
 	runWorkspace?: "worktree" | "clone";
 	/** Failed expansion runs a draft tolerates before the bounded retry releases
@@ -1086,6 +1091,9 @@ export async function attachProject(
 						...(cfg.agentEgressTelemetry === true
 							? { egressTelemetry: true }
 							: {}),
+						...(cfg.agentEgressUploadBudget
+							? { egressUploadBudget: cfg.agentEgressUploadBudget }
+							: {}),
 					}
 				: undefined,
 	});
@@ -1406,6 +1414,7 @@ export async function attachProject(
 		// The tmux socket is machine-wide: a run another project owns is no orphan.
 		ownedElsewhere: opts.ownedElsewhere,
 		egressHome: opts.mfwHome,
+		egressEvents: bus,
 		notify: (kind, detail) =>
 			notifier.notify(kind, { project: cfg.name, ...detail }),
 		log: plog,

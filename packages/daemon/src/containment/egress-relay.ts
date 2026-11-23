@@ -40,6 +40,11 @@ export interface EgressRelay {
 	close(): Promise<void>;
 }
 
+const REAP_EVERY_MS = 250;
+
+/** Checks with the proxy gone and no queued byte moving, before giving up. */
+const REAP_STALLED_TICKS = 2;
+
 /** Start the relay. Resolves once it is listening. */
 export async function startEgressRelay(
 	opts: EgressRelayOptions,
@@ -75,7 +80,40 @@ export async function startEgressRelay(
 		// client sends before the upstream is up is lost.
 		client.pipe(upstream);
 		upstream.pipe(client);
+		peers.push({ client, upstream, drop, written: 0, stalled: 0 });
 	});
+
+	// A proxy that ends a tunnel shows up here only as `end`. With bytes still
+	// queued for it nothing else ever fires (Bun emits no `close` on a socket
+	// blocked in a write), so the agent's upload would hang.
+	const peers: {
+		client: net.Socket;
+		upstream: net.Socket;
+		drop(): void;
+		written: number;
+		stalled: number;
+	}[] = [];
+	const reaper = setInterval(() => {
+		for (let i = peers.length - 1; i >= 0; i--) {
+			const p = peers[i] as (typeof peers)[number];
+			if (!pairs.has(p.client)) {
+				peers.splice(i, 1);
+				continue;
+			}
+			const u = p.upstream;
+			const stuck =
+				u.readyState === "writeOnly" &&
+				u.writableLength > 0 &&
+				u.bytesWritten === p.written;
+			p.written = u.bytesWritten;
+			p.stalled = stuck ? p.stalled + 1 : 0;
+			if (p.stalled >= REAP_STALLED_TICKS) {
+				p.drop();
+				peers.splice(i, 1);
+			}
+		}
+	}, REAP_EVERY_MS);
+	reaper.unref();
 
 	await new Promise<void>((resolve, reject) => {
 		const onError = (err: Error): void => reject(err);
@@ -95,6 +133,7 @@ export async function startEgressRelay(
 			return pairs.size / 2;
 		},
 		async close() {
+			clearInterval(reaper);
 			for (const s of pairs) s.destroy();
 			pairs.clear();
 			await new Promise<void>((r) => server.close(() => r()));

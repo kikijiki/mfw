@@ -268,3 +268,39 @@ describe("the relay in front of a command", () => {
 		}
 	});
 });
+
+describe("a proxy that ends a tunnel during an upload", () => {
+	test("the relay drops the connection instead of hanging", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "mfw-relay-lost-"));
+		const path = join(dir, "e.sock");
+		const proxy = net.createServer((s) => {
+			s.on("error", () => {});
+			s.once("data", () => s.destroy());
+		});
+		await new Promise<void>((r) => proxy.listen(path, r));
+		const relay = await startEgressRelay({ socketPath: path, port: 0 });
+		const client = net.connect(relay.port, relay.host);
+		client.on("error", () => {});
+		const chunk = Buffer.alloc(1024 * 1024, 0x61);
+		const pump = () => {
+			for (let i = 0; i < 128 && !client.destroyed; i++) {
+				if (!client.write(chunk)) {
+					client.once("drain", pump);
+					return;
+				}
+			}
+		};
+		try {
+			client.on("connect", pump);
+			const end = Date.now() + 5_000;
+			while (relay.active === 0 && Date.now() < end) await Bun.sleep(5);
+			while (relay.active > 0 && Date.now() < end) await Bun.sleep(25);
+			expect(relay.active).toBe(0);
+		} finally {
+			client.destroy();
+			await relay.close();
+			await new Promise<void>((r) => proxy.close(() => r()));
+			await rm(dir, { recursive: true, force: true });
+		}
+	}, 15_000);
+});

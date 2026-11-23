@@ -113,6 +113,25 @@ export function createConnectionGate(max: number): ConnectionGate {
 	};
 }
 
+/** What a run may send upstream, across relaunches of its CLI. */
+export interface UploadBudget {
+	perDestinationBytes: number;
+	totalBytes: number;
+}
+
+/** Finite but generous until real runs calibrate them. Configurable per project. */
+export const DEFAULT_UPLOAD_BUDGET: UploadBudget = {
+	perDestinationBytes: 1024 ** 3,
+	totalBytes: 2 * 1024 ** 3,
+};
+
+export interface UploadBreach {
+	scope: "destination" | "total";
+	destination: string;
+	limitBytes: number;
+	at: number;
+}
+
 export interface EgressProxyOptions {
 	runId: string;
 	/** Absolute path of the unix socket. See `egressSocketPath`. */
@@ -123,6 +142,17 @@ export interface EgressProxyOptions {
 	resolve?: Resolver;
 	clock?: EgressClock;
 	log?: (entry: EgressLogEntry) => void;
+	/**
+	 * On breach every tunnel closes, the chunk that crossed the limit is not
+	 * forwarded, and every later CONNECT is refused. Absent means unlimited,
+	 * which only tests use.
+	 */
+	uploadBudget?: UploadBudget;
+	/** Bytes already sent per `host:port` by earlier launches of this run. */
+	uploadedBefore?: Readonly<Record<string, number>>;
+	/** An earlier launch already breached: refuse from the start. */
+	breachedBefore?: boolean;
+	onUploadBreach?: (breach: UploadBreach) => void;
 	/** Called per chunk relayed, so counters stay current while a tunnel is open. */
 	onBytes?: (host: string, port: number, up: number, down: number) => void;
 	limits?: Partial<EgressLimits>;
@@ -217,6 +247,48 @@ export async function startEgressProxy(
 		return (ip) => own.has(canonicalAddress(ip));
 	};
 
+	const uploaded = new Map(Object.entries(opts.uploadedBefore ?? {}));
+	let uploadedTotal = [...uploaded.values()].reduce((n, v) => n + v, 0);
+	let budgetSpent = opts.breachedBefore === true;
+	const tunnels = new Set<() => void>();
+
+	/** Count `bytes` toward the budget, or end every tunnel and return false. */
+	function charge(destination: string, bytes: number): boolean {
+		if (budgetSpent) return false;
+		const budget = opts.uploadBudget;
+		const next = (uploaded.get(destination) ?? 0) + bytes;
+		const nextTotal = uploadedTotal + bytes;
+		if (budget) {
+			const scope =
+				next > budget.perDestinationBytes
+					? ("destination" as const)
+					: nextTotal > budget.totalBytes
+						? ("total" as const)
+						: null;
+			if (scope) {
+				budgetSpent = true;
+				try {
+					opts.onUploadBreach?.({
+						scope,
+						destination,
+						limitBytes:
+							scope === "total"
+								? budget.totalBytes
+								: budget.perDestinationBytes,
+						at: clock.now(),
+					});
+				} catch {
+					// The tunnels still close.
+				}
+				for (const end of [...tunnels]) end();
+				return false;
+			}
+		}
+		uploaded.set(destination, next);
+		uploadedTotal = nextTotal;
+		return true;
+	}
+
 	const denyLog = (
 		d: EgressDenial,
 		target?: { host: string; port: number },
@@ -291,6 +363,12 @@ export async function startEgressProxy(
 			respondDeny(client, refused);
 			return;
 		}
+		if (budgetSpent) {
+			const spent = deny(403, "upload-budget");
+			denyLog(spent, target);
+			respondDeny(client, spent);
+			return;
+		}
 		const pinned = await withDeadline(
 			// Fully qualified: the policy keeps the normalised name, but the
 			// resolver must not retry it under the host's DNS search domains.
@@ -332,6 +410,7 @@ export async function startEgressProxy(
 		const finish = (): void => {
 			if (logged) return;
 			logged = true;
+			tunnels.delete(teardown);
 			clearTimeout(lifetime);
 			log({
 				decision: "ALLOW",
@@ -354,6 +433,8 @@ export async function startEgressProxy(
 			upstream.destroy();
 			finish();
 		};
+		tunnels.add(teardown);
+		const destination = `${target.host}:${target.port}`;
 		upstream.on("error", teardown);
 		upstream.once("close", () => {
 			client.end(); // let queued downstream bytes flush; idle timeout reaps it
@@ -372,11 +453,13 @@ export async function startEgressProxy(
 
 		const startPiping = (first: Buffer): void => {
 			if (first.length > 0) {
+				if (!charge(destination, first.length)) return;
 				bytesUp += first.length;
 				count(first.length, 0);
 				upstream.write(first);
 			}
 			client.on("data", (chunk: Buffer) => {
+				if (!charge(destination, chunk.length)) return;
 				bytesUp += chunk.length;
 				count(chunk.length, 0);
 				if (!upstream.write(chunk)) {
