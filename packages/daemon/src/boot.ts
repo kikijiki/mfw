@@ -1396,6 +1396,7 @@ export async function attachProject(
 		eventTail: engine.eventTail,
 		// The tmux socket is machine-wide: a run another project owns is no orphan.
 		ownedElsewhere: opts.ownedElsewhere,
+		egressHome: opts.mfwHome,
 		notify: (kind, detail) =>
 			notifier.notify(kind, { project: cfg.name, ...detail }),
 		log: plog,

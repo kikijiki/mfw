@@ -13,10 +13,12 @@
  * in place of the agent CLI.
  */
 
+import { chmodSync, copyFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ProjectDb } from "@mfw/db/client";
 import { z } from "zod";
+import { HOST_BUN_FLAGS } from "./agent-launch-argv.ts";
 import {
 	AgentProfileError,
 	agentToolCandidates,
@@ -30,10 +32,16 @@ import {
 	UNATTESTED_CONFIG_MARKER,
 } from "./agent-profile.ts";
 import { authorizeAutonomousLaunch } from "./attestation-gate.ts";
-import { type CompileHost, compileBwrap } from "./compile-bwrap.ts";
+import {
+	type CompileHost,
+	compileBwrap,
+	SANDBOX_PATHS,
+} from "./compile-bwrap.ts";
+import { EGRESS_SOCKET_NAME } from "./egress-run.ts";
 import { launchSandbox } from "./launch-sandbox.ts";
 import { attestSandbox } from "./probe-run.ts";
 import { ProfileRejectedError, type SandboxProfile } from "./profile.ts";
+import { RUN_CONTROL_DIR } from "./run-dir.ts";
 
 const AbsolutePath = z.string().startsWith("/").max(4096);
 
@@ -131,6 +139,34 @@ export function launchRoots(req: AgentLaunchRequest): string[] {
 export type AgentLaunchResult =
 	| { ok: true; child: ReturnType<typeof launchSandbox>; attestationId: string }
 	| AgentLaunchRefusal;
+
+const RELAY_FILE = "egress-relay.ts";
+
+/**
+ * The agent command behind the in-sandbox relay. The relay is copied into the
+ * run's control directory, which the sandbox sees read-only, because the source
+ * tree is not bound. Bun reads no config or `.env` from the agent's workspace.
+ */
+export function withEgressRelay(
+	req: Pick<AgentLaunchRequest, "runDir">,
+	bun: string,
+	argv: readonly string[],
+): string[] {
+	const copy = join(req.runDir, RUN_CONTROL_DIR, RELAY_FILE);
+	rmSync(copy, { force: true });
+	copyFileSync(join(import.meta.dir, RELAY_FILE), copy);
+	chmodSync(copy, 0o444);
+	return [
+		bun,
+		...HOST_BUN_FLAGS,
+		"run",
+		`${SANDBOX_PATHS.runControl}/${RELAY_FILE}`,
+		"--socket",
+		`${SANDBOX_PATHS.egress}/${EGRESS_SOCKET_NAME}`,
+		"--",
+		...argv,
+	];
+}
 
 /** Run the whole path for one launch. Each launch needs its own passing probe. */
 export async function launchAgentSandbox(
@@ -247,7 +283,19 @@ export async function launchAgentSandbox(
 		);
 	}
 
-	const compiled = compileBwrap(profile, finalArgv, host);
+	let sandboxArgv = finalArgv;
+	if (req.egressSocketDir) {
+		const bun = host.toolchain.resolved.find((b) => b.name === "bun");
+		if (!bun) {
+			return refuse(
+				"compile_refused",
+				"the egress relay needs bun in the sandbox",
+				"install bun in a known toolchain root",
+			);
+		}
+		sandboxArgv = withEgressRelay(req, bun.path, finalArgv);
+	}
+	const compiled = compileBwrap(profile, sandboxArgv, host);
 	if (!compiled.ok) {
 		return refuse(
 			"compile_refused",

@@ -13,6 +13,7 @@ import {
 import { parseAgentEvents } from "./agents/events.ts";
 import { isBrainTurnRun } from "./brain-runtime/turn-run.ts";
 import { PROJECT_DEFAULTS } from "./config.ts";
+import { sweepRunEgress } from "./containment/egress-run.ts";
 import { runEventsPath } from "./containment/run-dir.ts";
 import type { StepRunner } from "./finalize/step-runner.ts";
 import type { Logger } from "./log.ts";
@@ -97,6 +98,8 @@ export interface SupervisorDeps {
 	 * when no sibling project has a row for it either.
 	 */
 	ownedElsewhere?: (runId: string) => Promise<boolean>;
+	/** `$MFW_HOME`, to clear what dead runs left of their egress proxies. */
+	egressHome?: string;
 	log: Logger;
 	projectRoot: string;
 	bootId: string;
@@ -893,6 +896,16 @@ export class Supervisor {
 				"orphan",
 			);
 			report.orphanSessionsKilled++;
+		}
+
+		// F: a proxy or socket directory whose run is gone, across every project,
+		// because the tmux socket and the index are machine-wide.
+		if (this.deps.egressHome) {
+			await sweepRunEgress(this.deps.egressHome, (runId) =>
+				this.deps.host.sessionLiveness(runId),
+			).catch((err) =>
+				this.log.warn({ err }, "egress proxy recovery sweep failed"),
+			);
 		}
 
 		// G: tasks claimed by a run that can never finalize go back to ready.

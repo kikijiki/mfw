@@ -5,11 +5,17 @@
  * dumb byte pipe. It has no policy: the proxy is the only gate, and the netns
  * is what makes every client that skips the relay fail closed.
  *
- * It uses only `node:net`, so it runs under Bun inside the sandbox with no
+ * It uses only node builtins, so it runs under Bun inside the sandbox with no
  * socat. It can run as a library (`startEgressRelay`) or as a script:
- * `bun egress-relay.ts --socket <path> [--port 3128] [--host 127.0.0.1]`.
+ * `bun egress-relay.ts --socket <path> [--port 3128] [--host 127.0.0.1] [-- <command...>]`.
+ *
+ * With a command, the relay starts it once listening, passes signals on and
+ * exits with its status. If the relay cannot listen the command never starts.
+ * The launcher copies this file into the run's read-only control directory, so
+ * it must stay self-contained.
  */
 
+import { spawn } from "node:child_process";
 import net from "node:net";
 
 export const RELAY_HOST = "127.0.0.1";
@@ -127,17 +133,64 @@ export function parseRelayArgs(argv: readonly string[]): EgressRelayOptions {
 	};
 }
 
+/** Split the relay's own arguments from the command after `--`. */
+export function splitRelayCommand(argv: readonly string[]): {
+	relay: string[];
+	command: string[];
+} {
+	const at = argv.indexOf("--");
+	return at < 0
+		? { relay: [...argv], command: [] }
+		: { relay: argv.slice(0, at), command: argv.slice(at + 1) };
+}
+
+/** Exit status of a command the relay could not run, as a shell reports it. */
+const COMMAND_NOT_RUN = 127;
+/** The sandbox's refusal status: the relay never came up. */
+const RELAY_REFUSED = 78;
+
+function runCommand(command: readonly string[]): void {
+	const child = spawn(command[0] as string, command.slice(1), {
+		stdio: "inherit",
+	});
+	for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
+		process.on(signal, () => child.kill(signal));
+	}
+	child.on("error", (err) => {
+		console.error(`egress-relay: ${err.message}`);
+		process.exit(COMMAND_NOT_RUN);
+	});
+	child.on("exit", (code, signal) => {
+		process.exit(code ?? (signal ? 128 + signalNumber(signal) : 1));
+	});
+}
+
+function signalNumber(signal: NodeJS.Signals): number {
+	return (
+		{ SIGHUP: 1, SIGINT: 2, SIGKILL: 9, SIGTERM: 15 }[signal as string] ?? 0
+	);
+}
+
 if (import.meta.main) {
+	const { relay: relayArgs, command } = splitRelayCommand(
+		process.argv.slice(2),
+	);
 	try {
-		const relay = await startEgressRelay(parseRelayArgs(process.argv.slice(2)));
-		console.log(`egress-relay listening on ${relay.host}:${relay.port}`);
+		const relay = await startEgressRelay(parseRelayArgs(relayArgs));
+		if (command.length > 0) {
+			runCommand(command);
+		} else {
+			console.log(`egress-relay listening on ${relay.host}:${relay.port}`);
+		}
 		const stop = (): void => {
 			void relay.close().then(() => process.exit(0));
 		};
-		process.on("SIGTERM", stop);
-		process.on("SIGINT", stop);
+		if (command.length === 0) {
+			process.on("SIGTERM", stop);
+			process.on("SIGINT", stop);
+		}
 	} catch (err) {
 		console.error(`egress-relay: ${(err as Error).message}`);
-		process.exit(1);
+		process.exit(command.length > 0 ? RELAY_REFUSED : 1);
 	}
 }

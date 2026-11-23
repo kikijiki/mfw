@@ -26,6 +26,7 @@ import {
 } from "./containment/agent-preflight.ts";
 import { withoutAutonomyFlags } from "./containment/agent-profile.ts";
 import { SANDBOX_PATHS } from "./containment/compile-bwrap.ts";
+import { prepareRunEgress } from "./containment/egress-run.ts";
 import {
 	driverRunPaths,
 	ensureRunDirLayout,
@@ -209,6 +210,8 @@ export interface LaunchSpec {
 
 /** What differs in a run whose driver stays on the host. */
 interface HostBridge {
+	/** The run's proxy, started by `run.sh` before the driver. */
+	egress: { configPath: string; socketPath: string };
 	requestPath: string;
 	cwd: string;
 	agentArgv: string[];
@@ -216,6 +219,15 @@ interface HostBridge {
 	providerArgv: string[];
 	env: Record<string, string>;
 }
+
+const EGRESS_PROXY_MAIN = join(
+	import.meta.dir,
+	"containment",
+	"egress-proxy-main.ts",
+);
+
+/** 0.05 s each: how long `run.sh` waits for the proxy socket. */
+const EGRESS_START_POLLS = 400;
 
 const FLEET_CLI: Readonly<Record<string, "claude" | "codex">> = {
 	"claude-cli": "claude",
@@ -476,6 +488,9 @@ export class AgentHost {
 					"unset -f secret_handoff_failed",
 				]
 			: [];
+		const egressStart = bridge
+			? this.egressStartLines(bridge.egress, bunBin)
+			: [];
 		const script = [
 			"#!/usr/bin/env bash",
 			// One brace group: bash parses it whole before running anything, so text
@@ -502,9 +517,13 @@ export class AgentHost {
 				: [`export PATH=${q(process.env.PATH ?? "/usr/bin:/bin")}`]),
 			"IFS= read -r _ 2>/dev/null  # wait for go signal",
 			`cd ${q(bridge ? dir : spec.cwd)} || { mfw_record_exit 'exit:1'; exit 1; }`,
+			// Before the secret gate, so the proxy never inherits a secret.
+			...egressStart,
 			...secretGate,
-			driverCmd,
+			bridge ? `${driverCmd} 8>&-` : driverCmd,
 			"rc=$?",
+			// Closing the pipe stops the proxy; its final counters land before the exit does.
+			...(bridge ? ["exec 8>&-", 'wait "$mfw_egress_pid" 2>/dev/null'] : []),
 			'mfw_record_exit "exit:$rc"',
 			'exit "$rc"',
 			"}",
@@ -591,6 +610,46 @@ export class AgentHost {
 	}
 
 	/**
+	 * Start the run's proxy on a pipe from this script, and wait for its socket.
+	 * The proxy gets an empty environment. If it never listens the run ends with
+	 * the sandbox's refusal status and no agent starts.
+	 */
+	private egressStartLines(
+		egress: HostBridge["egress"],
+		bunBin: string,
+	): string[] {
+		const env = pinnedTool("env");
+		if (!env) {
+			throw new SandboxUnavailableError("env is not on a trusted PATH");
+		}
+		const proxy = [
+			env,
+			"-i",
+			bunBin,
+			...HOST_BUN_FLAGS,
+			"run",
+			EGRESS_PROXY_MAIN,
+			egress.configPath,
+		]
+			.map(q)
+			.join(" ");
+		return [
+			`exec 8> >(exec ${proxy} >/dev/null 2>&1)`,
+			"mfw_egress_pid=$!",
+			"mfw_egress_wait=0",
+			`until [ -S ${q(egress.socketPath)} ]; do`,
+			"  mfw_egress_wait=$((mfw_egress_wait + 1))",
+			`  if [ "$mfw_egress_wait" -gt ${EGRESS_START_POLLS} ] || ! kill -0 "$mfw_egress_pid" 2>/dev/null; then`,
+			"    exec 8>&-",
+			"    mfw_record_exit 'exit:78'",
+			"    exit 78",
+			"  fi",
+			"  sleep 0.05",
+			"done",
+		];
+	}
+
+	/**
 	 * The launch request and driver settings of a host-bridged run. Everything
 	 * the agent sees uses sandbox paths, and an interactive run never carries an
 	 * autonomous flag. Refuses rather than falling back to the interim sandbox.
@@ -631,6 +690,13 @@ export class AgentHost {
 		if ("MFW_REPORT_PATH" in env) {
 			env.MFW_REPORT_PATH = `${SANDBOX_PATHS.workspace}/MFW_REPORT.json`;
 		}
+		// Deny-by-default until a harness list is supplied.
+		const egress = prepareRunEgress({
+			mfwHome: await realpath(mfwHome),
+			runDir,
+			runId: spec.runId,
+			allow: [],
+		});
 		const request: AgentLaunchRequest = {
 			version: 1,
 			runId: spec.runId,
@@ -644,6 +710,7 @@ export class AgentHost {
 			mfwHome: await realpath(mfwHome),
 			env,
 			secretNames: secretEnvironment.names(),
+			egressSocketDir: egress.socketDir,
 		};
 		const requestPath = join(control, `agent-launch-${spec.runId}.json`);
 		await rm(requestPath, { force: true });
@@ -654,6 +721,7 @@ export class AgentHost {
 		const bun = pinnedTool("bun") ?? process.execPath;
 		const bridgeArgv = spec.bridgeArgv ?? agentArgv;
 		return {
+			egress: { configPath: egress.configPath, socketPath: egress.socketPath },
 			requestPath,
 			cwd: SANDBOX_PATHS.workspace,
 			agentArgv,
