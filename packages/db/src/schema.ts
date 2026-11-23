@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+	check,
 	index,
 	integer,
 	primaryKey,
@@ -8,6 +9,7 @@ import {
 	text,
 	uniqueIndex,
 } from "drizzle-orm/sqlite-core";
+import { RUN_FACTS_PROVENANCE_CHECK, runFactsPairCheck } from "./provenance.ts";
 
 /**
  * One SQLite DB per project at `<project>/.mfw/mfw.db`, holding everything
@@ -291,6 +293,12 @@ export const runs = sqliteTable(
 		transcriptSummary: text("transcript_summary", {
 			mode: "json",
 		}).$type<Record<string, unknown> | null>(),
+		/**
+		 * `split` once the host launched this run with `control/` and `outbox/`
+		 * (0021). It lives here because the run dir of an older run was
+		 * agent-writable: only this column can say a `control/exit` is the host's.
+		 */
+		runDirLayout: text("run_dir_layout").$type<"split" | null>(),
 	},
 	(t) => [
 		index("ix_runs_state").on(t.state),
@@ -566,6 +574,32 @@ export const sandboxAttestationUses = sqliteTable("sandbox_attestation_uses", {
 	runId: text("run_id").notNull(),
 	usedAt: integer("used_at", { mode: "timestamp_ms" }).notNull(),
 });
+
+/**
+ * L1 facts with their provenance (0021), written only through
+ * `recordRunFact` in `run-facts.ts`. A host observation and an agent's claim
+ * about the same fact are separate rows.
+ */
+export const runFacts = sqliteTable(
+	"run_facts",
+	{
+		runId: text("run_id").notNull(),
+		fact: text("fact").notNull(),
+		provenance: text("provenance").notNull(),
+		/** JSON, bounded by `RUN_FACT_MAX_BYTES`. */
+		value: text("value").notNull(),
+		source: text("source").notNull(),
+		firstObservedAt: integer("first_observed_at", {
+			mode: "timestamp_ms",
+		}).notNull(),
+		observedAt: integer("observed_at", { mode: "timestamp_ms" }).notNull(),
+	},
+	(t) => [
+		primaryKey({ columns: [t.runId, t.fact, t.provenance] }),
+		check("ck_run_facts_provenance", sql.raw(RUN_FACTS_PROVENANCE_CHECK)),
+		check("ck_run_facts_pair", sql.raw(runFactsPairCheck())),
+	],
+);
 
 // ---------- comments ----------
 
