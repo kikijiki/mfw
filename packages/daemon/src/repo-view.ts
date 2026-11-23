@@ -4,8 +4,8 @@ import type { ProjectDbHandle } from "@mfw/db/client";
 import { events, mergeJobs } from "@mfw/db/schema";
 import { isTerminalRunState } from "@mfw/db/spans";
 import { eq } from "drizzle-orm";
+import { gitRaw, hostGitCommand } from "./git.ts";
 import { parseDiffPaths } from "./git-diff-paths.ts";
-import { runProc } from "./proc.ts";
 import type { RunRegistry, RunRow } from "./run-registry.ts";
 import {
 	MAX_IMAGE_BYTES,
@@ -302,27 +302,21 @@ export class RepoViewService {
 			input?: string;
 		} = {},
 	): Promise<GitOut> {
-		const r = await runProc(
+		const r = await gitRaw(
 			[
-				"git",
 				"--no-pager",
 				"-c",
 				"core.quotepath=off",
 				"-c",
-				"core.fsmonitor=false",
-				"-c",
 				"diff.external=",
-				"-c",
-				"core.hooksPath=/dev/null",
 				...args,
 			],
+			opts.cwd ?? this.deps.root,
 			{
-				cwd: opts.cwd ?? this.deps.root,
 				timeoutMs: opts.timeoutMs ?? GIT_TIMEOUT_MS,
 				maxOutputBytes: opts.maxBytes ?? LIST_BYTES,
 				...(opts.input !== undefined ? { input: opts.input } : {}),
 				env: {
-					...process.env,
 					GIT_OPTIONAL_LOCKS: "0",
 					GIT_TERMINAL_PROMPT: "0",
 					GIT_EXTERNAL_DIFF: "",
@@ -1224,29 +1218,20 @@ export class RepoViewService {
 		if (size > MAX_IMAGE_BYTES) {
 			throw new NotFoundError(`${path} is too large to serve`);
 		}
-		const proc = Bun.spawn(
-			[
-				"git",
-				"--no-pager",
-				"-c",
-				"core.hooksPath=/dev/null",
-				"cat-file",
-				"blob",
-				spec,
-			],
-			{
-				cwd: this.deps.root,
-				stdout: "pipe",
-				stderr: "ignore",
-				stdin: "ignore",
-				env: {
-					...process.env,
-					GIT_OPTIONAL_LOCKS: "0",
-					GIT_TERMINAL_PROMPT: "0",
-					LC_ALL: "C",
-				},
-			},
-		);
+		const command = await hostGitCommand(
+			["--no-pager", "cat-file", "blob", spec],
+			this.deps.root,
+			{ GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" },
+		).catch(() => {
+			throw new NotFoundError(`cannot read ${path}`);
+		});
+		const proc = Bun.spawn(command.argv, {
+			cwd: this.deps.root,
+			stdout: "pipe",
+			stderr: "ignore",
+			stdin: "ignore",
+			env: command.env,
+		});
 		const timer = setTimeout(() => proc.kill(), GIT_TIMEOUT_MS);
 		let data: Buffer;
 		try {

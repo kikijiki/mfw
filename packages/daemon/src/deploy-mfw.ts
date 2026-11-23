@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { hostGitCommand } from "./git.ts";
 import { acquireKernelLock } from "./kernel-lock.ts";
 import type { ProcResult } from "./proc.ts";
 import { runProc } from "./proc.ts";
@@ -29,6 +30,16 @@ export type DeployCommand = (
 	argv: string[],
 	opts?: DeployCommandOptions,
 ) => Promise<ProcResult>;
+
+/** Git goes through the hardened runner; everything else runs as given. */
+const hardenedDeployCommand: DeployCommand = async (argv, opts) => {
+	if (argv[0] !== "git") return runProc(argv, opts);
+	const command = await hostGitCommand(
+		argv.slice(1),
+		opts?.cwd ?? process.cwd(),
+	);
+	return runProc(command.argv, { ...opts, env: command.env });
+};
 
 export interface DeployMfwOptions {
 	/** The checkout whose apps/start/.output is served by systemd. */
@@ -230,7 +241,7 @@ async function deployMfwLocked(
 ): Promise<DeployMfwResult> {
 	const repoRoot = resolve(options.repoRoot);
 	const requestedSha = options.sha.trim().toLowerCase();
-	const run = options.run ?? runProc;
+	const run = options.run ?? hardenedDeployCommand;
 	if (!SHA_PATTERN.test(requestedSha)) {
 		throw new Error("MFW_SHA must be a full hexadecimal commit id");
 	}

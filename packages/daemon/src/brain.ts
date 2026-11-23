@@ -22,6 +22,7 @@ import type {
 	BrainPort,
 	CriticResult,
 } from "./finalize/step-runner.ts";
+import { gitRaw } from "./git.ts";
 import { affectedPaths, parseDiffPaths } from "./git-diff-paths.ts";
 import type { Logger } from "./log.ts";
 import type { DiagnoseCtx, DiagnoseResult } from "./maintenance.ts";
@@ -346,8 +347,7 @@ export class GitDiffSource implements DiffSource {
 	}
 
 	private async git(args: string[], cwd: string): Promise<string> {
-		const r = await runProc(["git", ...args], {
-			cwd,
+		const r = await gitRaw(args, cwd, {
 			timeoutMs: GIT_TIMEOUT_MS,
 			maxOutputBytes: GIT_MAX_BYTES,
 		});

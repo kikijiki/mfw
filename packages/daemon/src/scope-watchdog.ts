@@ -1,5 +1,6 @@
 import { filesOutsideOwns, ownsPath } from "@mfw/board-core";
 import { PROJECT_DEFAULTS } from "./config.ts";
+import { hostGitCommand } from "./git.ts";
 import { runProcRecords } from "./proc.ts";
 
 /**
@@ -128,11 +129,12 @@ async function gitList(
 	cwd: string,
 ): Promise<{ paths: string[]; truncated: boolean }> {
 	const paths: string[] = [];
+	const command = await hostGitCommand(args, cwd, { GIT_OPTIONAL_LOCKS: "0" });
 	const r = await runProcRecords(
-		["git", ...args],
+		command.argv,
 		{
 			cwd,
-			env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+			env: command.env,
 			timeoutMs: GIT_TIMEOUT_MS,
 			maxRecords: MAX_SCOPE_PATHS,
 			maxRecordBytes: GIT_MAX_PATH_BYTES,

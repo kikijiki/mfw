@@ -107,6 +107,74 @@ export async function gitComplete(
 	return r.stdout.trim();
 }
 
+export interface GitRawResult {
+	ok: boolean;
+	exitCode: number | null;
+	/** Untrimmed: porcelain and `-z` output keep their leading bytes. */
+	stdout: string;
+	stderr: string;
+	truncated: boolean;
+	timedOut: boolean;
+}
+
+/** The hardened argv and env, for a caller that must spawn git itself. Throws on a refused config. */
+export async function hostGitCommand(
+	args: string[],
+	cwd: string,
+	env?: Record<string, string>,
+): Promise<{ argv: string[]; env: Record<string, string> }> {
+	const refused = await refusal(args, cwd);
+	if (refused) throw new Error(refused);
+	return {
+		argv: [requireHostTool("git"), ...HOST_GIT_OVERRIDES, ...args],
+		env: hostGitEnv(env),
+	};
+}
+
+/** Hardened git whose output is not trimmed. A refused config is a failed result. */
+export async function gitRaw(
+	args: string[],
+	cwd: string,
+	opts: {
+		env?: Record<string, string>;
+		timeoutMs?: number;
+		maxOutputBytes?: number;
+		input?: string;
+	} = {},
+): Promise<GitRawResult> {
+	const refused = await refusal(args, cwd);
+	if (refused) {
+		return {
+			ok: false,
+			exitCode: 128,
+			stdout: "",
+			stderr: refused,
+			truncated: false,
+			timedOut: false,
+		};
+	}
+	const r = await runProc(
+		[requireHostTool("git"), ...HOST_GIT_OVERRIDES, ...args],
+		{
+			cwd,
+			env: hostGitEnv(opts.env),
+			...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+			...(opts.maxOutputBytes !== undefined
+				? { maxOutputBytes: opts.maxOutputBytes }
+				: {}),
+			...(opts.input !== undefined ? { input: opts.input } : {}),
+		},
+	);
+	return {
+		ok: r.exitCode === 0 && !r.timedOut,
+		exitCode: r.exitCode,
+		stdout: r.stdout,
+		stderr: r.stderr,
+		truncated: r.truncated === true,
+		timedOut: r.timedOut === true,
+	};
+}
+
 export async function isGitRepo(cwd: string): Promise<boolean> {
 	const r = await git(["rev-parse", "--is-inside-work-tree"], cwd);
 	return r.exitCode === 0 && r.stdout === "true";
