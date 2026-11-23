@@ -47,6 +47,7 @@ import { createCheckSandbox } from "./containment/check-sandbox.ts";
 import { runDirLayout } from "./containment/run-dir.ts";
 import { assertRunDead } from "./containment/run-liveness.ts";
 import { ensureSocketRoot } from "./containment/socket-root.ts";
+import { sourceRunRefusal } from "./containment/source-run-guard.ts";
 import { CredentialStore, WorkloadSecretGrantStore } from "./credentials.ts";
 import { ensureBoardConfig } from "./default-board-config.ts";
 import { readMemAvailable } from "./dispatch-preflight.ts";
@@ -464,6 +465,10 @@ export async function attachProject(
 	// Must run before any write: mkdir(recursive) would recreate a moved or
 	// unmounted root and report a healthy attach.
 	await assertGitRepo(cfg.root);
+	// From source, host scripts come from the checkout: a project that merges
+	// into that same repository could rewrite what the host runs next.
+	const sourceRefusal = await sourceRunRefusal(import.meta.url, cfg.root);
+	if (sourceRefusal) throw new Error(sourceRefusal);
 	// A typo in `boardRoot` must not be "fixed" by mkdir(recursive) below.
 	if (cfg.boardRoot) await assertBoardRoot(cfg.boardRoot, cfg.root);
 	// Canonical root: git cwd, worktree base and path-escape prefix all compare

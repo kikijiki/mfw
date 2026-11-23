@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -65,9 +73,68 @@ describe("host-side scripts in the bundled server (review F5)", () => {
 		expect(hostScript(url("src/module.ts"), script)).toBe(beside);
 	});
 
-	test("from the bundle, it resolves in the bundle's own checkout", () => {
-		const real = write("repo/packages/daemon/src/x-main.ts");
-		expect(hostScript(url(CHUNK), script)).toBe(real);
+	/** A built copy of `script` and its manifest, as the build writes them. */
+	const build = (content = "// built\n") => {
+		const dir = join(root, "repo/apps/start/.output/server/host-scripts");
+		mkdirSync(dir, { recursive: true });
+		const name = "packages__daemon__src__x-main.js";
+		writeFileSync(join(dir, name), content);
+		const sha256 = createHash("sha256").update(content).digest("hex");
+		writeFileSync(
+			join(dir, "manifest.json"),
+			JSON.stringify({ version: 1, scripts: { [name]: sha256 } }),
+		);
+		return join(dir, name);
+	};
+
+	test("from the bundle, it runs the built copy", () => {
+		write("repo/packages/daemon/src/x-main.ts");
+		const built = build();
+		expect(hostScript(url(CHUNK), script)).toBe(built);
+	});
+
+	test("a merge that rewrites the source script does not reach the host", () => {
+		const source = write("repo/packages/daemon/src/x-main.ts");
+		const built = build("// reviewed at build time\n");
+		// What an autonomous fast-forward of the checkout does.
+		writeFileSync(source, "// agent-authored\n");
+		const resolved = hostScript(url(CHUNK), script);
+		expect(resolved).toBe(built);
+		expect(readFileSync(resolved, "utf8")).toBe("// reviewed at build time\n");
+	});
+
+	test("a built copy that no longer matches its hash is refused", () => {
+		const built = build();
+		writeFileSync(built, "// tampered\n");
+		expect(() => hostScript(url(CHUNK), script)).toThrow(
+			/hash.*bun run build/s,
+		);
+	});
+
+	test("a missing manifest is refused, even with the source present", () => {
+		write("repo/packages/daemon/src/x-main.ts");
+		const built = build();
+		rmSync(join(dirname(built), "manifest.json"));
+		expect(() => hostScript(url(CHUNK), script)).toThrow(
+			/manifest.*bun run build/s,
+		);
+	});
+
+	test("a script the manifest does not list is refused", () => {
+		const built = build();
+		writeFileSync(
+			join(dirname(built), "manifest.json"),
+			JSON.stringify({ version: 1, scripts: {} }),
+		);
+		expect(() => hostScript(url(CHUNK), script)).toThrow(/not in the manifest/);
+	});
+
+	test("a built copy replaced by a symlink is refused", () => {
+		const built = build();
+		const elsewhere = write("elsewhere.js");
+		rmSync(built);
+		symlinkSync(elsewhere, built);
+		expect(() => hostScript(url(CHUNK), script)).toThrow(/regular file/);
 	});
 
 	test("a copy in an agent-writable working directory is never used", () => {
@@ -77,7 +144,7 @@ describe("host-side scripts in the bundled server (review F5)", () => {
 		const before = process.cwd();
 		process.chdir(workspace);
 		try {
-			expect(() => hostScript(url(CHUNK), script)).toThrow(/cannot locate/);
+			expect(() => hostScript(url(CHUNK), script)).toThrow(/manifest/);
 		} finally {
 			process.chdir(before);
 		}

@@ -1,10 +1,19 @@
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type {
 	BrainMcpServer,
 	BrainTurnLaunch,
 } from "../brain-runtime/turn-run.ts";
+import {
+	ACP_BRIDGE,
+	APP_SERVER_DRIVER,
+	CLAUDE_BRIDGE,
+	CODEX_BRIDGE,
+	CODEX_EXEC_BRIDGE,
+	type HostScript,
+	hostScript,
+	isBundledModule,
+	MCP_MAIN,
+} from "../containment/host-script.ts";
 import type { RateLimitInfo } from "../rate-limit.ts";
 import { nativeSessionUuid } from "./native-session.ts";
 import { parseClaudeRateLimit } from "./rate-limit-claude.ts";
@@ -77,142 +86,82 @@ export interface AgentAdapter {
 	parseRateLimit?(output: string): RateLimitInfo | null;
 }
 
-// ---------- driver path resolution (bundled-build safe, see v1 scripts.ts) ----------
+// ---------- driver path resolution ----------
 
 /**
- * Driver location relative to the repo root for the bundled build, where
- * `import.meta.url` points into `.output/server/` and the colocated lookup
- * misses. Source runs never read this, so it can rot unnoticed;
- * `test/driver-path.test.ts` asserts these paths name real files.
+ * Each script's path from the repo root. `test/driver-path.test.ts` asserts
+ * these name real files; the build copies them (see `host-script.ts`).
  */
 export const FROM_ROOT = {
-	appServerDriver: join(
-		"packages",
-		"daemon",
-		"src",
-		"agents",
-		"drivers",
-		"app-server-driver.ts",
-	),
-	claudeBridge: join(
-		"packages",
-		"daemon",
-		"src",
-		"agents",
-		"bridges",
-		"claude-app-server.ts",
-	),
-	codexBridge: join(
-		"packages",
-		"daemon",
-		"src",
-		"agents",
-		"bridges",
-		"codex-app-server-bridge.ts",
-	),
-	codexExecBridge: join(
-		"packages",
-		"daemon",
-		"src",
-		"agents",
-		"bridges",
-		"codex-exec-bridge.ts",
-	),
-	acpBridge: join(
-		"packages",
-		"daemon",
-		"src",
-		"agents",
-		"bridges",
-		"acp-bridge.ts",
-	),
+	appServerDriver: APP_SERVER_DRIVER.fromRoot,
+	claudeBridge: CLAUDE_BRIDGE.fromRoot,
+	codexBridge: CODEX_BRIDGE.fromRoot,
+	codexExecBridge: CODEX_EXEC_BRIDGE.fromRoot,
+	acpBridge: ACP_BRIDGE.fromRoot,
 	/** The MCP server a brain turn is given (`@mfw/mcp --brain`). */
-	mcpMain: join("packages", "mcp", "src", "main.ts"),
+	mcpMain: MCP_MAIN.fromRoot,
 } as const;
 
-function findUp(start: string, relFromRoot: string): string | null {
-	let dir = start;
-	for (;;) {
-		const candidate = join(dir, relFromRoot);
-		if (existsSync(candidate)) return candidate;
-		const parent = dirname(dir);
-		if (parent === dir) return null;
-		dir = parent;
-	}
-}
-
+/**
+ * The script to run. An env override is for running from source: the production
+ * server runs only its verified built copies, so it refuses one.
+ */
 export function resolveScript(
-	colocatedUrl: string,
-	relFromRoot: string,
+	moduleUrl: string,
+	script: HostScript,
 	envVar: string,
 ): string {
 	const override = process.env[envVar];
 	if (override) {
+		if (isBundledModule(moduleUrl)) {
+			throw new Error(
+				`refusing ${envVar}: the production server runs only its built host scripts. Fix: unset it`,
+			);
+		}
 		if (existsSync(override)) return override;
 		throw new Error(
 			`${envVar}="${override}" does not exist: unset it or point it at the real script`,
 		);
 	}
-	const colocated = fileURLToPath(colocatedUrl);
-	if (existsSync(colocated)) return colocated;
-	for (const start of [dirname(colocated), process.cwd()]) {
-		const found = findUp(start, relFromRoot);
-		if (found) return found;
-	}
-	throw new Error(
-		`cannot locate ${relFromRoot}; set ${envVar} to its absolute path`,
-	);
+	return hostScript(moduleUrl, script);
 }
 
 let appServerDriverCached: string | null = null;
 export function appServerDriverScript(): string {
+	// Only the source path is cached: a built copy is re-verified at each launch.
+	if (isBundledModule(import.meta.url)) {
+		return resolveScript(
+			import.meta.url,
+			APP_SERVER_DRIVER,
+			"MFW_APP_SERVER_DRIVER_SCRIPT",
+		);
+	}
 	appServerDriverCached ??= resolveScript(
-		new URL("./drivers/app-server-driver.ts", import.meta.url).href,
-		FROM_ROOT.appServerDriver,
+		import.meta.url,
+		APP_SERVER_DRIVER,
 		"MFW_APP_SERVER_DRIVER_SCRIPT",
 	);
 	return appServerDriverCached;
 }
 
 const BRIDGES = {
-	claude: {
-		rel: FROM_ROOT.claudeBridge,
-		file: "claude-app-server.ts",
-		env: "MFW_CLAUDE_BRIDGE_SCRIPT",
-	},
-	codex: {
-		rel: FROM_ROOT.codexBridge,
-		file: "codex-app-server-bridge.ts",
-		env: "MFW_CODEX_BRIDGE_SCRIPT",
-	},
+	claude: { script: CLAUDE_BRIDGE, env: "MFW_CLAUDE_BRIDGE_SCRIPT" },
+	codex: { script: CODEX_BRIDGE, env: "MFW_CODEX_BRIDGE_SCRIPT" },
 	"codex-exec": {
-		rel: FROM_ROOT.codexExecBridge,
-		file: "codex-exec-bridge.ts",
+		script: CODEX_EXEC_BRIDGE,
 		env: "MFW_CODEX_EXEC_BRIDGE_SCRIPT",
 	},
-	acp: {
-		rel: FROM_ROOT.acpBridge,
-		file: "acp-bridge.ts",
-		env: "MFW_ACP_BRIDGE_SCRIPT",
-	},
+	acp: { script: ACP_BRIDGE, env: "MFW_ACP_BRIDGE_SCRIPT" },
 } as const;
 
 function bridgeScript(name: keyof typeof BRIDGES): string {
 	const b = BRIDGES[name];
-	return resolveScript(
-		new URL(`./bridges/${b.file}`, import.meta.url).href,
-		b.rel,
-		b.env,
-	);
+	return resolveScript(import.meta.url, b.script, b.env);
 }
 
-/** The `@mfw/mcp` entry a brain turn spawns; `MFW_MCP_SCRIPT` overrides. */
+/** The `@mfw/mcp` entry a brain turn spawns; `MFW_MCP_SCRIPT` overrides from source. */
 export function mcpMainScript(): string {
-	return resolveScript(
-		new URL("../../../mcp/src/main.ts", import.meta.url).href,
-		FROM_ROOT.mcpMain,
-		"MFW_MCP_SCRIPT",
-	);
+	return resolveScript(import.meta.url, MCP_MAIN, "MFW_MCP_SCRIPT");
 }
 
 // ---------- adapters ----------
