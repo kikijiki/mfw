@@ -5,6 +5,7 @@ import { OpenRouterSettingsPanel } from "./OpenRouterSettingsPanel";
 import { ProvidersPanel } from "./ProvidersPanel";
 import { RunPodSettingsPanel } from "./RunPodSettingsPanel";
 import { SessionPanel } from "./SessionPanel";
+import { TokensPanel } from "./TokensPanel";
 
 /** Global machine/browser settings. Project policy stays on each project. */
 
@@ -71,6 +72,9 @@ export function SettingsPage({ tab, onTabChange }: SettingsPageProps) {
 				</section>
 				<Panel title="Session">
 					<SessionPanel />
+				</Panel>
+				<Panel title="API tokens">
+					<TokensPanel />
 				</Panel>
 			</Scroller>
 		</Page>

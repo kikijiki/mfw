@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import type { AppRouter } from "@mfw/api";
 import { createTRPCClient, httpBatchStreamLink, httpLink } from "@trpc/client";
 import SuperJSON from "superjson";
+import { assertTokenTransport, DEFAULT_MFW_URL } from "./credential.ts";
 
 /**
  * tRPC client to the *running* mfw app (default :7777). The MCP server is a thin
@@ -12,12 +13,27 @@ import SuperJSON from "superjson";
  * `apps/start/vite.config.ts`). This package runs outside that build and cannot
  * read `import.meta.env.BASE_URL`, so it repeats the default; a build with a
  * different `MFW_BASE_PATH` needs MFW_URL set to match.
+ *
+ * With an API token the client sends `Authorization: Bearer` and makes one call
+ * per request, because the server refuses batches from tokens.
  */
 export function makeClient(
-	url = process.env.MFW_URL ?? "http://localhost:7777/mfw/api/trpc",
+	url = process.env.MFW_URL ?? DEFAULT_MFW_URL,
+	token?: string | null,
 ) {
+	if (!token)
+		return createTRPCClient<AppRouter>({
+			links: [httpBatchStreamLink({ transformer: SuperJSON, url })],
+		});
+	assertTokenTransport(url);
 	return createTRPCClient<AppRouter>({
-		links: [httpBatchStreamLink({ transformer: SuperJSON, url })],
+		links: [
+			httpLink({
+				transformer: SuperJSON,
+				url,
+				headers: () => ({ authorization: `Bearer ${token}` }),
+			}),
+		],
 	});
 }
 
@@ -110,14 +126,15 @@ export function makeBrainSocketClient(env: BrainSocketEnv) {
 }
 
 /**
- * The client a brain turn uses: the socket when the daemon gave one
- * (`MFW_SOCKET`, `MFW_BRAIN_TOKEN_FILE`), otherwise the TCP default.
+ * The client a brain turn uses: always the socket the daemon gave it
+ * (`MFW_SOCKET`, `MFW_BRAIN_TOKEN_FILE`). There is no TCP path.
  */
 export function makeBrainClient(
 	env: NodeJS.ProcessEnv = process.env,
 ): MfwClient {
 	const socketPath = env.MFW_SOCKET;
-	if (!socketPath) return makeClient(env.MFW_URL);
+	if (!socketPath)
+		throw new Error("a brain turn needs MFW_SOCKET; it has no TCP path");
 	const tokenFile = env.MFW_BRAIN_TOKEN_FILE;
 	if (!tokenFile)
 		throw new Error("MFW_SOCKET is set but MFW_BRAIN_TOKEN_FILE is not");

@@ -1,7 +1,11 @@
 import type { StoredEvent } from "@mfw/daemon/services";
 import { z } from "zod";
 import { hubFor } from "../run-output-hub.ts";
-import { createTRPCRouter, projectProcedure } from "../trpc.ts";
+import {
+	createTRPCRouter,
+	projectProcedure,
+	tokenTaskRunOnly,
+} from "../trpc.ts";
 
 /**
  * The push channel. Two subscriptions:
@@ -154,6 +158,7 @@ export const liveRouter = createTRPCRouter({
 				file: z.enum(["events.jsonl", "raw.log"]).default("events.jsonl"),
 			}),
 		)
+		.use(tokenTaskRunOnly)
 		.subscription(async function* ({ ctx, input, signal }) {
 			const { registry } = ctx.svc;
 			let offset = input.offset;

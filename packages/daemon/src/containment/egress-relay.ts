@@ -210,7 +210,11 @@ function signalNumber(signal: NodeJS.Signals): number {
 	);
 }
 
-if (import.meta.main) {
+// The server bundle inlines this module, where `import.meta.main` is true too.
+if (
+	import.meta.main &&
+	/egress-relay\.[cm]?[jt]s$/.test(process.argv[1] ?? "")
+) {
 	const { relay: relayArgs, command } = splitRelayCommand(
 		process.argv.slice(2),
 	);

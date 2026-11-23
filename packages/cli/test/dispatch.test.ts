@@ -205,3 +205,44 @@ describe("real entry point", () => {
 		expect(`${out}${err}`).toContain("usage: mfw-board");
 	});
 });
+
+describe("mfw mcp as a real process", () => {
+	test("stays up on stdio and answers initialize", async () => {
+		const home = mkdtempSync(join(tmpdir(), "mfw-cli-mcp-"));
+		const child = Bun.spawn(
+			[process.execPath, "run", join(import.meta.dir, "../src/main.ts"), "mcp"],
+			{
+				env: { PATH: process.env.PATH ?? "", HOME: home, MFW_HOME: home },
+				stdin: "pipe",
+				stdout: "pipe",
+				stderr: "ignore",
+			},
+		);
+		try {
+			const line = `${JSON.stringify({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "initialize",
+				params: {
+					protocolVersion: "2025-03-26",
+					capabilities: {},
+					clientInfo: { name: "test", version: "0" },
+				},
+			})}\n`;
+			await Bun.sleep(1000);
+			expect(child.exitCode).toBeNull();
+			child.stdin.write(line);
+			child.stdin.flush();
+			const reader = child.stdout.getReader();
+			const first = await Promise.race([
+				reader.read(),
+				Bun.sleep(8000).then(() => null),
+			]);
+			expect(new TextDecoder().decode(first?.value)).toContain('"id":1');
+		} finally {
+			child.kill("SIGKILL");
+			await child.exited;
+			rmSync(home, { recursive: true, force: true });
+		}
+	}, 15_000);
+});

@@ -4,7 +4,7 @@ import {
 	createStart,
 } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
-import { guard } from "./server/auth-guard";
+import { guardAppRequest } from "./server/auth-guard";
 import {
 	applySecurityHeaders,
 	newNonce,
@@ -43,7 +43,7 @@ const securityHeadersMiddleware = createMiddleware().server(async (ctx) => {
  * they need the session and must stay safe if this list ever changes.
  */
 const authMiddleware = createMiddleware().server(async (ctx) => {
-	const guarded = await guard(getRequest());
+	const guarded = await guardAppRequest(getRequest());
 	if (!guarded.ok) return guarded.response as never;
 	return ctx.next();
 });

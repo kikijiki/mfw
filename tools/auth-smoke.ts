@@ -759,6 +759,612 @@ async function loginRacingPasswordChange(
 	);
 }
 
+/** One tRPC call over a raw socket; the input goes through superjson's plain shape. */
+function trpcRequest(
+	type: "query" | "mutation",
+	path: string,
+	input: unknown,
+	headers: Record<string, string>,
+): string {
+	const encoded = JSON.stringify({ json: input });
+	return type === "query"
+		? request(
+				"GET",
+				`/mfw/api/trpc/${path}?input=${encodeURIComponent(encoded)}`,
+				headers,
+			)
+		: request(
+				"POST",
+				`/mfw/api/trpc/${path}`,
+				{ "Content-Type": "application/json", ...headers },
+				encoded,
+			);
+}
+
+/** Speak MCP to the real `mfw mcp` over stdio and call one tool. */
+async function mcpToolCall(
+	env: Record<string, string>,
+	args: string[],
+	tool: string,
+	toolArgs: Record<string, unknown>,
+): Promise<string> {
+	const child = Bun.spawn(
+		[
+			process.execPath,
+			"run",
+			join(ROOT, "packages/cli/src/main.ts"),
+			"mcp",
+			...args,
+		],
+		{ cwd: ROOT, env, stdin: "pipe", stdout: "pipe", stderr: "ignore" },
+	);
+	const send = (message: unknown) => {
+		child.stdin.write(`${JSON.stringify(message)}\n`);
+		child.stdin.flush();
+	};
+	const reader = child.stdout.getReader();
+	const decoder = new TextDecoder();
+	let buffer = "";
+	const until = async (id: number): Promise<string> => {
+		const deadline = Date.now() + 15_000;
+		for (;;) {
+			for (const line of buffer.split("\n"))
+				if (line.includes(`"id":${id}`)) return line;
+			const left = deadline - Date.now();
+			if (left <= 0) return "";
+			const next = await Promise.race([
+				reader.read(),
+				Bun.sleep(left).then(() => null),
+			]);
+			if (!next || next.done) return "";
+			buffer += decoder.decode(next.value);
+		}
+	};
+	try {
+		send({
+			jsonrpc: "2.0",
+			id: 1,
+			method: "initialize",
+			params: {
+				protocolVersion: "2025-03-26",
+				capabilities: {},
+				clientInfo: { name: "auth-smoke", version: "0" },
+			},
+		});
+		await until(1);
+		send({ jsonrpc: "2.0", method: "notifications/initialized" });
+		send({
+			jsonrpc: "2.0",
+			id: 2,
+			method: "tools/call",
+			params: { name: tool, arguments: toolArgs },
+		});
+		return await until(2);
+	} finally {
+		child.kill("SIGKILL");
+		await child.exited;
+	}
+}
+
+async function scopedTokens(
+	port: number,
+	owner: { cookie: string; key: string },
+	scratch: string,
+	mfwHome: string,
+	env: Record<string, string>,
+	logFile: string,
+): Promise<void> {
+	const session = { Cookie: owner.cookie, "x-mfw-key": owner.key };
+	const mint = async (body: Record<string, unknown>) => {
+		const r = await authPost(port, "tokens", body, session);
+		return {
+			status: r.status,
+			token: String(r.json.token ?? ""),
+			id: String((r.json.info as { id?: string } | undefined)?.id ?? ""),
+		};
+	};
+	const bearer = (token: string, more: Record<string, string> = {}) => ({
+		Authorization: `Bearer ${token}`,
+		...more,
+	});
+
+	// A real project, so board reads, writes and the audit stream are real.
+	const repo = join(scratch, "repo");
+	mkdirSync(repo);
+	for (const argv of [
+		["init", "-q", "-b", "main"],
+		[
+			"-c",
+			"user.name=smoke",
+			"-c",
+			"user.email=smoke@localhost",
+			"commit",
+			"-q",
+			"--allow-empty",
+			"-m",
+			"init",
+		],
+	])
+		Bun.spawnSync(["git", ...argv], { cwd: repo, env });
+	const templates = await raw(
+		port,
+		trpcRequest("query", "system.boardTemplates", undefined, session),
+	);
+	const template = /"id":"([^"]+)"/.exec(templates.body)?.[1];
+	const added = await raw(
+		port,
+		trpcRequest(
+			"mutation",
+			"system.addProject",
+			{
+				name: "smoke",
+				root: repo,
+				boardRoot: join(repo, "board"),
+				createBoardFolder: true,
+				template,
+				integrationBranch: "main",
+				schedulerAutostart: false,
+			},
+			session,
+		),
+		{ ms: 15_000 },
+	);
+	check(
+		"tokens: the test project is added",
+		added.status === 200,
+		added.body.slice(0, 200),
+	);
+
+	const reader = await mint({ name: "reader", scopes: ["board:read"] });
+	const writer = await mint({ name: "writer", scopes: ["board:write"] });
+	const everything = await mint({
+		name: "all",
+		scopes: ["status:read", "board:read", "board:write", "runs:act"],
+	});
+	const unknownProject = await mint({
+		name: "other",
+		scopes: ["board:read"],
+		project: "not-this-one",
+	});
+	check(
+		"tokens: the server refuses a project that does not exist",
+		unknownProject.status === 400,
+		unknownProject.status,
+	);
+	// The CLI only warns, so it can still produce a token bound elsewhere.
+	const otherProject = {
+		token: Bun.spawnSync(
+			[
+				process.execPath,
+				"run",
+				join(ROOT, "packages/cli/src/main.ts"),
+				"auth",
+				"token",
+				"create",
+				"--name",
+				"other",
+				"--scope",
+				"board:read",
+				"--project",
+				"not-this-one",
+			],
+			{ cwd: ROOT, env },
+		)
+			.stdout.toString()
+			.trim(),
+	};
+	check(
+		"tokens: the owner mints",
+		reader.status === 200 && reader.token.startsWith("mfwt_"),
+		reader.status,
+	);
+	const listed = await raw(
+		port,
+		request("GET", "/mfw/api/auth/tokens", session),
+	);
+	check(
+		"tokens: the list holds no secret",
+		listed.status === 200 && !listed.body.includes(reader.token),
+		listed.status,
+	);
+	check(
+		"tokens: the secret is not stored in the clear",
+		!readFileSync(join(mfwHome, "auth.db"), "latin1").includes(reader.token),
+	);
+
+	const project = { project: "smoke" };
+	const status = async (
+		token: string,
+		type: "query" | "mutation",
+		path: string,
+		input: unknown,
+		more: Record<string, string> = {},
+	) =>
+		(await raw(port, trpcRequest(type, path, input, bearer(token, more))))
+			.status;
+
+	check(
+		"tokens: in-scope read through the production stack",
+		(await status(reader.token, "query", "tasks.list", project)) === 200,
+	);
+	check(
+		"tokens: out-of-scope read refused",
+		(await status(reader.token, "query", "system.health", {})) === 403,
+	);
+	check(
+		"tokens: write refused to a read token",
+		(await status(reader.token, "mutation", "tasks.create", {
+			...project,
+			title: "x",
+		})) === 403,
+	);
+	check(
+		"tokens: in-scope write",
+		(await status(writer.token, "mutation", "tasks.create", {
+			...project,
+			title: "from a token",
+		})) === 200,
+	);
+	check(
+		"tokens: a task cannot carry a command",
+		(await status(everything.token, "mutation", "tasks.create", {
+			...project,
+			title: "x",
+			verification: {
+				verifier: "deterministic",
+				checks: [{ run: "true", expect_exit: 0 }],
+			},
+		})) === 403,
+	);
+	check(
+		"tokens: owner-only refused with every scope",
+		(await status(everything.token, "query", "settings.get", project)) === 403,
+	);
+	check(
+		"tokens: another project's token refused",
+		(await status(otherProject.token, "query", "tasks.list", project)) === 403,
+	);
+	check(
+		"tokens: a foreign Origin refused",
+		(await status(reader.token, "query", "tasks.list", project, {
+			Origin: "https://evil.example",
+		})) === 403,
+	);
+	check(
+		"tokens: a cross-site fetch refused",
+		(await status(reader.token, "query", "tasks.list", project, {
+			"Sec-Fetch-Site": "cross-site",
+		})) === 403,
+	);
+
+	const refusedBody = await raw(
+		port,
+		trpcRequest("query", "settings.get", project, bearer(reader.token)),
+	);
+	check(
+		"tokens: an API error carries no stack or server path",
+		refusedBody.status === 403 &&
+			!refusedBody.body.includes('"stack"') &&
+			!refusedBody.body.includes(ROOT),
+		refusedBody.body.slice(0, 200),
+	);
+
+	const inCookie = await raw(
+		port,
+		trpcRequest("query", "tasks.list", project, {
+			Cookie: `mfw_session=${reader.token}`,
+		}),
+	);
+	check(
+		"tokens: not accepted as a cookie",
+		inCookie.status === 401,
+		inCookie.status,
+	);
+	const inUrl = await raw(
+		port,
+		request(
+			"GET",
+			`/mfw/api/trpc/tasks.list?access_token=${reader.token}&input=${encodeURIComponent(JSON.stringify({ json: project }))}`,
+		),
+	);
+	check("tokens: not accepted in the URL", inUrl.status === 401, inUrl.status);
+	const batch = await raw(
+		port,
+		request(
+			"GET",
+			`/mfw/api/trpc/tasks.list?batch=1&input=${encodeURIComponent(JSON.stringify({ "0": { json: project } }))}`,
+			bearer(reader.token),
+		),
+	);
+	check("tokens: batches refused", batch.status === 400, batch.status);
+
+	for (const [method, path] of [
+		["GET", "/mfw/api/auth/tokens"],
+		["POST", "/mfw/api/auth/tokens"],
+		["POST", "/mfw/api/auth/password"],
+		["POST", "/mfw/api/auth/sign-out-everywhere"],
+		["GET", "/mfw/api/files/smoke/README.md"],
+		["GET", "/mfw/settings"],
+	] as const) {
+		const r = await raw(
+			port,
+			request(
+				method,
+				path,
+				{
+					...bearer(everything.token),
+					...(method === "POST"
+						? { "Content-Type": "application/json", "x-mfw-auth": "1" }
+						: {}),
+				},
+				method === "POST" ? "{}" : undefined,
+			),
+		);
+		check(`tokens: ${method} ${path} refused`, r.status === 403, r.status);
+	}
+
+	// The real `mfw mcp`, from the 0600 file that `mfw auth token create` writes.
+	const mcpEnv = { ...env, MFW_URL: `http://127.0.0.1:${port}/mfw/api/trpc` };
+	const created = Bun.spawnSync(
+		[
+			process.execPath,
+			"run",
+			join(ROOT, "packages/cli/src/main.ts"),
+			"auth",
+			"token",
+			"create",
+			"--name",
+			"mcp",
+			"--scope",
+			"board:read",
+			"--write-file",
+			"--origin",
+			`http://127.0.0.1:${port}`,
+		],
+		{ cwd: ROOT, env },
+	);
+	check(
+		"tokens: the CLI creates a token file",
+		created.exitCode === 0,
+		created.stderr.toString().slice(0, 200),
+	);
+	const tokenArgs = ["--token-file", join(mfwHome, "mcp-token")];
+	const implicit = await mcpToolCall(mcpEnv, [], "list_tasks", project);
+	check(
+		"tokens: the stored token is not sent to a non-default MFW_URL",
+		!implicit.includes("from a token"),
+		implicit.slice(0, 200),
+	);
+	const viaMcp = await mcpToolCall(mcpEnv, tokenArgs, "list_tasks", project);
+	check(
+		"tokens: mfw mcp reads with its token",
+		viaMcp.includes("from a token"),
+		viaMcp.slice(0, 200),
+	);
+	const mcpDenied = await mcpToolCall(mcpEnv, tokenArgs, "health", {});
+	check(
+		"tokens: mfw mcp is held to its scope",
+		/needs the status:read scope/.test(mcpDenied),
+		mcpDenied.slice(0, 200),
+	);
+
+	const openStream = (token: string) => {
+		const socket = net.connect(port, "127.0.0.1");
+		const state = { buffer: "", ended: false, socket };
+		socket.on("data", (d) => {
+			state.buffer += d.toString();
+		});
+		socket.on("close", () => {
+			state.ended = true;
+		});
+		socket.on("error", () => {
+			state.ended = true;
+		});
+		const input = encodeURIComponent(JSON.stringify({ json: project }));
+		socket.write(
+			`GET /mfw/api/trpc/live.events?input=${input} HTTP/1.1\r\nHost: localhost\r\nAccept: text/event-stream\r\nAuthorization: Bearer ${token}\r\n\r\n`,
+		);
+		return state;
+	};
+	const finished = (s: { buffer: string; ended: boolean }) =>
+		s.ended || /0\r\n\r\n$/.test(s.buffer);
+
+	const live = await mint({ name: "stream", scopes: ["board:read"] });
+	const stream = openStream(live.token);
+	await Bun.sleep(600);
+	check(
+		"tokens: a stream opens",
+		/text\/event-stream/i.test(stream.buffer),
+		stream.buffer.slice(0, 80),
+	);
+	check(
+		"tokens: the stream is still open before revocation",
+		!finished(stream),
+	);
+	await authPost(port, "token-revoke", { id: live.id }, session);
+	await Bun.sleep(300);
+	check("tokens: revocation ends the stream at once", finished(stream));
+	stream.socket.destroy();
+
+	const cliLive = await mint({ name: "stream-cli", scopes: ["board:read"] });
+	const cliStream = openStream(cliLive.token);
+	await Bun.sleep(600);
+	check(
+		"tokens: a second stream opens",
+		/text\/event-stream/i.test(cliStream.buffer),
+	);
+	const revoked = Bun.spawnSync(
+		[
+			process.execPath,
+			"run",
+			join(ROOT, "packages/cli/src/main.ts"),
+			"auth",
+			"token",
+			"revoke",
+			cliLive.id,
+		],
+		{ cwd: ROOT, env },
+	);
+	check(
+		"tokens: the CLI revokes",
+		revoked.exitCode === 0,
+		revoked.stderr.toString().slice(0, 200),
+	);
+	await Bun.sleep(1800);
+	check(
+		"tokens: a CLI revocation ends the stream within the recheck",
+		finished(cliStream),
+	);
+	cliStream.socket.destroy();
+	check(
+		"tokens: a revoked token gets 401",
+		(await status(live.token, "query", "tasks.list", project)) === 401,
+	);
+
+	const noisy = await mint({ name: "noisy", scopes: ["board:read"] });
+	let limited = 0;
+	await Promise.all(
+		Array.from({ length: 8 }, async () => {
+			for (let i = 0; i < 25 && limited === 0; i++)
+				if (
+					(await status(noisy.token, "query", "board.schema", project)) === 429
+				)
+					limited++;
+		}),
+	);
+	check("tokens: the rate limit answers 429", limited > 0);
+
+	// A real scheduler tick. It promotes only with a brain route, and no agent CLI
+	// is on this PATH, so nothing can launch. The owner's task proves the tick ran.
+	const ownerCall = (
+		type: "query" | "mutation",
+		path: string,
+		input: unknown,
+	) => raw(port, trpcRequest(type, path, input, session), { ms: 10_000 });
+	const idOf = (body: string) => /"id":"([^"]+)"/.exec(body)?.[1] ?? "";
+	const statusOf = async (id: string) =>
+		/"status":"([a-z_]+)"/.exec(
+			(await ownerCall("query", "tasks.get", { ...project, id })).body,
+		)?.[1];
+	const victim = idOf(
+		(
+			await ownerCall("mutation", "tasks.create", {
+				...project,
+				title: "waiting for a spec",
+			})
+		).body,
+	);
+	const control = idOf(
+		(
+			await ownerCall("mutation", "tasks.create", {
+				...project,
+				title: "control",
+				body: "the owner's spec",
+			})
+		).body,
+	);
+	const parkedByToken = idOf(
+		(
+			await raw(
+				port,
+				trpcRequest(
+					"mutation",
+					"tasks.create",
+					{ ...project, title: "token task", body: "token text" },
+					bearer(writer.token),
+				),
+			)
+		).body,
+	);
+	check(
+		"tokens: board:write cannot give a waiting task a body",
+		(await status(writer.token, "mutation", "tasks.update", {
+			...project,
+			id: victim,
+			patch: { body: "orders from a token" },
+		})) === 403,
+	);
+	check(
+		"tokens: board:write cannot give a waiting task a criterion",
+		(await status(writer.token, "mutation", "tasks.criteria", {
+			...project,
+			id: victim,
+			op: { op: "add", text: "orders from a token" },
+		})) === 403,
+	);
+	await ownerCall("mutation", "settings.update", {
+		...project,
+		patch: {
+			brain: { routes: [{ provider: "claude-cli" }], maxTurnsPerHour: 1 },
+		},
+	});
+	await ownerCall("mutation", "system.scheduler.set", {
+		...project,
+		enabled: true,
+	});
+	let controlStatus: string | undefined;
+	for (let i = 0; i < 40 && controlStatus !== "ready"; i++) {
+		await ownerCall("mutation", "system.scheduler.kick", project);
+		await Bun.sleep(250);
+		controlStatus = await statusOf(control);
+	}
+	check(
+		"tokens: the scheduler tick ran",
+		controlStatus === "ready",
+		controlStatus,
+	);
+	const victimStatus = await statusOf(victim);
+	const parkedStatus = await statusOf(parkedByToken);
+	await ownerCall("mutation", "system.scheduler.set", {
+		...project,
+		enabled: false,
+	});
+	await ownerCall("mutation", "settings.update", {
+		...project,
+		patch: { brain: null },
+	});
+	check(
+		"tokens: the task a token tried to write stays in backlog",
+		victimStatus === "backlog",
+		victimStatus,
+	);
+	check(
+		"tokens: a token's own task stays in backlog through a tick",
+		parkedStatus === "backlog",
+		parkedStatus,
+	);
+	const launched = await ownerCall("query", "runs.list", project);
+	check(
+		"tokens: board:write caused no agent launch",
+		launched.status === 200 && !/"kind":"task"/.test(launched.body),
+		launched.body.slice(0, 200),
+	);
+	const auditView = await raw(
+		port,
+		request("GET", "/mfw/api/auth/token-audit", session),
+	);
+	check(
+		"tokens: the owner can read the audit log",
+		auditView.status === 200 &&
+			auditView.body.includes("tasks.create") &&
+			auditView.body.includes("live.events") &&
+			/"refused":[1-9]/.test(auditView.body),
+		auditView.body.slice(0, 200),
+	);
+
+	const log = readFileSync(logFile, "utf8");
+	check(
+		"tokens: no secret in the server log",
+		![
+			reader.token,
+			writer.token,
+			everything.token,
+			live.token,
+			noisy.token,
+		].some((t) => log.includes(t)),
+	);
+}
+
 async function main(): Promise<number> {
 	if (!existsSync(ENTRY)) {
 		console.error("auth-smoke: no production build. Fix: bun run build");
@@ -853,6 +1459,7 @@ async function main(): Promise<number> {
 		}
 
 		await matrix(port, setup.cookie, setup.key);
+		await scopedTokens(port, setup, scratch, mfwHome, env, logFile);
 		await streamEndsOnLogout(port);
 		await loopbackIsOneSource(port, mfwHome, env);
 		await plantedCookie(port);

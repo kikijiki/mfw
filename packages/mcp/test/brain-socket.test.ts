@@ -247,29 +247,12 @@ describe("the token's binding holds on the parsed input (reviewer M2)", () => {
 	});
 });
 
-describe("UI TCP stays open until auth v1 (C1)", () => {
-	test("owner-side clients and a brain without MFW_SOCKET still use the TCP url", async () => {
-		// `mfw mcp` (owner side) is unchanged: MFW_URL or the :7777 default.
+describe("the brain client has no TCP path", () => {
+	test("a brain without MFW_SOCKET is refused, even with MFW_URL set", () => {
 		expect(makeClient()).toBeDefined();
-		const original = process.env.MFW_URL;
-		const seen: string[] = [];
-		const server = Bun.serve({
-			port: 0,
-			fetch(req) {
-				seen.push(new URL(req.url).pathname);
-				return new Response("{}", { status: 500 });
-			},
-		});
-		cleanups.push(async () => {
-			await server.stop(true);
-			if (original === undefined) delete process.env.MFW_URL;
-			else process.env.MFW_URL = original;
-		});
-		const brain = makeBrainClient({
-			MFW_URL: `http://127.0.0.1:${server.port}/mfw/api/trpc`,
-		});
-		await brain.brain.session.query({ project: "alpha" }).catch(() => {});
-		expect(seen[0]).toStartWith("/mfw/api/trpc/");
+		expect(() =>
+			makeBrainClient({ MFW_URL: "http://127.0.0.1:1/mfw/api/trpc" }),
+		).toThrow(/MFW_SOCKET/);
 	});
 
 	test("MFW_SOCKET without a token file is a configuration error", () => {

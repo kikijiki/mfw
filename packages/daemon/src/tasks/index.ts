@@ -797,13 +797,16 @@ export class TaskIndex {
 		to: TaskStatus,
 		reason?: string | null,
 		editedBy?: string,
+		/** Runs under the board lock on the current record; throwing refuses the move. */
+		check?: (rec: TaskRecord) => void,
 	): Promise<TaskRecord | undefined> {
 		const wantReason = to === "blocked" ? (reason ?? null) : null;
 		const stamp =
 			editedBy && this.declaresField("edited_by") ? editedBy : undefined;
 		const result = await this.update(
 			id,
-			(draft) => {
+			(draft, rec) => {
+				check?.(rec);
 				const fields: string[] = [];
 				if (draft.frontmatter.blocked_reason !== wantReason) {
 					draft.frontmatter.blocked_reason = wantReason;
