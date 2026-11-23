@@ -40,6 +40,7 @@ import {
 import type { Logger } from "./log.ts";
 import { runProc } from "./proc.ts";
 import type { ExitEvidence, ExitSource } from "./run-exit-evidence.ts";
+import { writeWipLaunchRequest } from "./run-workspace/wip-snapshot.ts";
 import {
 	type BwrapIsolation,
 	bwrapAvailable,
@@ -645,6 +646,7 @@ export class AgentHost {
 			env,
 			secretNames: secretEnvironment.names(),
 		};
+		writeWipLaunchRequest(request);
 		const requestPath = join(control, `agent-launch-${spec.runId}.json`);
 		await rm(requestPath, { force: true });
 		await writeFile(requestPath, JSON.stringify(request), {

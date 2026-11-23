@@ -1927,7 +1927,9 @@ export class StepRunner {
 				baseSha: run.baseSha ?? "",
 			});
 			if (!imported.sha) {
-				throw new Error("enqueue_merge: the run's result was not imported");
+				throw new Error(
+					`enqueue_merge: the run's result was not imported${imported.failure ? ` (${imported.failure})` : ""}`,
+				);
 			}
 		}
 		// Mark `merging` BEFORE the job is visible: otherwise the worker could

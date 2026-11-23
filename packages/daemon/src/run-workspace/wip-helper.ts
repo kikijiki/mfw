@@ -337,6 +337,11 @@ if (import.meta.main && /wip-helper\.[cm]?[jt]s$/.test(process.argv[1] ?? "")) {
 	const env = envFromProcess();
 	if (cmd === "snapshot") {
 		const ack = await snapshotWip(env, process.argv[3] ?? "manual");
+		try {
+			writeAck(env.outbox, ack);
+		} catch {
+			// The exit code still reports the outcome.
+		}
 		appendFileSync(process.stdout.fd, `${JSON.stringify(ack)}\n`);
 		process.exit(ack.ok ? 0 : 1);
 	} else if (cmd === "watch") {

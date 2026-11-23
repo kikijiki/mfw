@@ -85,7 +85,7 @@ export interface FinalSnapshot {
 
 /** What the host observed about an import, for the run's provenance record. */
 export type ResultImportEvent =
-	| { outcome: "imported"; tip: string; wipRefs: number }
+	| { outcome: "imported"; tip: string; wipRefs: number; claim?: WipAck }
 	| { outcome: "refused"; failure: string };
 
 export interface CloneWorkspaceOptions {
@@ -412,6 +412,8 @@ export class CloneRunWorkspace implements RunWorkspace {
 		const bundle = join(root, BUNDLE_REL);
 		const snapshot = this.opts.finalSnapshot;
 		const fresh = snapshot ? await snapshot.available(runId) : false;
+		// The helper's own account of the snapshot. Recorded, never relied on.
+		let claim: WipAck | null = null;
 		if (fresh && snapshot) {
 			try {
 				await assertDead(runId);
@@ -431,6 +433,7 @@ export class CloneRunWorkspace implements RunWorkspace {
 				await this.refuseImport(marker, "snapshot_failed");
 				return;
 			}
+			claim = await readAck(join(root, "outbox", wipAckFile()), "final");
 		} else if (
 			!(await lstat(bundle).then(
 				() => true,
@@ -459,6 +462,7 @@ export class CloneRunWorkspace implements RunWorkspace {
 				outcome: "imported",
 				tip: out.tip,
 				wipRefs: out.wipRefs.length,
+				...(claim ? { claim } : {}),
 			});
 		} catch (e) {
 			if (
@@ -497,7 +501,7 @@ export class CloneRunWorkspace implements RunWorkspace {
 		opts: { timeoutMs?: number; pollMs?: number } = {},
 	): Promise<{
 		ack: WipAck;
-		imported: { tip: string; wip: string[]; live: boolean } | null;
+		imported: { tip: string; wip: string[]; live?: boolean } | null;
 	}> {
 		const runId = this.runIdOf(handle.path);
 		return serialized(this.dirOf(runId), () =>
@@ -511,7 +515,7 @@ export class CloneRunWorkspace implements RunWorkspace {
 		opts: { timeoutMs?: number; pollMs?: number },
 	): Promise<{
 		ack: WipAck;
-		imported: { tip: string; wip: string[]; live: boolean } | null;
+		imported: { tip: string; wip: string[]; live?: boolean } | null;
 	}> {
 		const marker = await this.readMarker(runId);
 		if (!marker) throw new Error(`not an owned run workspace: ${handle.path}`);

@@ -43,6 +43,7 @@ import {
 	PROJECT_DEFAULTS,
 } from "./config.ts";
 import { agentSandboxRefusal } from "./containment/agent-preflight.ts";
+import { runDirLayout } from "./containment/run-dir.ts";
 import { CredentialStore, WorkloadSecretGrantStore } from "./credentials.ts";
 import { ensureBoardConfig } from "./default-board-config.ts";
 import { readMemAvailable } from "./dispatch-preflight.ts";
@@ -132,6 +133,7 @@ import {
 	rebaseCloneOptions,
 } from "./run-workspace/factory.ts";
 import { rebaseQuarantineInScratch } from "./run-workspace/rebase-clone.ts";
+import { sandboxFinalSnapshot } from "./run-workspace/wip-snapshot.ts";
 import {
 	RunPodAccountService,
 	type RunPodProviderClient,
@@ -591,6 +593,19 @@ export async function attachProject(
 		// this setting must still be handled as the clone it is.
 		clone: {
 			workspaceRoot: join(opts.mfwHome, "workspaces"),
+			runDirOf: (runId) => registry.runDir(runId),
+			controlPath: (runId) =>
+				join(runDirLayout(registry.runDir(runId)).control, "control.jsonl"),
+			finalSnapshot: sandboxFinalSnapshot({
+				runDirOf: (runId) => registry.runDir(runId),
+			}),
+			onResultImport: async (runId, event) => {
+				try {
+					await registry.recordResultImport(runId, event);
+				} catch (err) {
+					plog.warn({ err, runId }, "could not record the result import");
+				}
+			},
 			// Only a session tmux positively reports gone counts as dead.
 			assertProcessesDead: async (runId) => {
 				if ((await host.sessionLiveness(runId)) !== false) {
