@@ -18,7 +18,13 @@
  */
 
 import { dlopen, FFIType, ptr } from "bun:ffi";
-import { closeSync, readFileSync, realpathSync, writeSync } from "node:fs";
+import {
+	closeSync,
+	openSync,
+	readFileSync,
+	realpathSync,
+	writeSync,
+} from "node:fs";
 
 /** Every sealed descriptor's name starts with this, as `/memfd:<name>`. */
 export const SEALED_PROBE_PREFIX = "mfw-probe-";
@@ -33,6 +39,7 @@ const F_GET_SEALS = 1034;
 const ALL_SEALS = 0x1 | 0x2 | 0x4 | 0x8;
 
 const PT_INTERP = 3;
+const O_CLOEXEC = 0x80000;
 
 export class ProbeRuntimeError extends Error {
 	constructor(message: string) {
@@ -46,8 +53,16 @@ export interface SealedProbeRuntime {
 	readonly fds: readonly number[];
 	/** The command that starts bun, given the child's number for `fds[0]`. */
 	command(firstChildFd: number, bunArgs: readonly string[]): string[];
-	/** A successful spawn took the descriptors: do not close them again. */
+	/**
+	 * Call right after a successful spawn. Bun owns the numbers it was given and
+	 * closes them only when it finalizes the subprocess (at GC), so each is
+	 * replaced, in place, by `/dev/null`: the child keeps its own inherited
+	 * copy, the sealed memory is released now, and Bun's later close lands on
+	 * a descriptor that is still ours. Idempotent. Throws if a descriptor cannot
+	 * be replaced; the caller must then stop the child.
+	 */
 	release(): void;
+	/** Close what is still held, e.g. after a failed spawn. Idempotent. */
 	close(): void;
 }
 
@@ -136,6 +151,10 @@ function openLibc() {
 			args: [FFIType.i32, FFIType.i32, FFIType.i64],
 			returns: FFIType.i32,
 		},
+		dup3: {
+			args: [FFIType.i32, FFIType.i32, FFIType.i32],
+			returns: FFIType.i32,
+		},
 	});
 }
 
@@ -162,8 +181,15 @@ export function sealProbeRuntime(
 	const fds: number[] = [];
 	let owned = true;
 	const close = () => {
-		if (owned) for (const fd of fds) closeSync(fd);
+		if (!owned) return;
 		owned = false;
+		for (const fd of fds) {
+			try {
+				closeSync(fd);
+			} catch {
+				// Already gone: closing twice must never throw.
+			}
+		}
 	};
 	try {
 		if (interp) fds.push(sealFile(libc, interp, "loader"));
@@ -191,7 +217,22 @@ export function sealProbeRuntime(
 			];
 		},
 		release() {
+			if (!owned) return;
 			owned = false;
+			// The numbers stay occupied until Bun closes them, so nothing else
+			// can take one and have it closed from under it.
+			const nul = openSync("/dev/null", "r");
+			const libc = openLibc();
+			try {
+				for (const fd of fds) {
+					if (libc.symbols.dup3(nul, fd, O_CLOEXEC) < 0) {
+						throw new ProbeRuntimeError("could not release a sealed fd");
+					}
+				}
+			} finally {
+				libc.close();
+				closeSync(nul);
+			}
 		},
 		close,
 	};

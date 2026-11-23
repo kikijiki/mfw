@@ -77,9 +77,17 @@ export async function collectProbe(
 			observePins: opts.observePins,
 			...(opts.sealed ? { sealedProbeFds: opts.sealed.fds } : {}),
 		});
-		opts.sealed?.release();
 	} catch (err) {
 		return failAll(`the probe did not launch: ${(err as Error).message}`);
+	}
+	try {
+		opts.sealed?.release();
+	} catch (err) {
+		child.kill("SIGKILL");
+		await child.exited;
+		return failAll(
+			`the probe's runtime was not released: ${(err as Error).message}`,
+		);
 	}
 	const stdin = child.stdin as unknown as {
 		write(s: string): unknown;
