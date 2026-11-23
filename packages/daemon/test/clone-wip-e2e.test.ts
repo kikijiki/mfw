@@ -25,6 +25,10 @@ import {
 	TEMPORARY_FLEET_WRITABLE,
 } from "../src/containment/agent-profile.ts";
 import { ensureRunDirLayout } from "../src/containment/run-dir.ts";
+import {
+	assertRunDead,
+	liveRunProcesses,
+} from "../src/containment/run-liveness.ts";
 import { git } from "../src/git.ts";
 import { quarantineRef } from "../src/host-git/fetch.ts";
 import { silentLogger } from "../src/log.ts";
@@ -612,6 +616,61 @@ echo pending > pending.txt
 			expect(["HEAD", "config", "objects", "packed-refs", "refs"]).toContain(
 				name,
 			);
+		}
+	}, 120_000);
+
+	test("a gone tmux session is not proof: death comes from the launcher and sandbox (M1)", async () => {
+		const script = join(f.bin, "claude");
+		writeFileSync(
+			script,
+			`#!/bin/sh\n${guard(f)}\n: > /mfw-run/outbox/ready\nsleep 60\n`,
+		);
+		chmodSync(script, 0o755);
+		const requestPath = join(f.runDir, "agent-request.json");
+		writeFileSync(requestPath, JSON.stringify(f.req), { mode: 0o600 });
+		const launcher = Bun.spawn(
+			[
+				BUN,
+				"--config=/dev/null",
+				"--no-env-file",
+				"run",
+				CAGED,
+				requestPath,
+				"--",
+				"claude",
+			],
+			{
+				cwd: f.runDir,
+				env: {
+					PATH: process.env.PATH,
+					HOME: f.home,
+					MFW_CAGE_CONFIG: JSON.stringify(f.cage),
+				},
+				stdin: "pipe",
+				stdout: "ignore",
+				stderr: "ignore",
+			},
+		);
+		try {
+			for (let i = 0; i < 800 && !existsSync(join(f.outbox, "ready")); i++) {
+				await Bun.sleep(25);
+			}
+			expect(existsSync(join(f.outbox, "ready"))).toBe(true);
+			const proof = (waitMs: number) =>
+				assertRunDead({
+					runId: f.runId,
+					runDir: f.runDir,
+					sessionLiveness: async () => false,
+					waitMs,
+				});
+			expect(liveRunProcesses(f.runDir).length).toBeGreaterThanOrEqual(2);
+			await expect(proof(100)).rejects.toThrow("still has running processes");
+			launcher.kill("SIGKILL");
+			await launcher.exited;
+			await proof(10_000);
+			expect(liveRunProcesses(f.runDir)).toEqual([]);
+		} finally {
+			launcher.kill("SIGKILL");
 		}
 	}, 120_000);
 

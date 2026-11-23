@@ -44,6 +44,7 @@ import {
 } from "./config.ts";
 import { agentSandboxRefusal } from "./containment/agent-preflight.ts";
 import { runDirLayout } from "./containment/run-dir.ts";
+import { assertRunDead } from "./containment/run-liveness.ts";
 import { CredentialStore, WorkloadSecretGrantStore } from "./credentials.ts";
 import { ensureBoardConfig } from "./default-board-config.ts";
 import { readMemAvailable } from "./dispatch-preflight.ts";
@@ -606,12 +607,13 @@ export async function attachProject(
 					plog.warn({ err, runId }, "could not record the result import");
 				}
 			},
-			// Only a session tmux positively reports gone counts as dead.
-			assertProcessesDead: async (runId) => {
-				if ((await host.sessionLiveness(runId)) !== false) {
-					throw new Error(`run ${runId} is not confirmed stopped`);
-				}
-			},
+			// The session must be gone and the launcher and sandbox have exited.
+			assertProcessesDead: (runId) =>
+				assertRunDead({
+					runId,
+					runDir: registry.runDir(runId),
+					sessionLiveness: () => host.sessionLiveness(runId),
+				}),
 		},
 	});
 	// Nothing imports yet: whatever is under `incoming` was left by a crash.
