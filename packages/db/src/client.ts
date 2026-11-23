@@ -1,10 +1,13 @@
-import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type Client, createClient, type Transaction } from "@libsql/client";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { backfillLineage } from "./lineage-backfill.ts";
+import {
+	sourceMigrationsDir,
+	withVerifiedMigrations,
+} from "./migration-source.ts";
 import * as schema from "./schema.ts";
 import { backfillSpansFromEvents } from "./spans-backfill.ts";
 
@@ -22,64 +25,9 @@ export interface ProjectDbHandle {
 	withTx: <T>(fn: (tx: ProjectDbTx) => Promise<T>) => Promise<T>;
 }
 
-/**
- * `import.meta.dir` alone cannot locate migrations: in a bundled build it points
- * at a chunk directory with no SQL. Try the co-located path, then walk up to the
- * source tree, with an explicit env override.
- */
-const MIGRATIONS_FROM_ROOT = join("packages", "db", "migrations");
-
-function findUp(start: string, rel: string): string | null {
-	let dir = start;
-	for (;;) {
-		const candidate = join(dir, rel);
-		if (existsSync(join(candidate, "meta", "_journal.json"))) return candidate;
-		const parent = dirname(dir);
-		if (parent === dir) return null;
-		dir = parent;
-	}
-}
-
-let migrationsDirCache: string | null = null;
-
+/** The source tree's migrations. A production build never reads these. */
 export function migrationsDir(): string {
-	if (migrationsDirCache) return migrationsDirCache;
-
-	const override = process.env.MFW_MIGRATIONS_DIR;
-	if (override) {
-		if (!existsSync(join(override, "meta", "_journal.json"))) {
-			throw new Error(
-				`MFW_MIGRATIONS_DIR="${override}" has no meta/_journal.json; unset it or point it at packages/db/migrations`,
-			);
-		}
-		migrationsDirCache = override;
-		return override;
-	}
-
-	// `import.meta.dir` is Bun-only; undefined under vite's SSR transform, where
-	// `join(undefined, ...)` would throw before the fallbacks run.
-	const here = typeof import.meta.dir === "string" ? import.meta.dir : null;
-	if (here) {
-		const colocated = join(here, "../../migrations");
-		if (existsSync(join(colocated, "meta", "_journal.json"))) {
-			migrationsDirCache = colocated;
-			return colocated;
-		}
-	}
-
-	for (const start of [here, process.cwd()].filter((s) => s !== null)) {
-		const found = findUp(start, MIGRATIONS_FROM_ROOT);
-		if (found) {
-			migrationsDirCache = found;
-			return found;
-		}
-	}
-
-	throw new Error(
-		`cannot locate ${MIGRATIONS_FROM_ROOT}: no parent of ` +
-			`${here ?? "(import.meta.dir unavailable)"} or ${process.cwd()} ` +
-			"contains it. Set MFW_MIGRATIONS_DIR to its absolute path.",
-	);
+	return sourceMigrationsDir(import.meta.url);
 }
 
 /**
@@ -307,7 +255,9 @@ export async function openDbAt(dbPath: string): Promise<ProjectDbHandle> {
 		`PRAGMA journal_mode=WAL;\n${CONNECTION_PRAGMAS}`,
 	);
 	const db = drizzle(client, { schema });
-	await migrate(db, { migrationsFolder: migrationsDir() });
+	await withVerifiedMigrations(import.meta.url, (migrationsFolder) =>
+		migrate(db, { migrationsFolder }),
+	);
 	// Rows from before typed lineage get `relation`/`chain_root_id`; a no-op once filled.
 	await backfillLineage(db);
 	// Old events become spans once; afterwards `appendEvent` writes them live.
