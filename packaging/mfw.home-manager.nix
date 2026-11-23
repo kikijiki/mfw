@@ -45,7 +45,11 @@
     set -eu
     cd ${dir}
     if [ ! -f ${out} ]; then
-      ${pkgs.bun}/bin/bun install --frozen-lockfile || ${pkgs.bun}/bin/bun install
+      # Fail closed: exactly the committed lockfile, and no dependency
+      # lifecycle scripts (they would run arbitrary code as this user). If the
+      # lockfile is out of date the unit fails; fix the lockfile, never fall
+      # back to an unfrozen, script-running install.
+      ${pkgs.bun}/bin/bun install --frozen-lockfile --ignore-scripts
       ${pkgs.bun}/bin/bun run build
     fi
   '';

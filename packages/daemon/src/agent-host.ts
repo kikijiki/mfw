@@ -106,8 +106,8 @@ import {
  * driver and bridge stay on the host, outside the workspace, and start the
  * agent through `containment/agent-launch.ts`. Their `events.jsonl` and
  * `raw.log` stay in the host-only run root, and no agent byte reaches the tmux
- * pane. Other run kinds keep the interim sandbox around the driver until their
- * role profiles exist.
+ * pane. Every other isolated launch is bridged the same way or refused; none
+ * keeps a separate sandbox around the driver.
  */
 
 /** POSIX single-quote for safe embedding in a generated shell script. */
@@ -738,7 +738,7 @@ export class AgentHost {
 	/**
 	 * The launch request and driver settings of a host-bridged run. Everything
 	 * the agent sees uses sandbox paths, and an interactive run never carries an
-	 * autonomous flag. Refuses rather than falling back to the interim sandbox.
+	 * autonomous flag. Refuses rather than falling back to an unbridged launch.
 	 */
 	private async prepareHostBridge(
 		spec: LaunchSpec,

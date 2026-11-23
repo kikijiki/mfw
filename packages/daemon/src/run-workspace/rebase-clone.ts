@@ -1,6 +1,6 @@
 /**
  * Rebasing a clone run onto the moved target, in a host-owned scratch clone
- * (backstage architecture.md, "Run workspace").
+ *.
  *
  * A clone run's branch is agent-writable, so the host never rebases inside the
  * run's own workspace. The merge queue instead fetches the run's quarantine

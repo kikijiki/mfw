@@ -1,5 +1,5 @@
 /**
- * Minimal 5-field cron matcher for lifetime-task schedules (backstage architecture.md, "Triggers, recurring tasks").
+ * Minimal 5-field cron matcher for lifetime-task schedules.
  * Fields: minute hour day-of-month month day-of-week.
  * Supports: *  a  a-b  a,b,c  *​/n  a-b/n  (day-of-week 0 or 7 = Sunday).
  */

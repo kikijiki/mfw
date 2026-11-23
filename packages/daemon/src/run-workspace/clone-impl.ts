@@ -39,8 +39,7 @@ import { cloneConfig, seedWorkspace } from "./seed.ts";
 import { type WipAck, wipAckFile, wipControlLine } from "./wip-helper.ts";
 
 /**
- * `RunWorkspace` over a private clone per run (backstage architecture.md,
- * "Run workspace"): `<workspaceRoot>/<runId>/{git,tree,outbox}`.
+ * `RunWorkspace` over a private clone per run: `<workspaceRoot>/<runId>/{git,tree,outbox}`.
  *
  * The clone is agent-writable, so the host never runs git on it. The host
  * owns exactly two things here:

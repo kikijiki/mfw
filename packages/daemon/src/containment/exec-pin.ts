@@ -1,6 +1,5 @@
 /**
- * Pins on the files the host executes (backstage architecture.md, "Host-executed
- * paths"). The rule: the host never executes a file an agent could have written
+ * Pins on the files the host executes. The rule: the host never executes a file an agent could have written
  * unless the owner approved those exact bytes.
  *
  * `buildExecPin` runs when the owner arms a command. It statically resolves what

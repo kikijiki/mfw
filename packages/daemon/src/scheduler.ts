@@ -29,21 +29,10 @@ import type { TaskRow, TaskService } from "./task-service.ts";
  * and a project with no configured brain route dispatches nothing (status
  * `blocked: no_brain_route`).
  *
- * Resource slots are a real semaphore (`resource_slots`, PK `(resourceId,
- * slot)`).
- *
- * ORDERING: `resource_slots.run_id` is a FK onto `runs.id` (FKs are enforced)
- * and `RunEngine.startTask` mints the run id itself, so slot rows cannot exist
- * before the run row. Acquisition is split to stay all-or-nothing:
- *
- *   plan   - one read of resources+slots, then an in-memory reservation that is
- *            rolled back as soon as any required resource is full, so a task
- *            that cannot get everything reserves nothing;
- *   commit - `acquireSlots(runId, plan)`: ONE transaction, every insert
- *            `onConflictDoNothing`; a single lost row throws and rolls back.
- *
- * The scheduler is the only writer of slot acquisitions (releases only free
- * capacity), so the window between plan and commit cannot over-admit.
+ * Resource capacity is not counted here: the per-project `resource_slots`
+ * semaphore is gone (migration 0025 drops it). The scheduler holds a task whose
+ * budget is spent or whose resource cannot be leased, and the leases live in
+ * the resource store (`resources/store.ts`, `rp_*` tables in the host database).
  */
 
 export interface SchedulerConfig {

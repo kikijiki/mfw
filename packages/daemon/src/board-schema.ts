@@ -37,7 +37,7 @@ export interface BoardSchema {
 	hierarchy: {
 		/** Null when the board declares no depth limit. */
 		maxDepth: number | null;
-		/** The task field the hierarchy rules branch on (poot: "kind"). */
+		/** The task field the hierarchy rules branch on (for example "kind"). */
 		kindField?: string;
 		/** Every value of that field a rule mentions, first-seen order. */
 		kinds?: string[];

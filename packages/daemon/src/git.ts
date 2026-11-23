@@ -4,7 +4,7 @@ import { requireHostTool } from "./sandbox.ts";
 
 /**
  * The hardened runner for host git in a repository the daemon did not create
- * (backstage architecture.md, "Host-executed paths"). Each call refuses a
+ *. Each call refuses a
  * repository config outside the allowlist, pins the keys below, and ignores
  * `refs/replace`, so a planted replacement cannot forge what a commit contains.
  */

@@ -157,7 +157,7 @@ describe("default expansion follows what matters", () => {
 		expect(view.rows[0]?.chain).toEqual({
 			count: 3,
 			glyphs: ["cross", "cross", "check"],
-			labels: ["failed", "failed", "merged"],
+			labels: ["failed", "failed", "finished"],
 		});
 		// expanded, it shows each run and no aggregate
 		const open = buildFlow(chain, {

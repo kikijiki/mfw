@@ -118,12 +118,12 @@ a `refs` rule scans files in one for a pattern that must name a board document:
 
 ```yaml
 roots:
-  code: ../../poot               # also: --root code=<path>, or MFWB_ROOT_CODE
+  code: ../../app                 # also: --root code=<path>, or MFWB_ROOT_CODE
 refs:
   - id: held-markers
     root: code
     paths: ["crates/**/*.rs"]    # root-relative globs (the `owns` grammar)
-    pattern: 'held for (?<id>POOT-\d+)'   # one line at a time; (?<id>...) is the document id
+    pattern: 'held for (?<id>TSK-\d+)'   # one line at a time; (?<id>...) is the document id
     flags: i                     # optional
     to: task                     # the type the id must resolve to
     status: [planned, doing, deferred]     # allowed status values; omit for existence only
@@ -132,7 +132,7 @@ refs:
 ```
 
 An id that is unknown, not an id of `to`, or in another status is an issue at
-`file:line`. A capture cut short of a longer token (`POOT-641` inside `POOT-6410`)
+`file:line`. A capture cut short of a longer token (`TSK-641` inside `TSK-6410`)
 is never reported. Files come from `git ls-files` (so `.gitignore` holds; symlinks
 and submodules are not followed), otherwise a walk that skips `.git`,
 `node_modules` and `target`; binary and oversized files are skipped and listed as

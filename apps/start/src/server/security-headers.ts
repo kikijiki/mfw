@@ -1,6 +1,9 @@
 /**
- * Security headers for every response the app serves (pages, tRPC, SSE and the
- * raw file routes), attached by the request middleware in `src/start.ts`.
+ * Security headers for every response the app's request handlers produce (pages,
+ * tRPC, SSE and the raw file routes), attached by the request middleware in
+ * `src/start.ts`. Static build assets (`/assets/*`, fonts, `public/`) are served
+ * by the nitro file server before that middleware and carry none of them; the
+ * CSP nonce is per request, so it cannot apply to them in any case.
  *
  * Why it exists: the UI renders agent-authored markdown, mermaid diagrams and
  * file contents inside a session that can approve widening a sandbox, so an

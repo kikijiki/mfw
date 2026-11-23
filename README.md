@@ -64,8 +64,12 @@ The daemon is the engine that does the work. For each project you attach, it:
 - **Runs a coding agent** on the task: Claude Code, OpenAI Codex CLI, or any agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com) (ACP): Cursor, Gemini CLI, opencode and pi are supported. Each agent
   runs in its own terminal session that survives restarts of the daemon, and you
   can steer or stop it while it works.
-- **Checks the result** against the task's goal, then runs
-  the checks in a clean copy of the repository. It never takes the agent's word.
+- **Checks the result** against the task's goal, then runs the task's `run`
+  checks without trusting the agent's word. An autonomous run's checks run on its
+  committed tip inside the no-network verifier sandbox; a check that cannot run
+  there is reported as an infrastructure result, never retried on the host. Only
+  an interactive worktree run's checks run on the host, because a person
+  approved the run (see [docs/verifier-sandbox.md](docs/verifier-sandbox.md)).
 - **Merges automatically** when everything passes, into a branch you choose. If the
   main branch turns red, it stops merging and can repair it.
 - **Asks a model for help only when needed:** to diagnose an ambiguous failure,
@@ -76,8 +80,12 @@ The daemon is the engine that does the work. For each project you attach, it:
 - **Can use a rented GPU machine (RunPod)** for tasks that need one.
 
 Safe by default: the scheduler is **off** until you turn it on, so starting mfw
-never starts spending. Agents run with your user's permissions, so only attach
-projects you are happy to let them work on.
+never starts spending. Agents run inside a sandbox (`agentIsolation`, `bwrap` by default): a task or
+repair run sees its own worktree, a read-only system and a private home, and
+reaches the network only through a host proxy with a fixed allowlist (see
+[docs/egress.md](docs/egress.md)). With `agentIsolation: "none"` they run with
+your user's permissions instead, so only attach projects you are happy to let
+them work on.
 
 ## 3. The web UI
 
@@ -202,9 +210,11 @@ Run these on the host, outside any agent sandbox:
 | `mfw auth reset --yes` | forget the password and all sessions, then repeat setup |
 
 Failed sign-ins are limited per address (behind a trusted proxy, per forwarded
-client), and all of loopback counts as one address. Until agents get their own network namespace they share that limit with
-you, so a misbehaving agent can slow your sign-in on loopback: `mfw auth unlock`
-clears it.
+client), and all of loopback counts as one address. A sandboxed agent has its own
+network namespace and cannot reach the daemon on loopback, so it cannot use up
+your limit. An unsandboxed run
+(`agentIsolation: "none"`) shares loopback with you and can slow your sign-in;
+`mfw auth unlock` clears it.
 
 To change the password, use Settings > Session. It asks for the current password
 and signs out every other session.
@@ -271,8 +281,7 @@ The project brain does not use tokens: it talks over its own unix socket.
 
 ## How it is built
 
-The architecture notes live in the backstage knowledge repository under
-`projects/mfw/architecture.md`. The short version: one app (a [TanStack Start](https://tanstack.com/start) server) runs the
+The design notes that are public live in [docs/](docs/). The short version: one app (a [TanStack Start](https://tanstack.com/start) server) runs the
 daemon in-process, serves the web UI and a typed API, and keeps run bookkeeping in
 a local SQLite database. The board itself is always just files.
 
@@ -307,8 +316,11 @@ bun run dev            # the app with hot reload
 
 Each agent runs in a detached tmux session with its output on disk under
 `<project>/.mfw/runs/<id>/`, so runs survive daemon restarts and are picked up
-again on boot.
+again on boot. For a sandboxed task or repair run the agent itself runs in the
+sandbox behind a host bridge, so the tmux pane does not carry the agent's output:
+read the run in the UI or its `events.jsonl`, not by attaching to tmux.
 
 ## License
 
-[MIT](./LICENSE)
+[MIT](./LICENSE). A build writes the licences of everything it bundles, fonts included,
+to `apps/start/.output/THIRD_PARTY_NOTICES.txt` (`tools/third-party-notices.ts`).

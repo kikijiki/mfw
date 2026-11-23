@@ -1,6 +1,5 @@
 /**
- * The scope watchdog's file listing for a clone run (backstage
- * architecture.md, "Run workspace").
+ * The scope watchdog's file listing for a clone run.
  *
  * A clone's work tree is agent-writable, so the host never runs `git diff`
  * there. A sample asks the in-sandbox helper for a WIP snapshot, verifies the

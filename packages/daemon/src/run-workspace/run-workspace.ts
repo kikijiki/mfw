@@ -1,6 +1,5 @@
 /**
- * The seam between a run and the place its files live (backstage
- * architecture.md, "Run workspace"). Every caller that creates, inspects,
+ * The seam between a run and the place its files live. Every caller that creates, inspects,
  * archives or removes a run's workspace goes through `RunWorkspace`, so the
  * storage strategy (a git worktree today, a private clone later) can change
  * without touching them.

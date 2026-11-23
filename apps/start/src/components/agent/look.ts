@@ -67,13 +67,18 @@ export const ACTIVITY_LOOK = {
 	ended: mk("square", "ended", "--mfw-fg-faint"),
 } as const satisfies Record<RunActivity, Look>;
 
+/**
+ * Neutral words only. `completed` also covers "agent asked a question",
+ * "waiting at the review gate" and "merge queued", so it says `finished`;
+ * `verified`/`merged` come from the claim chips (`renderClaim`, host evidence).
+ */
 export const STATE_LOOK = {
 	starting: mk("clock", "queued", "--mfw-neutral"),
 	running: mk("dot", "running", "--mfw-status-in-progress"),
 	ended: mk("square", "ended", "--mfw-fg-faint"),
 	finalizing: mk("loader", "finalizing", "--mfw-info"),
 	merging: mk("merge", "merging", "--mfw-info"),
-	completed: mk("check", "merged", "--mfw-ok"),
+	completed: mk("check", "finished", "--mfw-ok"),
 	failed: mk("cross", "failed", "--mfw-critical"),
 	killed: mk("stop", "stopped", "--mfw-warn"),
 	interrupted: mk("stop", "interrupted", "--mfw-warn"),
@@ -83,7 +88,7 @@ export const STATE_LOOK = {
 } as const satisfies Record<RunState, Look>;
 
 export const PIP_LOOK = {
-	ok: mk("check", "verified", "--mfw-ok"),
+	ok: mk("check", "finished", "--mfw-ok"),
 	fail: mk("cross", "failed", "--mfw-critical"),
 	stopped: mk("stop", "stopped", "--mfw-warn"),
 	rate: mk("hourglass", "rate limited", "--mfw-warn"),

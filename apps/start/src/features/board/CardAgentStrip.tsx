@@ -22,7 +22,7 @@ import { type OutcomeDetail, outcomeTail } from "./CardSubtree";
  * strip at all, so its card stays two lines.
  */
 
-/** The last settled run, as a line: `verified · 3 runs` (the icon is the pip's). Null when nothing ever settled. */
+/** The last settled run, as a line: `finished · 3 runs` (the icon is the pip's). Null when nothing ever settled. */
 export function lastOutcome(
 	pips: readonly Pip[],
 	detail?: OutcomeDetail | null,
