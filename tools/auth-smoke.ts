@@ -24,7 +24,10 @@ import { join, resolve } from "node:path";
 import { validateTestHome } from "./root-test.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
-const ENTRY = join(ROOT, "apps/start/.output/server/index.mjs");
+/** `MFW_SMOKE_ENTRY` runs the same checks against another build, such as an old one. */
+const ENTRY =
+	process.env.MFW_SMOKE_ENTRY ??
+	join(ROOT, "apps/start/.output/server/index.mjs");
 const PASSWORD = "smoke test owner passphrase";
 const Q = "brain.states";
 const AGENT_CLI =
@@ -389,37 +392,8 @@ async function streamEndsOnLogout(port: number): Promise<void> {
 	}
 }
 
-async function perSourceThrottle(
-	port: number,
-	home: string,
-	env: Record<string, string>,
-): Promise<void> {
-	const attacker = "127.0.0.2";
-	for (let i = 0; i < 5; i++)
-		await authPost(
-			port,
-			"login",
-			{ password: `wrong guess number ${i}` },
-			{},
-			attacker,
-		);
-	const locked = await authPost(
-		port,
-		"login",
-		{ password: PASSWORD },
-		{},
-		attacker,
-	);
-	check("the guessing address is locked", locked.status === 429, locked.status);
-	const owner = await authPost(
-		port,
-		"login",
-		{ password: PASSWORD },
-		{},
-		"127.0.0.1",
-	);
-	check("another address still signs in", owner.status === 200, owner.status);
-	const cli = Bun.spawnSync(
+function unlock(home: string, env: Record<string, string>): number | null {
+	return Bun.spawnSync(
 		[
 			process.execPath,
 			"run",
@@ -433,20 +407,57 @@ async function perSourceThrottle(
 			stdout: "ignore",
 			stderr: "ignore",
 		},
+	).exitCode;
+}
+
+/** N1: every loopback address is one source, so rotating them buys nothing. */
+async function loopbackIsOneSource(
+	port: number,
+	home: string,
+	env: Record<string, string>,
+): Promise<void> {
+	let evaluated = 0;
+	for (let i = 1; i <= 9; i++) {
+		const r = await authPost(
+			port,
+			"login",
+			{ password: `wrong guess number ${i}` },
+			{},
+			`127.66.0.${i}`,
+		);
+		if (r.status === 401) evaluated++;
+	}
+	check(
+		"rotating 127.x addresses does not escape the lock",
+		evaluated <= 5,
+		`${evaluated} guesses evaluated`,
 	);
-	check("mfw auth unlock exits 0", cli.exitCode === 0, cli.exitCode);
+	const shared = await authPost(
+		port,
+		"login",
+		{ password: PASSWORD },
+		{},
+		"127.0.0.1",
+	);
+	check(
+		"agents and the owner share the loopback bucket",
+		shared.status === 429,
+		shared.status,
+	);
+	check(
+		"the refusal says when to retry",
+		/retry-after: \d+/i.test(shared.head),
+		shared.head.slice(0, 60),
+	);
+	check("mfw auth unlock exits 0", unlock(home, env) === 0);
 	const after = await authPost(
 		port,
 		"login",
 		{ password: PASSWORD },
 		{},
-		attacker,
+		"127.0.0.1",
 	);
-	check(
-		"unlock lets the locked address back in",
-		after.status === 200,
-		after.status,
-	);
+	check("unlock lets the owner back in", after.status === 200, after.status);
 }
 
 async function main(): Promise<number> {
@@ -544,7 +555,7 @@ async function main(): Promise<number> {
 
 		await matrix(port, setup.cookie, setup.key);
 		await streamEndsOnLogout(port);
-		await perSourceThrottle(port, mfwHome, env);
+		await loopbackIsOneSource(port, mfwHome, env);
 		check(
 			"no agent CLI ran",
 			!existsSync(join(fakeHome, ".codex")) &&

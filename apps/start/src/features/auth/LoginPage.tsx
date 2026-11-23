@@ -24,6 +24,8 @@ function describe(error: unknown): string {
 	if (error instanceof AuthRequestError) {
 		if (error.code === "locked" && error.retryAfterSeconds > 0)
 			return `Too many failed attempts. Try again in ${error.retryAfterSeconds} s.`;
+		if (error.code === "busy" && error.retryAfterSeconds > 0)
+			return `The server is busy. Try again in ${error.retryAfterSeconds} s.`;
 		return error.message;
 	}
 	return "Could not reach the server.";

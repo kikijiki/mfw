@@ -28,6 +28,7 @@ const STATUS: Record<AuthRefused["code"], number> = {
 	invalid_password: 401,
 	weak_password: 400,
 	locked: 429,
+	busy: 429,
 };
 
 function refusal(e: AuthRefused): Response {

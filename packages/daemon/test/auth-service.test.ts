@@ -10,6 +10,7 @@ import {
 	backoffMs,
 	FREE_ATTEMPTS,
 	isAuthRefused,
+	LOOPBACK_SOURCE,
 	SESSION_ABSOLUTE_MS,
 	SESSION_IDLE_MS,
 	SETUP_TOKEN_TTL_MS,
@@ -376,6 +377,80 @@ describe("setup retries and the password policy (reviewer m4, m5)", () => {
 
 	test("accepts a long uncommon passphrase", () => {
 		expect(() => assertPasswordPolicy(PASSWORD)).not.toThrow();
+	});
+});
+
+describe("loopback is one source (recheck N1)", () => {
+	for (const address of [
+		"127.0.0.1",
+		"127.0.0.2",
+		"127.66.0.9",
+		"127.255.255.254",
+		"::1",
+		"0:0:0:0:0:0:0:1",
+		"0000:0000:0000:0000:0000:0000:0000:0001",
+		"[::1]",
+		"::1%lo",
+		"::ffff:127.0.0.1",
+		"::ffff:127.9.8.7",
+		"::ffff:7f00:1",
+		"0:0:0:0:0:ffff:7f42:0102",
+	])
+		test(`${address} is loopback`, () => {
+			expect(throttleSource(address)).toBe(LOOPBACK_SOURCE);
+		});
+
+	for (const address of ["128.0.0.1", "10.127.0.1", "::2", "::ffff:128.0.0.1"])
+		test(`${address} is not loopback`, () => {
+			expect(throttleSource(address)).not.toBe(LOOPBACK_SOURCE);
+		});
+
+	test("rotating loopback addresses does not escape the lock", async () => {
+		await owner();
+		for (let i = 1; i <= FREE_ATTEMPTS; i++)
+			expect(
+				await code(auth.login("wrong password!", undefined, `127.66.0.${i}`)),
+			).toBe("invalid_password");
+		expect(
+			await code(auth.login("wrong password!", undefined, "127.66.0.99")),
+		).toBe("locked");
+		expect(await code(auth.login(PASSWORD, undefined, "::1"))).toBe("locked");
+		await auth.unlock();
+		expect(await code(auth.login(PASSWORD, undefined, "127.0.0.1"))).toBe("ok");
+	});
+});
+
+describe("the password queue is bounded (recheck N1)", () => {
+	test("a full queue refuses new attempts with a retry time, and queued ones finish", async () => {
+		const small = await AuthService.open(join(dir, "queue.db"), {
+			now: () => clock,
+			passwordCheckIntervalMs: 20,
+			maxQueuedPasswordChecks: 3,
+		});
+		try {
+			await small.setup((await small.beginFirstRun()) as string, PASSWORD);
+			const queued = [
+				small.login(PASSWORD, undefined, "10.0.1.1"),
+				small.login("wrong password!", undefined, "10.0.1.2"),
+				small.login(PASSWORD, undefined, "10.0.1.3"),
+			];
+			let refused: unknown;
+			await small.login(PASSWORD, undefined, "10.0.1.4").catch((e) => {
+				refused = e;
+			});
+			expect(isAuthRefused(refused) && refused.code).toBe("busy");
+			expect((refused as AuthRefused).retryAfterMs).toBeGreaterThan(0);
+			expect(await code(queued[0] as Promise<unknown>)).toBe("ok");
+			expect(await code(queued[1] as Promise<unknown>)).toBe(
+				"invalid_password",
+			);
+			expect(await code(queued[2] as Promise<unknown>)).toBe("ok");
+			expect(await code(small.login(PASSWORD, undefined, "10.0.1.4"))).toBe(
+				"ok",
+			);
+		} finally {
+			small.close();
+		}
 	});
 });
 

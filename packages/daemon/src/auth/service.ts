@@ -54,7 +54,8 @@ export type AuthRefusalCode =
 	| "invalid_token"
 	| "invalid_password"
 	| "weak_password"
-	| "locked";
+	| "locked"
+	| "busy";
 
 export class AuthRefused extends Error {
 	override readonly name = "AuthRefused";
@@ -95,6 +96,8 @@ export const BACKOFF_MAX_MS = 15 * 60 * 1000;
 const THROTTLE_RESET_MS = 24 * 60 * 60 * 1000;
 /** Global ceiling on password hashing: about ten checks a second. */
 const PASSWORD_CHECK_INTERVAL_MS = 100;
+/** About six seconds of waiting at that rate. */
+const MAX_QUEUED_PASSWORD_CHECKS = 64;
 /** How often an open stream re-checks its session (revocation is immediate). */
 const STREAM_RECHECK_MS = 15 * 1000;
 
@@ -118,14 +121,51 @@ export interface AuthServiceOptions {
 	streamRecheckMs?: number;
 	/** Minimum spacing of password hash checks, across all sources. */
 	passwordCheckIntervalMs?: number;
+	/** Password checks allowed to wait at once; further ones are refused. */
+	maxQueuedPasswordChecks?: number;
 	/** Where a first-run setup token is written (0600). */
 	setupTokenFile?: string;
 }
 
+/** Eight 16-bit groups, or null when this is not an IPv6 address. */
+function ipv6Groups(raw: string): number[] | null {
+	let text = raw;
+	const dotted = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(text);
+	if (dotted) {
+		const [a, b, c, d] = dotted.slice(1).map(Number) as [
+			number,
+			number,
+			number,
+			number,
+		];
+		if ([a, b, c, d].some((n) => n > 255)) return null;
+		text = `${text.slice(0, dotted.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+	}
+	const halves = text.split("::");
+	if (halves.length > 2) return null;
+	const left = halves[0] ? (halves[0] as string).split(":") : [];
+	const right = halves[1] ? (halves[1] as string).split(":") : [];
+	const missing = 8 - left.length - right.length;
+	if (halves.length === 1 ? missing !== 0 : missing < 1) return null;
+	const all = [
+		...left,
+		...Array<string>(halves.length === 2 ? missing : 0).fill("0"),
+		...right,
+	];
+	if (!all.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return null;
+	return all.map((g) => Number.parseInt(g, 16));
+}
+
+/** The one throttle bucket for every loopback address. */
+export const LOOPBACK_SOURCE = "loopback";
+
 /**
- * Addresses to one throttle key: IPv4-mapped IPv6 to IPv4, and IPv6 to its /64
- * (one host commonly controls a whole /64). A missing address is one shared
- * bucket, so it cannot be used to escape the limit.
+ * Addresses to one throttle key. All of loopback is ONE source: any local
+ * process can bind any 127.x address, so separate keys would let it rotate past
+ * the lock. Agents therefore share the owner's bucket until their network
+ * namespace lands (E7b); `mfw auth unlock` is the owner's way back in.
+ * IPv4-mapped IPv6 becomes IPv4, and IPv6 its /64 (one host commonly controls a
+ * whole /64). A missing or unparseable address is one shared bucket.
  *
  * TODO(C4): behind a trusted proxy every peer is the proxy. Trusted-proxy mode
  * must pass the forwarded client address here, and only from that proxy.
@@ -134,43 +174,75 @@ export function throttleSource(address: string | null | undefined): string {
 	const raw = address
 		?.trim()
 		.toLowerCase()
-		.replace(/^\[|\]$/g, "");
+		.replace(/^\[|\]$/g, "")
+		.replace(/%.*$/, "");
 	if (!raw) return "unknown";
-	const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(raw);
-	if (mapped?.[1]) return mapped[1];
-	if (!raw.includes(":")) return raw;
-	const [head = "", tail] = raw.split("::");
-	const left = head ? head.split(":") : [];
-	const right = tail ? tail.split(":") : [];
-	const missing = raw.includes("::") ? 8 - left.length - right.length : 0;
-	const groups = [...left, ...Array(Math.max(missing, 0)).fill("0"), ...right];
-	return `${groups
+	if (!raw.includes(":")) {
+		const v4 = /^(\d{1,3})\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.exec(raw);
+		if (!v4) return "unknown";
+		return v4[1] === "127" ? LOOPBACK_SOURCE : raw;
+	}
+	const g = ipv6Groups(raw);
+	if (!g) return "unknown";
+	const [g0, g1, g2, g3, g4, g5, g6, g7] = g as [
+		number,
+		number,
+		number,
+		number,
+		number,
+		number,
+		number,
+		number,
+	];
+	if (g0 + g1 + g2 + g3 + g4 + g5 + g6 === 0 && g7 === 1)
+		return LOOPBACK_SOURCE;
+	if (g0 + g1 + g2 + g3 + g4 === 0 && g5 === 0xffff) {
+		const first = g6 >> 8;
+		if (first === 127) return LOOPBACK_SOURCE;
+		return `${first}.${g6 & 255}.${g7 >> 8}.${g7 & 255}`;
+	}
+	return `${g
 		.slice(0, 4)
-		.map((g) => g.replace(/^0+(?=.)/, ""))
+		.map((n) => n.toString(16))
 		.join(":")}::/64`;
 }
 
 /**
- * One password check at a time, in arrival order, at a bounded rate. It holds
- * the global cost of hashing down without ever refusing anyone: each source
- * has at most one entry, so a flood from one source cannot push another back
- * by more than one turn each.
+ * One password check at a time, in arrival order, at a bounded rate. A full
+ * queue refuses the NEW request with a retry time; anything already queued,
+ * including a correct password, still gets its turn.
  */
 class PasswordCheckQueue {
 	private tail: Promise<unknown> = Promise.resolve();
 	private last = 0;
+	private pending = 0;
 
-	constructor(private readonly intervalMs: number) {}
+	constructor(
+		private readonly intervalMs: number,
+		private readonly maxPending: number,
+	) {}
 
 	run<T>(check: () => Promise<T>): Promise<T> {
+		if (this.pending >= this.maxPending)
+			return Promise.reject(
+				new AuthRefused(
+					"busy",
+					"too many sign-in attempts are waiting; try again shortly",
+					Math.max(1000, this.pending * this.intervalMs),
+				),
+			);
+		this.pending++;
 		const turn = this.tail.then(async () => {
 			const wait = this.last + this.intervalMs - performance.now();
 			if (wait > 0) await Bun.sleep(wait);
 			this.last = performance.now();
 			return check();
 		});
-		this.tail = turn.catch(() => undefined);
-		return turn;
+		const settled = turn.finally(() => {
+			this.pending--;
+		});
+		this.tail = settled.catch(() => undefined);
+		return settled;
 	}
 }
 
@@ -193,6 +265,7 @@ export class AuthService {
 		this.setupTokenFile = opts.setupTokenFile ?? null;
 		this.passwordChecks = new PasswordCheckQueue(
 			opts.passwordCheckIntervalMs ?? PASSWORD_CHECK_INTERVAL_MS,
+			opts.maxQueuedPasswordChecks ?? MAX_QUEUED_PASSWORD_CHECKS,
 		);
 	}
 

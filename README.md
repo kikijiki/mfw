@@ -189,6 +189,11 @@ Run these on the host, outside any agent sandbox:
 | `mfw auth setup-token` | issue a new first-run token (before an owner exists) |
 | `mfw auth reset --yes` | forget the password and all sessions, then repeat setup |
 
+Failed sign-ins are limited per address, and all of loopback counts as one
+address. Until agents get their own network namespace they share that limit with
+you, so a misbehaving agent can slow your sign-in on loopback: `mfw auth unlock`
+clears it.
+
 To change the password, use Settings > Session. It asks for the current password
 and signs out every other session.
 
