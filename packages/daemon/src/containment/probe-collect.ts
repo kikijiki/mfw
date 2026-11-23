@@ -21,6 +21,7 @@ import {
 	ProbeObservationsSchema,
 } from "./probe-evaluate.ts";
 import type { ProbePlan } from "./probe-run.ts";
+import type { SealedProbeRuntime } from "./probe-runtime.ts";
 
 const MAX_OUTPUT = 8 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -55,6 +56,8 @@ export interface CollectOptions {
 	readCgroup?: (pid: number) => CgroupObservation | null;
 	tmpDir?: string;
 	observePins?: (pins: PinIdentity[]) => void;
+	/** The sealed runtime the probe command starts from. */
+	sealed?: Pick<SealedProbeRuntime, "fds" | "release">;
 }
 
 /** Launch, speak the protocol, and judge. Never throws for a bad child. */
@@ -72,7 +75,9 @@ export async function collectProbe(
 			scope: opts.scope,
 			tmpDir: opts.tmpDir,
 			observePins: opts.observePins,
+			...(opts.sealed ? { sealedProbeFds: opts.sealed.fds } : {}),
 		});
+		opts.sealed?.release();
 	} catch (err) {
 		return failAll(`the probe did not launch: ${(err as Error).message}`);
 	}

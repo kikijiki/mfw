@@ -1071,7 +1071,7 @@ describe.skipIf(skip !== null)("forged results", () => {
 		expect(d).toEqual({ ok: true, attestationId: null, authorization: null });
 	});
 
-	test("a profile without bun cannot be attested", async () => {
+	test("a profile with no toolchain is measured by the sealed runtime", async () => {
 		const r = await attestSandbox({
 			db: handle.db,
 			runId: "r1",
@@ -1079,13 +1079,12 @@ describe.skipIf(skip !== null)("forged results", () => {
 			host: compileHost(),
 			targets: targets(),
 			scope: "none",
+			timeoutMs: 40_000,
 		});
-		expect(r.ok).toBe(false);
-		if (!r.ok) {
-			expect(r.code).toBe("probe_runtime_missing");
-			expect(r.fix).toContain("bun");
-		}
-	});
+		if (!r.ok) throw new Error(r.reason);
+		// Only the limits are unproven, because the cage has no scope.
+		expect(failed(r.items)).toEqual(["cgroup_limits"]);
+	}, 45_000);
 });
 
 describe.skipIf(noScope !== "")("the real systemd scope chain", () => {

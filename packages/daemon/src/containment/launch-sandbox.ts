@@ -7,6 +7,7 @@
  *   3    the seccomp program
  *   4    the bwrap options
  *   5..  the pinned bind sources, in `pinnedBinds` order
+ *   then the probe's sealed runtime, for a probe launch only (probe-runtime.ts)
  *
  * Bun closes every descriptor not listed in `stdio`, including ones without
  * close-on-exec and ones this process inherited; the live tests hold it to
@@ -32,7 +33,14 @@
  * attestation-gate.ts refuses autonomous flags without a passing record.
  */
 
-import { closeSync, constants, fstatSync, openSync, writeSync } from "node:fs";
+import {
+	closeSync,
+	constants,
+	fstatSync,
+	openSync,
+	readlinkSync,
+	writeSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { isatty } from "node:tty";
 import {
@@ -52,6 +60,7 @@ import {
 	pinIdentities,
 	samePins,
 } from "./pinned-binds.ts";
+import { SEALED_PROBE_PREFIX } from "./probe-runtime.ts";
 import { RunDirLayoutError, verifyRunDirLayout } from "./run-dir.ts";
 
 const O_TMPFILE = 0o20000000 | constants.O_DIRECTORY;
@@ -77,6 +86,12 @@ export interface LaunchOptions {
 	expectPins?: readonly PinIdentity[];
 	/** Told which directories were opened, before anything runs. */
 	observePins?: (pins: PinIdentity[]) => void;
+	/**
+	 * The probe's sealed runtime, placed right after the pins. Refused on an
+	 * autonomous launch, so an agent can never inherit a runtime this way. A
+	 * successful spawn takes ownership.
+	 */
+	sealedProbeFds?: readonly number[];
 }
 
 /**
@@ -270,6 +285,8 @@ export function launchSandbox(
 			"an autonomous launch must run under the systemd scope and its limits",
 		);
 	}
+	const sealed = options.sealedProbeFds ?? [];
+	if (sealed.length > 0) checkSealedFds(sealed, options.approvalMode);
 	const expectPins = approvedPins(compiled, options) ?? options.expectPins;
 
 	const opened = openSandboxFds(compiled, options.tmpDir);
@@ -283,7 +300,13 @@ export function launchSandbox(
 	options.observePins?.(opened.pins);
 	let child: ReturnType<typeof spawnWithFds>;
 	try {
-		child = spawnWithFds(argv, scope, [stdin, stdout, stderr, ...opened.fds]);
+		child = spawnWithFds(argv, scope, [
+			stdin,
+			stdout,
+			stderr,
+			...opened.fds,
+			...sealed,
+		]);
 	} catch (err) {
 		// A spawn that throws leaves the descriptors with us.
 		opened.close();
@@ -294,6 +317,33 @@ export function launchSandbox(
 	}
 	opened.release();
 	return child;
+}
+
+/** Only a probe launch carries these, and only real sealed-runtime memfds. */
+function checkSealedFds(
+	fds: readonly number[],
+	mode: LaunchApproval["approvalMode"],
+): void {
+	if (mode !== "interactive") {
+		throw new SandboxLaunchError(
+			"invalid_compiled",
+			"an autonomous launch cannot inherit the probe's runtime",
+		);
+	}
+	for (const fd of fds) {
+		let target = "";
+		try {
+			target = readlinkSync(`/proc/self/fd/${fd}`);
+		} catch {
+			// Refused below.
+		}
+		if (!target.startsWith(`/memfd:${SEALED_PROBE_PREFIX}`)) {
+			throw new SandboxLaunchError(
+				"invalid_compiled",
+				`descriptor ${fd} is not a sealed probe runtime`,
+			);
+		}
+	}
 }
 
 /** The attested pins of an autonomous launch, null for an interactive one. */
