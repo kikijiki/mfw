@@ -53,13 +53,19 @@ const CREATE_FIELDS = [
 	"criteria",
 	"status",
 ];
-const PATCH_FIELDS = ["title", "body", "priority", "size", "labels"];
+// Not `labels`: a patch replaces the list, and `review:agent` selects the reviewer.
+const PATCH_FIELDS = ["title", "body", "priority", "size"];
 
 const checkCreate: Check = (input) => {
 	const fields = onlyFields(CREATE_FIELDS)(input, []);
 	if (fields) return fields;
 	if (input.status !== undefined && input.status !== "backlog")
 		return "an API token can only create tasks in backlog";
+	if (
+		Array.isArray(input.labels) &&
+		input.labels.some((l) => typeof l === "string" && /^\s*review:/i.test(l))
+	)
+		return "an API token cannot set a review label";
 	if (
 		Array.isArray(input.criteria) &&
 		input.criteria.some((c) => isRecord(c) && c.checked === true)

@@ -230,6 +230,27 @@ describe("write rules", () => {
 		});
 	});
 
+	test("labels cannot change a task's review", () => {
+		// `review:agent` selects the agent reviewer; a patch replaces the whole
+		// list, so allowing one could silently remove it.
+		refused(token(TOKEN_SCOPES), "tasks.update", {
+			project: "a",
+			id: "T",
+			patch: { labels: [] },
+		});
+		for (const label of ["review:agent", "REVIEW:agent", " review:agent"])
+			refused(token(TOKEN_SCOPES), "tasks.create", {
+				project: "a",
+				title: "t",
+				labels: [label],
+			});
+		allowed(write, "tasks.create", {
+			project: "a",
+			title: "t",
+			labels: ["docs"],
+		});
+	});
+
 	test("create stays in backlog, unchecked", () => {
 		allowed(write, "tasks.create", { project: "a", title: "t" });
 		allowed(write, "tasks.create", {
