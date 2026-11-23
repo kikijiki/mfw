@@ -39,6 +39,7 @@ function deps(over: Partial<Deps> = {}) {
 	const ran: { argv: string[]; cwd?: string }[] = [];
 	const mcp: string[][] = [];
 	const auth: string[][] = [];
+	const doctor: string[][] = [];
 	const d: Deps = {
 		env: { PATH: "" },
 		selfDir: "/nonexistent",
@@ -56,14 +57,30 @@ function deps(over: Partial<Deps> = {}) {
 			mcp.push(args);
 		},
 		runHost: async () => 0,
+		runDoctor: async (command, args) => {
+			doctor.push([command, ...args]);
+			return 7;
+		},
 		runAuth: async (args) => {
 			auth.push(args);
 			return 0;
 		},
 		...over,
 	};
-	return { d, out, err, ran, mcp, auth };
+	return { d, out, err, ran, mcp, auth, doctor };
 }
+
+describe("mfw doctor and init", () => {
+	test("hand their arguments over and return the exit code", async () => {
+		const h = deps();
+		expect(await dispatch(["doctor", "--json"], h.d)).toBe(7);
+		expect(await dispatch(["init", "--write"], h.d)).toBe(7);
+		expect(h.doctor).toEqual([
+			["doctor", "--json"],
+			["init", "--write"],
+		]);
+	});
+});
 
 describe("mfw auth", () => {
 	test("hands its arguments to the auth command", async () => {
@@ -138,11 +155,9 @@ describe("mfw: other subcommands", () => {
 			expect(msg).toContain(c);
 	});
 
-	test("no doctor or backup stubs yet", async () => {
-		for (const c of ["doctor", "backup"]) {
-			const t = deps();
-			expect(await dispatch([c], t.d)).toBe(2);
-		}
+	test("no backup stub yet", async () => {
+		const t = deps();
+		expect(await dispatch(["backup"], t.d)).toBe(2);
 	});
 
 	test("no arguments prints usage to stderr, exit 2; --help to stdout, exit 0", async () => {

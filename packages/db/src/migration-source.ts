@@ -183,6 +183,14 @@ function verifiedFiles(dir: string): Map<string, Uint8Array> {
 	return out;
 }
 
+/**
+ * Check a build's migrations against its manifest without copying them. Throws
+ * the same refusal a server would hit at open.
+ */
+export function verifyBuiltMigrations(outputDir: string): void {
+	verifiedFiles(join(outputDir, MIGRATIONS_OUTPUT_DIR));
+}
+
 /** The migrations beside this package, for a server running from source. */
 export function sourceMigrationsDir(moduleUrl: string): string {
 	const override = process.env.MFW_MIGRATIONS_DIR;

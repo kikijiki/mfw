@@ -1,0 +1,340 @@
+import { existsSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
+import {
+	mutateConfig,
+	normalizeRoot,
+	type StoredProjectConfig,
+} from "../config.ts";
+import { gitRaw } from "../git.ts";
+import { acquireDaemonLock } from "../resources/daemon-lock.ts";
+import { liveDoctorProbes } from "./live-probes.ts";
+import type { DoctorProbes } from "./probes.ts";
+import {
+	type DoctorReport,
+	doctorExitCode,
+	renderDoctorReport,
+	sanitizeText,
+} from "./report.ts";
+import { isPublicForgeUrl, runDoctor } from "./run.ts";
+
+/**
+ * `mfw doctor` and `mfw init`.
+ *
+ * Inside an agent sandbox both refuse (exit 3), as `mfw auth` does. A report
+ * from there would describe the sandbox's masked view as if it were the host.
+ * The environment markers are a courtesy: an agent can unset them. What keeps
+ * the owner's state from an agent is that `$MFW_HOME` is hidden in the sandbox.
+ */
+
+export const DOCTOR_USAGE = [
+	"usage: mfw doctor [--json] [--no-exec-harness] [--first-run]",
+	"",
+	"  Read-only host and install check. It prints fixes and never applies them.",
+	"  --json             the report as JSON (schemaVersion 1)",
+	"  --no-exec-harness  do not run `claude --version` or `codex --version`",
+	"  --first-run        the guided first-run flow (same as mfw init)",
+	"",
+	"  exit: 0 no blockers, 1 a blocker exists, 2 usage, 3 refused in a sandbox",
+].join("\n");
+
+export const INIT_USAGE = [
+	"usage: mfw init [--project <dir>] [--name <name>] [--branch <branch>] [--write] [--json] [--no-exec-harness]",
+	"",
+	"  Runs the doctor, shows where the setup token is and what to do next.",
+	"  With --project it prints a minimal project entry. Only --write adds it",
+	"  to $MFW_HOME/config.json, and that is refused while the server runs.",
+].join("\n");
+
+export interface DoctorCliDeps {
+	env: Record<string, string | undefined>;
+	home: string;
+	out: (line: string) => void;
+	err: (line: string) => void;
+	exposure?: DoctorProbes["exposure"];
+	/** Test seam: the probes to use instead of the live ones. */
+	probes?: DoctorProbes;
+}
+
+const SANDBOX_MARKERS = [
+	"MFW_RUN_ID",
+	"MFW_TASK_ID",
+	"MFW_RUN_KIND",
+	"MFW_AGENT_BRIDGED",
+] as const;
+
+/** The marker that says this process belongs to an agent run, if any. */
+export function sandboxMarker(
+	env: Record<string, string | undefined>,
+): string | null {
+	return SANDBOX_MARKERS.find((k) => !!env[k]) ?? null;
+}
+
+function refuseInSandbox(what: string, d: DoctorCliDeps): number | null {
+	const marker = sandboxMarker(d.env);
+	if (!marker) return null;
+	d.err(
+		`mfw ${what}: refused inside an agent run (${marker} is set). Run it on the host, outside any agent sandbox.`,
+	);
+	return 3;
+}
+
+const probesFor = (d: DoctorCliDeps): DoctorProbes =>
+	d.probes ??
+	liveDoctorProbes({
+		env: d.env,
+		home: d.home,
+		...(d.exposure ? { exposure: d.exposure } : {}),
+	});
+
+export async function runDoctorCommand(
+	args: readonly string[],
+	d: DoctorCliDeps,
+): Promise<number> {
+	if (args.includes("--help") || args.includes("-h")) {
+		d.out(DOCTOR_USAGE);
+		return 0;
+	}
+	if (args.includes("--first-run")) {
+		return runInitCommand(
+			args.filter((a) => a !== "--first-run"),
+			d,
+		);
+	}
+	const known = new Set(["--json", "--no-exec-harness"]);
+	const bad = args.find((a) => !known.has(a));
+	if (bad) {
+		d.err(`mfw doctor: unknown option '${bad}'\n${DOCTOR_USAGE}`);
+		return 2;
+	}
+	const refused = refuseInSandbox("doctor", d);
+	if (refused !== null) return refused;
+	const report = await runDoctor(probesFor(d), {
+		skipHarnessExec: args.includes("--no-exec-harness"),
+	});
+	d.out(
+		args.includes("--json")
+			? JSON.stringify(report, null, 2)
+			: renderDoctorReport(report),
+	);
+	return doctorExitCode(report);
+}
+
+interface InitArgs {
+	project?: string;
+	name?: string;
+	branch?: string;
+	write: boolean;
+	json: boolean;
+	skipHarnessExec: boolean;
+}
+
+function parseInit(args: readonly string[]): InitArgs | string {
+	const out: InitArgs = { write: false, json: false, skipHarnessExec: false };
+	for (let i = 0; i < args.length; i++) {
+		const a = args[i];
+		if (a === "--write") out.write = true;
+		else if (a === "--json") out.json = true;
+		else if (a === "--no-exec-harness") out.skipHarnessExec = true;
+		else if (a === "--project" || a === "--name" || a === "--branch") {
+			const value = args[++i];
+			if (value === undefined || value.startsWith("--")) {
+				return `${a} needs a value`;
+			}
+			if (a === "--project") out.project = value;
+			else if (a === "--name") out.name = value;
+			else out.branch = value;
+		} else return `unknown option '${a}'`;
+	}
+	if (out.write && !out.project) return "--write needs --project";
+	return out;
+}
+
+/** The smallest entry whose runs can start: a private clone in the sandbox. */
+export function minimalProjectEntry(input: {
+	name: string;
+	root: string;
+	branch: string;
+}): StoredProjectConfig {
+	return {
+		name: input.name,
+		root: input.root,
+		integrationBranch: input.branch,
+		agentIsolation: "bwrap",
+		runWorkspace: "clone",
+	};
+}
+
+async function currentBranch(root: string): Promise<string | null> {
+	const r = await gitRaw(
+		["--no-optional-locks", "symbolic-ref", "--short", "HEAD"],
+		root,
+		{ timeoutMs: 3_000 },
+	).catch(() => null);
+	return r?.ok ? r.stdout.trim() || null : null;
+}
+
+async function writeEntry(
+	home: string,
+	entry: StoredProjectConfig,
+): Promise<string | null> {
+	await mkdir(home, { recursive: true, mode: 0o700 });
+	let lock: Awaited<ReturnType<typeof acquireDaemonLock>>;
+	try {
+		// The running server rewrites this file from its own copy.
+		lock = await acquireDaemonLock(home, {
+			processBootId: `init-${process.pid}`,
+			timeoutMs: 500,
+		});
+	} catch {
+		return "the server is running. Stop it, or add the project in the web UI";
+	}
+	try {
+		return await mutateConfig(home, (config) => {
+			const clash = config.projects.find(
+				(p) => p.name === entry.name || p.root === entry.root,
+			);
+			if (clash) {
+				throw new InitRefused(
+					`project '${clash.name}' already uses that name or root`,
+				);
+			}
+			config.projects.push(entry);
+			return null;
+		});
+	} catch (e) {
+		if (e instanceof InitRefused) return e.message;
+		throw e;
+	} finally {
+		await lock.release();
+	}
+}
+
+class InitRefused extends Error {}
+
+function nextSteps(report: DoctorReport, tokenPath: string): string[] {
+	const auth = report.checks.find((c) => c.id === "auth.state");
+	const steps: string[] = [];
+	if (!report.ok) steps.push("Fix each BLOCKER above, then run: mfw doctor");
+	if (auth?.status === "problem") {
+		steps.push("Start the server: mfw server");
+		steps.push(
+			`Open the web UI and enter the one-time setup token. It is in ${tokenPath} (or print a new one with: mfw auth setup-token)`,
+		);
+	}
+	steps.push(
+		"Add a project: mfw init --project <dir> --write, or use the web UI",
+	);
+	steps.push("Check the result: mfw doctor");
+	return steps;
+}
+
+export async function runInitCommand(
+	args: readonly string[],
+	d: DoctorCliDeps,
+): Promise<number> {
+	if (args.includes("--help") || args.includes("-h")) {
+		d.out(INIT_USAGE);
+		return 0;
+	}
+	const parsed = parseInit(args);
+	if (typeof parsed === "string") {
+		d.err(`mfw init: ${parsed}\n${INIT_USAGE}`);
+		return 2;
+	}
+	const refused = refuseInSandbox("init", d);
+	if (refused !== null) return refused;
+
+	const probes = probesFor(d);
+	const report = await runDoctor(probes, {
+		skipHarnessExec: parsed.skipHarnessExec,
+	});
+	// The path only. The token itself is never opened here.
+	const tokenPath = join(d.home, "setup-token");
+
+	let entry: StoredProjectConfig | null = null;
+	let wrote = false;
+	const notes: string[] = [];
+	if (parsed.project) {
+		const root = normalizeRoot(resolve(parsed.project));
+		if (!existsSync(join(root, ".git"))) {
+			d.err(`mfw init: ${sanitizeText(root)} is not a git repository.`);
+			return 1;
+		}
+		const branch = parsed.branch ?? (await currentBranch(root));
+		if (!branch) {
+			d.err(
+				"mfw init: cannot tell the integration branch (detached HEAD?). Pass --branch <branch>.",
+			);
+			return 1;
+		}
+		entry = minimalProjectEntry({
+			name: parsed.name ?? basename(root),
+			root,
+			branch,
+		});
+		const facts = await probes.project(entry);
+		if (facts.hasEnvrc) {
+			notes.push(
+				"This project has an .envrc, and runs are refused until dev shells work in the sandbox or the file is removed.",
+			);
+		}
+		if (facts.remotes.length > 0) {
+			notes.push(
+				'It has a remote. Pushes stay refused until you add "pushUrl" to this entry yourself.',
+			);
+		}
+		if (facts.remotes.some((r) => isPublicForgeUrl(r.url))) {
+			notes.push(
+				'The remote is on a public forge. Choose "untracked" for board reports when you attach the board.',
+			);
+		}
+		if (parsed.write) {
+			const why = await writeEntry(d.home, entry);
+			if (why) {
+				d.err(`mfw init: not written: ${sanitizeText(why)}`);
+				return 1;
+			}
+			wrote = true;
+		}
+	}
+
+	const steps = nextSteps(report, tokenPath);
+	if (parsed.json) {
+		d.out(
+			JSON.stringify(
+				{
+					schemaVersion: 1,
+					doctor: report,
+					setupTokenPath: tokenPath,
+					steps,
+					projectEntry: entry,
+					notes,
+					wrote,
+				},
+				null,
+				2,
+			),
+		);
+		return doctorExitCode(report);
+	}
+	d.out(renderDoctorReport(report));
+	d.out("");
+	d.out(`Setup token file: ${sanitizeText(tokenPath)}`);
+	if (entry) {
+		d.out("");
+		d.out(
+			wrote
+				? "Added to $MFW_HOME/config.json (restart the server to load it):"
+				: 'Minimal project entry (not written; add --write, or paste it into "projects" in $MFW_HOME/config.json):',
+		);
+		d.out(JSON.stringify(entry, null, 2));
+		for (const note of notes) d.out(`note: ${note}`);
+	}
+	d.out("");
+	d.out("Next steps:");
+	steps.forEach((s, i) => {
+		d.out(`  ${i + 1}. ${sanitizeText(s)}`);
+	});
+	return doctorExitCode(report);
+}
