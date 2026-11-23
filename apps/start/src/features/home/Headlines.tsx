@@ -4,6 +4,7 @@ import { Fragment } from "react";
 import { AppLink } from "../../components/AppLink";
 import { Chip } from "../../components/Page";
 import { href } from "../../routes";
+import { ClaimChips } from "../agents/ProvenanceChips";
 import { headlineTarget } from "./needs";
 
 /**
@@ -29,12 +30,15 @@ export function Headlines({ headlines }: { headlines: readonly Headline[] }) {
 						{h.parts.map((p, i) => (
 							<Fragment key={p.key}>
 								{i === 0 ? "" : i === 1 ? ", " : "; "}
-								<AppLink to={headlineTarget(h.project, p.link)}>
-									{p.text}
-								</AppLink>
+								<span data-claim-class={p.claimClass}>
+									<AppLink to={headlineTarget(h.project, p.link)}>
+										{p.text}
+									</AppLink>
+								</span>
 							</Fragment>
 						))}
 					</span>
+					<ClaimChips parts={h.parts} />
 				</li>
 			))}
 		</ul>

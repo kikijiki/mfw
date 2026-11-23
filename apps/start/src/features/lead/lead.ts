@@ -232,6 +232,13 @@ export function answerBadges(a: ChatAnswerView): {
 			title: "No record backs this answer",
 		});
 	}
+	if (a.unbackedClaims) {
+		out.push({
+			label: `${a.unbackedClaims} unbacked claim${a.unbackedClaims === 1 ? "" : "s"}`,
+			tone: "warn",
+			title: "Marked in the text: no host record backs these words",
+		});
+	}
 	if (a.provenance.includes("agent") || a.provenance.includes("external")) {
 		out.push({
 			label: "drew on agent text",

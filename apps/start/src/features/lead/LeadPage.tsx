@@ -8,6 +8,7 @@ import { Chip, Page, PageHeader, Scroller } from "../../components/Page";
 import { nodeRef } from "../../lib/nodeRef";
 import { useTRPC } from "../../lib/trpc";
 import { href } from "../../routes";
+import { ClaimChips } from "../agents/ProvenanceChips";
 import { useBrainStates } from "../brain/BrainBadge";
 import { BRAIN_OFF_HINT, brainLine } from "../brain/brain";
 import { LiveSection } from "../home/LiveSection";
@@ -83,9 +84,12 @@ export function LeadPage({ project }: { project: string }) {
 							{headline.parts.map((p, i) => (
 								<Fragment key={p.key}>
 									{i === 0 ? "" : i === 1 ? ", " : "; "}
-									<AppLink to={leadTarget(project, p.link)}>{p.text}</AppLink>
+									<span data-claim-class={p.claimClass}>
+										<AppLink to={leadTarget(project, p.link)}>{p.text}</AppLink>
+									</span>
 								</Fragment>
-							))}
+							))}{" "}
+							<ClaimChips parts={headline.parts} />
 						</p>
 					) : (
 						<p className="m-0" style={{ color: "var(--mfw-fg-muted)" }}>
