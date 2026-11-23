@@ -48,6 +48,7 @@ const GIT = `${"a".repeat(32)}-git-2.5`;
 const PY = `${"b".repeat(32)}-python3-3.14`;
 const BASH = `${"c".repeat(32)}-bash-5.3`;
 const CURL = `${"d".repeat(32)}-curl-8.23`;
+const INTERACTIVE = `${"f".repeat(32)}-bash-interactive-5.3`;
 
 const paths = (p: { binds: { path: string }[] }) => p.binds.map((b) => b.path);
 
@@ -160,6 +161,32 @@ describe("toolchain discovery", () => {
 		});
 		expect(paths(plan)).toContain(`/nix/store/${PY}`);
 		expect(plan.masks).toEqual([`/nix/store/${PY}/bin`]);
+	});
+
+	test("NixOS: a shell in the closure stays executable once a shell is declared", async () => {
+		const root = await fixture();
+		await exe(
+			root,
+			`nix/store/${GIT}/bin/git`,
+			`\x7fELF /nix/store/${BASH}/bin/bash /nix/store/${PY}/bin/python3`,
+		);
+		await exe(root, `nix/store/${BASH}/bin/bash`);
+		await exe(root, `nix/store/${PY}/bin/python3`);
+		await exe(root, `nix/store/${INTERACTIVE}/bin/sh`);
+		const declared = discoverToolchain({
+			home: "/users/u",
+			binaries: ["git", "sh"],
+			path: `/nix/store/${GIT}/bin:/nix/store/${INTERACTIVE}/bin`,
+			root,
+		});
+		expect(declared.masks).toEqual([`/nix/store/${PY}/bin`]);
+		const none = discoverToolchain({
+			home: "/users/u",
+			binaries: ["git"],
+			path: `/nix/store/${GIT}/bin`,
+			root,
+		});
+		expect(none.masks).toContain(`/nix/store/${BASH}/bin`);
 	});
 
 	test("NixOS: refuses when the closure cannot be computed", async () => {

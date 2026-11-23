@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import {
 	discoverToolchain,
@@ -157,6 +157,40 @@ describe.skipIf(skip !== null)("store closure under bwrap", () => {
 		];
 		expect(found.length).toBeGreaterThan(0);
 		expectAbsent(p, found);
+	});
+
+	test("every shell script git ships can start, and perl and python cannot", () => {
+		const p = plan();
+		const git = p.resolved.find((b) => b.name === "git")?.realPath as string;
+		const exec = `${git.slice(0, git.indexOf("/bin/"))}/libexec/git-core`;
+		const interpreters = new Set<string>();
+		for (const name of readdirSync(exec)) {
+			const file = `${exec}/${name}`;
+			if (!lstatSync(file).isFile()) continue;
+			const head = readFileSync(file).subarray(0, 200).toString("latin1");
+			const m = /^#!\s*(\S+)/.exec(head);
+			if (m) interpreters.add(m[1] as string);
+		}
+		const shells = [...interpreters].filter((i) => /\/(ba|da)?sh$/.test(i));
+		const others = [...interpreters].filter((i) => !shells.includes(i));
+		expect(shells.length).toBeGreaterThan(0);
+		for (const shell of shells) {
+			const r = inSandbox(p, `'${shell}' -c 'echo started'`);
+			expect([shell, r.out]).toEqual([shell, "started\n"]);
+		}
+		expect(others.some((i) => /perl|python/.test(i))).toBe(true);
+		expectAbsent(p, others);
+		// filter-branch also calls these by name, as an agent's toolchain provides.
+		const withTools = discoverToolchain({
+			home: homedir(),
+			binaries: [...DECLARED, "sed", "grep"],
+			path: process.env.PATH ?? "",
+		});
+		const filter = inSandbox(
+			withTools,
+			"git init -q r && cd r && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m a && FILTER_BRANCH_SQUELCH_WARNING=1 git -c user.name=t -c user.email=t@t filter-branch -f --msg-filter cat HEAD",
+		);
+		expect(filter.code).toBe(0);
 	});
 
 	test("a hidden directory cannot be written", () => {

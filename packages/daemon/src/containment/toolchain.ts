@@ -131,6 +131,10 @@ const NIX_SUPPORT_LINKS = [
 	"/lib/ld-linux-aarch64.so.1",
 ] as const;
 
+/** A POSIX shell package, by store name. */
+const SHELL_PACKAGE =
+	/^[0-9a-df-np-sv-z]{32}-(?:bash|bash-interactive|dash)-\d/;
+
 /** Executable directories hidden in an undeclared closure member. */
 const MASKED_DIRS = ["bin", "sbin"] as const;
 
@@ -531,6 +535,11 @@ export function discoverToolchain(opts: ToolchainOptions): ToolchainPlan {
 		if (store && exists(fs, store)) dataRoots.add(store);
 	}
 
+	// Git's own scripts start with the bash in its closure, often a different
+	// build from the declared one. With a shell declared, that adds no capability.
+	const shellDeclared = storeResolved.some(
+		(b) => b.name === "sh" || b.name === "bash",
+	);
 	let masks: string[] = [];
 	let closureMethod: StoreClosure["method"] | undefined;
 	const visible = new Set(launchRoots);
@@ -554,6 +563,7 @@ export function discoverToolchain(opts: ToolchainOptions): ToolchainPlan {
 			for (const path of closure.paths) {
 				add({ path, source: "nix", reason: "closure", optional: false });
 				if (visible.has(path)) continue;
+				if (shellDeclared && SHELL_PACKAGE.test(posix.basename(path))) continue;
 				for (const d of MASKED_DIRS) {
 					const dir = `${path}/${d}`;
 					if (isRealDir(fs, dir)) masks.push(dir);
