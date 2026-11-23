@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { guard, serverAuth } from "~/server/auth-guard";
-import { handleAuthAction, peerAddress } from "~/server/auth-routes";
+import { handleAuthAction } from "~/server/auth-routes";
 import { getOrchestrator } from "~/server/orchestrator";
 
 const attachedProjects = async () =>
@@ -14,8 +14,9 @@ const handler = async (request: Request, action: string) => {
 		request,
 		guarded,
 		await serverAuth(),
+		// Base path and throttle identity: the handler's own defaults.
 		undefined,
-		peerAddress(request),
+		undefined,
 		attachedProjects,
 	);
 };
