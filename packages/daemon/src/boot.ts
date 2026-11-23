@@ -57,7 +57,7 @@ import { type CriticResult, StepRunner } from "./finalize/step-runner.ts";
 import { git } from "./git.ts";
 import { GlobalDispatch } from "./global-dispatch.ts";
 import { Health } from "./health.ts";
-import { quarantineRef } from "./host-git/fetch.ts";
+import { quarantineRef, sweepIncomingRefs } from "./host-git/fetch.ts";
 import type { HostObservationServiceOptions } from "./host-observation-service.ts";
 import {
 	createProductionHostProbeRuntime,
@@ -613,6 +613,10 @@ export async function attachProject(
 				}
 			},
 		},
+	});
+	// Nothing imports yet: whatever is under `incoming` was left by a crash.
+	await sweepIncomingRefs(root).catch((err) => {
+		plog.warn({ err }, "could not sweep leftover incoming refs");
 	});
 	const adapters = new AdapterRegistry();
 	const notifier = makeNotifier(cfg.notify, plog);

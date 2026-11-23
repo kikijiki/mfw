@@ -27,6 +27,7 @@ import { randomBytes } from "node:crypto";
 import { constants, lstatSync, realpathSync } from "node:fs";
 import { mkdtemp, open, rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
+import { gitComplete, gitOk } from "../git.ts";
 import { assertLocalSource, type HostGit, HostGitError } from "./runner.ts";
 
 export interface FetchValidationContext {
@@ -88,6 +89,13 @@ export interface FetchRunResultOk {
 const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const BARE_HEAD = "refs/mfw/run/head";
 const BARE_WIP = "refs/mfw/run/wip/";
+const INCOMING_PREFIX = "refs/mfw/incoming/";
+/**
+ * The WIP names the quarantine transaction accepts, one level short of the
+ * runner's depth limit because `incoming/<id>/wip/` adds a component. Git
+ * allows more (`a.b`); those are refused before anything reaches the primary.
+ */
+const WIP_NAME_RE = /^[A-Za-z0-9_-]{1,128}(?:\/[A-Za-z0-9_-]{1,128}){0,6}$/;
 const HEADER_CAP = 1024 * 1024;
 export const DEFAULT_MAX_BUNDLE_BYTES = 1024 * 1024 * 1024;
 export const DEFAULT_MAX_REFS = 1000;
@@ -142,6 +150,20 @@ export function sandboxBundleArgv(runId: string, outPath: string): string[] {
 		runHeadSourceRef(runId),
 		`--glob=${wipSourcePrefix(runId)}*`,
 	];
+}
+
+/** Remove what an interrupted import left under `refs/mfw/incoming/`. Call at boot, before any import. */
+export async function sweepIncomingRefs(primaryRepo: string): Promise<void> {
+	// Plain git in the trusted primary: an older import may have left a name
+	// the HostGit transaction pattern refuses, which is why it was left behind.
+	const listed = await gitComplete(
+		["for-each-ref", "--format=%(refname)", INCOMING_PREFIX],
+		primaryRepo,
+	);
+	for (const ref of listed.split("\n").filter(Boolean)) {
+		if (!ref.startsWith(INCOMING_PREFIX)) continue;
+		await gitOk(["update-ref", "-d", ref], primaryRepo);
+	}
 }
 
 export interface BundleHeader {
@@ -426,6 +448,12 @@ export async function fetchRunResult(
 		const tip = heads.get(BARE_HEAD);
 		if (!tip) throw new HostGitError("no_branch", "no head ref was fetched");
 		const wipNames = [...heads.keys()].filter((n) => n.startsWith(BARE_WIP));
+		if (wipNames.some((n) => !WIP_NAME_RE.test(n.slice(BARE_WIP.length)))) {
+			throw new HostGitError(
+				"validation",
+				"the bundle has a WIP ref whose name the host does not accept",
+			);
+		}
 		try {
 			await o.validate({
 				bareRepo: bare,

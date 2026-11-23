@@ -1,8 +1,19 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	realpathSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitComplete, gitOk } from "../src/git.ts";
+import {
+	fetchRunResult,
+	sweepIncomingRefs,
+	unsafeNoValidation,
+} from "../src/host-git/fetch.ts";
 import { HostGit, HostGitError } from "../src/host-git/runner.ts";
 import { validateRunResult } from "../src/run-workspace/clone-impl.ts";
 import {
@@ -244,5 +255,99 @@ describe("H1: long paths cannot hide an out-of-scope edit", () => {
 		expect(sample.level).toBe("violation");
 		expect(scopeKill(sample, policy)).toBe("watchdog-files");
 		expect(scopeKill(sample, { ...policy, mode: "warn" })).toBeNull();
+	});
+});
+
+describe("H2: a WIP ref name outside the pattern is refused before the primary", () => {
+	async function withBundle(wipName: string) {
+		const root = realpathSync(mkdtempSync(join(tmpdir(), "mfw-wip-h2-")));
+		dirs.push(root);
+		const src = join(root, "src");
+		const primary = join(root, "primary");
+		const run = join(root, "run");
+		const scratch = join(root, "scratch");
+		for (const d of [src, primary, join(run, "outbox"), scratch]) {
+			mkdirSync(d, { recursive: true });
+		}
+		for (const d of [src, primary]) {
+			await gitOk(["init", "-q", "-b", "main"], d);
+			await gitOk(["config", "user.email", "t@t"], d);
+			await gitOk(["config", "user.name", "t"], d);
+		}
+		writeFileSync(join(src, "a.txt"), "x\n");
+		await gitOk(["add", "-A"], src);
+		await gitOk(["commit", "-q", "-m", "c"], src);
+		await gitOk(["update-ref", "refs/heads/mfw/r1", "HEAD"], src);
+		await gitOk(
+			["update-ref", `refs/heads/mfw-wip/r1/${wipName}`, "HEAD"],
+			src,
+		);
+		await gitOk(
+			[
+				"bundle",
+				"create",
+				join(run, "outbox/result.bundle"),
+				"refs/heads/mfw/r1",
+				"--glob=refs/heads/mfw-wip/r1/*",
+			],
+			src,
+		);
+		const host = new HostGit({
+			workspaceRoot: join(root, "workspaces"),
+			ownedRoots: [scratch],
+		});
+		const attempt = () =>
+			fetchRunResult({
+				host,
+				primaryRepo: primary,
+				outboxRoot: run,
+				bundleRel: "outbox/result.bundle",
+				runId: "r1",
+				scratchRoot: scratch,
+				assertProcessesDead: () => {},
+				validate: unsafeNoValidation,
+			});
+		const refs = async () =>
+			(
+				await gitOk(
+					["for-each-ref", "--format=%(refname)", "refs/mfw/"],
+					primary,
+				)
+			)
+				.split("\n")
+				.filter(Boolean);
+		const objects = async () => gitOk(["count-objects"], primary);
+		return { primary, attempt, refs, objects };
+	}
+
+	test("two attempts are refused as validation and leave no ref or object", async () => {
+		const b = await withBundle("a.b");
+		const before = await b.objects();
+		expect(await refusal(b.attempt())).toBe("validation");
+		expect(await refusal(b.attempt())).toBe("validation");
+		expect(await b.refs()).toEqual([]);
+		expect(await b.objects()).toBe(before);
+	});
+
+	test("a normal WIP name still imports", async () => {
+		const b = await withBundle("1");
+		expect(await refusal(b.attempt())).toBeNull();
+		expect(await b.refs()).toContain("refs/mfw/quarantine-wip/r1/1");
+		expect((await b.refs()).filter((r) => r.includes("incoming"))).toEqual([]);
+	});
+
+	test("the boot sweep removes refs an older import leaked, whatever their name", async () => {
+		const b = await withBundle("1");
+		await b.attempt();
+		const sha = await gitOk(["rev-parse", "refs/mfw/quarantine/r1"], b.primary);
+		for (const r of [
+			"refs/mfw/incoming/aa/head",
+			"refs/mfw/incoming/aa/wip/a.b",
+		]) {
+			await gitOk(["update-ref", r, sha], b.primary);
+		}
+		await sweepIncomingRefs(b.primary);
+		expect((await b.refs()).filter((r) => r.includes("incoming"))).toEqual([]);
+		expect(await b.refs()).toContain("refs/mfw/quarantine/r1");
 	});
 });
