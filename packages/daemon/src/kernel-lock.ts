@@ -1,11 +1,14 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import type { FileSink } from "bun";
+import { requireHostTool, safeHostPath } from "./sandbox.ts";
 
 export class KernelLockError extends Error {
 	constructor(
 		readonly lockPath: string,
 		message: string,
+		/** True only when another holder really has the lock. */
+		readonly busy: boolean = false,
 	) {
 		super(message);
 		this.name = "KernelLockError";
@@ -27,6 +30,9 @@ export interface KernelLockOptions {
 	/** Human-facing description used when a fail-fast acquisition is refused. */
 	busyMessage?: string;
 }
+
+/** `flock` exits with this only on a real conflict. */
+const CONFLICT_EXIT = 75;
 
 async function firstLine(stream: ReadableStream<Uint8Array>): Promise<string> {
 	const reader = stream.getReader();
@@ -62,17 +68,25 @@ export async function acquireKernelLock(
 	try {
 		proc = Bun.spawn(
 			[
-				"flock",
+				requireHostTool("flock"),
 				"--exclusive",
+				"--conflict-exit-code",
+				String(CONFLICT_EXIT),
 				...(options.wait ? [] : ["--nonblock"]),
 				lockPath,
-				"sh",
+				requireHostTool("sh"),
 				"-c",
 				'printf "%s\\n" "$1"; cat >/dev/null',
 				"mfw-lock-holder",
 				marker,
 			],
-			{ stdin: "pipe", stdout: "pipe", stderr: "pipe" },
+			{
+				stdin: "pipe",
+				stdout: "pipe",
+				stderr: "pipe",
+				// The helper shell runs `cat`, which must not come from a planted PATH entry.
+				env: { ...process.env, PATH: safeHostPath() },
+			},
 		);
 	} catch (error) {
 		throw new KernelLockError(
@@ -82,6 +96,7 @@ export async function acquireKernelLock(
 	}
 
 	let timer: ReturnType<typeof setTimeout> | undefined;
+	let busy = false;
 	try {
 		const acquired = firstLine(proc.stdout as ReadableStream<Uint8Array>);
 		const output =
@@ -90,18 +105,24 @@ export async function acquireKernelLock(
 				: await Promise.race([
 						acquired,
 						new Promise<never>((_, reject) => {
-							timer = setTimeout(
-								() => reject(new Error("lock acquisition timed out")),
-								options.timeoutMs,
-							);
+							timer = setTimeout(() => {
+								// Only a waiting helper is known to be queued behind a holder.
+								busy = options.wait === true;
+								reject(new Error("lock acquisition timed out"));
+							}, options.timeoutMs);
 						}),
 					]);
 		if (output !== marker) {
 			const stderr = await new Response(
 				proc.stderr as ReadableStream<Uint8Array>,
 			).text();
+			const exit = await proc.exited;
+			if (exit === CONFLICT_EXIT) {
+				busy = true;
+				throw new Error(options.busyMessage ?? "the lock is already held");
+			}
 			throw new Error(
-				options.busyMessage ?? (stderr.trim() || "the lock is already held"),
+				`the lock helper failed (exit ${exit}): ${stderr.trim() || "no output"}`,
 			);
 		}
 	} catch (error) {
@@ -111,6 +132,7 @@ export async function acquireKernelLock(
 		throw new KernelLockError(
 			lockPath,
 			`cannot acquire ${lockPath}: ${error instanceof Error ? error.message : String(error)}`,
+			busy,
 		);
 	} finally {
 		if (timer) clearTimeout(timer);

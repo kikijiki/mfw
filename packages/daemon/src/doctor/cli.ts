@@ -9,7 +9,10 @@ import {
 	type StoredProjectConfig,
 } from "../config.ts";
 import { gitRaw } from "../git.ts";
-import { acquireDaemonLock } from "../resources/daemon-lock.ts";
+import {
+	acquireDaemonLock,
+	DaemonLockError,
+} from "../resources/daemon-lock.ts";
 import { liveDoctorProbes } from "./live-probes.ts";
 import type { DoctorProbes } from "./probes.ts";
 import {
@@ -208,8 +211,10 @@ async function writeEntry(
 			processBootId: `init-${process.pid}`,
 			timeoutMs: 500,
 		});
-	} catch {
-		return "the server is running. Stop it, or add the project in the web UI";
+	} catch (e) {
+		return e instanceof DaemonLockError && e.busy
+			? "the server is running. Stop it, or add the project in the web UI"
+			: `could not take the daemon lock: ${(e as Error).message}`;
 	}
 	try {
 		const unsafe = await configSaveProblem(home);
