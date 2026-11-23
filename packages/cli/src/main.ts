@@ -8,7 +8,14 @@ import { delimiter, join, resolve } from "node:path";
  * usable without the server) or a module run in this process (`mcp`).
  */
 
-const SUBCOMMANDS = ["auth", "board", "mcp", "server", "version"] as const;
+const SUBCOMMANDS = [
+	"auth",
+	"board",
+	"host",
+	"mcp",
+	"server",
+	"version",
+] as const;
 
 export interface Deps {
 	env: Record<string, string | undefined>;
@@ -29,6 +36,8 @@ export interface Deps {
 	runMcp: (args: string[]) => Promise<void>;
 	/** Runs `mfw auth ...` against this install's auth store. */
 	runAuth: (args: string[]) => Promise<number>;
+	/** Runs `mfw host ...` against this install's host state. */
+	runHost: (args: string[]) => Promise<number>;
 }
 
 export const USAGE = [
@@ -36,6 +45,7 @@ export const USAGE = [
 	"",
 	"  auth ...      owner tools: token, unlock, setup-token, sign-out-everywhere, reset",
 	"  board ...     the markdown board (runs mfw-board; no server needed)",
+	"  host ...      owner tools for host state: acknowledge-legacy",
 	"  mcp [--token-file <path>]   MCP server over stdio, using a scoped API token",
 	"  server        run the orchestrator + web UI in the foreground",
 	"  version       print the mfw and mfw-board versions",
@@ -93,6 +103,8 @@ export async function dispatch(argv: string[], d: Deps): Promise<number> {
 	switch (cmd) {
 		case "auth":
 			return d.runAuth(rest);
+		case "host":
+			return d.runHost(rest);
 		case "board": {
 			const exe = findBoardExecutable(d.env, d.selfDir);
 			if (exe) return d.run([exe, ...rest]);
@@ -170,6 +182,17 @@ function realDeps(): Deps {
 			// The MCP entry reads process.argv itself; present it as its own script.
 			process.argv = [process.argv[0] ?? "bun", "mfw mcp", ...args];
 			await import("@mfw/mcp");
+		},
+		runHost: async (args) => {
+			const [{ runHostCommand }, { mfwHome }] = await Promise.all([
+				import("../../daemon/src/resources/legacy-host-state.ts"),
+				import("../../daemon/src/config.ts"),
+			]);
+			return runHostCommand(args, {
+				home: mfwHome(),
+				out: (l) => console.log(l),
+				err: (l) => console.error(l),
+			});
 		},
 		runAuth: async (args) => {
 			const [{ runAuthCommand }, { mfwHome }] = await Promise.all([

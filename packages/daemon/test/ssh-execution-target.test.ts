@@ -33,6 +33,7 @@ import {
 	SshHostUnavailableError,
 } from "../src/ssh-execution-target.ts";
 import { RemoteTransportError } from "../src/ssh-transport.ts";
+import { liveGate } from "./support/live-gate.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -368,7 +369,7 @@ describe("SSH ExecutionTarget", () => {
 	});
 
 	const bwrap = Bun.which("bwrap");
-	const bwrapWorks =
+	const bwrapRuns =
 		bwrap !== null &&
 		Bun.spawnSync([
 			bwrap,
@@ -381,6 +382,9 @@ describe("SSH ExecutionTarget", () => {
 			"/proc",
 			"true",
 		]).exitCode === 0;
+	const bwrapWorks =
+		liveGate("ssh-execution-target", bwrapRuns ? null : "no working bwrap") ===
+		null;
 	test.skipIf(!bwrapWorks)(
 		"the bwrap sandbox really runs the driver with ~/.ssh and other runs hidden",
 		async () => {

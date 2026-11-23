@@ -36,6 +36,7 @@ import {
 import { SecretEnvironment } from "../src/execution-environment.ts";
 import { installWipHelper } from "../src/run-workspace/wip-helper-install.ts";
 import { type CageConfig, cagedSteps } from "./support/caged-launch.ts";
+import { liveGate } from "./support/live-gate.ts";
 import { runShTmux } from "./support/run-sh-tmux.ts";
 
 /**
@@ -71,11 +72,7 @@ function skipReason(): string | null {
 	]);
 	return r.exitCode === 0 ? null : "bwrap cannot run here";
 }
-const skip = skipReason();
-if (skip && process.env.MFW_REQUIRE_LIVE_SANDBOX === "1") {
-	throw new Error(`MFW_REQUIRE_LIVE_SANDBOX is set, but ${skip}`);
-}
-if (skip) console.log(`[agent-bridge-conformance] skipped: ${skip}`);
+const skip = liveGate("agent-bridge-conformance", skipReason());
 
 /** The real directories of the base tools, so a fixture home cannot shadow them. */
 function toolDirs(): string[] {
@@ -838,14 +835,13 @@ const managerState = Bun.spawnSync(["systemctl", "--user", "is-system-running"])
 	.trim();
 const noManager =
 	skip ??
-	(managerState === "running" || managerState === "degraded"
-		? null
-		: `no systemd user manager (${managerState || "unavailable"})`);
-if (noManager) {
-	console.log(
-		`[agent-bridge-conformance] real systemd scope chain NOT VERIFIED: ${noManager}`,
+	liveGate(
+		"agent-bridge-conformance",
+		managerState === "running" || managerState === "degraded"
+			? null
+			: `no systemd user manager (${managerState || "unavailable"})`,
+		"systemd-scope",
 	);
-}
 
 describe.skipIf(noManager !== null)("the real systemd scope chain", () => {
 	beforeEach(async () => {

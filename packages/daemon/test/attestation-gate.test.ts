@@ -34,6 +34,7 @@ import {
 	type SandboxProfile,
 } from "../src/containment/profile.ts";
 import { discoverToolchain } from "../src/containment/toolchain.ts";
+import { liveGate } from "./support/live-gate.ts";
 
 /**
  * The gate and the launcher together, on throwaway fixtures. The scope binary
@@ -70,8 +71,7 @@ function skipReason(): string | null {
 		: `bwrap cannot run here: ${r.stderr.toString().trim()}`;
 }
 
-const skip = skipReason();
-if (skip) console.log(`[attestation-gate] skipped: ${skip}`);
+const skip = liveGate("attestation-gate", skipReason());
 
 const pass = <T>(value: T): Check<T> => ({
 	ok: true,

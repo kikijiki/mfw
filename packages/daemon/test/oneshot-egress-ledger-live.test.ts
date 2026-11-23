@@ -15,6 +15,7 @@ import { TEMPORARY_FLEET_WRITABLE } from "../src/containment/agent-profile.ts";
 import { runOneShotAgent } from "../src/containment/oneshot-agent.ts";
 import { socketRoot } from "../src/containment/socket-root.ts";
 import { type CageConfig, cagedSteps } from "./support/caged-launch.ts";
+import { liveGate } from "./support/live-gate.ts";
 
 /**
  * Security review P7, M3: the reviewer's proxy counters lived in a directory
@@ -47,8 +48,7 @@ function skipReason(): string | null {
 	]);
 	return r.exitCode === 0 ? null : "bwrap cannot run here";
 }
-const skip = skipReason();
-if (skip) console.log(`[oneshot-egress-ledger] skipped: ${skip}`);
+const skip = liveGate("oneshot-egress-ledger-live", skipReason());
 
 const toolDirs = () =>
 	["sh", "cat", "env", "sleep"]
