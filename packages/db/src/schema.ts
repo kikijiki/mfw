@@ -299,6 +299,8 @@ export const runs = sqliteTable(
 		 * agent-writable: only this column can say a `control/exit` is the host's.
 		 */
 		runDirLayout: text("run_dir_layout").$type<"split" | null>(),
+		/** What the workspace really was at launch. Never re-derived from config. */
+		workspaceKind: text("workspace_kind").$type<"worktree" | "clone" | null>(),
 	},
 	(t) => [
 		index("ix_runs_state").on(t.state),

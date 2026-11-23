@@ -234,9 +234,10 @@ describe("migration chain", () => {
 		}
 	});
 
-	test("0021 is the last migration and its snapshot holds the table", () => {
-		const last = journal.entries.at(-1) as { tag: string; idx: number };
-		expect(last.tag).toBe("0021_run_provenance");
+	test("0021 is journaled and its snapshot holds the table", () => {
+		const last = journal.entries.find(
+			(e) => e.tag === "0021_run_provenance",
+		) as { tag: string; idx: number };
 		expect(last.idx).toBe(20);
 		const snap = snapshot(last.tag);
 		expect(

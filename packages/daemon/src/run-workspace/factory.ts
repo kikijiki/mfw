@@ -1,4 +1,8 @@
 import { resolve } from "node:path";
+import {
+	isRunWorkspacePath,
+	registerRunWorkspaceRoot,
+} from "../host-git/legacy-guard.ts";
 import { CloneRunWorkspace, type CloneWorkspaceOptions } from "./clone-impl.ts";
 import type { RebaseCloneOptions } from "./rebase-clone.ts";
 import type { RunWorkspace, RunWorkspaceHandle } from "./run-workspace.ts";
@@ -28,6 +32,7 @@ export function configureRunWorkspace(
 	if (setting.kind === "clone" && !setting.clone) {
 		throw new Error("runWorkspace clone needs its workspace options");
 	}
+	if (setting.clone) registerRunWorkspaceRoot(setting.clone.workspaceRoot);
 	settings.set(resolve(projectRoot), setting);
 }
 
@@ -45,15 +50,58 @@ export function createRunWorkspace(projectRoot: string): RunWorkspace {
 	return new WorktreeRunWorkspace(projectRoot);
 }
 
+/** What a run row says about where its workspace is. */
+export interface RunWorkspaceFacts {
+	workspaceKind?: RunWorkspaceKind | null;
+	worktreePath?: string | null;
+}
+
+/**
+ * What a run's workspace really is: the kind recorded at launch, else its
+ * location. Never the project's current setting, which can change while a run
+ * is live or waiting to be finalized.
+ */
+export function runWorkspaceKind(
+	projectRoot: string,
+	run: RunWorkspaceFacts,
+): RunWorkspaceKind {
+	if (run.workspaceKind) return run.workspaceKind;
+	if (run.worktreePath) {
+		return isRunWorkspacePath(run.worktreePath) ? "clone" : "worktree";
+	}
+	return settings.get(resolve(projectRoot))?.kind ?? "worktree";
+}
+
+/** The implementation that owns this run's workspace. Refuses rather than guess. */
+export function workspaceForRun(
+	projectRoot: string,
+	run: RunWorkspaceFacts,
+): RunWorkspace {
+	if (runWorkspaceKind(projectRoot, run) === "worktree") {
+		return new WorktreeRunWorkspace(projectRoot);
+	}
+	const clone = settings.get(resolve(projectRoot))?.clone;
+	if (!clone) {
+		throw new Error(
+			`run workspace ${run.worktreePath ?? "(unknown)"} is a clone, but this project has no clone settings`,
+		);
+	}
+	return new CloneRunWorkspace(resolve(projectRoot), clone);
+}
+
 /**
  * The disposable verification clones for a project, or null when it runs on
  * worktrees (verification then happens in the run's own worktree, as before).
+ * With a run, the answer follows that run's workspace, not the project setting.
  */
 export function createVerifierClones(
 	projectRoot: string,
+	run?: RunWorkspaceFacts,
 ): VerifierClones | null {
 	const setting = settings.get(resolve(projectRoot));
-	if (setting?.kind !== "clone" || !setting.clone) return null;
+	if (!setting?.clone) return null;
+	const kind = run ? runWorkspaceKind(projectRoot, run) : setting.kind;
+	if (kind !== "clone") return null;
 	return new VerifierClones({
 		workspaceRoot: setting.clone.workspaceRoot,
 		primaryRoot: resolve(projectRoot),
@@ -71,7 +119,9 @@ export function rebaseCloneOptions(
 	projectRoot: string,
 ): RebaseCloneOptions | null {
 	const setting = settings.get(resolve(projectRoot));
-	if (setting?.kind !== "clone" || !setting.clone) return null;
+	// Offered whatever the current setting: the merge queue uses it only for a
+	// job that has a quarantine ref, which only a clone run can have.
+	if (!setting?.clone) return null;
 	return {
 		workspaceRoot: setting.clone.workspaceRoot,
 		primaryRoot: resolve(projectRoot),

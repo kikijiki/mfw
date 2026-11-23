@@ -54,8 +54,8 @@ import {
 } from "../run-exit-evidence.ts";
 import type { BeginStepResult, RunRegistry, RunRow } from "../run-registry.ts";
 import {
-	createRunWorkspace,
 	createVerifierClones,
+	workspaceForRun,
 } from "../run-workspace/factory.ts";
 import type { WorktreeReportIdentity } from "../run-workspace/run-workspace.ts";
 import {
@@ -906,7 +906,7 @@ export class StepRunner {
 		} catch {
 			return false;
 		}
-		const workspace = createRunWorkspace(this.deps.projectRoot);
+		const workspace = workspaceForRun(this.deps.projectRoot, run);
 		// Same ownership-aware policy as maintenance. MFW_REPORT.json is exempt
 		// only while it matches the identity recorded by ingest_report.
 		if (await workspace.hasLocalChanges({ path: wt }, { reportIdentity }))
@@ -1370,11 +1370,12 @@ export class StepRunner {
 		};
 		// A clone's tree is agent-writable: the checks run in a disposable
 		// host-owned clone of the imported tip, never in the run's workspace.
-		const clones = createVerifierClones(this.deps.projectRoot);
+		const clones = createVerifierClones(this.deps.projectRoot, run);
 		let candidate: string | null = null;
 		if (clones) {
-			const imported = await createRunWorkspace(
+			const imported = await workspaceForRun(
 				this.deps.projectRoot,
+				run,
 			).fetchResult({
 				path: run.worktreePath,
 				branch: run.branch ?? "",
@@ -1901,7 +1902,7 @@ export class StepRunner {
 		// A clone's work reaches the primary only through the host's verified
 		// import; the merge queue reads that quarantine ref. Nothing to merge
 		// is a failed step, not an empty merge.
-		const workspace = createRunWorkspace(this.deps.projectRoot);
+		const workspace = workspaceForRun(this.deps.projectRoot, run);
 		if (workspace.kind === "clone") {
 			const imported = await workspace.fetchResult({
 				path: run.worktreePath ?? workspace.paths(run.id).workPath,
@@ -1978,7 +1979,7 @@ export class StepRunner {
 	private async archiveWip(built: Built): Promise<ArchiveWipResult> {
 		const { run } = built;
 		if (!run.branch || !run.baseSha) return { ref: null, sha: null };
-		const archive = await createRunWorkspace(this.deps.projectRoot).archive(
+		const archive = await workspaceForRun(this.deps.projectRoot, run).archive(
 			{
 				// No worktree: archiveWip saves the branch tip instead.
 				path: run.worktreePath ?? join(this.deps.projectRoot, ".mfw", "none"),
@@ -2014,7 +2015,7 @@ export class StepRunner {
 		const owns = task?.owns ?? [];
 		let files: string[] = [];
 		const wt = run.worktreePath;
-		const workspace = createRunWorkspace(this.deps.projectRoot);
+		const workspace = workspaceForRun(this.deps.projectRoot, run);
 		const present =
 			wt !== null &&
 			(await access(wt).then(
@@ -2119,7 +2120,7 @@ export class StepRunner {
 				reason: "durable worktree ownership is incomplete",
 			};
 		}
-		await createRunWorkspace(this.deps.projectRoot).remove(
+		await workspaceForRun(this.deps.projectRoot, run).remove(
 			{ path: wt, branch: run.branch, baseSha: run.baseSha },
 			{ force, reportIdentity },
 		);

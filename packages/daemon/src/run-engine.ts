@@ -48,6 +48,7 @@ import {
 } from "./routing.ts";
 import { RunEventTail } from "./run-event-tail.ts";
 import type { RunRegistry, RunRow } from "./run-registry.ts";
+import { runWorkspaceKind } from "./run-workspace/factory.ts";
 import type { BwrapIsolation } from "./sandbox.ts";
 import {
 	runHoldsClaim,
@@ -1440,6 +1441,10 @@ export class RunEngine {
 				run.id,
 				secretEnvironment?.names() ?? [],
 				workloadSecrets?.binding ?? null,
+			);
+			await this.deps.registry.recordWorkspaceKind(
+				run.id,
+				runWorkspaceKind(this.deps.projectRoot, run),
 			);
 			// Before the launch: a crash after it must still find the marker.
 			if (target.kind === "local" && this.deps.isolation) {
