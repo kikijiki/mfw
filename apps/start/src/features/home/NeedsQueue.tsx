@@ -52,6 +52,7 @@ const KIND_ICON: Record<InboxKind, LucideIcon> = {
 	blocked: PauseCircle,
 	trigger_disarmed: ShieldAlert,
 	trigger_failed: CircleX,
+	push_refused: ShieldAlert,
 	failed_run: CircleX,
 	sweep_infra: Wrench,
 	verify_infra: Wrench,

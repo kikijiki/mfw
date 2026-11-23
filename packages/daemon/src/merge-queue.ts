@@ -127,6 +127,11 @@ export interface MergeQueueDeps {
 	reclaimTask?: (job: MergeJobView) => Promise<void>;
 	/** Move the task to `ready`; the job is abandoned as in `abandon`. */
 	sendTaskToReady?: (job: MergeJobView) => Promise<void>;
+	/**
+	 * The paths a landed merge changed, before `merge.completed` is recorded;
+	 * null when they could not be listed. Armed triggers touching them disarm.
+	 */
+	onLandedPaths?: (paths: readonly string[] | null) => Promise<unknown>;
 	/** Publish the target branch after each merge lands. Absent or disabled
 	 *  leaves the branch local, which is the default. */
 	push?: { enabled: boolean; remote: string };
@@ -140,6 +145,9 @@ export interface MergeQueueDeps {
 }
 
 const IN_FLIGHT = ["merging", "rebasing", "reverifying"] as const;
+
+/** `engine_kv` row behind the `push_refused` inbox item; gone once a push succeeds. */
+export const PUSH_REFUSED_KEY = "push_refused";
 
 export class MergeQueue {
 	/** Mutable so settings can flip publishing without a restart; affects only
@@ -673,6 +681,7 @@ export class MergeQueue {
 				return "deferred";
 			}
 		}
+		await this.reportLandedPaths(job, baseSha, sha);
 		const stored = await this.deps.handle.withTx(async (tx) => {
 			await tx
 				.update(mergeJobs)
@@ -770,10 +779,57 @@ export class MergeQueue {
 			remote: this.push.remote,
 			branch,
 		});
-		// A refusal reaches the operator the same way a failed push does.
-		return r.status === "pushed"
-			? { status: "pushed" }
-			: { status: "error", reason: r.reason };
+		if (r.status === "refused") await this.recordPushRefusal(branch, r.reason);
+		if (r.status === "pushed") {
+			await this.deps.handle.db
+				.delete(engineKv)
+				.where(eq(engineKv.key, PUSH_REFUSED_KEY));
+			return { status: "pushed" };
+		}
+		return { status: "error", reason: r.reason };
+	}
+
+	/** Keep the inbox item until a later push succeeds. */
+	private async recordPushRefusal(
+		branch: string,
+		reason: string,
+	): Promise<void> {
+		const value = { at: Date.now(), branch, reason };
+		await this.deps.handle.db
+			.insert(engineKv)
+			.values({ key: PUSH_REFUSED_KEY, value, updatedAt: new Date() })
+			.onConflictDoUpdate({
+				target: engineKv.key,
+				set: { value, updatedAt: new Date() },
+			});
+	}
+
+	/**
+	 * Tell the owner of armed files what this merge changed, before
+	 * `merge.completed` can fire them. Unknown paths are reported as null, which
+	 * disarms conservatively. A failure here must not undo a landed merge; the
+	 * execution-time pin check still applies.
+	 */
+	private async reportLandedPaths(
+		job: MergeJobView,
+		baseSha: string,
+		sha: string,
+	): Promise<void> {
+		if (!this.deps.onLandedPaths) return;
+		try {
+			const diff = await git(
+				["diff-tree", "-r", "-z", "--name-only", "--no-renames", baseSha, sha],
+				this.deps.projectRoot,
+			);
+			await this.deps.onLandedPaths(
+				diff.exitCode === 0 ? diff.stdout.split("\0").filter(Boolean) : null,
+			);
+		} catch (e) {
+			this.deps.log.error(
+				{ err: e, job: job.id },
+				"could not re-check armed files after a merge",
+			);
+		}
 	}
 
 	/** Compare-and-swap the branch ref on the merged base; throws rather than

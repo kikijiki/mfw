@@ -550,6 +550,20 @@ async function treeBlobs(
 	return out;
 }
 
+/** Path to blob id at `rev`; null when git cannot read the revision. */
+export async function committedBlobs(
+	gitCwd: string,
+	rev: string,
+	paths: string[],
+): Promise<Map<string, string> | null> {
+	try {
+		return await treeBlobs(gitCwd, rev, paths);
+	} catch (e) {
+		if (e instanceof Refused) return null;
+		throw e;
+	}
+}
+
 /** `#!` target and the first argument, or null. */
 function parseShebang(bytes: Buffer): string[] | null {
 	if (bytes[0] !== 0x23 || bytes[1] !== 0x21) return null;
@@ -688,6 +702,31 @@ class PinBuilder {
 			}
 			await this.addPath(resolve(baseDir, target), "source");
 			return baseDir;
+		}
+		if (head !== "[" && /[*?[]/.test(head)) {
+			fail(
+				"unanalyzable",
+				"the command cannot be pinned because its path is a glob",
+				"Name one tracked script.",
+			);
+		}
+		if (SHELLS.has(basename(head))) {
+			const rest = words.slice(1);
+			if (rest.some((w) => typeof w === "string" && /^-[a-zA-Z]*c/.test(w))) {
+				fail(
+					"unanalyzable",
+					"the command cannot be pinned because it runs an inline shell string",
+					"Put the commands in a tracked script and run that.",
+				);
+			}
+			const target = rest.find((w) => w === null || !w.startsWith("-"));
+			if (target === undefined || target === null || /[*?[]/.test(target)) {
+				fail(
+					"unanalyzable",
+					"the command cannot be pinned because its shell reads a script that is not a literal path (stdin, a variable or a glob)",
+					"Run one tracked script by its path.",
+				);
+			}
 		}
 		if (!BUILTINS.has(head)) {
 			if (head.includes("/")) {

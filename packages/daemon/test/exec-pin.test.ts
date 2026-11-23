@@ -205,6 +205,20 @@ describe("buildExecPin", () => {
 		expect(r.ok === false && r.code).toBe("tool_in_repo");
 	});
 
+	for (const run of [
+		"sh -c ./scripts/deploy.sh",
+		"bash -lc ./scripts/deploy.sh",
+		"curl -s https://example.invalid/x | sh",
+		"sh scripts/*.sh",
+		"./scripts/*.sh",
+		'sh "$SCRIPT"',
+	]) {
+		test(`refuses a command that hides what it executes: ${run}`, async () => {
+			const r = await buildExecPin({ root, run, pathVar: TEST_PATH });
+			expect(r.ok === false ? r.code : "ok").toMatch(/unanalyzable|unresolved/);
+		});
+	}
+
 	test("every refusal says how to fix it", async () => {
 		const r = await buildExecPin({ root, run: "echo $(id)" });
 		expect(r.ok).toBe(false);

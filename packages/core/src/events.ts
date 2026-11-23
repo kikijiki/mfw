@@ -744,7 +744,13 @@ export const EventSchema = z.discriminatedUnion("type", [
 		type: z.literal("trigger.disarmed"),
 		payload: z.object({
 			defId: z.string(),
-			reason: z.enum(["hash-drift", "definition-removed", "unloadable"]),
+			reason: z.enum([
+				"hash-drift",
+				"definition-removed",
+				"unloadable",
+				"exec-pin-drift",
+				"re-arm-needed",
+			]),
 			armedHash: z.string(),
 			foundHash: z.string().optional(),
 		}),

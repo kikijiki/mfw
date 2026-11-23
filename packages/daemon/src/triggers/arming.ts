@@ -2,6 +2,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
 import { z } from "zod";
+import { type ExecPin, ExecPinSchema } from "../containment/exec-pin.ts";
 
 /**
  * The arming store, `~/.local/share/mfw/triggers/<project>.json`.
@@ -23,7 +24,15 @@ import { z } from "zod";
 
 const DisarmSchema = z.object({
 	at: z.number(),
-	reason: z.enum(["hash-drift", "definition-removed", "unloadable"]),
+	reason: z.enum([
+		"hash-drift",
+		"definition-removed",
+		"unloadable",
+		/** A file the trigger executes no longer matches its pin. */
+		"exec-pin-drift",
+		/** A merge touched an armed file, or the record predates exec pins. */
+		"re-arm-needed",
+	]),
 	/** The hash found on disk when the pin broke; absent if the file is gone. */
 	foundHash: z.string().optional(),
 });
@@ -49,6 +58,8 @@ const RecordSchema = z.object({
 	armedBy: z.string(),
 	/** Secret names granted. Requesting an ungranted secret refuses dispatch. */
 	secrets: z.array(z.string()).default([]),
+	/** What a script action executes. A script without one never runs. */
+	execPin: ExecPinSchema.optional(),
 	disarmed: DisarmSchema.optional(),
 	failing: FailingSchema.optional(),
 });
@@ -103,7 +114,12 @@ export class ArmingStore {
 	async arm(
 		defId: string,
 		hash: string,
-		opts: { by?: string; secrets?: string[]; definition?: string } = {},
+		opts: {
+			by?: string;
+			secrets?: string[];
+			definition?: string;
+			execPin?: ExecPin;
+		} = {},
 	): Promise<ArmingRecord> {
 		const file = await this.load();
 		const record: ArmingRecord = {
@@ -112,6 +128,7 @@ export class ArmingStore {
 			armedAt: Date.now(),
 			armedBy: opts.by ?? "operator",
 			secrets: opts.secrets ?? [],
+			...(opts.execPin ? { execPin: opts.execPin } : {}),
 		};
 		file[defId] = record;
 		await this.save(file);

@@ -891,6 +891,8 @@ export async function attachProject(
 			remote: cfg.pushRemote ?? "origin",
 		},
 		selfRepairMainRed: () => scheduler.selfRepairMainRed,
+		// `triggers` is built later; this only runs once a merge lands.
+		onLandedPaths: (paths) => triggers.disarmForMergedPaths(paths),
 	});
 
 	const executionTargets = new ExecutionTargetRegistry([

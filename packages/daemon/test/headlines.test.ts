@@ -34,6 +34,7 @@ describe("attention classes", () => {
 		"merge_parked",
 		"trigger_disarmed",
 		"trigger_failed",
+		"push_refused",
 		"sweep_infra",
 		"verify_infra",
 		"admission",

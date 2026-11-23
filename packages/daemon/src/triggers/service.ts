@@ -11,11 +11,21 @@ import {
 } from "@mfw/db/eventlog";
 import { triggerCursor, triggerDeliveries } from "@mfw/db/schema";
 import { desc, eq, sql } from "drizzle-orm";
+import {
+	buildExecPin,
+	type ExecPin,
+	type ExecRefusal,
+	verifyExecPin,
+} from "../containment/exec-pin.ts";
 import type { QuarantinedDefinition } from "../definitions.ts";
 import type { Logger } from "../log.ts";
 import type { NotificationType } from "../notify.ts";
-import type { TriggerActionRegistry, TriggerDispatch } from "./actions.ts";
-import { ArmingStore } from "./arming.ts";
+import type {
+	TriggerActionRegistry,
+	TriggerActionResult,
+	TriggerDispatch,
+} from "./actions.ts";
+import { ArmingStore, type DisarmReason } from "./arming.ts";
 import {
 	CRON_NEVER_FIRED,
 	cronCursorToLastFired,
@@ -157,6 +167,20 @@ export class TriggerReviewStaleError extends Error {
 	}
 }
 
+/** Arming refused: the files this trigger executes cannot be pinned. */
+export class TriggerPinRefusedError extends Error {
+	constructor(
+		readonly defId: string,
+		readonly refusal: ExecRefusal,
+	) {
+		super(`cannot arm ${defId}: ${refusal.reason}. Fix: ${refusal.fix}`);
+		this.name = "TriggerPinRefusedError";
+	}
+	get fix(): string {
+		return this.refusal.fix;
+	}
+}
+
 export interface TriggerServiceDeps {
 	handle: ProjectDbHandle;
 	bus: EventBus;
@@ -225,6 +249,15 @@ export class TriggerService {
 			const record = records[def.id];
 			let state: TriggerState;
 			let reason: string | undefined;
+			// Only a live pin is worth checking; anything else is already not armed.
+			const pinRefusal =
+				record?.execPin &&
+				record.hash === def.hash &&
+				!record.disarmed &&
+				def.action.kind === "script" &&
+				def.action.cwd === "repo"
+					? await this.pinRefusal(record.execPin)
+					: null;
 			const granted = record?.secrets ?? [];
 			const missing = def.secrets.filter((s) => !granted.includes(s));
 
@@ -240,6 +273,25 @@ export class TriggerService {
 			} else if (record.disarmed) {
 				state = "drifted";
 				reason = `disarmed automatically: ${record.disarmed.reason}`;
+			} else if (def.action.kind === "script" && !record.execPin) {
+				await this.raiseDrift(
+					def.id,
+					"re-arm-needed",
+					record.hash,
+					"no-exec-pin",
+				);
+				state = "drifted";
+				reason =
+					"armed before exec pins existed, so it will not run (review it and arm it again)";
+			} else if (pinRefusal) {
+				await this.raiseDrift(
+					def.id,
+					"exec-pin-drift",
+					record.hash,
+					`${pinRefusal.code}:${pinRefusal.path ?? ""}`,
+				);
+				state = "drifted";
+				reason = `${pinRefusal.reason}. ${pinRefusal.fix}`;
 			} else if (!def.enabled) {
 				state = "disabled";
 				reason = "`enabled: false` in the definition";
@@ -326,10 +378,55 @@ export class TriggerService {
 		return { defs, quarantined, armed, views };
 	}
 
+	/** Why the primary checkout no longer matches `pin`, or null if it does. */
+	private async pinRefusal(pin: ExecPin): Promise<ExecRefusal | null> {
+		const verified = await verifyExecPin(pin, {
+			root: this.deps.projectRoot,
+			gitCwd: this.deps.projectRoot,
+			rev: "HEAD",
+		});
+		return verified.ok ? null : verified;
+	}
+
+	/**
+	 * A merge landed. Any trigger whose definition or pinned files it touched
+	 * stays disarmed until the owner re-arms it, even when the primary checkout
+	 * has not moved and the bytes on disk still match. `null` means the changed
+	 * paths are unknown, so every script trigger disarms.
+	 */
+	async disarmForMergedPaths(
+		paths: readonly string[] | null,
+	): Promise<string[]> {
+		const records = await this.arming.load();
+		const touched = paths === null ? null : new Set(paths);
+		const disarmed: string[] = [];
+		for (const [defId, record] of Object.entries(records)) {
+			if (record.disarmed) continue;
+			const pinned = record.execPin?.files.map((f) => f.path) ?? [];
+			const hit =
+				touched === null
+					? record.execPin
+						? "unknown"
+						: undefined
+					: [`.mfw/triggers/${defId}.md`, ...pinned].find((p) =>
+							touched.has(p),
+						);
+			if (!hit) continue;
+			await this.raiseDrift(
+				defId,
+				"re-arm-needed",
+				record.hash,
+				`merged:${hit}`,
+			);
+			disarmed.push(defId);
+		}
+		return disarmed;
+	}
+
 	/** Stamp the arming record and emit once per distinct drift. */
 	private async raiseDrift(
 		defId: string,
-		reason: "hash-drift" | "definition-removed" | "unloadable",
+		reason: DisarmReason,
 		armedHash: string,
 		foundHash?: string,
 	): Promise<void> {
@@ -368,7 +465,13 @@ export class TriggerService {
 
 	/** Disarm stamps for the inbox: one small JSON read, no definition scan. */
 	async disarmed(): Promise<
-		{ defId: string; at: number; reason: string; armedBy: string }[]
+		{
+			defId: string;
+			at: number;
+			reason: string;
+			armedBy: string;
+			found?: string;
+		}[]
 	> {
 		const records = await this.arming.load();
 		return Object.entries(records)
@@ -378,6 +481,7 @@ export class TriggerService {
 				at: r.disarmed?.at ?? r.armedAt,
 				reason: r.disarmed?.reason ?? "unknown",
 				armedBy: r.armedBy,
+				...(r.disarmed?.foundHash ? { found: r.disarmed.foundHash } : {}),
 			}));
 	}
 
@@ -402,11 +506,21 @@ export class TriggerService {
 		if (opts.expectedHash && opts.expectedHash !== def.hash) {
 			throw new TriggerReviewStaleError(defId, opts.expectedHash, def.hash);
 		}
+		let execPin: ExecPin | undefined;
+		if (def.action.kind === "script") {
+			const built = await buildExecPin({
+				root: this.deps.projectRoot,
+				run: def.action.run,
+			});
+			if (!built.ok) throw new TriggerPinRefusedError(defId, built);
+			execPin = built.pin;
+		}
 		await this.ensureCursor(def);
 		await this.arming.arm(defId, def.hash, {
 			by: opts.by,
 			secrets: opts.secrets,
 			definition: def.definition,
+			...(execPin ? { execPin } : {}),
 		});
 		this.seen.delete(defId); // next pass is a first pass
 		const views = await this.list();
@@ -796,7 +910,8 @@ export class TriggerService {
 
 		const startedAt = this.now();
 		const records = await this.arming.load();
-		const granted = records[def.id]?.secrets ?? [];
+		const armedRecord = records[def.id];
+		const granted = armedRecord?.secrets ?? [];
 		const attemptNumber = existing ? existing.attempt + 1 : 1;
 
 		await this.deps.handle.db
@@ -831,14 +946,20 @@ export class TriggerService {
 			projectName: this.deps.projectName,
 			grantedSecrets: granted,
 			skippedSeqs,
+			// Only a live pin for exactly this definition authorizes execution.
+			...(armedRecord?.execPin &&
+			!armedRecord.disarmed &&
+			armedRecord.hash === def.hash
+				? {
+						execGate: {
+							pin: armedRecord.execPin,
+							sealRoot: join(this.deps.mfwHome, "triggers", "sealed"),
+						},
+					}
+				: {}),
 		};
 
-		let result: {
-			ok: boolean;
-			detail?: string;
-			exitCode?: number;
-			runId?: string;
-		};
+		let result: TriggerActionResult;
 		try {
 			result = await this.deps.actions.run(dispatch);
 		} catch (e) {
@@ -846,6 +967,15 @@ export class TriggerService {
 				ok: false,
 				detail: e instanceof Error ? e.message : String(e),
 			};
+		}
+
+		if (result.execRefusal && armedRecord) {
+			await this.raiseDrift(
+				def.id,
+				"exec-pin-drift",
+				armedRecord.hash,
+				`${result.execRefusal.code}:${result.execRefusal.path ?? ""}`,
+			);
 		}
 
 		const finishedAt = this.now();

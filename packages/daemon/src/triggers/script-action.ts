@@ -1,3 +1,8 @@
+import {
+	type SealedExec,
+	sealShellEntry,
+	verifyExecPin,
+} from "../containment/exec-pin.ts";
 import { headSha } from "../git.ts";
 import type { Logger } from "../log.ts";
 import { runProc } from "../proc.ts";
@@ -17,6 +22,10 @@ import { eventRefs } from "./placeholders.ts";
  * output-capped). Payload fields reach the script only through
  * `MFW_EVENT_JSON`; `def.ts` refuses a `run` string with placeholders
  * (shell injection).
+ *
+ * Nothing runs without the armed exec pin, and every file in it is re-hashed
+ * in the directory the command will run in, before any secret is read
+ * (`containment/exec-pin.ts`).
  */
 
 const STDERR_TAIL = 8 * 1024; // matches the delivery record's cap
@@ -90,6 +99,16 @@ async function runScript(
 		}
 	}
 
+	const gate = dispatch.execGate;
+	if (!gate) {
+		return {
+			ok: false,
+			detail:
+				"refusing to execute: this trigger has no armed exec pin. Fix: review it and arm it again.",
+			execRefusal: { code: "not_armed" },
+		};
+	}
+
 	const payload = (dispatch.event.payload ?? {}) as Record<string, unknown>;
 	const { taskId, runId } = eventRefs(dispatch.event);
 	const sha =
@@ -114,17 +133,6 @@ async function runScript(
 	env.MFW_SHA = sha;
 	env.MFW_EVENT_JSON = JSON.stringify(payload);
 
-	for (const name of dispatch.def.secrets) {
-		const value = await deps.secrets.getSecret(name);
-		if (value === undefined) {
-			return {
-				ok: false,
-				detail: `secret "${name}" is granted but not set in credentials.json`,
-			};
-		}
-		env[name.toUpperCase()] = value;
-	}
-
 	const workspace = createRunWorkspace(dispatch.projectRoot);
 	let worktree: RunWorkspaceHandle | null = null;
 	let cwd = dispatch.projectRoot;
@@ -138,14 +146,49 @@ async function runScript(
 		cwd = worktree.path;
 	}
 
+	let sealed: SealedExec | null = null;
 	try {
+		const verified = await verifyExecPin(gate.pin, {
+			root: cwd,
+			gitCwd: dispatch.projectRoot,
+			rev: worktree ? sha || "HEAD" : "HEAD",
+			pathVar: env.PATH,
+		});
+		if (!verified.ok) {
+			return {
+				ok: false,
+				detail: `refusing to execute: ${verified.reason}. Fix: ${verified.fix}`,
+				execRefusal: {
+					code: verified.code,
+					...(verified.path ? { path: verified.path } : {}),
+				},
+			};
+		}
+		for (const name of dispatch.def.secrets) {
+			const value = await deps.secrets.getSecret(name);
+			if (value === undefined) {
+				return {
+					ok: false,
+					detail: `secret "${name}" is granted but not set in credentials.json`,
+				};
+			}
+			env[name.toUpperCase()] = value;
+		}
+		sealed = await sealShellEntry(
+			action.run,
+			verified.entry,
+			gate.pin,
+			cwd,
+			gate.sealRoot,
+		);
 		// One shell, no wrapper prefix: for a single external command `sh -c` execs
 		// it, so exitCode/signalCode describe it directly. For multi-statement
 		// `run` (`foo && bar`) sh forks and a crash shows as sh's 128+signal exit.
 		// Harmless here: a crash and a non-zero exit both mean "delivery failed".
-		const result = await runProc([requireHostTool("sh"), "-c", action.run], {
+		const argv = sealed?.argv ?? [requireHostTool("sh"), "-c", action.run];
+		const result = await runProc(argv, {
 			cwd,
-			env,
+			env: { ...env, ...sealed?.env },
 			timeoutMs: action.timeoutMs,
 		});
 		const ok = result.exitCode === 0 && !result.timedOut;
@@ -162,6 +205,7 @@ async function runScript(
 						: `exit ${result.exitCode}: ${result.stderr.slice(-STDERR_TAIL)}`,
 		};
 	} finally {
+		await sealed?.dispose();
 		// Scratch worktree for one delivery: always removed, even if dirty.
 		if (worktree) await workspace.remove(worktree);
 	}
