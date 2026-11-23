@@ -9,6 +9,7 @@
 import { readFileSync } from "node:fs";
 import { createConnectionGate, startEgressProxy } from "./egress-proxy.ts";
 import {
+	armProxyHardExit,
 	RunEgressConfigSchema,
 	recordProxyProcess,
 	removeRunEgressEndpoints,
@@ -17,6 +18,9 @@ import { EgressCounters, parseEgressStats } from "./egress-stats.ts";
 
 /** A hung close must not hold up the run's exit record. */
 const SHUTDOWN_DEADLINE_MS = 2_000;
+
+/** Enforced by the kernel, for a proxy whose event loop no longer runs. */
+const HARD_EXIT_SECONDS = 3;
 
 /** Its own process, so the cap protects this process's descriptors. */
 const MAX_CONNECTIONS = 64;
@@ -64,6 +68,11 @@ async function main(): Promise<void> {
 	const stop = (): void => {
 		if (stopping) return;
 		stopping = true;
+		try {
+			armProxyHardExit(HARD_EXIT_SECONDS);
+		} catch {
+			// The timer below still applies; the recovery sweep covers the rest.
+		}
 		const finish = (): void => {
 			flush();
 			removeRunEgressEndpoints(config);

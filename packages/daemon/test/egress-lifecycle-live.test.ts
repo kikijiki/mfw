@@ -191,13 +191,14 @@ describe("the proxy through the real run script", () => {
 		writeFileSync(join(base, "release"), "");
 		await until(() => existsSync(join(control, `exit-${runId}`)), 15_000);
 		expect(readFileSync(join(control, `exit-${runId}`), "utf8")).toBe("exit:0");
-		await until(() => !running(run.proxy));
-		// It was killed before it could clean up, so recovery removes the rest.
+		// The run script signals nothing, so the stuck proxy is recovery's to remove.
+		expect(alive(run.proxy, run.ticks)).toBe(true);
 		expect(existsSync(run.paths.socketDir)).toBe(true);
 		const report = await sweepRunEgress(mfwHome, async () => false, {
 			graceMs: 0,
 		});
-		expect(report.removed).toBe(1);
+		expect(report).toEqual({ killed: 1, removed: 1, kept: 0 });
+		await until(() => !running(run.proxy));
 		expect(existsSync(run.paths.socketDir)).toBe(false);
 	}, 60_000);
 

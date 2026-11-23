@@ -16,6 +16,7 @@
  *   run is gone.
  */
 
+import { dlopen, FFIType } from "bun:ffi";
 import { createHash } from "node:crypto";
 import {
 	chmodSync,
@@ -150,6 +151,18 @@ export function processStartTicks(pid: number): string | null {
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * Have the kernel end this process in `seconds`, whatever its event loop is
+ * doing: `alarm(2)` with SIGALRM left at its default action. Timers cannot do
+ * this, because a stuck loop never runs them.
+ */
+export function armProxyHardExit(seconds: number): void {
+	const libc = dlopen("libc.so.6", {
+		alarm: { args: [FFIType.u32], returns: FFIType.u32 },
+	});
+	libc.symbols.alarm(seconds);
 }
 
 /** Called by the proxy once it listens, so recovery can identify it. */

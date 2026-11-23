@@ -232,8 +232,8 @@ const EGRESS_PROXY_MAIN = join(
 
 /** 0.05 s each: how long `run.sh` waits for the proxy socket. */
 const EGRESS_START_POLLS = 400;
-/** 0.05 s each: past the proxy's own shutdown deadline. */
-const EGRESS_STOP_POLLS = 60;
+/** 0.05 s each: past the proxy's hard exit deadline. */
+const EGRESS_STOP_POLLS = 80;
 
 const FLEET_CLI: Readonly<Record<string, "claude" | "codex">> = {
 	"claude-cli": "claude",
@@ -530,16 +530,16 @@ export class AgentHost {
 			"rc=$?",
 			// Closing the pipe stops the proxy, and its final counters land before the
 			// exit does. Bounded: a stuck proxy must never hold up the run's exit record.
+			// Nothing is signalled here. The proxy has its own hard deadline, and the
+			// recovery sweep removes one that outlives it.
 			...(bridge
 				? [
 						"exec 8>&-",
 						"mfw_egress_wait=0",
-						`while kill -0 "$mfw_egress_pid" 2>/dev/null && [ "$mfw_egress_wait" -lt ${EGRESS_STOP_POLLS} ]; do`,
+						`while [ -n "$mfw_egress_ticks" ] && [ "$(mfw_proc_ticks "$mfw_egress_pid")" = "$mfw_egress_ticks" ] && [ "$mfw_egress_wait" -lt ${EGRESS_STOP_POLLS} ]; do`,
 						"  mfw_egress_wait=$((mfw_egress_wait + 1))",
 						"  sleep 0.05",
 						"done",
-						'kill -9 "$mfw_egress_pid" 2>/dev/null',
-						'wait "$mfw_egress_pid" 2>/dev/null',
 					]
 				: []),
 			'mfw_record_exit "exit:$rc"',
@@ -652,12 +652,25 @@ export class AgentHost {
 			.map(q)
 			.join(" ");
 		return [
+			// Field 22 of /proc/<pid>/stat, empty for a zombie or a missing process.
+			// With the pid it identifies one process, so a reused pid never matches.
+			"mfw_proc_ticks() {",
+			"  local line fields",
+			'  { IFS= read -r line < "/proc/$1/stat"; } 2>/dev/null || return 1',
+			"  fields=${line##*) }",
+			"  set -f",
+			"  set -- $fields",
+			"  set +f",
+			'  [ "$1" != Z ] || return 1',
+			"  printf '%s' \"${20}\"",
+			"}",
 			`exec 8> >(exec ${proxy} >/dev/null 2>&1)`,
 			"mfw_egress_pid=$!",
+			'mfw_egress_ticks=$(mfw_proc_ticks "$mfw_egress_pid")',
 			"mfw_egress_wait=0",
 			`until [ -S ${q(egress.socketPath)} ]; do`,
 			"  mfw_egress_wait=$((mfw_egress_wait + 1))",
-			`  if [ "$mfw_egress_wait" -gt ${EGRESS_START_POLLS} ] || ! kill -0 "$mfw_egress_pid" 2>/dev/null; then`,
+			`  if [ "$mfw_egress_wait" -gt ${EGRESS_START_POLLS} ] || [ -z "$mfw_egress_ticks" ] || [ "$(mfw_proc_ticks "$mfw_egress_pid")" != "$mfw_egress_ticks" ]; then`,
 			"    exec 8>&-",
 			"    mfw_record_exit 'exit:78'",
 			"    exit 78",
