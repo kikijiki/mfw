@@ -436,6 +436,10 @@ export class WorktreeManager {
 			if (tree === (await gitOk(["rev-parse", "HEAD^{tree}"], path))) {
 				return head;
 			}
+			// Dated to the parent, not the wall clock: the same tree on the same
+			// HEAD must give the same SHA so a repeat archive is idempotent even
+			// when it lands a second later.
+			const stamp = await gitOk(["show", "-s", "--format=%cI", "HEAD"], path);
 			return await gitOk(
 				[
 					"-c",
@@ -450,6 +454,7 @@ export class WorktreeManager {
 					`mfw wip: run ${name.runId}${name.taskId ? ` (${name.taskId})` : ""}`,
 				],
 				path,
+				{ env: { GIT_AUTHOR_DATE: stamp, GIT_COMMITTER_DATE: stamp } },
 			);
 		} finally {
 			await rm(tmp, { recursive: true, force: true });
