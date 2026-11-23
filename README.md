@@ -170,6 +170,21 @@ Both keep the scheduler off until you enable it in the UI.
 | `PORT` / `HOST` | `7777` / runtime default | the address the server listens on |
 | `MFW_BASE_PATH` | `/mfw/` | the URL prefix, fixed when you run `bun run build` (`/` for the root) |
 | `MFW_URL` | `http://localhost:7777/mfw/api/trpc` | where the MCP server finds the app |
+| `MFW_ALLOWED_HOSTS` | none | extra host names the UI may be reached on (comma separated); loopback is always allowed |
+
+### Signing in
+
+Auth is always on, including on loopback. On first start the server prints a
+one-time **setup token** to its log (`journalctl --user -u mfw-server`). Open the
+UI, enter it and choose the owner password (12 characters or more). The token
+expires after an hour; restart the server for a new one.
+
+To recover a lost password, stop the server, delete `auth.db` from `MFW_HOME`
+and start it again: that signs everyone out and repeats first-run setup. No
+project data is touched.
+
+`mfw mcp` over HTTP has no way to sign in yet and is refused until scoped tokens
+land. The project brain is unaffected: it uses its own unix socket.
 
 Provider keys, if you use any, are stored in a private file
 (`~/.local/share/mfw/credentials.json`, readable only by you), never in the
