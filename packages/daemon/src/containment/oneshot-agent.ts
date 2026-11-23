@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { openProjectDb } from "@mfw/db/client";
+import { ingestRunEgress } from "../egress-ledger.ts";
 import type { ProcResult } from "../proc.ts";
 import { requireHostTool, SandboxUnavailableError } from "../sandbox.ts";
 import {
@@ -43,14 +44,20 @@ export interface OneShotAgentRequest {
 	maxOutputBytes: number;
 	signal?: AbortSignal;
 	steps?: LauncherSteps;
-	/** Stands in for the real proxy in the caged tests. */
-	startProxy?: (configPath: string, socketPath: string) => Promise<() => void>;
+	/** Stands in for the real proxy. Its result stops it and waits for its exit. */
+	startProxy?: (
+		configPath: string,
+		socketPath: string,
+	) => Promise<() => Promise<void>>;
 }
+
+/** Past the proxy's own hard exit deadline. */
+const PROXY_STOP_MS = 4_000;
 
 async function startRealProxy(
 	configPath: string,
 	socketPath: string,
-): Promise<() => void> {
+): Promise<() => Promise<void>> {
 	const proxy = Bun.spawn(
 		[
 			requireHostTool("env"),
@@ -63,16 +70,25 @@ async function startRealProxy(
 		],
 		{ stdin: "pipe", stdout: "ignore", stderr: "ignore" },
 	);
-	// Closing the pipe is how the proxy learns the call is over.
-	const stop = () => {
+	// Closing the pipe is how the proxy learns the call is over. It writes its
+	// final counters as it exits, so the caller waits for that.
+	const stop = async () => {
 		try {
 			(proxy.stdin as unknown as { end(): void }).end();
 		} catch {}
+		const exited = await Promise.race([
+			proxy.exited.then(() => true),
+			Bun.sleep(PROXY_STOP_MS).then(() => false),
+		]);
+		if (!exited) {
+			proxy.kill("SIGKILL");
+			await proxy.exited;
+		}
 	};
 	const deadline = Date.now() + PROXY_START_MS;
 	while (!existsSync(socketPath)) {
 		if (proxy.exitCode !== null || Date.now() > deadline) {
-			stop();
+			await stop();
 			throw new SandboxUnavailableError(
 				"the reviewer's egress proxy did not start",
 			);
@@ -96,7 +112,7 @@ export async function runOneShotAgent(
 	const runDir = join(stateDir, "runs", runId);
 	ensureRunDirLayout(runDir);
 	const handle = await openProjectDb(stateDir);
-	let stopProxy: (() => void) | null = null;
+	let stopProxy: (() => Promise<void>) | null = null;
 	try {
 		const egress = prepareRunEgress({
 			mfwHome,
@@ -172,8 +188,20 @@ export async function runOneShotAgent(
 			req.signal?.removeEventListener("abort", kill);
 		}
 	} finally {
-		stopProxy?.();
+		// Stop, wait, record, and only then delete: the counters are host-observed
+		// evidence of what this role sent. If they cannot be recorded the
+		// directory is kept, because it is then the only copy.
+		let recorded = stopProxy === null;
+		try {
+			await stopProxy?.();
+			if (stopProxy) {
+				await ingestRunEgress(handle.db, runId, runDir, new Date());
+				recorded = true;
+			}
+		} catch {
+			recorded = false;
+		}
 		handle.close();
-		rmSync(runDir, { recursive: true, force: true });
+		if (recorded) rmSync(runDir, { recursive: true, force: true });
 	}
 }
