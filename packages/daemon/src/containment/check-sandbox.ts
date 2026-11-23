@@ -34,6 +34,7 @@ import {
 	drainTail,
 	openStartPipe,
 } from "./check-runner.ts";
+import { DEFAULT_CHECK_TREE_MB, watchTreeSize } from "./check-tree-cap.ts";
 import {
 	type CompileHost,
 	compileBwrap,
@@ -48,6 +49,10 @@ export interface CheckSandboxDeps {
 	projectRoot: string;
 	stateDir: string;
 	steps?: LauncherSteps;
+	/** The most a check's tree may hold (`checkMaxTreeMb`). */
+	maxTreeBytes?: number;
+	/** How often the tree is measured. Tests shorten it. */
+	treePollMs?: number;
 }
 
 /**
@@ -234,6 +239,18 @@ export function createCheckSandbox(deps: CheckSandboxDeps): CheckRunner {
 			kill();
 		}, req.timeoutMs);
 		req.signal?.addEventListener("abort", kill, { once: true });
+		const maxTreeBytes =
+			deps.maxTreeBytes ?? DEFAULT_CHECK_TREE_MB * 1024 * 1024;
+		let breach: "over" | "blind" | null = null;
+		const stopWatching = watchTreeSize(
+			tree,
+			maxTreeBytes,
+			(why) => {
+				breach = why;
+				kill();
+			},
+			deps.treePollMs,
+		);
 		let started: boolean | null = null;
 		try {
 			const [out, err, exitCode] = await Promise.all([
@@ -243,6 +260,15 @@ export function createCheckSandbox(deps: CheckSandboxDeps): CheckRunner {
 			]);
 			const signalCode = (child.signalCode ?? null) as NodeJS.Signals | null;
 			started = checkStartedOn(start.read);
+			if (breach) {
+				return refuse(
+					"check_tree_cap",
+					breach === "over"
+						? `the check wrote more than ${Math.round(maxTreeBytes / 1024 / 1024)} MiB to its tree and was stopped`
+						: "the check hid part of its tree from the size measurement and was stopped",
+					"reduce what the check writes, or raise checkMaxTreeMb for this project",
+				);
+			}
 			if (!started) {
 				return refuse(
 					"no_start_handshake",
@@ -260,6 +286,7 @@ export function createCheckSandbox(deps: CheckSandboxDeps): CheckRunner {
 			};
 		} finally {
 			clearTimeout(timer);
+			stopWatching();
 			req.signal?.removeEventListener("abort", kill);
 			// Reading it closes it, so only an early throw leaves it open.
 			if (started === null) closeSync(start.read);

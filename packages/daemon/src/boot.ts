@@ -269,6 +269,7 @@ export interface ProjectConfig {
 	maxConcurrentDraftExpansions?: number;
 	/** Dispatch preflight memory floor in MiB; see `config.ts`. */
 	minFreeMemoryMb?: number;
+	checkMaxTreeMb?: number;
 	/** Live-run watchdog limits and scope policy; see `config.ts`. Applied live by settings. */
 	watchdog?: import("./config.ts").WatchdogConfig;
 	/** Optional narrowing of the machine-wide RunPod policy. */
@@ -609,6 +610,9 @@ export async function attachProject(
 				mfwHome: opts.mfwHome,
 				projectRoot: root,
 				stateDir: mfwDir,
+				...(cfg.checkMaxTreeMb
+					? { maxTreeBytes: cfg.checkMaxTreeMb * 1024 * 1024 }
+					: {}),
 			}),
 			runDirOf: (runId) => registry.runDir(runId),
 			controlPath: (runId) =>

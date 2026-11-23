@@ -296,6 +296,66 @@ describe.skipIf(skip !== null)("a DoD check in the verifier role", () => {
 		await git(["branch", "-q", "-D", "elsewhere"], primary);
 	}, 60_000);
 
+	// Review P7, M2: nothing limited what a check wrote to the host disk.
+	describe("the tree size cap", () => {
+		const capped = () =>
+			new VerifierClones({
+				workspaceRoot: join(base, "mfw/workspaces"),
+				primaryRoot: primary,
+				checkRunner: createCheckSandbox({
+					db: handle.db,
+					mfwHome: join(base, "mfw"),
+					projectRoot: primary,
+					stateDir: join(primary, ".mfw"),
+					maxTreeBytes: 4 * 1024 * 1024,
+					treePollMs: 25,
+					steps: cagedSteps({
+						home,
+						path: process.env.PATH ?? "",
+						shim: join(base, "systemd-run-shim"),
+					}),
+				}),
+			});
+		const run = (clones: VerifierClones, command: string) =>
+			verifyInClone(
+				clones,
+				sha,
+				"cap",
+				{ verifier: "deterministic", checks: [{ run: command }] } as never,
+				sha,
+			);
+
+		test("a check under the cap passes", async () => {
+			const r = await run(
+				capped(),
+				"head -c 1024 /dev/zero > small; sleep 0.2",
+			);
+			expect(r.checks[0]?.detail).toBeUndefined();
+			expect(r.passed).toBe(true);
+		}, 30_000);
+
+		test("a check that fills the tree is killed and never passes", async () => {
+			const started = Date.now();
+			const r = await run(
+				capped(),
+				"i=0; while :; do i=$((i+1)); head -c 1048576 /dev/urandom > f$i; done",
+			);
+			expect(r.passed).toBe(false);
+			expect(r.crashed).toBe(true);
+			expect(r.checks[0]?.detail).toContain("check_tree_cap");
+			expect(Date.now() - started).toBeLessThan(20_000);
+		}, 30_000);
+
+		test("a directory hidden from the measurement stops the check", async () => {
+			const r = await run(
+				capped(),
+				"mkdir hidden; head -c 1024 /dev/zero > hidden/f; chmod 000 hidden; sleep 10",
+			);
+			expect(r.passed).toBe(false);
+			expect(r.checks[0]?.detail).toContain("check_tree_cap");
+		}, 30_000);
+	});
+
 	test("the check itself cannot reach the handshake pipe", async () => {
 		const r = await check(
 			'for fd in 3 4 5 6 7 8 9; do if ( : >&"$fd" ) 2>/dev/null; then exit 9; fi; done',

@@ -300,6 +300,11 @@ const projectSchema = z.object({
 	 * entrypoint such as `direnv exec .`, `nix develop -c`). Never auto-detected.
 	 */
 	checkPrefix: z.string().optional(),
+	/**
+	 * The most one DoD check may write to its disposable clone, in MiB. The host
+	 * measures the tree and stops the check at this size. Default 20480 (20 GiB).
+	 */
+	checkMaxTreeMb: z.number().int().positive().optional(),
 	/** Env vars a check may read. Absent = `DEFAULT_ENV_ALLOWLIST` in `verifier.ts`. */
 	envPolicy: z
 		.object({
