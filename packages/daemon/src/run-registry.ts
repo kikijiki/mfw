@@ -911,6 +911,20 @@ export class RunRegistry {
 			.where(eq(runs.id, runId));
 	}
 
+	/**
+	 * Record what the run's workspace is, once. Later code routes on this and
+	 * never on the project's current `runWorkspace`.
+	 */
+	async recordWorkspaceKind(
+		runId: string,
+		kind: "worktree" | "clone",
+	): Promise<void> {
+		await this.handle.db
+			.update(runs)
+			.set({ workspaceKind: kind })
+			.where(and(eq(runs.id, runId), isNull(runs.workspaceKind)));
+	}
+
 	/** What the agent left at `outbox/exit`. Stored as a claim, never read for a verdict. */
 	async recordAgentExitClaim(
 		runId: string,

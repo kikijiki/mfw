@@ -24,7 +24,7 @@ import {
 	type RunRow,
 } from "./run-registry.ts";
 import { CloneRunWorkspace } from "./run-workspace/clone-impl.ts";
-import { createRunWorkspace } from "./run-workspace/factory.ts";
+import { workspaceForRun } from "./run-workspace/factory.ts";
 import { cloneScopeFiles } from "./run-workspace/scope-files.ts";
 import {
 	assessScope,
@@ -615,7 +615,7 @@ export class Supervisor {
 			return;
 		let sample: ScopeSample;
 		try {
-			const workspace = createRunWorkspace(this.deps.projectRoot);
+			const workspace = workspaceForRun(this.deps.projectRoot, run);
 			const listed = await (
 				this.deps.scopeFiles ??
 				(workspace instanceof CloneRunWorkspace

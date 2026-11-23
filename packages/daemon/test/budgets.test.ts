@@ -75,7 +75,8 @@ async function harness(
 			recordSpend(unit.handle.db, {
 				kind,
 				accountKey,
-				source: kind === "resource" ? "runpod_billing" : "run_usage",
+				// Enforcement reads host-observed spend only (agent-reported-signals.test.ts).
+				source: "runpod_billing",
 				usd,
 				ts: new Date(unit.clock.t),
 			}),
@@ -359,7 +360,7 @@ describe("agent budgets (P5b)", () => {
 		await recordSpend(h.u.handle.db, {
 			kind: "agent",
 			accountKey: "claude-cli",
-			source: "run_usage",
+			source: "runpod_billing",
 			runId: "R-1",
 			tokensIn: 900,
 			tokensOut: 200,
@@ -514,7 +515,7 @@ describe("brain budget", () => {
 		await recordSpend(h.u.handle.db, {
 			kind: "brain",
 			accountKey: "claude-cli",
-			source: "brain_usage",
+			source: "runpod_billing",
 			runId: "B-1",
 			usd: 2,
 			ts: new Date(h.u.clock.t),
@@ -553,7 +554,7 @@ describe("brain budget", () => {
 		await recordSpend(h.u.handle.db, {
 			kind: "brain",
 			accountKey: "claude-cli",
-			source: "brain_usage",
+			source: "runpod_billing",
 			runId: "B-1",
 			usd: 2,
 			ts: new Date(h.u.clock.t),

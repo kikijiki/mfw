@@ -92,7 +92,8 @@ export function classifyRunFailure(
 
 	if (f.killReason?.startsWith("watchdog-")) {
 		return f.killReason === "watchdog-scope" ||
-			f.killReason === "watchdog-files"
+			f.killReason === "watchdog-files" ||
+			f.killReason === "watchdog-output"
 			? "agent"
 			: "timeout";
 	}

@@ -1,5 +1,6 @@
 import type { Logger } from "./log.ts";
 import type { StoredProviderHold } from "./provider-holds.ts";
+import { CLAUDE_WEEKLY_SOURCE } from "./usage/claude-weekly.ts";
 import {
 	type UsageProbe,
 	UsageProbeError,
@@ -35,7 +36,8 @@ export type {
  *  - A window at 100% with a known reset holds the provider in the shared
  *    `ProviderHoldStore` until that reset (reason prefixed
  *    `USAGE_HOLD_PREFIX`). The monitor clears only holds it placed itself.
- *    For Claude that only happens after an observed `rate_limit_event`.
+ *    A window known only from agent events (`CLAUDE_WEEKLY_SOURCE`) is
+ *    sandbox-reported: it is shown and never places a hold.
  *  - A provider that answers with no windows is `unknown`, never 0%.
  *  - Probes cost no model tokens and read no login file (see `usage/*`).
  */
@@ -253,7 +255,11 @@ export class UsageMonitor {
 		if (!holds) return;
 		try {
 			const full = windows.filter(
-				(w) => w.usedPercent >= 100 && w.resetsAt !== null && w.resetsAt > at,
+				(w) =>
+					w.source !== CLAUDE_WEEKLY_SOURCE &&
+					w.usedPercent >= 100 &&
+					w.resetsAt !== null &&
+					w.resetsAt > at,
 			);
 			if (full.length > 0) {
 				const worst = full.reduce((a, b) =>

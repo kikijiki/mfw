@@ -99,7 +99,7 @@ process.exit(0);
 			agentArgv: ["true"],
 			env: {},
 			steer: false,
-			approvalMode: "autonomous",
+			approvalMode: "interactive",
 			isolation: { mode: "bwrap", hidePaths: [] },
 		});
 		await procs.get("mfw_g1")?.exited;
@@ -219,7 +219,7 @@ fs.writeFileSync(armed, "1");
 			projectRoot: base,
 			agentArgv: ["true"],
 			steer: false,
-			approvalMode: "autonomous" as const,
+			approvalMode: "interactive" as const,
 			isolation: { mode: "bwrap" as const, hidePaths: [] },
 		};
 		await host.launch({
@@ -325,7 +325,7 @@ process.exit(0);
 				agentArgv: ["true"],
 				env: {},
 				steer: false,
-				approvalMode: "autonomous",
+				approvalMode: "interactive",
 				isolation: { mode: "bwrap", hidePaths: [] },
 			});
 			await procs.get("mfw_g7")?.exited;
@@ -417,7 +417,7 @@ describe("G3: agent-writable startup files do not run on the host", () => {
 			agentArgv: ["true"],
 			env: {},
 			steer: false,
-			approvalMode: "autonomous",
+			approvalMode: "interactive",
 			isolation: { mode: "bwrap", hidePaths: [] },
 		});
 		const command = calls.find((c) => c[0] === "new-session")?.at(-1) as string;

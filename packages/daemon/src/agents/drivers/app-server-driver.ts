@@ -1,7 +1,11 @@
 /** Shared mfw.app-server/v1 run driver. Provider bridges own vendor protocols. */
 import { appendFileSync, readFileSync } from "node:fs";
 import type { FileSink } from "bun";
-import { driverRunPaths } from "../../containment/run-dir.ts";
+import {
+	agentSpawnCwd,
+	refuseBridgedRunWithoutRequest,
+} from "../../containment/agent-launch-argv.ts";
+import { driverRunPaths, isHostBridged } from "../../containment/run-dir.ts";
 import {
 	type ApprovalDecision,
 	type AppServerEnvelope,
@@ -9,6 +13,7 @@ import {
 	type AppServerResponse,
 	parseAppServerEnvelope,
 } from "../app-server-protocol.ts";
+import { limitAgentEvent, stripTerminalControls } from "../event-limits.ts";
 import { AgentEventSchema } from "../events.ts";
 
 const runDir = process.argv[2];
@@ -17,6 +22,7 @@ if (!runDir) {
 	process.exit(2);
 }
 
+refuseBridgedRunWithoutRequest(isHostBridged(runDir));
 const paths = driverRunPaths(runDir);
 const cfg = JSON.parse(readFileSync(paths.config, "utf8")) as {
 	bridgeArgv: string[];
@@ -40,7 +46,7 @@ let lastResultText: string | undefined;
 
 function emit(payload: Record<string, unknown>): void {
 	const candidate = { ts: new Date().toISOString(), seq: seq++, ...payload };
-	const parsed = AgentEventSchema.safeParse(candidate);
+	const parsed = AgentEventSchema.safeParse(limitAgentEvent(candidate));
 	if (!parsed.success) {
 		process.stderr.write(
 			`app-server driver: invalid event ${String(payload.type ?? "unknown")}\n`,
@@ -50,8 +56,9 @@ function emit(payload: Record<string, unknown>): void {
 	appendFileSync(eventsPath, `${JSON.stringify(parsed.data)}\n`);
 }
 
+// A bridged run's `cwd` is the sandbox path; the bridge itself stays on the host.
 const child = Bun.spawn([...cfg.bridgeArgv, ...cfg.providerArgv], {
-	cwd: cfg.cwd,
+	cwd: agentSpawnCwd(cfg.cwd),
 	env: { ...process.env, ...(cfg.env ?? {}) },
 	stdin: "pipe",
 	stdout: "pipe",
@@ -175,7 +182,7 @@ void readLines(
 );
 void readLines(
 	child.stderr,
-	(line) => process.stderr.write(`${line}\n`),
+	(line) => process.stderr.write(`${stripTerminalControls(line)}\n`),
 	false,
 );
 

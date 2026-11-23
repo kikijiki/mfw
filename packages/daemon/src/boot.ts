@@ -42,6 +42,7 @@ import {
 	normalizeRoot,
 	PROJECT_DEFAULTS,
 } from "./config.ts";
+import { agentSandboxRefusal } from "./containment/agent-preflight.ts";
 import { CredentialStore, WorkloadSecretGrantStore } from "./credentials.ts";
 import { ensureBoardConfig } from "./default-board-config.ts";
 import { readMemAvailable } from "./dispatch-preflight.ts";
@@ -142,7 +143,6 @@ import type {
 	RunPodPlacementRequest,
 	RunPodProjectPolicy,
 } from "./runpod-policy.ts";
-import { autonomySandboxRefusal } from "./sandbox.ts";
 import { Scheduler } from "./scheduler.ts";
 import type { Orchestrator, ProjectServices } from "./services.ts";
 import { SessionService } from "./session.ts";
@@ -585,23 +585,20 @@ export async function attachProject(
 		log: plog,
 	});
 	const host = new AgentHost(plog);
-	configureRunWorkspace(
-		root,
-		(cfg.runWorkspace ?? DEFAULTS.runWorkspace) === "clone"
-			? {
-					kind: "clone",
-					clone: {
-						workspaceRoot: join(opts.mfwHome, "workspaces"),
-						// Only a session tmux positively reports gone counts as dead.
-						assertProcessesDead: async (runId) => {
-							if ((await host.sessionLiveness(runId)) !== false) {
-								throw new Error(`run ${runId} is not confirmed stopped`);
-							}
-						},
-					},
+	configureRunWorkspace(root, {
+		kind: cfg.runWorkspace ?? DEFAULTS.runWorkspace,
+		// Kept for a worktree project too: a clone run that outlives a change of
+		// this setting must still be handled as the clone it is.
+		clone: {
+			workspaceRoot: join(opts.mfwHome, "workspaces"),
+			// Only a session tmux positively reports gone counts as dead.
+			assertProcessesDead: async (runId) => {
+				if ((await host.sessionLiveness(runId)) !== false) {
+					throw new Error(`run ${runId} is not confirmed stopped`);
 				}
-			: { kind: "worktree" },
-	);
+			},
+		},
+	});
 	const adapters = new AdapterRegistry();
 	const notifier = makeNotifier(cfg.notify, plog);
 	// Built before mergeQueue/maintenance/stepRunner, which raise sessions.
@@ -731,7 +728,7 @@ export async function attachProject(
 	let maintenance!: Maintenance;
 	let supervisor!: Supervisor;
 
-	const verifierClones = createVerifierClones(root);
+	const verifierClones = createVerifierClones(root, { workspaceKind: "clone" });
 	// A crashed daemon may have left verification clones and their pins behind.
 	await verifierClones?.sweep().catch((e) => {
 		plog.warn({ err: e }, "verifier clone sweep failed");
@@ -760,10 +757,11 @@ export async function attachProject(
 			if (!run?.worktreePath || !run.baseSha)
 				return { passed: false, detail: "run worktree is gone" };
 			const opts = { checkPrefix: cfg.checkPrefix, envPolicy: cfg.envPolicy };
+			const runClones = createVerifierClones(root, run);
 			const result = await verification.foreground(() =>
-				verifierClones
+				runClones
 					? verifyInClone(
-							verifierClones,
+							runClones,
 							quarantineRef(job.runId),
 							job.runId,
 							dod,
@@ -792,31 +790,30 @@ export async function attachProject(
 			: {}),
 		// Clone projects verify the merge commit itself, in a disposable clone,
 		// before the ref moves. Worktree projects keep today's behaviour.
-		...(verifierClones
-			? {
-					verifyMerge: async (
-						job: MergeJobView,
-						mergeSha: string,
-					): Promise<MergeVerdict> => {
-						const task = job.taskId ? await tasks.get(job.taskId) : null;
-						const dod = tasks.effectiveDod(task?.dod ?? null);
-						if (!dod) return { passed: true };
-						const run = await registry.get(job.runId);
-						if (!run?.baseSha) return { passed: true };
-						const result = await verification.foreground(() =>
-							verifyInClone(
-								verifierClones,
-								mergeSha,
-								`merge-${job.runId}`,
-								dod,
-								run.baseSha as string,
-								{ checkPrefix: cfg.checkPrefix, envPolicy: cfg.envPolicy },
-							),
-						);
-						return verdictOf(result);
-					},
-				}
-			: {}),
+		verifyMerge: async (
+			job: MergeJobView,
+			mergeSha: string,
+		): Promise<MergeVerdict> => {
+			const task = job.taskId ? await tasks.get(job.taskId) : null;
+			const dod = tasks.effectiveDod(task?.dod ?? null);
+			if (!dod) return { passed: true };
+			const run = await registry.get(job.runId);
+			if (!run?.baseSha) return { passed: true };
+			// Follows the run: a worktree run keeps today's behaviour.
+			const runClones = createVerifierClones(root, run);
+			if (!runClones) return { passed: true };
+			const result = await verification.foreground(() =>
+				verifyInClone(
+					runClones,
+					mergeSha,
+					`merge-${job.runId}`,
+					dod,
+					run.baseSha as string,
+					{ checkPrefix: cfg.checkPrefix, envPolicy: cfg.envPolicy },
+				),
+			);
+			return verdictOf(result);
+		},
 		onMerged: async (job) => {
 			const mergedRun = await registry.get(job.runId);
 			if (job.taskId && mergedRun?.kind !== "repair") {
@@ -1033,7 +1030,7 @@ export async function attachProject(
 		projectName: cfg.name,
 		integrationBranch,
 		routing: () => liveRouting,
-		providerHolds,
+		providerHolds: providerHolds.forProject(cfg.name),
 		budgetHold: (task): ReturnType<BudgetService["holdFor"]> =>
 			budgets.holdFor(task),
 		outcomePriors: async () => {
@@ -1052,14 +1049,21 @@ export async function attachProject(
 			memoryFloorBytes:
 				BigInt(cfg.minFreeMemoryMb ?? DEFAULTS.minFreeMemoryMb) * 1024n * 1024n,
 			memAvailableBytes: readMemAvailable,
-			// Autonomy is refused without a bwrap sandbox that passes the minimal probe.
+			// Autonomy is refused without the sandbox a real launch would get.
 			sandbox: () =>
-				autonomySandboxRefusal({
+				agentSandboxRefusal({
 					approvalMode: cfg.approvalMode ?? DEFAULTS.approvalMode,
 					isolation:
 						(cfg.agentIsolation ?? DEFAULTS.agentIsolation) === "bwrap"
-							? { mode: "bwrap", hidePaths: [opts.mfwHome] }
+							? {
+									mode: "bwrap",
+									hidePaths: [opts.mfwHome],
+									mfwHome: opts.mfwHome,
+								}
 							: undefined,
+					runWorkspace: cfg.runWorkspace ?? DEFAULTS.runWorkspace,
+					projectRoot: root,
+					mfwHome: opts.mfwHome,
 				}),
 		},
 		globalPaused: opts.globalPaused,
@@ -1073,7 +1077,7 @@ export async function attachProject(
 		// Hide the daemon's home (trigger arming store, credentials.json).
 		isolation:
 			(cfg.agentIsolation ?? DEFAULTS.agentIsolation) === "bwrap"
-				? { mode: "bwrap", hidePaths: [opts.mfwHome] }
+				? { mode: "bwrap", hidePaths: [opts.mfwHome], mfwHome: opts.mfwHome }
 				: undefined,
 	});
 	const admission = new ProjectDispatchAdmission(
@@ -1498,7 +1502,12 @@ export async function attachProject(
 		budgets,
 		authHolds: async () =>
 			Object.entries(await providerHolds.active())
-				.filter(([, h]) => h.reason === AUTH_HOLD_REASON)
+				.filter(
+					([key, h]) =>
+						h.reason === AUTH_HOLD_REASON &&
+						(!key.includes("#project:") ||
+							key.endsWith(`#project:${cfg.name}`)),
+				)
 				.map(([key, h]) => ({ key, since: h.since ?? 0, until: h.until })),
 		isolationIssue: () => {
 			const detail = isolationConfigProblem({

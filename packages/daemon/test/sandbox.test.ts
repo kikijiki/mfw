@@ -122,6 +122,7 @@ process.exit(0);
 			model: "test-model",
 			initialMessage: "",
 			steer: false,
+			approvalMode: "interactive",
 			isolation: { mode: "bwrap", hidePaths: [hidden] },
 		});
 		await waitFor(async () => (await host.readExit(runDir)).kind === "exit");

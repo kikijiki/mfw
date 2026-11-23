@@ -97,7 +97,9 @@ export type KillReason =
 	/** Touched files another claimed task owns (scope watchdog). */
 	| "watchdog-scope"
 	/** Changed more files than the scope watchdog allows. */
-	| "watchdog-files";
+	| "watchdog-files"
+	/** Wrote more to the host than a run may (line length or total bytes). */
+	| "watchdog-output";
 
 export type TargetLifecycleState =
 	| "legacy"
@@ -299,6 +301,8 @@ export const runs = sqliteTable(
 		 * agent-writable: only this column can say a `control/exit` is the host's.
 		 */
 		runDirLayout: text("run_dir_layout").$type<"split" | null>(),
+		/** What the workspace really was at launch. Never re-derived from config. */
+		workspaceKind: text("workspace_kind").$type<"worktree" | "clone" | null>(),
 	},
 	(t) => [
 		index("ix_runs_state").on(t.state),

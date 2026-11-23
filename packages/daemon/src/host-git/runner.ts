@@ -19,9 +19,12 @@
  * The only operation meant to touch a clone is a fetch run from a host-owned
  * repository; see `fetch.ts`.
  */
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { lstatSync, readFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { type ProcResult, runProc } from "../proc.ts";
+import { isUnder, resolveReal } from "./paths.ts";
+
+export { isUnder, resolveReal };
 
 export type HostGitErrorCode =
 	| "path_under_workspace"
@@ -338,35 +341,12 @@ export const DEFAULT_MAX_CPU_SECONDS = 120;
 /** Env vars inherited from the daemon. Everything else is dropped. */
 const INHERITED_ENV = ["PATH", "LANG", "LC_ALL", "TMPDIR", "TZ"];
 
-/** realpath that tolerates a missing tail: resolve the nearest existing ancestor. */
-export function resolveReal(p: string): string {
-	const abs = resolve(p);
-	const tail: string[] = [];
-	let cur = abs;
-	for (;;) {
-		try {
-			return join(realpathSync(cur), ...tail.reverse());
-		} catch {
-			const parent = dirname(cur);
-			if (parent === cur) return abs;
-			tail.push(basename(cur));
-			cur = parent;
-		}
-	}
-}
-
 function readSmallFile(p: string): string | undefined {
 	try {
 		return readFileSync(p, "utf8").slice(0, 64 * 1024);
 	} catch {
 		return undefined;
 	}
-}
-
-export function isUnder(path: string, root: string): boolean {
-	const p = resolveReal(path);
-	const r = resolveReal(root);
-	return p === r || p.startsWith(r.endsWith(sep) ? r : r + sep);
 }
 
 /** A url or path that git could parse as an option, or that is not an absolute local path. */
@@ -739,6 +719,7 @@ export class HostGit {
 				},
 				timeoutMs: opts.timeoutMs ?? 120_000,
 				...(opts.maxOutputBytes ? { maxOutputBytes: opts.maxOutputBytes } : {}),
+				hostGitChecked: true,
 			},
 		);
 		return {

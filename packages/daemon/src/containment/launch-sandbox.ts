@@ -27,9 +27,9 @@
  * With `"pipe"`, Bun hands the child a unix socketpair rather than a FIFO. Only
  * a caller's numeric descriptor is checked to be a real pipe.
  *
- * Not wired into the engine yet. The in-child probe (probe-run.ts) verifies
- * this contract from inside each sandbox, and attestation-gate.ts refuses
- * autonomous flags without a passing record.
+ * Task and repair runs reach it through agent-launch.ts. The in-child probe
+ * (probe-run.ts) verifies this contract from inside each sandbox, and
+ * attestation-gate.ts refuses autonomous flags without a passing record.
  */
 
 import { closeSync, constants, fstatSync, openSync, writeSync } from "node:fs";
@@ -70,6 +70,11 @@ export interface LaunchOptions {
 	scope?: "systemd" | "none";
 	/** Where the unnamed option files are created. */
 	tmpDir?: string;
+	/**
+	 * The directories an interactive launch was probed against. An autonomous
+	 * launch takes them from its authorization instead.
+	 */
+	expectPins?: readonly PinIdentity[];
 	/** Told which directories were opened, before anything runs. */
 	observePins?: (pins: PinIdentity[]) => void;
 }
@@ -265,7 +270,7 @@ export function launchSandbox(
 			"an autonomous launch must run under the systemd scope and its limits",
 		);
 	}
-	const expectPins = approvedPins(compiled, options);
+	const expectPins = approvedPins(compiled, options) ?? options.expectPins;
 
 	const opened = openSandboxFds(compiled, options.tmpDir);
 	if (expectPins && !samePins(expectPins, opened.pins)) {

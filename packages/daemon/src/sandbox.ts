@@ -3,7 +3,9 @@ import {
 	existsSync,
 	constants as fsConstants,
 	mkdirSync,
+	mkdtempSync,
 	realpathSync,
+	rmSync,
 	statSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -13,7 +15,11 @@ import {
 	PROBE_EXIT_CODE,
 	PROBE_SENTINEL,
 } from "./containment/minimal-probe.ts";
-import { runDirLayout, runStateRoot } from "./containment/run-dir.ts";
+import {
+	ensureRunDirLayout,
+	runDirLayout,
+	runStateRoot,
+} from "./containment/run-dir.ts";
 import { runProc } from "./proc.ts";
 
 /**
@@ -44,6 +50,8 @@ export interface BwrapIsolation {
 	/** Absolute paths masked with an empty tmpfs. Applied after every writable
 	 *  bind so a path nested under one (e.g. under `$HOME`) still overlays it. */
 	hidePaths: string[];
+	/** The daemon's home. Task and repair runs need it to find their fleet config. */
+	mfwHome?: string;
 }
 
 /**
@@ -525,17 +533,24 @@ export async function probeSandbox(
 		return probeMemo.result;
 	}
 	const env = opts.env ?? process.env;
-	const scratch = tmpdir();
+	// The layout a real launch gets: a split run dir beside a separate work tree.
+	const scratch = mkdtempSync(join(tmpdir(), "mfw-sandbox-probe-"));
+	const cwd = join(scratch, "work");
+	const runDir = join(scratch, "run");
 	let plan: SandboxPlan;
 	try {
+		mkdirSync(cwd);
+		ensureRunDirLayout(runDir);
 		plan = planSandbox({
-			cwd: scratch,
-			runDir: scratch,
+			cwd,
+			runDir,
 			isolation,
 			passEnv: [],
+			splitRunDir: true,
 			env,
 		});
 	} catch (error) {
+		rmSync(scratch, { recursive: true, force: true });
 		return {
 			ok: false,
 			detail: error instanceof Error ? error.message : String(error),
@@ -575,6 +590,8 @@ export async function probeSandbox(
 			ok: false,
 			detail: error instanceof Error ? error.message : String(error),
 		};
+	} finally {
+		rmSync(scratch, { recursive: true, force: true });
 	}
 	probeMemo = { key, at: now, result };
 	return result;

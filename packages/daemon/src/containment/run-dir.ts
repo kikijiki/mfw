@@ -24,6 +24,13 @@ import { basename, dirname, join } from "node:path";
 
 export const RUN_CONTROL_DIR = "control";
 export const RUN_OUTBOX_DIR = "outbox";
+/**
+ * Host-written in `control/` when the driver runs on the host. Its events then
+ * stay in the host-only run root: a host process must not append through a
+ * path the agent can replace with a link, and a planted `outbox/events.jsonl`
+ * must not shadow the real stream.
+ */
+export const HOST_BRIDGE_MARKER = "host-bridge";
 
 export interface RunDirLayout {
 	root: string;
@@ -141,6 +148,17 @@ export function runHostFilesDir(runDir: string): string {
 	return existsSync(join(control, "driver.json")) ? control : runDir;
 }
 
+/** True for a run whose driver and bridge run on the host. Never follows a link. */
+export function isHostBridged(runDir: string): boolean {
+	try {
+		return lstatSync(
+			join(runDir, RUN_CONTROL_DIR, HOST_BRIDGE_MARKER),
+		).isFile();
+	} catch {
+		return false;
+	}
+}
+
 /** Where the driver finds its host-written inputs and writes its events. */
 export function driverRunPaths(runDir: string): {
 	config: string;
@@ -154,12 +172,16 @@ export function driverRunPaths(runDir: string): {
 		config: join(input, "driver.json"),
 		steer: join(input, "steer.jsonl"),
 		controls: join(input, "control.jsonl"),
-		events: join(split ? join(runDir, RUN_OUTBOX_DIR) : runDir, "events.jsonl"),
+		events: join(
+			split && !isHostBridged(runDir) ? join(runDir, RUN_OUTBOX_DIR) : runDir,
+			"events.jsonl",
+		),
 	};
 }
 
 /** The agent's event stream: the outbox copy, or the flat path of an older run. */
 export function runEventsPath(runDir: string): string {
+	if (isHostBridged(runDir)) return join(runDir, "events.jsonl");
 	const inOutbox = join(runDir, RUN_OUTBOX_DIR, "events.jsonl");
 	return existsSync(inOutbox) ? inOutbox : join(runDir, "events.jsonl");
 }

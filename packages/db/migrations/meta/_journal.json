@@ -148,6 +148,13 @@
       "when": 1795407475529,
       "tag": "0021_run_provenance",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1795418932366,
+      "tag": "0022_run_workspace_kind",
+      "breakpoints": true
     }
   ]
 }

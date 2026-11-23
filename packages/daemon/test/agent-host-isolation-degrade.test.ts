@@ -58,6 +58,7 @@ describe("AgentHost fails closed when bwrap is unavailable", () => {
 				model: "test-model",
 				initialMessage: "",
 				steer: false,
+				approvalMode: "interactive",
 				isolation: { mode: "bwrap", hidePaths: ["/nonexistent-on-purpose"] },
 			}),
 		).rejects.toBeInstanceOf(SandboxUnavailableError);

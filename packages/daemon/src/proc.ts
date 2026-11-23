@@ -6,6 +6,8 @@
  * whole process group gets SIGTERM, then SIGKILL 5 s later.
  */
 
+import { assertLegacyGitAllowed } from "./host-git/legacy-guard.ts";
+
 export interface ProcOpts {
 	cwd?: string;
 	env?: NodeJS.ProcessEnv;
@@ -15,6 +17,11 @@ export interface ProcOpts {
 	/** DEFAULT 4 MiB per stream, tail-kept (head dropped, marker inserted). */
 	maxOutputBytes?: number;
 	signal?: AbortSignal;
+	/**
+	 * This git command already runs under HostGit's ownership checks, config and
+	 * env. Everything else is refused in a run workspace (`legacy-guard.ts`).
+	 */
+	hostGitChecked?: true;
 }
 
 export interface ProcResult {
@@ -109,6 +116,7 @@ export async function runProc(
 		);
 	}
 	if (argv.length === 0) throw new Error("runProc: empty argv");
+	if (!opts.hostGitChecked) assertLegacyGitAllowed(argv, opts.cwd, opts.env);
 
 	// detached ⇒ the child setsid()s and leads its own process group, so a
 	// negative-pid kill reaps everything it spawned.

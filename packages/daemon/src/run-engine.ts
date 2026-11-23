@@ -48,6 +48,7 @@ import {
 } from "./routing.ts";
 import { RunEventTail } from "./run-event-tail.ts";
 import type { RunRegistry, RunRow } from "./run-registry.ts";
+import { runWorkspaceKind } from "./run-workspace/factory.ts";
 import type { BwrapIsolation } from "./sandbox.ts";
 import {
 	runHoldsClaim,
@@ -1204,10 +1205,29 @@ export class RunEngine {
 		return this.launchPreparedRun(prepared);
 	}
 
+	/**
+	 * Only task and repair runs have a sandbox profile. Every other kind would
+	 * get the interim sandbox, which binds the real home read-write, so it may
+	 * not act without a human until its role profile exists.
+	 */
+	assertKindMayRun(kind: string): void {
+		if (!this.deps.isolation) return;
+		if ((this.deps.defaults.approvalMode ?? "autonomous") !== "autonomous") {
+			return;
+		}
+		if (kind === "task" || kind === "repair") return;
+		throw new DispatchPreflightError(
+			"sandbox_role_unavailable",
+			[kind],
+			`autonomous ${kind} runs are refused until their sandbox profile exists`,
+		);
+	}
+
 	private async prepareRun(
 		spec: RunLaunchSpec,
 		targetResolution: ResolvedExecutionTarget,
 	): Promise<PreparedTaskRun> {
+		this.assertKindMayRun(spec.kind);
 		const target = this.requireTarget(targetResolution.kind);
 		const requestedShape = {
 			...targetResolution.requestedShape,
@@ -1441,6 +1461,10 @@ export class RunEngine {
 				secretEnvironment?.names() ?? [],
 				workloadSecrets?.binding ?? null,
 			);
+			await this.deps.registry.recordWorkspaceKind(
+				run.id,
+				runWorkspaceKind(this.deps.projectRoot, run),
+			);
 			// Before the launch: a crash after it must still find the marker.
 			if (target.kind === "local" && this.deps.isolation) {
 				await this.deps.registry.markRunDirSplit(run.id);
@@ -1471,6 +1495,8 @@ export class RunEngine {
 					steer: invocation.declaredCapabilities.steer,
 					approvalMode: this.deps.defaults.approvalMode ?? "autonomous",
 					isolation: this.deps.isolation,
+					runKind: run.kind,
+					providerId: provider.id,
 					secretEnvironment,
 				},
 			});

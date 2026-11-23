@@ -37,6 +37,23 @@ export const RUN_FACT_PROVENANCE = {
 	transcript_summary: ["sandbox-reported"],
 } as const satisfies Record<string, readonly FactProvenance[]>;
 
+/**
+ * Where each spend source comes from. Figures a run reports about itself are
+ * shown, and never count toward a hard budget stop.
+ */
+export const SPEND_SOURCE_PROVENANCE = {
+	run_usage: "sandbox-reported",
+	brain_usage: "sandbox-reported",
+	runpod_billing: "host-observed",
+	host_slot_time: "host-observed",
+} as const satisfies Record<string, FactProvenance>;
+
+export const REPORTED_SPEND_SOURCES = (
+	Object.keys(
+		SPEND_SOURCE_PROVENANCE,
+	) as (keyof typeof SPEND_SOURCE_PROVENANCE)[]
+).filter((s) => SPEND_SOURCE_PROVENANCE[s] === "sandbox-reported");
+
 export type RunFactKind = keyof typeof RUN_FACT_PROVENANCE;
 export const RUN_FACT_KINDS = Object.keys(RUN_FACT_PROVENANCE) as RunFactKind[];
 

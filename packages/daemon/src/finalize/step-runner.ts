@@ -37,6 +37,7 @@ import {
 import type { Logger } from "../log.ts";
 import { updateInfraState } from "../maintenance.ts";
 import type { NotificationType } from "../notify.ts";
+import { MAX_REPORTED_HOLD_MS } from "../provider-holds.ts";
 import { detectRateLimit } from "../rate-limit.ts";
 import type {
 	ReviewFailureCause,
@@ -54,8 +55,8 @@ import {
 } from "../run-exit-evidence.ts";
 import type { BeginStepResult, RunRegistry, RunRow } from "../run-registry.ts";
 import {
-	createRunWorkspace,
 	createVerifierClones,
+	workspaceForRun,
 } from "../run-workspace/factory.ts";
 import type { WorktreeReportIdentity } from "../run-workspace/run-workspace.ts";
 import {
@@ -121,6 +122,7 @@ const KILL_REASONS: ReadonlySet<string> = new Set([
 	"watchdog-wall",
 	"watchdog-turns",
 	"watchdog-timebox",
+	"watchdog-output",
 	...SCOPE_KILL_REASONS,
 ]);
 
@@ -255,10 +257,17 @@ export interface StepRunnerDeps {
 	 * the legacy project-wide `dispatch_hold`.
 	 */
 	providerHolds?: {
-		hold(
+		/** The agent's claim: clamped, and scoped until another project confirms it. */
+		report(
 			key: string,
-			hold: { until: number; reason: string; runId?: string; project?: string },
-		): Promise<unknown>;
+			report: {
+				project: string;
+				until: number;
+				reason: string;
+				runId?: string;
+				confirmedUntil?: number;
+			},
+		): Promise<{ scope: "project" | "machine"; key: string; until: number }>;
 	};
 	/** Project name recorded on a provider hold (which project hit the limit). */
 	projectName?: string;
@@ -906,16 +915,21 @@ export class StepRunner {
 		} catch {
 			return false;
 		}
+		const workspace = workspaceForRun(this.deps.projectRoot, run);
 		// Same ownership-aware policy as maintenance. MFW_REPORT.json is exempt
 		// only while it matches the identity recorded by ingest_report.
-		if (
-			await createRunWorkspace(this.deps.projectRoot).hasLocalChanges(
-				{ path: wt },
-				{ reportIdentity },
-			)
-		)
+		if (await workspace.hasLocalChanges({ path: wt }, { reportIdentity }))
 			return true;
 		if (!run.baseSha) return false;
+		if (workspace.kind === "clone") {
+			// A clone's own HEAD is agent-written: read the imported ref instead.
+			const imported = await workspace.fetchResult({
+				path: wt,
+				branch: run.branch ?? "",
+				baseSha: run.baseSha,
+			});
+			return imported.sha !== null && imported.sha !== run.baseSha;
+		}
 		const head = await git(["rev-parse", "HEAD"], wt);
 		if (head.exitCode !== 0)
 			throw new Error(
@@ -1259,9 +1273,15 @@ export class StepRunner {
 			| ClassifyResult
 			| undefined;
 		const auth = classify?.auth === true;
-		const until = auth
-			? Date.now() + AUTH_HOLD_MS
-			: (classify?.resetsAt ?? Date.now() + HOLD_FALLBACK_MS);
+		const now = Date.now();
+		const reported = auth
+			? now + AUTH_HOLD_MS
+			: (classify?.resetsAt ?? now + HOLD_FALLBACK_MS);
+		// What the agent says is never trusted for how long everything waits.
+		const until =
+			Number.isFinite(reported) && reported > now
+				? Math.min(reported, now + MAX_REPORTED_HOLD_MS)
+				: now + HOLD_FALLBACK_MS;
 		const value = {
 			until,
 			reason: auth ? AUTH_HOLD_REASON : `rate-limited run ${built.run.id}`,
@@ -1271,12 +1291,14 @@ export class StepRunner {
 				parseRoutingRecord(built.run.routing)?.holdKey ??
 				built.run.providerId ??
 				"unknown";
-			await this.deps.providerHolds.hold(key, {
+			const placed = await this.deps.providerHolds.report(key, {
 				...value,
 				runId: built.run.id,
-				...(this.deps.projectName ? { project: this.deps.projectName } : {}),
+				project: this.deps.projectName ?? "(unnamed)",
+				// Two projects agreeing on a login failure earns the full owner hold.
+				...(auth ? { confirmedUntil: now + AUTH_HOLD_MS } : {}),
 			});
-			return { ...value, key };
+			return { ...value, ...placed, key };
 		}
 		await this.deps.handle.db
 			.insert(engineKv)
@@ -1365,11 +1387,12 @@ export class StepRunner {
 		};
 		// A clone's tree is agent-writable: the checks run in a disposable
 		// host-owned clone of the imported tip, never in the run's workspace.
-		const clones = createVerifierClones(this.deps.projectRoot);
+		const clones = createVerifierClones(this.deps.projectRoot, run);
 		let candidate: string | null = null;
 		if (clones) {
-			const imported = await createRunWorkspace(
+			const imported = await workspaceForRun(
 				this.deps.projectRoot,
+				run,
 			).fetchResult({
 				path: run.worktreePath,
 				branch: run.branch ?? "",
@@ -1896,7 +1919,7 @@ export class StepRunner {
 		// A clone's work reaches the primary only through the host's verified
 		// import; the merge queue reads that quarantine ref. Nothing to merge
 		// is a failed step, not an empty merge.
-		const workspace = createRunWorkspace(this.deps.projectRoot);
+		const workspace = workspaceForRun(this.deps.projectRoot, run);
 		if (workspace.kind === "clone") {
 			const imported = await workspace.fetchResult({
 				path: run.worktreePath ?? workspace.paths(run.id).workPath,
@@ -1973,7 +1996,7 @@ export class StepRunner {
 	private async archiveWip(built: Built): Promise<ArchiveWipResult> {
 		const { run } = built;
 		if (!run.branch || !run.baseSha) return { ref: null, sha: null };
-		const archive = await createRunWorkspace(this.deps.projectRoot).archive(
+		const archive = await workspaceForRun(this.deps.projectRoot, run).archive(
 			{
 				// No worktree: archiveWip saves the branch tip instead.
 				path: run.worktreePath ?? join(this.deps.projectRoot, ".mfw", "none"),
@@ -2009,7 +2032,7 @@ export class StepRunner {
 		const owns = task?.owns ?? [];
 		let files: string[] = [];
 		const wt = run.worktreePath;
-		const workspace = createRunWorkspace(this.deps.projectRoot);
+		const workspace = workspaceForRun(this.deps.projectRoot, run);
 		const present =
 			wt !== null &&
 			(await access(wt).then(
@@ -2114,7 +2137,7 @@ export class StepRunner {
 				reason: "durable worktree ownership is incomplete",
 			};
 		}
-		await createRunWorkspace(this.deps.projectRoot).remove(
+		await workspaceForRun(this.deps.projectRoot, run).remove(
 			{ path: wt, branch: run.branch, baseSha: run.baseSha },
 			{ force, reportIdentity },
 		);

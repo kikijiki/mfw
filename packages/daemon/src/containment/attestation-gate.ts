@@ -2,9 +2,8 @@
  * The gate in front of autonomous flags (design "Probe barrier": no autonomous
  * flag without a passing attestation).
  *
- * Not wired into the engine's launch path yet; P5b calls
- * {@link authorizeAutonomousLaunch} where it spawns the agent. The requirement
- * is derived here from a required `approvalMode`: only `interactive` skips the
+ * agent-launch.ts calls {@link authorizeAutonomousLaunch} in the process that
+ * spawns the agent. The requirement is derived here from a required `approvalMode`: only `interactive` skips the
  * attestation, and a missing or unknown value is refused. The result is an
  * opaque authorization that `launchSandbox` demands for autonomous launches.
  *
@@ -16,9 +15,8 @@
  * same sandbox the agent is about to get: same profile, compiled options and
  * bind sources, seccomp program and bwrap version.
  *
- * Residual: a caller can still state `interactive` and pass autonomous flags in
- * the command, which the launcher cannot see. P5b must derive both from the
- * same setting.
+ * `launchSandbox` cannot see autonomous flags in a command, so agent-launch.ts
+ * refuses an interactive launch that carries one.
  */
 
 import type { ProjectDb } from "@mfw/db/client";
@@ -171,7 +169,7 @@ export function judgeAttestation(
 	return { ok: true, attestationId: row.id, pins: row.pins };
 }
 
-/** The seam P5b calls before every agent launch, whatever its approval mode. */
+/** Called before every agent launch, whatever its approval mode. */
 export async function authorizeAutonomousLaunch(
 	db: ProjectDb,
 	req: GateRequest,
