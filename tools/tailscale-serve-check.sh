@@ -71,27 +71,28 @@ password="serve check owner passphrase"
 token="$(tr -d '\n' <"$scratch/mfw/setup-token")"
 setup="$(post setup "{\"token\":\"$token\",\"password\":\"$password\"}")"
 code="$(status <<<"$setup")"
-[[ "$code" == 200 ]]; result "setup through the proxy" $? "$code"
+rc=0; [[ "$code" == 200 ]] || rc=$?; result "setup through the proxy" "$rc" "$code"
 
 cookie_line="$(grep -i '^set-cookie: __Secure-mfw_session=' <<<"$setup" | grep -vi 'Max-Age=0' | head -n1 | tr -d '\r' || true)"
-[[ -n "$cookie_line" ]]; result "X-Forwarded-Proto gave the __Secure- cookie" $? "no such cookie"
-grep -qi '; Secure' <<<"$cookie_line"; result "cookie is Secure" $? "$cookie_line"
-grep -qi '; HttpOnly' <<<"$cookie_line"; result "cookie is HttpOnly" $? "$cookie_line"
-grep -qi 'SameSite=Strict' <<<"$cookie_line"; result "cookie is SameSite=Strict" $? "$cookie_line"
-grep -qE 'Path=/mfw(;|$)' <<<"$cookie_line"; result "cookie Path is /mfw" $? "$cookie_line"
+rc=0; [[ -n "$cookie_line" ]] || rc=$?; result "X-Forwarded-Proto gave the __Secure- cookie" "$rc" "no such cookie"
+rc=0; grep -qi '; Secure' <<<"$cookie_line" || rc=$?; result "cookie is Secure" "$rc" "$cookie_line"
+rc=0; grep -qi '; HttpOnly' <<<"$cookie_line" || rc=$?; result "cookie is HttpOnly" "$rc" "$cookie_line"
+rc=0; grep -qi 'SameSite=Strict' <<<"$cookie_line" || rc=$?; result "cookie is SameSite=Strict" "$rc" "$cookie_line"
+rc=0; grep -qE 'Path=/mfw(;|$)' <<<"$cookie_line" || rc=$?; result "cookie Path is /mfw" "$rc" "$cookie_line"
 
 cookie="$(sed -E 's/^[^:]+: ([^;]+).*/\1/' <<<"$cookie_line")"
 key="$(sed -nE 's/.*"requestKey":"([^"]+)".*/\1/p' <<<"$setup")"
 code="$(http -o /dev/null -w '%{http_code}' "$url/api/trpc/brain.states" -H "Cookie: $cookie" -H "x-mfw-key: $key")"
-[[ "$code" == 200 ]]; result "cookie and key read the API" $? "$code"
+rc=0; [[ "$code" == 200 ]] || rc=$?; result "cookie and key read the API" "$rc" "$code"
 code="$(http -o /dev/null -w '%{http_code}' "$url/api/trpc/brain.states" -H "Cookie: __Secure-mfw_session=$(printf 'A%.0s' {1..43}); $cookie" -H "x-mfw-key: $key")"
-[[ "$code" == 200 ]]; result "a planted cookie is harmless" $? "$code"
+rc=0; [[ "$code" == 200 ]] || rc=$?; result "a planted cookie is harmless" "$rc" "$code"
 
-# A client's own forwarded headers must not choose its identity or origin.
+# The proxy must replace a client's forwarded headers. If it passes them on,
+# mfw refuses the request (403), and that is the failure this check exists for.
 code="$(http -o /dev/null -w '%{http_code}' "$url/api/auth/state" -H 'X-Forwarded-Host: evil.example')"
-[[ "$code" == 200 || "$code" == 403 ]]; result "a forged X-Forwarded-Host is replaced or refused" $? "$code"
-body="$(http "$url/api/auth/state" -H 'X-Forwarded-Proto: http' -w ' %{http_code}')"
-[[ "$body" == *" 200" || "$body" == *" 403" ]]; result "a forged X-Forwarded-Proto is replaced or refused" $? "$body"
+rc=0; [[ "$code" == 200 ]] || rc=$?; result "the proxy replaces a forged X-Forwarded-Host" "$rc" "$code"
+code="$(http -o /dev/null -w '%{http_code}' "$url/api/auth/state" -H 'X-Forwarded-Proto: http')"
+rc=0; [[ "$code" == 200 ]] || rc=$?; result "the proxy replaces a forged X-Forwarded-Proto" "$rc" "$code"
 
 locked=1
 for i in 1 2 3 4 5 6 7 8; do
