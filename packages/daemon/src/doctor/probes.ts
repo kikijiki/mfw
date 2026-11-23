@@ -71,6 +71,8 @@ export interface ProjectFacts {
 	rootExists: boolean;
 	isGit: boolean;
 	hasEnvrc: boolean;
+	/** Why host git refuses this repository, or null. */
+	gitConfigRefusal: string | null;
 	remotes: { name: string; url: string }[];
 	/** Not ignored and not tracked; null when git could not answer. */
 	untracked: FileList | null;

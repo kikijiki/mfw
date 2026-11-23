@@ -17,12 +17,11 @@ import {
 	detectTiocsti,
 	detectUserns,
 } from "../containment/host-caps.ts";
-import { assertSeccompSupported } from "../containment/seccomp.ts";
 import {
-	assertSocketPathFits,
-	SocketPathError,
-	socketRoot,
-} from "../containment/socket-root.ts";
+	type LaunchPreflightItem,
+	launchPreflight,
+} from "../containment/launch-preflight.ts";
+import { assertSeccompSupported } from "../containment/seccomp.ts";
 import { commandFor, isSystemPath } from "./fix-text.ts";
 import type { DoctorProbes, ProjectFacts } from "./probes.ts";
 import {
@@ -176,6 +175,10 @@ async function toolCheck(
 			: missing;
 	}
 	const version = await p.toolVersion(found.path, flag);
+	// A required tool that cannot report its version may not run at all.
+	if (version === undefined && missing.severity === "blocker") {
+		return { ...missing, detail: `${name} did not run` };
+	}
 	return ok(`${name} ${version ?? "(version not readable)"}`);
 }
 
@@ -247,18 +250,25 @@ async function homeCheck(p: DoctorProbes): Promise<Outcome> {
 	return ok(`$MFW_HOME (${p.home}) is private`);
 }
 
-function socketCheck(p: DoctorProbes): Outcome {
-	try {
-		const root = socketRoot(p.home, { env: p.env, uid: p.uid });
-		// The longest socket the daemon binds below its per-home directory.
-		assertSocketPathFits(join(root, "b", "0".repeat(12), "brain.sock"));
-		return ok(`socket directory ${root} fits the 107-byte limit`);
-	} catch (e) {
-		if (e instanceof SocketPathError) {
-			return problem("blocker", e.message, e.fix);
-		}
-		throw e;
-	}
+/** The launch path's own preflight, read through the doctor's probes. */
+function preflightFor(p: DoctorProbes): Promise<LaunchPreflightItem[]> {
+	return launchPreflight({
+		home: p.home,
+		uid: p.uid,
+		env: p.env,
+		lstat: (path) => p.stat(path),
+		tool: async (name) => (await p.tool(name)).path,
+		run: (argv) => p.host.run(argv),
+	});
+}
+
+async function preflightCheck(
+	items: Promise<LaunchPreflightItem[]>,
+	id: LaunchPreflightItem["id"],
+): Promise<Outcome> {
+	const item = (await items).find((i) => i.id === id);
+	if (!item) throw new Error(`no preflight item ${id}`);
+	return item.ok ? ok(item.detail) : problem("blocker", item.detail, item.fix);
 }
 
 // ------------------------------------------------------------------- auth
@@ -616,6 +626,14 @@ async function projectChecks(
 			}
 			return ok(`${entry.root} is a git repository`);
 		}),
+		at("git-config", () => {
+			const why = facts.gitConfigRefusal;
+			if (!why) return ok("host git accepts the repository's config");
+			const split = why.indexOf(" Fix: ");
+			return split >= 0
+				? problem("blocker", why.slice(0, split), why.slice(split + 6))
+				: problem("blocker", why, "repair the repository's git config");
+		}),
 		at("isolation", () => {
 			const why = isolationConfigProblem(entry);
 			if (why) {
@@ -659,6 +677,8 @@ export async function runDoctor(
 	const persistence = detectPersistence(p.host, p.home, repoRoot);
 	// Awaited inside a guard; this keeps a rejection from going unhandled first.
 	persistence.catch(() => {});
+	const preflight = preflightFor(p);
+	preflight.catch(() => {});
 
 	const fixed = await Promise.all([
 		guarded("host.bwrap", "host", () => bwrapCheck(p)),
@@ -694,18 +714,7 @@ export async function runDoctor(
 		guarded("host.tiocsti", "host", async () =>
 			fromHostCheck(await detectTiocsti(p.host)),
 		),
-		guarded("tool.tmux", "tools", () =>
-			toolCheck(
-				p,
-				"tmux",
-				"-V",
-				problem(
-					"blocker",
-					"tmux was not found",
-					"install tmux (apt install tmux, dnf install tmux, pacman -S tmux, or nix profile install nixpkgs#tmux)",
-				),
-			),
-		),
+		guarded("tool.tmux", "tools", () => preflightCheck(preflight, "tmux")),
 		guarded("tool.git", "tools", () =>
 			toolCheck(
 				p,
@@ -717,6 +726,10 @@ export async function runDoctor(
 					"install git (apt install git, dnf install git, pacman -S git, or nix profile install nixpkgs#git)",
 				),
 			),
+		),
+		guarded("tool.env", "tools", () => preflightCheck(preflight, "env")),
+		guarded("tool.systemd-run", "tools", () =>
+			preflightCheck(preflight, "systemd-run"),
 		),
 		guarded("tool.bun", "tools", () => ok(`bun ${p.bunVersion}`)),
 		guarded("tool.openssl", "tools", () =>
@@ -747,7 +760,9 @@ export async function runDoctor(
 				? ok("reflink seeds are available")
 				: problem("info", c.detail, c.fix);
 		}),
-		guarded("storage.socket", "storage", () => socketCheck(p)),
+		guarded("storage.socket", "storage", () =>
+			preflightCheck(preflight, "socket"),
+		),
 		guarded("auth.state", "auth", () => authStateCheck(p)),
 		guarded("auth.files", "auth", () => authFilesCheck(p)),
 		guarded("install.config", "install", () =>

@@ -5,7 +5,11 @@
 
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { pinnedTool, requireHostTool } from "../sandbox.ts";
+import {
+	pinnedTool,
+	requireHostTool,
+	SandboxUnavailableError,
+} from "../sandbox.ts";
 import type { AgentLaunchRequest } from "./agent-launch.ts";
 import type { CompileHost } from "./compile-bwrap.ts";
 import {
@@ -15,6 +19,7 @@ import {
 	detectUserns,
 	liveHostReaders,
 } from "./host-caps.ts";
+import { launchPreflight, liveLaunchPreflightIo } from "./launch-preflight.ts";
 import { discoverToolchain } from "./toolchain.ts";
 
 export const realOrNull = (p: string): string | null => {
@@ -30,6 +35,15 @@ export async function liveCompileHost(
 	binaries: readonly string[],
 	allowedRoots: readonly string[],
 ): Promise<CompileHost> {
+	// The same read-only checks the doctor reports.
+	const refused = (
+		await launchPreflight(liveLaunchPreflightIo(req.mfwHome))
+	).find((i) => i.launch && !i.ok);
+	if (refused) {
+		throw new SandboxUnavailableError(
+			`${refused.detail}${refused.fix ? `. Fix: ${refused.fix}` : ""}`,
+		);
+	}
 	const bwrapPath = requireHostTool("bwrap");
 	const readers = liveHostReaders();
 	const [userns, bwrap, systemd] = await Promise.all([

@@ -24,6 +24,7 @@ import {
 } from "../containment/host-caps.ts";
 import { BUILT_HOST_SCRIPTS, hostScript } from "../containment/host-script.ts";
 import { gitRaw } from "../git.ts";
+import { repoConfigRefusal } from "../host-git/repo-config.ts";
 import { runProc } from "../proc.ts";
 import {
 	LEGACY_ACK_TABLE,
@@ -435,6 +436,7 @@ export function liveDoctorProbes(o: LiveProbeOptions): DoctorProbes {
 				rootExists,
 				isGit,
 				hasEnvrc: rootExists && (await statPath(join(root, ".envrc"))) !== null,
+				gitConfigRefusal: null,
 				remotes: [],
 				untracked: empty,
 				ignoredState: empty,
@@ -442,7 +444,7 @@ export function liveDoctorProbes(o: LiveProbeOptions): DoctorProbes {
 				triggers: { armedCurrent: 0, drifted: [], quarantined: [], unarmed: 0 },
 			};
 		}
-		const [remotes, untracked, ignoredState, layout, triggers, envrc] =
+		const [remotes, untracked, ignoredState, layout, triggers, envrc, refusal] =
 			await Promise.all([
 				readRemotes(root),
 				listFiles(root, ["--others", "--exclude-standard", "-z"]),
@@ -457,11 +459,16 @@ export function liveDoctorProbes(o: LiveProbeOptions): DoctorProbes {
 				readBoardLayout(root),
 				readTriggers(home, entry),
 				statPath(join(root, ".envrc")),
+				repoConfigRefusal(root).catch((e: unknown) => ({
+					keys: [],
+					message: `could not audit the repository's git config: ${(e as Error).message}`,
+				})),
 			]);
 		return {
 			rootExists,
 			isGit,
 			hasEnvrc: envrc !== null,
+			gitConfigRefusal: refusal?.message ?? null,
 			remotes,
 			untracked,
 			ignoredState,

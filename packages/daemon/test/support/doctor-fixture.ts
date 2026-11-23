@@ -37,6 +37,7 @@ export function fixtureHost(over: Partial<HostFixture> = {}): HostReaders {
 					: { code: 0, stdout: f.bwrapHelp };
 			}
 			if (bin.endsWith("systemctl")) return { code: 0, stdout: f.systemd };
+			if (bin.endsWith("tmux")) return { code: 0, stdout: "tmux 3.5\n" };
 			return undefined;
 		},
 		fsInfo: async () => fs,
@@ -64,6 +65,7 @@ export function healthyProject(over: Partial<ProjectFacts> = {}): ProjectFacts {
 		rootExists: true,
 		isGit: true,
 		hasEnvrc: false,
+		gitConfigRefusal: null,
 		remotes: [],
 		untracked: { count: 0, sample: [], truncated: false },
 		ignoredState: { count: 0, sample: [], truncated: false },
@@ -84,11 +86,15 @@ export function fixture(over: Partial<DoctorProbes> = {}): DoctorProbes {
 		tool: async (name) => ({ path: `/usr/bin/${name}` }),
 		toolVersion: async (path) =>
 			path.endsWith("tmux") ? "3.5" : path.endsWith("git") ? "2.50.1" : "1.0.0",
-		stat: async (path) => ({
-			kind: path === home ? "dir" : "file",
-			mode: path === home ? 0o700 : 0o600,
-			uid: 1000,
-		}),
+		// The socket directories do not exist yet on a fresh host.
+		stat: async (path) =>
+			path.startsWith("/run/user/")
+				? null
+				: {
+						kind: path === home ? "dir" : "file",
+						mode: path === home ? 0o700 : 0o600,
+						uid: 1000,
+					},
 		config: async () => ({ ok: true, config: { projects: [] } }),
 		auth: async () => ({
 			state: "ready",
