@@ -851,7 +851,13 @@ export async function attachProject(
 			const dod = tasks.effectiveDod(task?.dod ?? null);
 			if (!dod) return { passed: true };
 			const run = await registry.get(job.runId);
-			if (!run?.baseSha) return { passed: true };
+			// As re-verify: no base commit means the checks cannot be run.
+			if (!run?.baseSha) {
+				return {
+					passed: false,
+					detail: "the run has no recorded base commit to verify against",
+				};
+			}
 			// Follows the run: a worktree run keeps today's behaviour.
 			const runClones = createVerifierClones(root, run);
 			if (!runClones) return { passed: true };
