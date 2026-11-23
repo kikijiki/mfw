@@ -132,6 +132,8 @@ async function makeEnv(
 			},
 		},
 		projectRoot: root,
+		// These runs are plain worktrees, the one case a check may run on the host.
+		approvalMode: "interactive",
 		log: silentLogger(),
 		config: {
 			draftExpandMaxAttempts: 3,

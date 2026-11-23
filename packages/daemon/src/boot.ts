@@ -131,6 +131,7 @@ import { RunEngine } from "./run-engine.ts";
 import { RunRegistry } from "./run-registry.ts";
 import {
 	configureRunWorkspace,
+	createCheckClones,
 	createVerifierClones,
 	rebaseCloneOptions,
 } from "./run-workspace/factory.ts";
@@ -183,7 +184,6 @@ import { VerificationCoordinator } from "./verification-coordinator.ts";
 import {
 	type EnvPolicy,
 	type VerificationResult,
-	verify,
 	verifyInClone,
 } from "./verifier.ts";
 import { WorkspaceService } from "./workspace.ts";
@@ -794,23 +794,23 @@ export async function attachProject(
 			if (!run?.worktreePath || !run.baseSha)
 				return { passed: false, detail: "run worktree is gone" };
 			const opts = { checkPrefix: cfg.checkPrefix, envPolicy: cfg.envPolicy };
-			const runClones = createVerifierClones(root, run);
+			// The merge queue never executes a check on the host: a worktree run is
+			// verified from its committed branch tip, in a disposable clone.
+			const clones = createCheckClones(root);
+			const rev = createVerifierClones(root, run)
+				? quarantineRef(job.runId)
+				: run.branch;
+			if (!clones || !rev) {
+				return {
+					passed: false,
+					detail: "no verifier sandbox or commit to re-check this run in",
+				};
+			}
 			const result = await verification.foreground(() =>
-				runClones
-					? verifyInClone(
-							runClones,
-							quarantineRef(job.runId),
-							job.runId,
-							dod,
-							run.baseSha as string,
-							opts,
-						)
-					: verify(
-							run.worktreePath as string,
-							dod,
-							run.baseSha as string,
-							opts,
-						),
+				verifyInClone(clones, rev, job.runId, dod, run.baseSha as string, {
+					...opts,
+					role: "merge-verify",
+				}),
 			);
 			return verdictOf(result);
 		},
@@ -1180,6 +1180,7 @@ export async function attachProject(
 		projectRoot: root,
 		checkPrefix: cfg.checkPrefix,
 		envPolicy: cfg.envPolicy,
+		approvalMode: cfg.approvalMode ?? DEFAULTS.approvalMode,
 		verification,
 		providerHolds,
 		projectName: cfg.name,

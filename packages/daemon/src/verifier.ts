@@ -1,4 +1,4 @@
-import { access } from "node:fs/promises";
+import { access, lstat } from "node:fs/promises";
 import { join } from "node:path";
 import {
 	type CheckRunner,
@@ -121,6 +121,26 @@ export interface VerifyOptions {
 	 * available, and every check is then refused rather than run on the host.
 	 */
 	sandbox?: { run: CheckRunner | null; role: VerifyRole };
+	/**
+	 * The only way a check runs on the host: an interactive worktree run, where
+	 * a person approved what the agent did. Maintenance and the merge queue never
+	 * pass it, and without it (or `sandbox`) every `run` check is refused.
+	 */
+	hostExecution?: "interactive-worktree";
+	/**
+	 * The tree has a dependency manifest but no installed dependencies, which P8
+	 * will supply. A failing check then says nothing about the code.
+	 */
+	dependenciesUnavailable?: boolean;
+}
+
+/** The host-execution option for a run, from the project's approval mode. */
+export function worktreeHostExecution(
+	approvalMode: "autonomous" | "interactive" | undefined,
+): Pick<VerifyOptions, "hostExecution"> {
+	return approvalMode === "interactive"
+		? { hostExecution: "interactive-worktree" }
+		: {};
 }
 
 const DEFAULT_CHECK_TIMEOUT_MS = 10 * 60_000;
@@ -197,11 +217,13 @@ export function describeVerificationEnvironment(opts: VerifyOptions): string {
 	const runner = opts.sandbox
 		? `attested verifier sandbox with no network; ${shell}`
 		: shell;
-	const ambient = opts.envPolicy?.inherit
-		? "ambient environment inherited by project policy"
-		: `scrubbed environment; allowed ambient names: ${(
-				opts.envPolicy?.allow ?? DEFAULT_ENV_ALLOWLIST
-			).join(", ")}`;
+	const ambient = opts.sandbox
+		? "no ambient environment"
+		: opts.envPolicy?.inherit
+			? "ambient environment inherited by project policy"
+			: `scrubbed environment; allowed ambient names: ${(
+					opts.envPolicy?.allow ?? DEFAULT_ENV_ALLOWLIST
+				).join(", ")}`;
 	const extras = Object.keys(opts.env ?? {});
 	return [
 		runner,
@@ -317,8 +339,18 @@ export async function verify(
 	opts: VerifyOptions = {},
 ): Promise<VerificationResult> {
 	const checks: CheckOutcome[] = [];
-	const runner = buildRunner(opts);
-	const env = scrubEnv(process.env, opts.env, opts.envPolicy);
+	const hostAllowed =
+		!opts.sandbox && opts.hostExecution === "interactive-worktree";
+	const runner = hostAllowed ? buildRunner(opts) : null;
+	const env = hostAllowed
+		? scrubEnv(process.env, opts.env, opts.envPolicy)
+		: {};
+	const refused = (label: string, err: CheckSandboxRefusal): CheckOutcome => ({
+		check: label,
+		ok: false,
+		classification: "crashed",
+		detail: `not run: the verifier sandbox refused (${err.code}): ${err.message}. Fix: ${err.fix}`,
+	});
 
 	for (const check of dod.checks) {
 		const label = describe(check);
@@ -332,16 +364,25 @@ export async function verify(
 				: (opts.defaultTimeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS);
 			const expected = check.expect_exit ?? 0;
 			const sandbox = opts.sandbox;
-			const runOnce = () =>
-				sandbox
-					? runSandboxed(sandbox, cwd, check.run, timeoutMs, opts)
-					: runProc(runner(check.run), {
-							cwd,
-							env,
-							timeoutMs,
-							maxOutputBytes: MAX_CHECK_OUTPUT,
-							signal: opts.signal,
-						});
+			const runOnce = async (): Promise<ProcResult> => {
+				if (sandbox) {
+					return runSandboxed(sandbox, cwd, check.run, timeoutMs, opts);
+				}
+				if (!runner) {
+					throw new CheckSandboxRefusal(
+						"host_execution_refused",
+						"this check has no verifier sandbox, and only an interactive worktree run may execute on the host",
+						"verify the commit through a verifier clone",
+					);
+				}
+				return runProc(runner(check.run), {
+					cwd,
+					env,
+					timeoutMs,
+					maxOutputBytes: MAX_CHECK_OUTPUT,
+					signal: opts.signal,
+				});
+			};
 
 			let r: ProcResult;
 			try {
@@ -349,12 +390,7 @@ export async function verify(
 			} catch (err) {
 				if (!(err instanceof CheckSandboxRefusal)) throw err;
 				// Not a result about the code, so it reads as a crash and is not retried.
-				checks.push({
-					check: label,
-					ok: false,
-					classification: "crashed",
-					detail: `not run: the verifier sandbox refused (${err.code}): ${err.message}. Fix: ${err.fix}`,
-				});
+				checks.push(refused(label, err));
 				continue;
 			}
 			if (opts.signal?.aborted) throw new Error("verification preempted");
@@ -367,12 +403,7 @@ export async function verify(
 					r = await runOnce();
 				} catch (err) {
 					if (!(err instanceof CheckSandboxRefusal)) throw err;
-					checks.push({
-						check: label,
-						ok: false,
-						classification: "crashed",
-						detail: `not run: the verifier sandbox refused (${err.code}): ${err.message}. Fix: ${err.fix}`,
-					});
+					checks.push(refused(label, err));
 					continue;
 				}
 				if (opts.signal?.aborted) throw new Error("verification preempted");
@@ -380,6 +411,27 @@ export async function verify(
 			}
 
 			const ok = !r.timedOut && !crashed && r.exitCode === expected;
+			// In the sandbox a missing tool or dependency is the environment's
+			// fault until P8, so it is reported as infrastructure and never rerun
+			// on the host. It can only ever fail the check, never pass it.
+			if (
+				!ok &&
+				sandbox &&
+				!r.timedOut &&
+				!crashed &&
+				(r.exitCode === 126 ||
+					r.exitCode === 127 ||
+					opts.dependenciesUnavailable)
+			) {
+				checks.push({
+					check: label,
+					ok: false,
+					exitCode: r.exitCode,
+					classification: "crashed",
+					detail: `could not run in the verifier sandbox (a tool or dependency is unavailable until P8): ${lastLines(r.stdout + r.stderr, 5)}`,
+				});
+				continue;
+			}
 			checks.push(
 				ok
 					? { check: label, ok }
@@ -483,12 +535,27 @@ export async function verifyInClone(
 	baseSha: string,
 	opts: VerifyOptions & { role?: VerifyRole } = {},
 ): Promise<VerificationResult> {
-	const { role = "verifier", ...rest } = opts;
-	return clones.with(rev, label, (clone) =>
+	// A clone is never host-executed, whatever the caller passed.
+	const { role = "verifier", hostExecution: _never, ...rest } = opts;
+	return clones.with(rev, label, async (clone) =>
 		verify(clone.path, dod, baseSha, {
 			...rest,
 			candidateSha: clone.sha,
 			sandbox: { run: clones.checkRunner, role },
+			dependenciesUnavailable: await lacksDependencies(clone.path),
 		}),
+	);
+}
+
+/** A package manifest with no installed `node_modules` beside it. */
+async function lacksDependencies(tree: string): Promise<boolean> {
+	const kind = async (name: string) =>
+		lstat(join(tree, name)).then(
+			(st) => (st.isDirectory() ? "dir" : st.isFile() ? "file" : "other"),
+			() => null,
+		);
+	return (
+		(await kind("package.json")) === "file" &&
+		(await kind("node_modules")) !== "dir"
 	);
 }

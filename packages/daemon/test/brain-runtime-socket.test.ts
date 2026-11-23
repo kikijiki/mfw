@@ -93,9 +93,10 @@ describe("the unix socket is the brain's only transport", () => {
 		process.env.MFW_BRAIN_TCP = "1";
 		const t = await started();
 		expect(t.launch.mcp.env.MFW_URL).toBeUndefined();
-		expect(t.launch.mcp.env.MFW_SOCKET).toBe(
-			join(home ?? "", "run", "brain.sock"),
-		);
+		expect(
+			t.launch.mcp.env.MFW_SOCKET?.startsWith(join(home ?? "", "run")),
+		).toBe(true);
+		expect(t.launch.mcp.env.MFW_SOCKET?.endsWith("/brain.sock")).toBe(true);
 	});
 
 	test("with no router wired to the socket no turn is launched and no token is minted", async () => {

@@ -15,6 +15,7 @@ import {
 import { RunRegistry } from "../src/run-registry.ts";
 import type { TaskService } from "../src/task-service.ts";
 import { makeTasks } from "./fixtures/board.ts";
+import { useCheckClones } from "./support/check-clones.ts";
 
 interface Env {
 	root: string;
@@ -23,6 +24,7 @@ interface Env {
 	maint: Maintenance;
 	now: { value: number };
 	seen: StoredEvent[];
+	dropClones: () => Promise<void>;
 }
 
 const envs: Env[] = [];
@@ -36,6 +38,7 @@ async function freshEnv(): Promise<Env> {
 	bus.subscribe((e) => seen.push(e));
 	const svc = await makeTasks(handle, bus, mfwDir);
 	const now = { value: Date.now() };
+	const dropClones = useCheckClones(root);
 	const maint = new Maintenance({
 		handle,
 		bus,
@@ -46,13 +49,14 @@ async function freshEnv(): Promise<Env> {
 		integrationBranch: "main",
 		now: () => now.value,
 	});
-	const env = { root, handle, svc, maint, now, seen };
+	const env = { root, handle, svc, maint, now, seen, dropClones };
 	envs.push(env);
 	return env;
 }
 
 afterEach(async () => {
 	for (const env of envs.splice(0)) {
+		await env.dropClones();
 		env.handle.close();
 		await rm(env.root, { recursive: true, force: true });
 	}
@@ -190,7 +194,7 @@ describe("reopen_when: run", () => {
 	test("commands run only after task_done holds, at most every 10 minutes", async () => {
 		const { svc, maint, now, root } = await freshEnv();
 		const dep = await svc.create({ title: "upstream" });
-		// Relative path: the command runs in the project root.
+		// Relative path: the command runs in a clone of the integration tip.
 		const id = await parked(svc, [
 			{ task_done: dep.id },
 			{ run: "test -f flag", expect_exit: 0 },
@@ -205,6 +209,11 @@ describe("reopen_when: run", () => {
 		expect(r).toEqual({ checked: [id], reopened: [] });
 
 		await writeFile(join(root, "flag"), "");
+		await git(["add", "flag"], root);
+		await git(
+			["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "flag"],
+			root,
+		);
 		now.value += REOPEN_CHECK_INTERVAL_MS - 1;
 		r = await maint.reopenByCommand();
 		expect(r).toEqual({ checked: [], reopened: [] });
@@ -232,6 +241,24 @@ async function arm(
 	id: string,
 	checkout: "primary" | "integration-worktree" = "primary",
 ) {
+	// An armed command runs in a clone of the integration tip, so it needs one.
+	if ((await git(["rev-parse", "--verify", "-q", "HEAD"], root)).exitCode) {
+		await git(["init", "-q", "-b", "main"], root);
+		await git(
+			[
+				"-c",
+				"user.name=t",
+				"-c",
+				"user.email=t@t",
+				"commit",
+				"-q",
+				"--allow-empty",
+				"-m",
+				"init",
+			],
+			root,
+		);
+	}
 	const row = await svc.get(id);
 	await setReopenPolicy(root, id, {
 		hash: reopenDefinitionHash(row?.reopenWhen ?? [], undefined, "main"),
@@ -381,7 +408,8 @@ describe("reopen safety and recovery", () => {
 		const id = await parked(svc, [
 			{ task_done: dep.id },
 			{
-				run: "touch started; while [ ! -f finish ]; do sleep 0.02; done",
+				// Absolute: the command runs in a clone, and the test watches it.
+				run: `touch '${root}/started'; while [ ! -f '${root}/finish' ]; do sleep 0.02; done`,
 				expect_exit: 0,
 				timeout: 5,
 			},

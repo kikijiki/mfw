@@ -15,17 +15,23 @@ export type RunWorkspaceKind = "worktree" | "clone";
  * A1.6 gate: the default stays `worktree` until all of these hold.
  *
  *  1. The death proof (`run-liveness.ts`) and the memory limits are exercised
- *     under a real systemd scope and real tmux. This also proves the verifier
- *     role's limits, which no caged test can.
+ *     under a real systemd scope and real tmux, including a real fork bomb and
+ *     memory limit in the verifier role. No caged test proves those limits.
  *  2. Host git that touches merged content runs without the operator's global
  *     filters, or the integration step disables them.
- *  3. The launch, probe and import path passes on real Claude and Codex CLIs,
- *     on NixOS and Ubuntu.
+ *  3. The launch, probe, resume and import path passes on real Claude and Codex
+ *     CLIs, on NixOS and Ubuntu, with no skips under MFW_REQUIRE_LIVE_SANDBOX=1.
+ *  4. P8 supplies dependencies and the dev shell. Until then a check that needs
+ *     them is an infrastructure result, so real projects cannot go green.
+ *  5. W4-2 pins the check entry points. Until then a passing check proves only
+ *     what candidate-controlled code reported.
  *
- * Closed by P7 (review WIPW H4): a clone's DoD checks run only in the attested
- * no-network verifier role (`containment/check-sandbox.ts`). `verifyInClone` has
- * no host path, so a project without that sandbox gets refused checks, and no
- * `checkPrefix` is needed or trusted for containment.
+ * What P7 does establish: DoD checks for clone runs, the merge queue's checks,
+ * the regression sweep, its corroboration rerun and armed reopen checks all run
+ * in the attested no-network verifier roles. The one remaining host execution
+ * of a `run` check is `verify()` with `hostExecution`, which only the finalize
+ * of an interactive worktree run passes. Armed trigger scripts are separate
+ * owner-approved host commands.
  */
 
 interface ProjectSetting {
@@ -124,15 +130,24 @@ export function createVerifierClones(
 	if (!setting?.clone) return null;
 	const kind = run ? runWorkspaceKind(projectRoot, run) : setting.kind;
 	if (kind !== "clone") return null;
+	return createCheckClones(projectRoot);
+}
+
+/**
+ * Verification clones whatever the project's workspace kind. Maintenance and
+ * the merge queue use these for committed code, because they never execute a
+ * check on the host. Null when the project has no workspace settings.
+ */
+export function createCheckClones(projectRoot: string): VerifierClones | null {
+	const clone = settings.get(resolve(projectRoot))?.clone;
+	if (!clone) return null;
 	return new VerifierClones({
-		workspaceRoot: setting.clone.workspaceRoot,
+		workspaceRoot: clone.workspaceRoot,
 		primaryRoot: resolve(projectRoot),
-		...(setting.clone.caches ? { caches: setting.clone.caches } : {}),
-		...(setting.clone.gitBin ? { gitBin: setting.clone.gitBin } : {}),
-		...(setting.clone.log ? { log: setting.clone.log } : {}),
-		...(setting.clone.checkRunner
-			? { checkRunner: setting.clone.checkRunner }
-			: {}),
+		...(clone.caches ? { caches: clone.caches } : {}),
+		...(clone.gitBin ? { gitBin: clone.gitBin } : {}),
+		...(clone.log ? { log: clone.log } : {}),
+		...(clone.checkRunner ? { checkRunner: clone.checkRunner } : {}),
 	});
 }
 
