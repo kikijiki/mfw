@@ -12,6 +12,11 @@
  * close-on-exec and ones this process inherited; the live tests hold it to
  * that. bwrap consumes 3, 4 and the pins, so the command itself sees only 0-2.
  *
+ * A successful `Bun.spawn` owns every numeric stdio entry and closes it at exit
+ * or finalization. Closing one here as well would later close whatever reused
+ * the number, so ownership moves to Bun, including a caller's stdio descriptor.
+ * After a refusal or a spawn that throws, the caller's descriptors stay its own.
+ *
  * The seccomp program and options live in `O_TMPFILE` files. The options carry
  * env values, and an unnamed file cannot be opened by path.
  *
@@ -48,7 +53,7 @@ const O_TMPFILE = 0o20000000 | constants.O_DIRECTORY;
 /** What `systemd-run --user` needs to find the user manager; nothing else crosses. */
 const SCOPE_ENV = ["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"] as const;
 
-/** A new pipe, or the descriptor of an existing one. */
+/** A new pipe, or an existing pipe's descriptor, which a successful launch takes. */
 export type LaunchStdio = "pipe" | number;
 
 export interface LaunchOptions {
@@ -153,7 +158,10 @@ function anonymousFile(dir: string, bytes: Buffer): number {
 export interface SandboxFds {
 	/** Parent descriptors for the child's 3, 4, 5, and so on. */
 	fds: number[];
+	/** Close them. Only valid while no successful spawn has taken them. */
 	close(): void;
+	/** Forget them, because a successful spawn now owns them. */
+	release(): void;
 }
 
 /** Open everything the child inherits past stdio, or throw with nothing open. */
@@ -183,7 +191,14 @@ export function openSandboxFds(
 			`cannot create an unnamed file in ${tmpDir}: ${(err as Error).message}`,
 		);
 	}
-	return { fds: [...files, ...pins.parentFds], close };
+	return {
+		fds: [...files, ...pins.parentFds],
+		close,
+		release: () => {
+			files.length = 0;
+			pins.release();
+		},
+	};
 }
 
 function scopeEnv(scope: "systemd" | "none"): Record<string, string> {
@@ -215,19 +230,29 @@ export function launchSandbox(
 	checkPinNumbers(compiled);
 
 	const opened = openSandboxFds(compiled, options.tmpDir);
+	let child: ReturnType<typeof spawnWithFds>;
 	try {
-		return Bun.spawn(argv, {
-			cwd: "/",
-			env: scopeEnv(scope),
-			stdio: [stdin, stdout, stderr, ...opened.fds] as never,
-		});
+		child = spawnWithFds(argv, scope, [stdin, stdout, stderr, ...opened.fds]);
 	} catch (err) {
+		// A spawn that throws leaves the descriptors with us.
+		opened.close();
 		throw new SandboxLaunchError(
 			"launch_failed",
 			`cannot spawn the sandbox: ${(err as Error).message}`,
 		);
-	} finally {
-		// Bun.spawn has already duplicated these into the child.
-		opened.close();
 	}
+	opened.release();
+	return child;
+}
+
+function spawnWithFds(
+	argv: string[],
+	scope: "systemd" | "none",
+	stdio: readonly (LaunchStdio | number)[],
+) {
+	return Bun.spawn(argv, {
+		cwd: "/",
+		env: scopeEnv(scope),
+		stdio: stdio as never,
+	});
 }

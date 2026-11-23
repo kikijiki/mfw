@@ -339,7 +339,8 @@ describe.skipIf(skip !== null)("compiled profile under bwrap", () => {
 				...pins.parentFds,
 			] as never,
 		});
-		pins.close();
+		// The spawn owns the numeric entries now.
+		pins.release();
 		try {
 			const reader = (child.stdout as ReadableStream<Uint8Array>).getReader();
 			const first = await reader.read();

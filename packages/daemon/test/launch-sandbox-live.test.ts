@@ -256,6 +256,30 @@ describe.skipIf(skip !== null)("launchSandbox under bwrap", () => {
 		expect(readFileSync(key, "utf8")).toBe("not a real key\n");
 	});
 
+	test("a launch never closes a descriptor it does not own", async () => {
+		const c = await guarded("true");
+		// Repeated, because the stale close lands at exit or at finalization.
+		for (let round = 0; round < 12; round++) {
+			let child: ReturnType<typeof launchSandbox> | null = launchSandbox(c, {
+				scope: "none",
+			});
+			// These take any number the launch wrongly gave back.
+			const victims = Array.from({ length: 6 }, () =>
+				openSync(join(root, "victim"), "a"),
+			);
+			(child.stdin as unknown as { end(): void }).end();
+			expect(await child.exited).toBe(0);
+			child = null;
+			Bun.gc(true);
+			await Bun.sleep(10);
+			Bun.gc(true);
+			for (const fd of victims) {
+				expect(existsSync(`/proc/self/fd/${fd}`)).toBe(true);
+				closeSync(fd);
+			}
+		}
+	}, 30_000);
+
 	test("no pinned bind descriptor reaches the command", async () => {
 		const r = await run(await guarded("ls /proc/self/fd; touch /work/ok"));
 		expect(r.out.trim().split("\n")).toEqual(["0", "1", "2", "3"]);

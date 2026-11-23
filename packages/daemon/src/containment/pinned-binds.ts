@@ -45,9 +45,10 @@ export interface OpenPins {
 	parentFds: number[];
 	close(): void;
 	/**
-	 * Forget the descriptors without closing them, because something else now
-	 * owns them. `Bun.spawnSync` closes numeric stdio entries in the parent
-	 * (`Bun.spawn` does not), and a second close could hit a reused number.
+	 * Forget the descriptors without closing them, because a successful spawn
+	 * now owns them. Bun closes numeric stdio entries itself (`spawnSync` at
+	 * once, `spawn` at exit or finalization), and a second close could hit
+	 * whatever reused the number.
 	 */
 	release(): void;
 }

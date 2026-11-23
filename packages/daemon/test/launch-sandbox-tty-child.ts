@@ -36,7 +36,7 @@ if (mode === "control") {
 	const opened = openSandboxFds(compiled);
 	const argv = compiled.argv.slice(compiled.argv.indexOf("--") + 1);
 	const child = Bun.spawn(argv, { stdio: [0, 1, 2, ...opened.fds] as never });
-	opened.close();
+	opened.release();
 	result.code = await child.exited;
 } else if (mode === "refuse") {
 	try {
