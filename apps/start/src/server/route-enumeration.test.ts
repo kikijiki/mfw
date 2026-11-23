@@ -112,6 +112,18 @@ describe("the enumeration is real", () => {
 		expect(procedures.some((p) => p.type === "mutation")).toBe(true);
 	});
 
+	test("it covers the give-direction and held-decision procedures", () => {
+		const names = procedures.map((p) => p.path);
+		for (const name of [
+			"brain.giveDirection",
+			"brain.directions",
+			"brain.decisions",
+			"brain.resolveDecision",
+			"brain.resetActBreaker",
+		])
+			expect(names).toContain(name);
+	});
+
 	test("the public list is exactly the allowlist", () => {
 		const open = routeIds().filter((id) =>
 			isPublicPath(concrete(id).slice(1), "GET"),
