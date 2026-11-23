@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { DirectionError } from "@mfw/daemon/brain-runtime/directions";
 import { OverrideError } from "@mfw/daemon/human-override";
 import type { Orchestrator, ProjectServices } from "@mfw/daemon/services";
 import { createCaller } from "../src/root.ts";
@@ -46,6 +47,19 @@ function setup() {
 					return { decisionId: 601, about: null };
 				},
 			},
+			directions: {
+				give: async (d: { text: string; key: string }) => {
+					calls.push(["give", d]);
+					if (d.text === "slow down") {
+						throw new DirectionError("rate_limited", "Too many");
+					}
+					if (d.text === "no brain") {
+						throw new DirectionError("no_brain", "Not started");
+					}
+					return { id: "D1", duplicate: false };
+				},
+				list: async () => [{ id: "D1", status: "drafting" }],
+			},
 			reads: {
 				read: async (tool: string, args: unknown, o: unknown) => {
 					calls.push(["read", tool, args, o]);
@@ -66,6 +80,58 @@ function setup() {
 	} as unknown as Orchestrator;
 	return { api: createCaller({ orchestrator }), calls };
 }
+
+describe("brain directions", () => {
+	const key = "key-12345";
+
+	test("only the text and key reach the runtime: authorship is not input", async () => {
+		const { api, calls } = setup();
+		const forged = {
+			project: "alpha",
+			text: "ship it",
+			key,
+			author: "agent",
+			provenance: "external",
+		};
+		expect(await api.brain.giveDirection(forged)).toEqual({
+			id: "D1",
+			duplicate: false,
+		});
+		expect(calls).toEqual([["give", { text: "ship it", key }]]);
+	});
+
+	test("oversized text and a malformed key never reach the runtime", async () => {
+		const { api, calls } = setup();
+		await expect(
+			api.brain.giveDirection({
+				project: "alpha",
+				text: "x".repeat(2001),
+				key,
+			}),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		await expect(
+			api.brain.giveDirection({ project: "alpha", text: "ok", key: "a b" }),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		expect(calls).toEqual([]);
+	});
+
+	test("refusals map to transport codes", async () => {
+		const { api } = setup();
+		await expect(
+			api.brain.giveDirection({ project: "alpha", text: "slow down", key }),
+		).rejects.toMatchObject({ code: "TOO_MANY_REQUESTS" });
+		await expect(
+			api.brain.giveDirection({ project: "alpha", text: "no brain", key }),
+		).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+	});
+
+	test("the timeline reads through", async () => {
+		const { api } = setup();
+		expect(await api.brain.directions({ project: "alpha" })).toEqual([
+			{ id: "D1", status: "drafting" },
+		] as never);
+	});
+});
 
 describe("brain router", () => {
 	test("the four read procedures reach the runtime", async () => {
