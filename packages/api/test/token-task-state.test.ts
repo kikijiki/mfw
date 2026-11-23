@@ -279,6 +279,63 @@ describe("runs:act is the scope that may dispatch", () => {
 	});
 });
 
+describe("a checked criterion", () => {
+	const withChecked = async (f: F) =>
+		(
+			await f.owner.tasks.create({
+				project,
+				title: "t",
+				status: "backlog",
+				criteria: [
+					{ text: "tests pass", checked: true },
+					{ text: "docs updated", checked: false },
+				],
+			})
+		).id;
+	const edit = (selector: string, text: string) =>
+		({ op: "edit", selector, text }) as const;
+
+	test("cannot be reworded by board:write", async () => {
+		const f = await fixture();
+		const id = await withChecked(f);
+		await expect(
+			f.writer.tasks.criteria({
+				project,
+				id,
+				op: edit("tests pass", "nothing needed"),
+			}),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		expect((await f.tasks.get(id))?.criteria[0]).toMatchObject({
+			text: "tests pass",
+			checked: true,
+		});
+	});
+
+	test("an unchecked one can", async () => {
+		const f = await fixture();
+		const id = await withChecked(f);
+		await f.writer.tasks.criteria({
+			project,
+			id,
+			op: edit("docs updated", "docs and changelog updated"),
+		});
+		expect((await f.tasks.get(id))?.criteria[1]?.text).toBe(
+			"docs and changelog updated",
+		);
+	});
+
+	test("runs:act can reword a checked one", async () => {
+		const f = await fixture();
+		const id = await withChecked(f);
+		await f.actor.tasks.criteria({
+			project,
+			id,
+			op: edit("tests pass", "all tests pass"),
+		});
+		expect((await f.tasks.get(id))?.criteria[0]?.text).toBe("all tests pass");
+	});
+});
+
 describe("the owner is unaffected", () => {
 	test("edits and moves that a token may not make still work", async () => {
 		const f = await fixture();

@@ -1838,6 +1838,19 @@ export class TaskService {
 					const next = applyCriteriaOp(draft.criteria, op);
 					itemId = next.itemId;
 					if (eqJson(next.items, draft.criteria)) return [];
+					// A passed criterion must keep saying what was actually checked.
+					if (
+						token &&
+						!token.mayDispatch &&
+						op.op === "edit" &&
+						draft.criteria.some(
+							(c, i) => c.checked && next.items[i]?.text !== c.text,
+						)
+					)
+						throw new TokenTaskStateError(
+							id,
+							"rewording a checked criterion needs the runs:act scope",
+						);
 					draft.criteria = next.items;
 					if (token) {
 						if (this.store.declaresField("edited_by"))
