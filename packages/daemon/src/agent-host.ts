@@ -70,6 +70,13 @@ import {
  * Only a sandboxed launch is split. An unsandboxed run (`isolation` unset) and
  * a run launched before the split keep these files flat in the run dir.
  * `run.sh` (the session wrapper) lives in the host-only control root.
+ *
+ * Task and repair runs use the host bridge (design "Bridge on the host"): the
+ * driver and bridge stay on the host, outside the workspace, and start the
+ * agent through `containment/agent-launch.ts`. Their `events.jsonl` and
+ * `raw.log` stay in the host-only run root, and no agent byte reaches the tmux
+ * pane. Other run kinds keep the interim sandbox around the driver until their
+ * role profiles exist.
  */
 
 /** POSIX single-quote for safe embedding in a generated shell script. */
@@ -472,7 +479,6 @@ export class AgentHost {
 			// plant binaries in $HOME) and the full PATH goes to the sandbox (security review G4).
 			...(spec.isolation
 				? [
-						// Never run on the host from the agent-writable workspace.
 						`MFW_SANDBOX_PATH=${q(process.env.PATH ?? "/usr/bin:/bin")}`,
 						`export PATH=${q(safeHostPath())}`,
 					]

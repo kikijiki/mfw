@@ -40,6 +40,7 @@ import {
 	ensureRunDirLayout,
 	runEventsPath,
 } from "../src/containment/run-dir.ts";
+import { SecretEnvironment } from "../src/execution-environment.ts";
 import { controlRootPath } from "../src/sandbox.ts";
 import { type CageConfig, cagedSteps } from "./support/caged-launch.ts";
 import { runShTmux } from "./support/run-sh-tmux.ts";
@@ -710,8 +711,12 @@ const FAKE_CLAUDE = `
 import { writeFileSync } from "node:fs";
 writeFileSync("/work/agent-proof.json", JSON.stringify({
   home: process.env.HOME, cwd: process.cwd(), config: process.env.CLAUDE_CONFIG_DIR,
+  granted: process.env.ANTHROPIC_API_KEY ?? null,
+  pid1: require("node:fs").readFileSync("/proc/1/cmdline", "latin1"),
+  self: require("node:fs").readFileSync("/proc/self/cmdline", "latin1"),
   report: process.env.MFW_REPORT_PATH, argv: process.argv.slice(2),
 }));
+const seen = [];
 let buf = "";
 for await (const bytes of Bun.stdin.stream()) {
   buf += new TextDecoder().decode(bytes);
@@ -719,6 +724,12 @@ for await (const bytes of Bun.stdin.stream()) {
   while ((at = buf.indexOf("\\n")) >= 0) {
     const line = buf.slice(0, at); buf = buf.slice(at + 1);
     if (!line.trim()) continue;
+    seen.push(line);
+    if (line.includes("HOLD-FOR-STEER") && seen.length === 1) {
+      writeFileSync("/work/holding", "1");
+      continue;
+    }
+    if (seen.length > 1) writeFileSync("/work/steered", line);
     console.log(JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "hello from the fake" }] } }));
     console.log(JSON.stringify({ type: "result", result: "fake done", usage: { input_tokens: 1, output_tokens: 1 }, total_cost_usd: 0, num_turns: 1 }));
   }
@@ -742,7 +753,25 @@ describe.skipIf(skip !== null)("the real drivers and bridges", () => {
 	const preload = resolve(import.meta.dir, "support/caged-launcher-preload.ts");
 	const src = resolve(import.meta.dir, "../src/agents");
 
-	async function runBridged(cli: "claude" | "codex") {
+	function installFakeClaude() {
+		writeFileSync(join(f.bin, "fake-claude.ts"), FAKE_CLAUDE);
+		const script = join(f.bin, "claude");
+		writeFileSync(
+			script,
+			`#!/bin/sh\nexec bun --config=/dev/null --no-env-file run '${join(f.bin, "fake-claude.ts")}' "$@"\n`,
+		);
+		chmodSync(script, 0o755);
+	}
+
+	async function runBridged(
+		cli: "claude" | "codex",
+		opts: {
+			initialMessage?: string;
+			steer?: boolean;
+			secretEnvironment?: SecretEnvironment;
+			whileRunning?: (host: AgentHost) => Promise<void>;
+		} = {},
+	) {
 		const bridge = join(
 			src,
 			"bridges",
@@ -772,13 +801,17 @@ describe.skipIf(skip !== null)("the real drivers and bridges", () => {
 			},
 			model: "fake",
 			reasoningEffort: "high",
-			initialMessage: "hello",
-			steer: false,
+			initialMessage: opts.initialMessage ?? "hello",
+			steer: opts.steer ?? false,
+			...(opts.secretEnvironment
+				? { secretEnvironment: opts.secretEnvironment }
+				: {}),
 			approvalMode: "autonomous",
 			isolation: { mode: "bwrap", hidePaths: [f.mfwHome], mfwHome: f.mfwHome },
 			runKind: "task",
 			providerId: `${cli}-cli`,
 		});
+		await opts.whileRunning?.(host);
 		await procs.get("mfw_r1")?.exited;
 		const exit = await host.readExit(f.runDir);
 		const raw = readFileSync(join(f.runDir, "raw.log"), "utf8");
@@ -824,6 +857,51 @@ describe.skipIf(skip !== null)("the real drivers and bridges", () => {
 			sql`SELECT count(*) AS n FROM sandbox_attestation_uses WHERE run_id = 'r1'`,
 		);
 		expect(row?.n).toBe(1);
+	}, 90_000);
+
+	test("steering reaches the sandboxed agent through the host bridge", async () => {
+		installFakeClaude();
+		const r = await runBridged("claude", {
+			initialMessage: "HOLD-FOR-STEER",
+			steer: true,
+			whileRunning: async (host) => {
+				const holding = join(f.tree, "holding");
+				for (let i = 0; i < 800 && !existsSync(holding); i++) {
+					await Bun.sleep(25);
+				}
+				expect(existsSync(holding)).toBe(true);
+				await host.appendControl(f.runDir, {
+					type: "steer",
+					message: "STEERED-TEXT",
+				});
+			},
+		});
+		expect(r.exit).toEqual({ kind: "exit", code: 0 });
+		expect(readFileSync(join(f.tree, "steered"), "utf8")).toContain(
+			"STEERED-TEXT",
+		);
+		expect(JSON.stringify(r.events)).toContain("hello from the fake");
+	}, 90_000);
+
+	test("a granted secret reaches the agent only through the sealed options", async () => {
+		installFakeClaude();
+		const canary = "conformance-grant-canary-value";
+		const r = await runBridged("claude", {
+			secretEnvironment: new SecretEnvironment({ ANTHROPIC_API_KEY: canary }),
+		});
+		expect(r.exit).toEqual({ kind: "exit", code: 0 });
+		const proof = JSON.parse(
+			readFileSync(join(f.tree, "agent-proof.json"), "utf8"),
+		);
+		expect(proof.granted).toBe(canary);
+		expect(proof.pid1).not.toContain(canary);
+		expect(proof.self).not.toContain(canary);
+		for (const file of ["control/driver.json", "raw.log", "events.jsonl"]) {
+			const path = join(f.runDir, file);
+			if (existsSync(path)) {
+				expect(readFileSync(path, "utf8")).not.toContain(canary);
+			}
+		}
 	}, 90_000);
 
 	test("codex runs under the bridge, in the sandbox", async () => {

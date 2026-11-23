@@ -80,6 +80,7 @@ export const DEV_SHELL_REFUSAL =
 /** Build the fixture and probe it. Every path is inside a fresh private directory. */
 async function probeLayout(
 	mfwHome: string,
+	projectRoot: string,
 	deps: AgentPreflightDeps,
 ): Promise<AgentPreflightRefusal | null> {
 	mkdirSync(mfwHome, { recursive: true, mode: 0o700 });
@@ -136,10 +137,7 @@ async function probeLayout(
 				targets: {
 					home: host.home,
 					mfwHome: realHome,
-					protectedPaths: protectedPaths(
-						{ projectRoot: project, stateDir },
-						host.home,
-					),
+					protectedPaths: protectedPaths({ projectRoot, stateDir }, host.home),
 					fleetExecBaseline: [],
 				},
 			});
@@ -194,10 +192,11 @@ export async function agentSandboxRefusal(
 		return { code: "sandbox_unavailable", detail: DEV_SHELL_REFUSAL };
 	}
 	const now = deps.now();
-	if (memo?.key === input.mfwHome && now - memo.at < PROBE_TTL_MS) {
+	const key = `${input.mfwHome}\0${input.projectRoot}`;
+	if (memo?.key === key && now - memo.at < PROBE_TTL_MS) {
 		return memo.result;
 	}
-	const result = await probeLayout(input.mfwHome, deps);
-	memo = { key: input.mfwHome, at: now, result };
+	const result = await probeLayout(input.mfwHome, input.projectRoot, deps);
+	memo = { key, at: now, result };
 	return result;
 }

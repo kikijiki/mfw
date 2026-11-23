@@ -27,9 +27,9 @@
  * With `"pipe"`, Bun hands the child a unix socketpair rather than a FIFO. Only
  * a caller's numeric descriptor is checked to be a real pipe.
  *
- * Not wired into the engine yet. The in-child probe (probe-run.ts) verifies
- * this contract from inside each sandbox, and attestation-gate.ts refuses
- * autonomous flags without a passing record.
+ * Task and repair runs reach it through agent-launch.ts. The in-child probe
+ * (probe-run.ts) verifies this contract from inside each sandbox, and
+ * attestation-gate.ts refuses autonomous flags without a passing record.
  */
 
 import { closeSync, constants, fstatSync, openSync, writeSync } from "node:fs";
