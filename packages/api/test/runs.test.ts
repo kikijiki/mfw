@@ -56,6 +56,11 @@ function project(name: string, rows: unknown[], lookups: string[][] = []) {
 		registry: {
 			list: async () => runRows,
 			get: async (id: string) => runRows.find((run) => run.id === id) ?? null,
+			provenance: async () => ({
+				exit: { observed: null, agentSays: null, disagree: false },
+				reportStatus: null,
+				facts: [],
+			}),
 		},
 		tasks: {
 			get: async () => {
