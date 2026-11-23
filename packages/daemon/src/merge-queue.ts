@@ -7,6 +7,7 @@ import { and, asc, eq, inArray, lt } from "drizzle-orm";
 import { readProtectedBoardPaths } from "./board-layout.ts";
 import { git } from "./git.ts";
 import { quarantineRef } from "./host-git/fetch.ts";
+import { hardenedPush } from "./host-git/push.ts";
 import type { Logger } from "./log.ts";
 import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
 
@@ -751,12 +752,15 @@ export class MergeQueue {
 		if (!remotes.stdout.split("\n").includes(this.push.remote)) {
 			return { status: "no-remote" };
 		}
-		const r = await git(
-			["push", this.push.remote, branch],
-			this.deps.projectRoot,
-		);
-		if (r.exitCode === 0) return { status: "pushed" };
-		return { status: "error", reason: tail(r.stderr || r.stdout, 300) };
+		const r = await hardenedPush({
+			projectRoot: this.deps.projectRoot,
+			remote: this.push.remote,
+			branch,
+		});
+		// A refusal reaches the operator the same way a failed push does.
+		return r.status === "pushed"
+			? { status: "pushed" }
+			: { status: "error", reason: r.reason };
 	}
 
 	/** Compare-and-swap the branch ref on the merged base; throws rather than

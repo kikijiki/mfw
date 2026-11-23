@@ -204,6 +204,36 @@ describe("MergeQueue v2, real git matrix", () => {
 		await f.cleanup();
 	});
 
+	test("the push after a merge never runs a planted pre-push hook", async () => {
+		const f = await fixture(undefined, { enabled: true, remote: "origin" });
+		const remote = await mkdtemp(join(tmpdir(), "mfw-remote-"));
+		const canary = join(remote, "..", `${remote.split("/").pop()}-canary`);
+		await git(["init", "-q", "--bare", "-b", "main"], remote);
+		await gitOk(["remote", "add", "origin", remote], f.root);
+		await writeFile(
+			join(f.root, ".git/hooks/pre-push"),
+			`#!/bin/sh\ntouch "${canary}"\n`,
+			{ mode: 0o755 },
+		);
+
+		const runId = await f.makeBranchRun("mfw/t1", "a.txt", "hello\n");
+		await f.queue.enqueue({
+			runId,
+			taskId: "MFW-1",
+			branch: "mfw/t1",
+			targetBranch: "main",
+		});
+		expect(await f.queue.tick()).toBe("merged");
+
+		expect(existsSync(canary)).toBe(false);
+		expect(await gitOk(["rev-parse", "main"], remote)).toBe(
+			f.merged[0]?.sha ?? "",
+		);
+		await rm(canary, { force: true });
+		await rm(remote, { recursive: true, force: true });
+		await f.cleanup();
+	});
+
 	test("a merge with pushing off stays local", async () => {
 		const f = await fixture();
 		const remote = await mkdtemp(join(tmpdir(), "mfw-remote-"));

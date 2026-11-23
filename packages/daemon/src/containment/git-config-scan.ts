@@ -65,6 +65,19 @@ function isDangerous(
 	return SUBSECTION_KEYS[section]?.has(key) === true;
 }
 
+/** {@link isDangerous} for a full `section[.subsection].key` name, as `git config --list` prints it. */
+export function isDangerousGitKey(fullKey: string): boolean {
+	const name = fullKey.toLowerCase();
+	const first = name.indexOf(".");
+	const last = name.lastIndexOf(".");
+	if (first < 0) return false;
+	return isDangerous(
+		name.slice(0, first),
+		first === last ? null : name.slice(first + 1, last),
+		name.slice(last + 1),
+	);
+}
+
 const HEADER = /^\[([A-Za-z0-9.-]+)(?:\s+"((?:[^"\\]|\\.)*)")?\]/;
 const KEY = /^([A-Za-z][A-Za-z0-9-]*)[ \t]*(=|$|[#;])/;
 
