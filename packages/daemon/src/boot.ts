@@ -931,6 +931,7 @@ export async function attachProject(
 			...(cfg.pushUrl ? { url: cfg.pushUrl } : {}),
 			...(cfg.pushAllowLocalUrl ? { allowLocalUrl: true } : {}),
 		},
+		landingRoot: join(opts.mfwHome, "landing"),
 		selfRepairMainRed: () => scheduler.selfRepairMainRed,
 		// `triggers` is built later; this only runs once a merge lands.
 		onLandedPaths: (paths) => triggers.disarmForMergedPaths(paths),

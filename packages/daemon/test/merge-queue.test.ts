@@ -275,6 +275,82 @@ describe("MergeQueue v2, real git matrix", () => {
 		await f.cleanup();
 	});
 
+	for (const [name, key] of [
+		["merge driver", "merge.evil.driver"],
+		["smudge filter", "filter.evil.smudge"],
+		["clean filter", "filter.evil.clean"],
+	] as const) {
+		test(`a ${name} in the repository config never runs`, async () => {
+			const f = await fixture();
+			const fired = `${f.root}-fired`;
+			const payload = `${f.root}-payload.sh`;
+			await writeFile(payload, `#!/bin/sh\ntouch "${fired}"\nexit 0\n`, {
+				mode: 0o755,
+			});
+			await writeFile(
+				join(f.root, ".gitattributes"),
+				"*.txt merge=evil filter=evil\n",
+			);
+			await gitOk(["add", ".gitattributes"], f.root);
+			await gitOk(["commit", "-q", "-m", "attrs"], f.root);
+			const runId = await f.makeBranchRun("mfw/t1", "a.txt", "hello\n");
+			await gitOk(["config", key, payload], f.root);
+			await f.queue.enqueue({
+				runId,
+				taskId: "MFW-1",
+				branch: "mfw/t1",
+				targetBranch: "main",
+			});
+			expect(await f.queue.tick()).toBe("parked");
+			expect(f.parked).toHaveLength(0);
+			expect((await f.queue.byRun(runId))?.error).toContain(key);
+			expect(existsSync(fired)).toBe(false);
+			await rm(payload, { force: true });
+			await f.cleanup();
+		});
+	}
+
+	test("a committed .gitattributes naming a driver merges without running one", async () => {
+		const f = await fixture();
+		await writeFile(join(f.root, "both.txt"), "1\n2\n3\n4\n5\n");
+		await writeFile(join(f.root, ".gitattributes"), "*.txt merge=evil\n");
+		await gitOk(["add", "-A"], f.root);
+		await gitOk(["commit", "-q", "-m", "attrs"], f.root);
+		const runId = await f.makeBranchRun(
+			"mfw/t1",
+			"both.txt",
+			"one\n2\n3\n4\n5\n",
+		);
+		await writeFile(join(f.root, "both.txt"), "1\n2\n3\n4\nfive\n");
+		await gitOk(["add", "-A"], f.root);
+		await gitOk(["commit", "-q", "-m", "other side"], f.root);
+		await f.queue.enqueue({
+			runId,
+			taskId: "MFW-1",
+			branch: "mfw/t1",
+			targetBranch: "main",
+		});
+		expect(await f.queue.tick()).toBe("merged");
+		expect(await gitOk(["show", "main:both.txt"], f.root)).toBe(
+			"one\n2\n3\n4\nfive",
+		);
+		await f.cleanup();
+	});
+
+	test("the merge runs outside the primary: no integration worktree appears", async () => {
+		const f = await fixture();
+		const runId = await f.makeBranchRun("mfw/t1", "a.txt", "hello\n");
+		await f.queue.enqueue({
+			runId,
+			taskId: "MFW-1",
+			branch: "mfw/t1",
+			targetBranch: "main",
+		});
+		expect(await f.queue.tick()).toBe("merged");
+		expect(existsSync(join(f.root, ".mfw", "integration"))).toBe(false);
+		await f.cleanup();
+	});
+
 	test("a merge with pushing off stays local", async () => {
 		const f = await fixture();
 		const remote = await mkdtemp(join(tmpdir(), "mfw-remote-"));

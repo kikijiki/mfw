@@ -205,10 +205,10 @@ const detachedHost: HostResourceAttachPort = {
 	registerProject: async () => {},
 	subscribe: () => () => {},
 };
-const directAttach = (root: string) =>
-	attachProject(cfg(root), silentLogger(), "boot-e2e", {
+const directAttach = (root: string, extra: Partial<ProjectConfig> = {}) =>
+	attachProject({ ...cfg(root), ...extra }, silentLogger(), "boot-e2e", {
 		hostResources: detachedHost,
-		mfwHome: join(root, ".test-mfw-home"),
+		mfwHome: join(root, ".git", "test-mfw-home"),
 	});
 
 describe("v2 end-to-end: goal → verified → merged", () => {
@@ -222,7 +222,10 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 			"good-driver.ts",
 		);
 		await writeFile(driver, GOOD_DRIVER);
-		const svc = await directAttach(root);
+		const svc = await directAttach(root, {
+			pushUrl: remote,
+			pushAllowLocalUrl: true,
+		});
 		useDriver(svc, driver);
 
 		const task = await svc.tasks.create({
