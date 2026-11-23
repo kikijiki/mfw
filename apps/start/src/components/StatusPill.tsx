@@ -125,7 +125,7 @@ export function StatusPill(props: StatusPillProps) {
 	return (
 		<span
 			className={cn(
-				"inline-flex h-5 shrink-0 items-center gap-1 border px-1.5 whitespace-nowrap",
+				"mfw-status inline-flex h-5 shrink-0 items-center gap-1 border px-1.5 whitespace-nowrap",
 				className,
 			)}
 			style={{

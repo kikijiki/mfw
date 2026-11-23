@@ -1,6 +1,6 @@
 /* Every theme, imported once from styles.css. Keep in step with registry.ts. */
 @import "./bridge.css";
-@import "./docket.css";
-@import "./switchyard.css";
-@import "./singlefile.css";
-@import "./bench.css";
+@import "./margin.css";
+@import "./pebble.css";
+@import "./gauge.css";
+@import "./slab.css";

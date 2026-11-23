@@ -569,7 +569,6 @@ export function ProjectEntry({
 						{menuButton}
 					</div>
 					<div
-						data-ui="project-stats"
 						className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 pl-[30px]"
 						style={{
 							color: "var(--mfw-fg-faint)",

@@ -48,7 +48,6 @@ export function PageHeader({
 }) {
 	return (
 		<header
-			data-ui="page-header"
 			className={cn(
 				"flex flex-wrap items-start gap-x-3 gap-y-2 border-b px-3 py-2",
 				className,
@@ -203,7 +202,7 @@ export function Chip({
 		<Tip label={title}>
 			<span
 				className={cn(
-					"inline-flex h-5 shrink-0 items-center gap-1 border px-1.5 whitespace-nowrap",
+					"mfw-chip inline-flex h-5 shrink-0 items-center gap-1 border px-1.5 whitespace-nowrap",
 					className,
 				)}
 				style={{
@@ -224,18 +223,12 @@ export function Chip({
 export function Scroller({
 	children,
 	className,
-	"data-ui": dataUi,
 }: {
 	children: ReactNode;
 	className?: string;
-	/** A stable hook for themes that rearrange this region. */
-	"data-ui"?: string;
 }) {
 	return (
-		<div
-			data-ui={dataUi}
-			className={cn("min-h-0 flex-1 overflow-auto", className)}
-		>
+		<div className={cn("min-h-0 flex-1 overflow-auto", className)}>
 			{children}
 		</div>
 	);
