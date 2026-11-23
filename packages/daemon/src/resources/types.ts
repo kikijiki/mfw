@@ -198,6 +198,19 @@ export interface PoolSummary {
 	observedAt: number | null;
 }
 
+/** Written before `provision`; closed only when an inventory proves absence. */
+export interface CleanupRecord {
+	ownershipToken: string;
+	leaseId: string;
+	poolId: string;
+	projectId: string;
+	externalId: string | null;
+	state: "open" | "closed";
+	teardownAttempts: number;
+	lastError: string | null;
+	createdAt: number;
+}
+
 export type ResourceErrorCode =
 	| "REFUSED"
 	| "NOT_FOUND"

@@ -27,12 +27,17 @@ import {
 	scopeKey,
 } from "./admission.ts";
 import { fromStored, toStored } from "./amounts.ts";
-import { RESOURCE_SCHEMA, RESOURCE_SCHEMA_VERSION } from "./schema.ts";
+import {
+	RESOURCE_CLEANUP_SCHEMA,
+	RESOURCE_SCHEMA,
+	RESOURCE_SCHEMA_VERSION,
+} from "./schema.ts";
 import {
 	type Actual,
 	type AdmissionVerdict,
 	type Claim,
 	type ClaimSetRequest,
+	type CleanupRecord,
 	type DimensionSummary,
 	HOLD_REASONS,
 	type HoldActor,
@@ -1214,6 +1219,7 @@ export class ResourceStore {
 					"INVALID_TRANSITION",
 				);
 			}
+			await this.assertNoOpenCleanup(tx, id);
 			await this.settleReservations(tx, id, actuals);
 			await this.closeLease(tx, lease, "released", "release completed", actor);
 			return true;
@@ -1238,6 +1244,8 @@ export class ResourceStore {
 					"INVALID_TRANSITION",
 				);
 			}
+			await this.assertNoOpenCleanup(tx, id);
+			await this.assertNoOpenCleanup(tx, id);
 			await tx.execute({
 				sql: "UPDATE rp_ledger SET state='void', amount=0, at_ms=? WHERE lease_id=? AND state='reserved'",
 				args: [this.now(), id],
@@ -1559,6 +1567,13 @@ export class ResourceStore {
 			const outcome = await this.withWrite(async (tx) => {
 				const lease = await this.fenced(tx, seen.id, seen.fence);
 				if (!isLive(lease.state)) return "unchanged" as const;
+				// A machine that may still exist keeps its capacity and its bill.
+				if (
+					evidence === "absent" &&
+					(await this.hasOpenCleanup(tx, lease.id))
+				) {
+					evidence = "unknown";
+				}
 				if (evidence === "absent") {
 					await this.settleReservations(tx, lease.id, []);
 					await this.closeLease(
@@ -1604,6 +1619,165 @@ export class ResourceStore {
 				from: lease.state,
 			},
 		);
+	}
+
+	// Cleanup records
+
+	private async hasOpenCleanup(tx: Transaction, leaseId: string) {
+		return (
+			(await one(
+				tx,
+				"SELECT 1 AS open FROM rp_cleanup WHERE lease_id=? AND state='open' LIMIT 1",
+				[leaseId],
+			)) !== null
+		);
+	}
+
+	private async assertNoOpenCleanup(tx: Transaction, leaseId: string) {
+		if (await this.hasOpenCleanup(tx, leaseId)) {
+			throw new ResourceError(
+				`lease ${leaseId} still has an open cleanup record`,
+				"CONFLICT",
+				"tear the machine down and prove its absence by inventory first",
+			);
+		}
+	}
+
+	/** Must commit before `provision`: at any kill point the machine is findable. */
+	async openCleanup(input: {
+		leaseId: string;
+		fence: number;
+		poolId: string;
+		ownershipToken: string;
+	}): Promise<CleanupRecord> {
+		return this.withWrite(async (tx) => {
+			const lease = await this.fenced(tx, input.leaseId, input.fence);
+			if (!isLive(lease.state) || lease.state === "releasing") {
+				throw new ResourceError(
+					`cannot provision under a ${lease.state} lease`,
+					"INVALID_TRANSITION",
+				);
+			}
+			const now = this.now();
+			await tx.execute({
+				sql: `INSERT INTO rp_cleanup(ownership_token,lease_id,pool_id,project_id,state,created_at,updated_at)
+				      VALUES(?,?,?,?,'open',?,?) ON CONFLICT(ownership_token) DO NOTHING`,
+				args: [
+					input.ownershipToken,
+					lease.id,
+					input.poolId,
+					lease.projectId,
+					now,
+					now,
+				],
+			});
+			const row = await one(
+				tx,
+				"SELECT * FROM rp_cleanup WHERE ownership_token=?",
+				[input.ownershipToken],
+			);
+			const record = cleanupFrom(row as Row);
+			if (record.leaseId !== lease.id || record.poolId !== input.poolId) {
+				throw new ResourceError(
+					"ownership token already names another lease",
+					"CONFLICT",
+				);
+			}
+			await this.audit(
+				tx,
+				"cleanup.opened",
+				"core",
+				{ poolId: input.poolId, leaseId: lease.id },
+				{ ownershipToken: input.ownershipToken },
+			);
+			return record;
+		});
+	}
+
+	async bindCleanup(ownershipToken: string, externalId: string): Promise<void> {
+		await this.withWrite(async (tx) => {
+			const row = await one(
+				tx,
+				"SELECT * FROM rp_cleanup WHERE ownership_token=?",
+				[ownershipToken],
+			);
+			if (!row) throw new ResourceError("no cleanup record", "NOT_FOUND");
+			const record = cleanupFrom(row);
+			if (record.externalId && record.externalId !== externalId) {
+				throw new ResourceError(
+					"cleanup record is bound to another machine",
+					"CONFLICT",
+				);
+			}
+			await tx.execute({
+				sql: "UPDATE rp_cleanup SET external_id=?, updated_at=? WHERE ownership_token=?",
+				args: [externalId, this.now(), ownershipToken],
+			});
+		});
+	}
+
+	async noteTeardown(ownershipToken: string, error: string | null) {
+		await this.withWrite(async (tx) => {
+			await tx.execute({
+				sql: `UPDATE rp_cleanup SET teardown_attempts=teardown_attempts+1, last_error=?, updated_at=?
+				      WHERE ownership_token=? AND state='open'`,
+				args: [error, this.now(), ownershipToken],
+			});
+		});
+	}
+
+	/**
+	 * Closes a record against a fresh inventory. Refuses while the inventory
+	 * still lists the token or the bound machine: a teardown reply is no proof.
+	 */
+	async closeCleanup(
+		ownershipToken: string,
+		inventory: readonly { externalId: string; ownershipToken: string | null }[],
+	): Promise<boolean> {
+		return this.withWrite(async (tx) => {
+			const row = await one(
+				tx,
+				"SELECT * FROM rp_cleanup WHERE ownership_token=?",
+				[ownershipToken],
+			);
+			if (!row) throw new ResourceError("no cleanup record", "NOT_FOUND");
+			const record = cleanupFrom(row);
+			if (record.state === "closed") return false;
+			if (
+				inventory.some(
+					(o) =>
+						o.ownershipToken === ownershipToken ||
+						(record.externalId !== null && o.externalId === record.externalId),
+				)
+			) {
+				throw new ResourceError(
+					"inventory still lists this machine",
+					"CONFLICT",
+				);
+			}
+			const now = this.now();
+			await tx.execute({
+				sql: "UPDATE rp_cleanup SET state='closed', closed_at=?, updated_at=? WHERE ownership_token=?",
+				args: [now, now, ownershipToken],
+			});
+			await this.audit(
+				tx,
+				"cleanup.closed",
+				"core",
+				{ poolId: record.poolId, leaseId: record.leaseId },
+				{ ownershipToken },
+			);
+			return true;
+		});
+	}
+
+	async openCleanups(poolId?: string): Promise<CleanupRecord[]> {
+		const rows = await all(
+			this.client,
+			`SELECT * FROM rp_cleanup WHERE state='open' ${poolId ? "AND pool_id=?" : ""} ORDER BY created_at, ownership_token`,
+			poolId ? [poolId] : [],
+		);
+		return rows.map(cleanupFrom);
 	}
 
 	// Read model
@@ -1717,6 +1891,24 @@ function claimFrom(row: Row): StoredClaim {
 	};
 }
 
+function cleanupFrom(row: Row): CleanupRecord {
+	return {
+		ownershipToken: str(row.ownership_token, "cleanup token"),
+		leaseId: str(row.lease_id, "cleanup lease"),
+		poolId: str(row.pool_id, "cleanup pool"),
+		projectId: str(row.project_id, "cleanup project"),
+		externalId:
+			row.external_id === null
+				? null
+				: str(row.external_id, "cleanup external"),
+		state: str(row.state, "cleanup state") as CleanupRecord["state"],
+		teardownAttempts: int(row.teardown_attempts, "cleanup attempts"),
+		lastError:
+			row.last_error === null ? null : str(row.last_error, "cleanup error"),
+		createdAt: int(row.created_at, "cleanup created"),
+	};
+}
+
 function entryKey(leaseId: string, poolId: string, dimension: string): string {
 	return `lease:${leaseId}:${poolId}:${dimension}`;
 }
@@ -1755,12 +1947,30 @@ export async function openResourceStore(
 						tx,
 						"SELECT name FROM sqlite_master WHERE type='table' AND name='rp_schema'",
 					);
-					if (!table) await tx.executeMultiple(RESOURCE_SCHEMA);
+					if (!table) {
+						await tx.executeMultiple(RESOURCE_SCHEMA);
+						await tx.executeMultiple(RESOURCE_CLEANUP_SCHEMA);
+						await tx.execute({
+							sql: "UPDATE rp_schema SET version=? WHERE singleton=1",
+							args: [RESOURCE_SCHEMA_VERSION],
+						});
+					}
 					const row = await one(
 						tx,
 						"SELECT version FROM rp_schema WHERE singleton=1",
 					);
-					const version = int(row?.version, "schema version");
+					let version = int(row?.version, "schema version");
+					if (version === 1) {
+						const cleanup = await one(
+							tx,
+							"SELECT name FROM sqlite_master WHERE type='table' AND name='rp_cleanup'",
+						);
+						if (!cleanup) await tx.executeMultiple(RESOURCE_CLEANUP_SCHEMA);
+						await tx.execute(
+							"UPDATE rp_schema SET version=2 WHERE singleton=1",
+						);
+						version = 2;
+					}
 					if (version !== RESOURCE_SCHEMA_VERSION) {
 						throw new ResourceError(
 							`resource schema ${version} is not the supported ${RESOURCE_SCHEMA_VERSION}`,

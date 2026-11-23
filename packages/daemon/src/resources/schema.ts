@@ -3,7 +3,29 @@
  * because the existing host store refuses any `user_version` it does not know,
  * and the two must share the file until cutover.
  */
-export const RESOURCE_SCHEMA_VERSION = 1;
+export const RESOURCE_SCHEMA_VERSION = 2;
+
+/**
+ * Cleanup records: written before a machine is provisioned and closed only
+ * when a later inventory proves the object is gone.
+ */
+export const RESOURCE_CLEANUP_SCHEMA = `
+CREATE TABLE rp_cleanup (
+  ownership_token TEXT PRIMARY KEY,
+  lease_id TEXT NOT NULL REFERENCES rp_leases(id),
+  pool_id TEXT NOT NULL REFERENCES rp_pools(id),
+  project_id TEXT NOT NULL,
+  external_id TEXT,
+  state TEXT NOT NULL CHECK (state IN ('open','closed')),
+  teardown_attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  closed_at INTEGER
+);
+CREATE INDEX ix_rp_cleanup_open ON rp_cleanup(state, pool_id);
+CREATE INDEX ix_rp_cleanup_lease ON rp_cleanup(lease_id, state);
+`;
 
 export const RESOURCE_SCHEMA = `
 CREATE TABLE rp_schema (
