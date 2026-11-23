@@ -11,6 +11,10 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+	createConnectionGate,
+	startEgressProxy,
+} from "../src/containment/egress-proxy.ts";
+import {
 	prepareRunEgress,
 	type RunEgressPaths,
 } from "../src/containment/egress-run.ts";
@@ -132,3 +136,54 @@ async function waitFor(path: string): Promise<string> {
 	}
 	return readFileSync(path, "utf8");
 }
+
+describe("a client over a connection cap", () => {
+	const answer = (path: string): Promise<string> =>
+		new Promise((done) => {
+			let out = "";
+			const c = net.connect(path);
+			const timer = setTimeout(() => {
+				c.destroy();
+				done(`no close: ${out}`);
+			}, 3_000);
+			c.on("data", (d) => {
+				out += d.toString("latin1");
+			});
+			c.on("error", () => {});
+			c.on("close", () => {
+				clearTimeout(timer);
+				done(out);
+			});
+		});
+
+	test.each([
+		["per run", { maxConnectionsPerRun: 1 }, 8],
+		["global", {}, 1],
+	])(
+		"%s: gets a 429 and a close",
+		async (_name, limits, gateSize) => {
+			const socketPath = join(root, "cap.sock");
+			const proxy = await startEgressProxy({
+				runId: "r",
+				socketPath,
+				allow: ["allowed.test"],
+				gate: createConnectionGate(gateSize),
+				limits,
+			});
+			const holder = net.connect(socketPath);
+			holder.on("error", () => {});
+			try {
+				await new Promise<void>((r) => holder.once("connect", () => r()));
+				const end = Date.now() + 2_000;
+				while (proxy.active === 0 && Date.now() < end) await Bun.sleep(5);
+				const out = await answer(socketPath);
+				expect(out).toContain("HTTP/1.1 429");
+				expect(out).toContain("X-Mfw-Egress: denied");
+			} finally {
+				holder.destroy();
+				await proxy.close();
+			}
+		},
+		15_000,
+	);
+});

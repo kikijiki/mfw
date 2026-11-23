@@ -328,16 +328,21 @@ export async function startEgressProxy(
 		setTimeout(() => client.destroy(), 250).unref();
 	}
 
+	/** Answer before closing: a bare destroy here can leave the client waiting. */
+	function refuseOverCap(client: net.Socket, denial: EgressDenial): void {
+		denyLog(denial);
+		client.on("error", () => client.destroy());
+		respondDeny(client, denial);
+	}
+
 	function onConnection(client: net.Socket): void {
 		const gate = opts.gate;
 		if (sockets.size >= limits.maxConnectionsPerRun) {
-			denyLog(deny(429, "limit-run"));
-			client.destroy();
+			refuseOverCap(client, deny(429, "limit-run"));
 			return;
 		}
 		if (!gate.acquire()) {
-			denyLog(deny(429, "limit-global"));
-			client.destroy();
+			refuseOverCap(client, deny(429, "limit-global"));
 			return;
 		}
 		sockets.add(client);
