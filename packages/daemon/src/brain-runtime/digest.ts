@@ -39,7 +39,10 @@ export interface DigestRunFact {
 	settle?: string | null;
 	costUsd?: number | null;
 	durationMs?: number | null;
+	/** `passed` or `failed`: the only part of a verification the host observed. */
 	verify?: string | null;
+	/** What the failing checks printed. Candidate-written, so never trusted. */
+	verifyOutput?: string | null;
 	scope?: string | null;
 	verdict?: string | null;
 	question?: string | null;
@@ -183,7 +186,28 @@ export function eventLine(e: WakeEvent): string {
 	return `#${e.seq} ${clock(e.ts)} ${e.type}${subject ? ` ${subject}` : ""}${facts.length ? ` ${facts.join(" ")}` : ""}`;
 }
 
-function runFactLine(f: DigestRunFact): string {
+/** A finalize `verify` step as digest facts: the verdict apart from the output. */
+export function verifyFacts(
+	verify:
+		| {
+				passed?: boolean;
+				checks?: { check: string; ok: boolean; detail?: string }[];
+		  }
+		| undefined,
+): Pick<DigestRunFact, "verify" | "verifyOutput"> {
+	if (!verify) return { verify: null, verifyOutput: null };
+	if (verify.passed) return { verify: "passed", verifyOutput: null };
+	const failing = verify.checks?.filter((c) => !c.ok) ?? [];
+	const output = failing
+		.map((c) => `${c.check}${c.detail ? ` (${c.detail.slice(0, 120)})` : ""}`)
+		.join("; ")
+		// One physical line: output must not be able to forge a line of its own.
+		.replace(/\s+/g, " ")
+		.trim();
+	return { verify: "failed", verifyOutput: output || null };
+}
+
+export function runFactLine(f: DigestRunFact): string {
 	const parts = [
 		`${f.runId}${f.taskId ? ` (${f.taskId})` : ""} ${f.kind}${f.role ? `/${f.role}` : ""} on ${f.harness ?? "?"}:${f.model}`,
 		`state=${f.state}${f.outcome ? ` outcome=${f.outcome}` : ""}`,
@@ -193,6 +217,11 @@ function runFactLine(f: DigestRunFact): string {
 	const lines = [`- ${parts.join(", ")}`];
 	if (f.settle) lines.push(`  - settled: ${f.settle}`);
 	if (f.verify) lines.push(`  - verify [host-observed]: ${f.verify}`);
+	if (f.verifyOutput) {
+		lines.push(
+			`  - check output [untrusted, candidate-written]: ${f.verifyOutput}`,
+		);
+	}
 	if (f.scope) lines.push(`  - scope: ${f.scope}`);
 	if (f.verdict) lines.push(`  - review [agent-reported]: ${f.verdict}`);
 	if (f.question) lines.push(`  - question [agent-reported]: ${f.question}`);

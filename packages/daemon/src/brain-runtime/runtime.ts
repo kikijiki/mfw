@@ -59,6 +59,7 @@ import {
 	type DigestInput,
 	type DigestRunFact,
 	renderDigest,
+	verifyFacts,
 } from "./digest.ts";
 import { BrainDirections } from "./directions.ts";
 import { BrainActionExecutor, type BrainExecutorDeps } from "./executor.ts";
@@ -1190,7 +1191,6 @@ export class BrainRuntime {
 		const report = done("ingest_report") as
 			| { report?: { status?: string; summary?: string; question?: string } }
 			| undefined;
-		const failing = verify?.checks?.filter((c) => !c.ok) ?? [];
 		return {
 			runId,
 			taskId: run.taskId,
@@ -1205,11 +1205,7 @@ export class BrainRuntime {
 			durationMs: run.finishedAt
 				? run.finishedAt.getTime() - run.startedAt.getTime()
 				: null,
-			verify: verify
-				? verify.passed
-					? "passed"
-					: `failed: ${failing.map((c) => `${c.check}${c.detail ? ` (${c.detail.slice(0, 120)})` : ""}`).join("; ") || "unknown"}`
-				: null,
+			...verifyFacts(verify),
 			scope: scope
 				? `${String(scope.files ?? "?")} files, ${String(scope.outside ?? 0)} outside owns`
 				: null,
