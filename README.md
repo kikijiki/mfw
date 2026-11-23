@@ -4,6 +4,10 @@
 in control.** You describe the work as tasks. mfw decides what can start, hands
 each task to an agent, checks the result, and merges it only if it passes.
 
+> **Pre-release.** mfw runs coding agents on your machine and can merge and push
+> their work. Read the [safety summary](#safety-summary) first. Some features are
+> [experimental](docs/experimental.md).
+
 mfw is three things that fit together. You can use the first on its own.
 
 | Part | What it is | Use it to |
@@ -59,38 +63,72 @@ teaches your coding agents (Claude Code, Codex, opencode, pi) how to use it.
 The daemon is the engine that does the work. For each project you attach, it:
 
 - **Picks ready tasks** in dependency order, and runs several at once.
-- **Gives each task its own copy of the repository** (a git worktree on its own
-  branch), so agents never overwrite each other.
-- **Runs a coding agent** on the task: Claude Code, OpenAI Codex CLI, or any agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com) (ACP): Cursor, Gemini CLI, opencode and pi are supported. Each agent
-  runs in its own terminal session that survives restarts of the daemon, and you
-  can steer or stop it while it works.
+- **Gives each task its own private clone of the repository**, so agents never
+  overwrite each other or touch your checkout.
+- **Runs a coding agent** on the task, in a sandbox: Claude Code or OpenAI Codex
+  CLI. Agents that speak the [Agent Client Protocol](https://agentclientprotocol.com)
+  (ACP), such as Cursor, Gemini CLI, opencode and pi, have no sandbox profile yet
+  and run only unsandboxed with interactive approval
+  ([experimental](docs/experimental.md#acp-agents)). Each agent runs in its own
+  session that survives restarts of the daemon, and you can steer or stop it while
+  it works.
 - **Checks the result** against the task's goal, then runs the task's `run`
   checks without trusting the agent's word. An autonomous run's checks run on its
-  committed tip inside the no-network verifier sandbox; a check that cannot run
+  committed tip inside the no-network verifier sandbox. A check that cannot run
   there is reported as an infrastructure result, never retried on the host. Only
   an interactive worktree run's checks run on the host, because a person
   approved the run (see [docs/verifier-sandbox.md](docs/verifier-sandbox.md)).
-- **Merges automatically** when everything passes, into a branch you choose. If the
-  main branch turns red, it stops merging and can repair it.
+- **Merges automatically** when everything passes, into a branch you choose, and
+  pushes it unless you set `pushOnMerge: false`. A change to files the host later
+  executes (agent config, CI, git behaviour, build entry points) waits for your
+  approval. If the main branch turns red, it stops merging and can repair it.
 - **Asks a model for help only when needed:** to diagnose an ambiguous failure,
   resolve a stubborn conflict, or review a change. Scheduling, checking and
   merging are always mechanical.
 - **Handles recurring work and reactions:** tasks that repeat on a schedule or
   event, and triggers such as "deploy after a merge lands".
-- **Can use a rented GPU machine (RunPod)** for tasks that need one.
+- **Can use a rented GPU machine (RunPod)** for tasks that need one. This is
+  [experimental](docs/experimental.md#remote-targets-ssh-and-runpod) and off by
+  default.
 
-Safe by default: the scheduler is **off** until you turn it on, so starting mfw
-never starts spending. Agents run inside a sandbox (`agentIsolation`, `bwrap` by default): a task or
-repair run sees its own worktree, a read-only system and a private home, and
-reaches the network only through a host proxy with a fixed allowlist (see
-[docs/egress.md](docs/egress.md)). With `agentIsolation: "none"` they run with
-your user's permissions instead, so only attach projects you are happy to let
-them work on.
+### Safety summary
+
+The scheduler is **off** until you turn it on, so starting mfw never starts
+spending. With the default `agentIsolation: "bwrap"`:
+
+- **An agent runs in a sandbox.** It sees its private clone, a read-only system
+  and a synthetic home. It cannot see your home directory, mfw's state or your
+  checkout.
+- **An autonomous launch needs proof.** A probe inside the sandbox must pass for
+  that exact launch. If it cannot, the run is refused rather than run unsandboxed.
+- **Network access is an allowlist.** Each run has its own network namespace and
+  reaches only its vendor's hosts, through a per-run proxy
+  ([docs/egress.md](docs/egress.md)).
+- **The host does not trust results.** It imports work as a validated git bundle,
+  runs checks in a no-network sandbox, and asks you before merging changes to
+  files it later executes.
+
+What this does **not** stop:
+
+- A run can read its agent CLI's login and send it, or the code it can see, to an
+  allowed vendor host, up to an upload budget.
+- Code that passes its checks merges and pushes, and runs with your rights when
+  you build or run it.
+- `agentIsolation: "none"`, ACP agents, armed host triggers and remote targets do
+  not have this protection.
+- The systemd limits and real agent CLIs have not yet been verified end to end
+  under the full sandbox.
+
+[SECURITY.md](SECURITY.md) is the one-page version and explains how to report a
+vulnerability. The [threat model](docs/threat-model.md) has every boundary, the
+code that enforces it and the known risks.
 
 ## 3. The web UI
 
 The web UI runs on your machine and shows:
 
+- **Lead**, each project's landing page: where things stand, what needs you, and a
+  box to give the project's brain a one-sentence direction or ask it a question;
 - the **board** as a grid of task cards grouped by status (or as columns), with each task's detail, history and files;
 - **running agents**, live: a readable view and the raw output, with buttons to
   steer or stop an agent mid-task;
@@ -113,7 +151,8 @@ The web UI runs on your machine and shows:
 ### For agents: the MCP server
 
 `@mfw/mcp` lets a coding agent read and edit your tasks through the running app,
-so there is still only one source of truth. Add it to any MCP-capable agent:
+so there is still only one source of truth. Create a token first
+([API tokens](#api-tokens)), then add it to any MCP-capable agent:
 
 ```json
 { "mcpServers": { "mfw": { "command": "bun", "args": ["run", "packages/cli/src/main.ts", "mcp"] } } }
@@ -124,19 +163,65 @@ and move tasks, check the inbox and health, and look at runs.
 
 ## Getting started
 
-You need [Bun](https://bun.sh), [git](https://git-scm.com) and
-[tmux](https://github.com/tmux/tmux), plus the agent CLIs you want to use
-(Claude Code, Codex, or an ACP agent: Cursor, Gemini CLI, opencode, pi).
+### Requirements
+
+| Need | Why |
+| --- | --- |
+| Linux on x86_64 | the sandbox's seccomp filter is x86_64 only; other platforms cannot run autonomously |
+| [Bun](https://bun.sh) | runs mfw |
+| [git](https://git-scm.com) and [tmux](https://github.com/tmux/tmux) | repositories and agent sessions |
+| [bubblewrap](https://github.com/containers/bubblewrap) (`bwrap`) 0.10 or newer, with unprivileged user namespaces | the agent sandbox |
+| a systemd user manager with delegated controllers | per-run memory and task limits; autonomous runs are refused without it |
+| Claude Code or Codex CLI | the agents. ACP agents are [experimental](docs/experimental.md#acp-agents) |
+| `openssl` (optional) | only for the `smoke:serve-check` rehearsal |
+
+### Quick start
+
+**1. Build and start the server.**
 
 ```sh
 bun install
-bun run build          # build the app
-bun run start          # run it
+bun run build
+bun run start
+alias mfw="bun run $PWD/packages/cli/src/main.ts"   # in another shell, from the checkout
 ```
 
-Open **http://localhost:7777/mfw/**, add a project, and create a few tasks. Nothing
-runs until you switch the scheduler on in the UI. The on/off choice is remembered
-across restarts.
+**2. Create the owner account.** Open **http://localhost:7777/mfw/**. On first start
+the server writes a one-time setup token to a private file and logs only its path:
+
+```sh
+cat "${MFW_HOME:-$HOME/.local/share/mfw}/setup-token"
+```
+
+Enter it and choose a password of at least 12 characters. See
+[Signing in](#signing-in) for recovery.
+
+**3. Log your agent CLI in to its fleet directory.** Sandboxed agents use a
+dedicated login under `$MFW_HOME/agents/`, never your personal one. mfw never reads
+or copies it. Use the vendor's own login:
+
+```sh
+export MFW_HOME="${MFW_HOME:-$HOME/.local/share/mfw}"
+mkdir -p -m 700 "$MFW_HOME/agents/claude" "$MFW_HOME/agents/codex"
+CLAUDE_CONFIG_DIR="$MFW_HOME/agents/claude" claude   # then sign in
+CODEX_HOME="$MFW_HOME/agents/codex" codex login
+```
+
+**4. Add a project, then switch it to a private clone.** Add the project in the UI.
+Until the default changes, a sandboxed project **starts no runs** without this
+setting, and the inbox tells you so. Add it to the project's entry in
+`$MFW_HOME/config.json`, then restart the server:
+
+```json
+{ "projects": [{ "name": "my-project", "runWorkspace": "clone" }] }
+```
+
+Keep the entry's other fields. A project with an `.envrc` is refused for now,
+because dev shells do not run inside the sandbox yet.
+
+**5. Direct the work.** The project opens on **Lead**. Give it a direction or create
+a few tasks on the board, then switch the scheduler on. Nothing runs until you do,
+and the choice is remembered across restarts.
 
 To use only the board tool, you do not need any of that:
 
@@ -146,7 +231,7 @@ bun packages/board/src/cli.ts --help
 
 ### Reach it from your phone
 
-Keep the server on loopback and let Tailscale publish it with a real certificate,
+**[Experimental](docs/experimental.md#tailscale-and-proxy-exposure).** Keep the server on loopback and let Tailscale publish it with a real certificate,
 through a private socket and on an HTTPS port of its own. Start the server with:
 
 ```sh
@@ -187,6 +272,16 @@ Both keep the scheduler off until you enable it in the UI.
 | `MFW_ALLOWED_HOSTS` | none | exact `host` or `host:port` names the UI may be reached on (comma separated, no wildcards); loopback is always allowed |
 | `MFW_LISTEN_SOCKET` | none | a private unix socket under `$MFW_HOME` for a TLS proxy; the recommended way to run behind Tailscale Serve |
 | `MFW_TRUSTED_PROXIES` | none | proxy peer addresses or CIDRs whose forwarded headers are honoured; loopback is not trusted by default |
+| `MFW_EXPERIMENTAL_REMOTE` | off | `1` enables the [experimental](docs/experimental.md#remote-targets-ssh-and-runpod) SSH and RunPod targets, never for autonomous runs |
+
+The main per-project keys in `$MFW_HOME/config.json`:
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `agentIsolation` | `bwrap` | the sandbox. `none` needs `approvalMode: "interactive"` and runs agents as your user |
+| `approvalMode` | `autonomous` | `interactive` asks a person for agent actions |
+| `runWorkspace` | `worktree` | set it to `clone`: sandboxed runs refuse a worktree ([why](docs/experimental.md#clone-workspaces)) |
+| `pushOnMerge` | `true` | push the integration branch after each merge |
 
 Agent network access, its per-project settings and its limits are described
 in [docs/egress.md](docs/egress.md).
@@ -226,7 +321,8 @@ delete `auth.db` by hand: that skips this check.
 
 ### API tokens
 
-MCP clients and scripts use scoped API tokens instead of a session. Create them
+**[Experimental](docs/experimental.md#scoped-api-tokens)** until reviewed by a
+second party. MCP clients and scripts use scoped API tokens instead of a session. Create them
 under Settings > API tokens, or on the host:
 
 ```sh
@@ -281,9 +377,20 @@ The project brain does not use tokens: it talks over its own unix socket.
 
 ## How it is built
 
-The design notes that are public live in [docs/](docs/). The short version: one app (a [TanStack Start](https://tanstack.com/start) server) runs the
+The [architecture overview](docs/architecture-overview.md) explains the components,
+the launch chain, the run lifecycle and where state lives. The short version: one app (a [TanStack Start](https://tanstack.com/start) server) runs the
 daemon in-process, serves the web UI and a typed API, and keeps run bookkeeping in
 a local SQLite database. The board itself is always just files.
+
+| Document | Covers |
+| --- | --- |
+| [SECURITY.md](SECURITY.md) | reporting a vulnerability, what is and is not protected |
+| [docs/threat-model.md](docs/threat-model.md) | assets, boundaries, attackers, residual risks |
+| [docs/experimental.md](docs/experimental.md) | features not yet at the default safety bar |
+| [docs/architecture-overview.md](docs/architecture-overview.md) | how the parts fit together |
+| [docs/egress.md](docs/egress.md) | agent network access |
+| [docs/verifier-sandbox.md](docs/verifier-sandbox.md) | where checks run |
+| [docs/exposure.md](docs/exposure.md) | reaching mfw from another device |
 
 ```
 packages/
@@ -309,7 +416,7 @@ tmux directly.
 ```sh
 direnv allow           # enters the dev shell (bun, node, sqlite, git)
 bun install
-bun run lint           # biome + typecheck
+bun run lint           # private-material check, biome, typecheck
 bun run test           # all test suites
 bun run dev            # the app with hot reload
 ```
