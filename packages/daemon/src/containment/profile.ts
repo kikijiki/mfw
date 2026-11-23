@@ -107,17 +107,24 @@ const CacheSection = z.strictObject({
 	access: Access,
 });
 
-const FleetConfigSection = z.strictObject({
-	cli: z.enum(["claude", "codex"]),
-	source: AbsolutePath,
-	/** Directories under `source` that stay writable; everything else is read-only. */
-	writable: z.array(RelativeDir).max(64),
-	/**
-	 * Where those directories really live for this run. They are mounted over
-	 * the shared ones, so nothing a run writes reaches another run.
-	 */
-	privateState: AbsolutePath.optional(),
-});
+const FleetConfigSection = z
+	.strictObject({
+		cli: z.enum(["claude", "codex"]),
+		source: AbsolutePath,
+		/** Directories under `source` that stay writable; everything else is read-only. */
+		writable: z.array(RelativeDir).max(64),
+		/**
+		 * Where those directories really live for this run. They are mounted over
+		 * the shared ones, so nothing a run writes reaches another run.
+		 */
+		privateState: AbsolutePath.optional(),
+		/** Directories under `source` the CLI may use but nothing keeps. */
+		tmpfs: z.array(RelativeDir).max(64).optional(),
+	})
+	.refine(
+		(f) => !f.tmpfs?.some((d) => f.writable.includes(d)),
+		"a fleet directory cannot be both persisted and tmpfs",
+	);
 
 /**
  * The run directory (`run-dir.ts`). Only its `control/` (always read-only) and

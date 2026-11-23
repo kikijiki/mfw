@@ -265,6 +265,12 @@ export function expectedWritableMounts(compiled: CompiledSandbox): string[] {
 		SANDBOX_PATHS.home,
 	]);
 	if (options.includes(SANDBOX_PATHS.scratch)) out.add(SANDBOX_PATHS.scratch);
+	options.forEach((option, i) => {
+		const next = options[i + 1];
+		if (option === "--tmpfs" && next?.startsWith(`${SANDBOX_PATHS.fleet}/`)) {
+			out.add(next);
+		}
+	});
 	for (const pin of compiled.pinnedBinds) {
 		if (pin.writable) out.add(pin.dest);
 	}

@@ -27,6 +27,7 @@ import {
 import {
 	AgentProfileError,
 	cloneLayout,
+	fleetPrivateState,
 	withoutAutonomyFlags,
 } from "./containment/agent-profile.ts";
 import {
@@ -34,6 +35,7 @@ import {
 	type BrainSandbox,
 	prepareBrainSandbox,
 } from "./containment/brain-launch.ts";
+import { restoreBrainTranscript } from "./containment/brain-transcript.ts";
 import { SANDBOX_PATHS } from "./containment/compile-bwrap.ts";
 import {
 	harnessAllowlist,
@@ -257,12 +259,24 @@ interface HostBridge {
 	env: Record<string, string>;
 	/** A read-only role's private clone, removed when the run ends. */
 	roleCloneRoot?: string;
+	/** A brain turn's transcript, kept once its sandbox has exited. */
+	brainTranscript?: {
+		turnState: string;
+		store: string;
+		cli: "claude" | "codex";
+	};
 }
 
 const EGRESS_PROXY_MAIN = join(
 	import.meta.dir,
 	"containment",
 	"egress-proxy-main.ts",
+);
+
+const BRAIN_TRANSCRIPT_MAIN = join(
+	import.meta.dir,
+	"containment",
+	"brain-transcript-main.ts",
 );
 
 /** 0.05 s each: how long `run.sh` waits for the proxy socket. */
@@ -552,6 +566,24 @@ export class AgentHost {
 						"done",
 					]
 				: []),
+			...(bridge?.brainTranscript
+				? [
+						[
+							requireHostTool("env"),
+							"-i",
+							bunBin,
+							...HOST_BUN_FLAGS,
+							"run",
+							BRAIN_TRANSCRIPT_MAIN,
+							bridge.brainTranscript.turnState,
+							bridge.brainTranscript.store,
+							bridge.brainTranscript.cli,
+						]
+							.map(q)
+							.join(" ")
+							.concat(" >/dev/null 2>&1"),
+					]
+				: []),
 			...(bridge?.roleCloneRoot
 				? [`rm -rf -- ${q(bridge.roleCloneRoot)} 2>/dev/null`]
 				: []),
@@ -819,13 +851,23 @@ export class AgentHost {
 			env,
 			secretNames: secretEnvironment.names(),
 			egressSocketDir: egress.socketDir,
-			...(brain
-				? {
-						brainSocketDir: brain.brainSocketDir,
-						fleetStateDir: brain.fleetStateDir,
-					}
-				: {}),
+			...(brain ? { brainSocketDir: brain.brainSocketDir } : {}),
 		};
+		// Only a transcript whose hash still matches is carried in. Otherwise
+		// `--resume` fails and the runtime starts a fresh generation.
+		const brainTranscript = brain
+			? {
+					turnState: fleetPrivateState(tree, cli),
+					store: brain.transcriptStore,
+					cli,
+				}
+			: undefined;
+		if (brainTranscript) {
+			await restoreBrainTranscript(
+				brainTranscript.store,
+				brainTranscript.turnState,
+			);
+		}
 		if (!readOnly) writeWipLaunchRequest(request);
 		const requestPath = join(control, `agent-launch-${spec.runId}.json`);
 		await rm(requestPath, { force: true });
@@ -847,6 +889,7 @@ export class AgentHost {
 			providerArgv,
 			env,
 			...(roleCloneRoot ? { roleCloneRoot } : {}),
+			...(brainTranscript ? { brainTranscript } : {}),
 		};
 	}
 

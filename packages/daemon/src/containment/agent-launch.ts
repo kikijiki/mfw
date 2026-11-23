@@ -73,8 +73,6 @@ export const AgentLaunchRequestSchema = z.strictObject({
 	egressSocketDir: AbsolutePath.optional(),
 	/** Brain role: the directory holding this turn's socket and token. */
 	brainSocketDir: AbsolutePath.optional(),
-	/** The CLI's private session state, when it must outlive the clone. */
-	fleetStateDir: AbsolutePath.optional(),
 	/** A host-started one-shot: the WIP helper alone, with no agent, secret or network. */
 	purpose: z.literal("wip-snapshot").optional(),
 });
@@ -156,7 +154,6 @@ export function launchRoots(req: AgentLaunchRequest): string[] {
 		join(req.mfwHome, "agents"),
 		...(req.egressSocketDir ? [dirname(req.egressSocketDir)] : []),
 		...(req.brainSocketDir ? [dirname(req.brainSocketDir)] : []),
-		...(req.fleetStateDir ? [dirname(req.fleetStateDir)] : []),
 	];
 }
 
@@ -255,7 +252,6 @@ export async function launchAgentSandbox(
 				req.tree,
 				req.cli,
 				join(req.mfwHome, "agents", req.cli),
-				req.fleetStateDir,
 			);
 		}
 		const looked = await deps.compileHost(
@@ -297,7 +293,6 @@ export async function launchAgentSandbox(
 						? { egressSocketDir: req.egressSocketDir }
 						: {}),
 					...(req.brainSocketDir ? { brainSocketDir: req.brainSocketDir } : {}),
-					...(req.fleetStateDir ? { fleetState: req.fleetStateDir } : {}),
 				})
 			: buildRunProfile({
 					...common,

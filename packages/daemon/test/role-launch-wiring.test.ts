@@ -10,11 +10,10 @@ import {
 import { codexMcpArgs } from "../src/agents/adapter.ts";
 import type { BrainMcpServer } from "../src/brain-runtime/turn-run.ts";
 import {
-	BrainLaunchError,
-	brainFleetState,
 	rewriteBrainArgv,
 	sandboxMcpServer,
 } from "../src/containment/brain-launch.ts";
+import { brainTranscriptStore } from "../src/containment/brain-transcript.ts";
 import type { OneShotAgentRequest } from "../src/containment/oneshot-agent.ts";
 import { git } from "../src/git.ts";
 import type { ProcResult } from "../src/proc.ts";
@@ -77,8 +76,8 @@ describe("a brain turn's command inside the sandbox", () => {
 		"a/b",
 		"",
 	])("the session id %j cannot name a path", (session) => {
-		expect(() => brainFleetState("/m", session, "claude")).toThrow(
-			BrainLaunchError,
+		expect(() => brainTranscriptStore("/m", session, "claude")).toThrow(
+			"invalid brain session id",
 		);
 	});
 });

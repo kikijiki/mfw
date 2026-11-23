@@ -428,6 +428,16 @@ function checkSources(
 
 	const fleet = profile.filesystem?.fleetConfig;
 	if (fleet) {
+		for (const rel of fleet.tmpfs ?? []) {
+			const full = joinUnder(fleet.source, rel);
+			if (full === null || host.realpath(full) !== full) {
+				return refuse(
+					"path_not_canonical",
+					`fleet directory ${rel} is missing, leaves ${fleet.source} or is a symlink`,
+					"create it as a real directory",
+				);
+			}
+		}
 		for (const rel of fleet.writable) {
 			// The shared directory is the mount point, the private one the source.
 			for (const root of [fleet.source, fleet.privateState]) {
@@ -693,6 +703,9 @@ function buildMounts(
 					joinUnder(dest, rel) as string,
 				),
 			);
+		}
+		for (const rel of [...(fs.fleetConfig.tmpfs ?? [])].sort()) {
+			after.push("--tmpfs", joinUnder(dest, rel) as string);
 		}
 	}
 	if (fs?.brainSocket) {

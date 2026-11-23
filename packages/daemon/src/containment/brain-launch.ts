@@ -6,8 +6,7 @@
  * source tree is not bound, so it is bundled into the run's read-only control
  * directory. It reaches the daemon only through this turn's socket directory.
  *
- * A turn's CLI session must survive to the next turn, so it lives in a private
- * per-session directory rather than beside the turn's disposable clone.
+ * Only the turn's transcript survives to the next turn (brain-transcript.ts).
  */
 
 import { chmodSync, rmSync, writeFileSync } from "node:fs";
@@ -23,6 +22,7 @@ import {
 } from "../brain-runtime/turn-run.ts";
 import { HOST_BUN_FLAGS } from "./agent-launch-argv.ts";
 import type { FleetCli } from "./agent-profile.ts";
+import { brainTranscriptStore } from "./brain-transcript.ts";
 import { SANDBOX_PATHS } from "./compile-bwrap.ts";
 import { runDirLayout } from "./run-dir.ts";
 
@@ -40,19 +40,8 @@ export interface BrainSandbox {
 	agentArgv: string[];
 	providerArgv: string[];
 	brainSocketDir: string;
-	fleetStateDir: string;
-}
-
-/** The session's private CLI state, under the daemon's home. */
-export function brainFleetState(
-	mfwHome: string,
-	session: string,
-	cli: FleetCli,
-): string {
-	if (!/^[A-Za-z0-9_-]{1,128}$/.test(session)) {
-		throw new BrainLaunchError(`invalid brain session id ${session}`);
-	}
-	return join(mfwHome, "agents-state", "brain", session, cli);
+	/** Where this session's transcript is kept between turns. Host-only. */
+	transcriptStore: string;
 }
 
 /** The same MCP server, as the sandbox must start it. */
@@ -129,7 +118,12 @@ export async function prepareBrainSandbox(input: {
 		);
 	}
 	const session = launch.mcp.env.MFW_BRAIN_SESSION ?? "";
-	const fleetStateDir = brainFleetState(input.mfwHome, session, input.cli);
+	let transcriptStore: string;
+	try {
+		transcriptStore = brainTranscriptStore(input.mfwHome, session, input.cli);
+	} catch (err) {
+		throw new BrainLaunchError((err as Error).message);
+	}
 	const { control } = runDirLayout(input.runDir);
 	await bundleMcp(join(control, MCP_BUNDLE));
 	const server = sandboxMcpServer(launch.mcp);
@@ -144,6 +138,6 @@ export async function prepareBrainSandbox(input: {
 		agentArgv: rewriteBrainArgv(input.agentArgv, server),
 		providerArgv: rewriteBrainArgv(input.providerArgv, server),
 		brainSocketDir: dirname(socket),
-		fleetStateDir,
+		transcriptStore,
 	};
 }

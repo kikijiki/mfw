@@ -24,6 +24,7 @@ import {
 	fleetPrivateState,
 	TEMPORARY_FLEET_WRITABLE,
 } from "./agent-profile.ts";
+import { BRAIN_TRANSCRIPT_DIR } from "./brain-transcript.ts";
 import { parseSandboxProfile, type SandboxProfile } from "./profile.ts";
 
 /** The roles an agent CLI runs in with a read-only workspace. */
@@ -163,8 +164,6 @@ export interface ReadOnlyAgentInput {
 	egressSocketDir?: string;
 	/** Brain role: the directory holding this turn's socket and token. */
 	brainSocketDir?: string;
-	/** Where the CLI's private session state lives, when it outlives the clone. */
-	fleetState?: string;
 }
 
 /** An agent that reads the project and reports through its outbox. */
@@ -172,6 +171,11 @@ export function buildReadOnlyAgentProfile(
 	input: ReadOnlyAgentInput,
 ): SandboxProfile {
 	const clone = cloneLayout(input.tree);
+	const session = [...TEMPORARY_FLEET_WRITABLE[input.cli]] as string[];
+	// A brain's transcript is carried to its next turn, so it alone is on disk.
+	const kept =
+		input.role === "brain" ? [BRAIN_TRANSCRIPT_DIR[input.cli]] : session;
+	const discarded = session.filter((dir) => !kept.includes(dir));
 	return parseSandboxProfile({
 		version: 1,
 		role: input.role,
@@ -184,9 +188,9 @@ export function buildReadOnlyAgentProfile(
 			fleetConfig: {
 				cli: input.cli,
 				source: input.fleetDir,
-				writable: [...TEMPORARY_FLEET_WRITABLE[input.cli]],
-				privateState:
-					input.fleetState ?? fleetPrivateState(clone.tree, input.cli),
+				writable: kept,
+				privateState: fleetPrivateState(clone.tree, input.cli),
+				...(discarded.length > 0 ? { tmpfs: discarded } : {}),
 			},
 			...(input.brainSocketDir
 				? { brainSocket: { source: input.brainSocketDir } }
