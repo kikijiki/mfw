@@ -107,6 +107,11 @@ export interface MergeQueueDeps {
 		tipSha: string,
 	) => Promise<{ passed: boolean; detail?: string; crashed?: boolean }>;
 	/**
+	 * Whether `reverify` would run any check for this job. Absent or failing
+	 * counts as no: a moved tip with nothing to check it is never landed.
+	 */
+	hasChecks?: (job: MergeJobView) => Promise<boolean>;
+	/**
 	 * Verify the merge commit itself (after the board restore) before it lands, in a disposable host-owned clone.
 	 * Absent (worktree projects) means no pre-landing verification. A failure
 	 * parks the job as `reverify`.
@@ -461,7 +466,13 @@ export class MergeQueue {
 				if (tip === pin.rebasedSha) {
 					return this.verifyRebasedAndLand(job, baseSha, tip);
 				}
-				await this.park(job, pinRefusal(tip, pin.verifiedSha), "reverify");
+				await this.park(
+					job,
+					pin.verifiedSha && !(await this.runsChecks(job))
+						? MOVED_TIP_REFUSAL
+						: pinRefusal(tip, pin.verifiedSha),
+					"reverify",
+				);
 				return "parked";
 			}
 		}
@@ -554,6 +565,11 @@ export class MergeQueue {
 			.from(mergeJobs)
 			.where(eq(mergeJobs.id, jobId));
 		return row ?? { verifiedSha: null, rebasedSha: null };
+	}
+
+	private async runsChecks(job: MergeJobView): Promise<boolean> {
+		if (!this.deps.hasChecks) return false;
+		return this.deps.hasChecks(job).catch(() => false);
 	}
 
 	/** The commit the job's source points at now; null when it cannot be read. */
@@ -1268,13 +1284,26 @@ export class MergeQueue {
 	/** Re-queue a parked job; reuses the same run worktree and branch. */
 	async retry(jobId: number): Promise<void> {
 		const job = await this.requireParked(jobId);
-		if (job.taskId) await this.deps.reclaimTask?.(job);
-		// A tip changed by hand (a resolved conflict) is not refused outright on
-		// an operator's retry, and it is not trusted either: it runs the same
-		// re-verification as the queue's own rebase before it can land.
 		const tip = await this.sourceTip(job);
-		const { verifiedSha } = await this.pinOf(jobId);
-		if (tip && verifiedSha && tip !== verifiedSha) {
+		const pin = await this.pinOf(jobId);
+		const moved =
+			tip !== null &&
+			pin.verifiedSha !== null &&
+			tip !== pin.verifiedSha &&
+			tip !== pin.rebasedSha;
+		// Before the claim is touched: a refused retry changes nothing but the
+		// reason on the job, which stays parked.
+		if (moved && !(await this.runsChecks(job))) {
+			await this.deps.handle.db
+				.update(mergeJobs)
+				.set({ error: MOVED_TIP_REFUSAL, updatedAt: new Date() })
+				.where(and(eq(mergeJobs.id, jobId), eq(mergeJobs.state, "parked")));
+			throw new Error(MOVED_TIP_REFUSAL);
+		}
+		if (job.taskId) await this.deps.reclaimTask?.(job);
+		// A tip changed by hand (a resolved conflict) with checks to run is not
+		// trusted: it takes the same re-verification as the queue's own rebase.
+		if (moved) {
 			await this.deps.handle.db
 				.update(mergeJobs)
 				.set({ rebasedSha: tip, updatedAt: new Date() })
@@ -1373,6 +1402,9 @@ export class MergeQueue {
 		return rows.length;
 	}
 }
+
+const MOVED_TIP_REFUSAL =
+	"the tip moved since it was verified; re-run the task so it is verified again";
 
 function pinRefusal(tip: string, verified: string | null): string {
 	return verified

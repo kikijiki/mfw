@@ -84,6 +84,7 @@ async function fixture(
 		projectRoot: root,
 		log: silentLogger(),
 		reverify,
+		hasChecks: async () => true,
 		onMerged: async (job, sha) => {
 			await onMergedTail?.(job, sha);
 			merged.push({ job, sha });
