@@ -219,6 +219,10 @@ export async function launchAgentSandbox(
 	}
 
 	const resolved = host.toolchain.resolved.find((b) => b.name === command);
+	// Toolchain binds keep their host paths, so a CLI installed in a home
+	// toolchain root shows that path (and the username in it) in `/proc/1/cmdline`,
+	// `PATH` and the mount table. Accepted: hiding it from one of the three would
+	// change nothing. Credentials are checked for below.
 	const finalArgv = [resolved?.path ?? command, ...argv.slice(1)];
 	const forbidden = [
 		...new Set(
