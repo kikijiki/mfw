@@ -7,9 +7,11 @@ import { UNATTESTED_CONFIG_MARKER } from "./harness-markers.ts";
  * ACP agent needs no plugin code; a new dialect needs a core bridge, because
  * bridges turn untrusted output into host facts. mfw drives unmodified CLIs.
  *
- * Data-only is not inert: detection runs the named binary. For a non-built-in
- * manifest detection runs inside the sandbox and the resolved binary is
- * pinned by sha256 at enable. Everything here is a closed, strict schema.
+ * Data-only is not inert: detection runs the named binary, today directly on
+ * the host and unsandboxed. That is acceptable only because just the compiled-in
+ * manifests can load. Running detection in the sandbox and pinning the resolved
+ * binary by sha256 are R6 requirements (`docs/plugin-trust-requirements.md`).
+ * Everything here is a closed, strict schema.
  */
 
 export const HARNESS_DIALECTS = [
