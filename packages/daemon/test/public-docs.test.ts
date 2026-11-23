@@ -69,6 +69,18 @@ function brokenLinks(file: string): string[] {
 const CITED_PATH =
 	/`((?:packages|apps|tools|packaging|docs)\/[A-Za-z0-9_./$-]+?)(?::\d+)?`/g;
 
+/**
+ * Paths a doc may cite that exist only after a build, each with the build
+ * script that writes it. An exact list: every other path must be on disk.
+ */
+const GENERATED_OUTPUTS: Readonly<Record<string, string>> = {
+	"apps/start/.output/THIRD_PARTY_NOTICES.txt":
+		"third-party-notices.ts .output/THIRD_PARTY_NOTICES.txt",
+};
+
+const citedPathExists = (path: string) =>
+	existsSync(join(root, path)) || GENERATED_OUTPUTS[path] !== undefined;
+
 describe("the public docs", () => {
 	test("the required documents exist", () => {
 		expect(REQUIRED.filter((f) => !existsSync(join(root, f)))).toEqual([]);
@@ -82,10 +94,25 @@ describe("the public docs", () => {
 		const missing = publicDocs().flatMap((file) =>
 			[...read(file).matchAll(CITED_PATH)]
 				.map((m) => (m[1] ?? "").replace(/\/$/, ""))
-				.filter((p) => !existsSync(join(root, p)))
+				.filter((p) => !citedPathExists(p))
 				.map((p) => `${file}: ${p}`),
 		);
 		expect(missing).toEqual([]);
+	});
+
+	test("every allowed generated path is really written by the build", () => {
+		const build = JSON.parse(read("apps/start/package.json")).scripts.build;
+		for (const writer of Object.values(GENERATED_OUTPUTS))
+			expect(build).toContain(writer);
+	});
+
+	test("a stale path is still caught, next to a generated one too", () => {
+		for (const path of [
+			"apps/start/.output/OTHER_NOTICES.txt",
+			"apps/start/.output/THIRD_PARTY_NOTICES.txt.bak",
+			"packages/daemon/src/no-such-file.ts",
+		])
+			expect(citedPathExists(path)).toBe(false);
 	});
 
 	test("no retired name or superseded sandbox claim survives", () => {
