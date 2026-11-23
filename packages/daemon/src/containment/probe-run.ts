@@ -233,6 +233,32 @@ export interface ProbeTargets {
 	toolchainHomeRoots: readonly string[];
 	/** Every toolchain and system bind: the only place an unlistable directory is tolerated. */
 	toolchainBinds: readonly string[];
+	/** Resolves symlinks; null when the path does not exist on the host. */
+	realpath(path: string): string | null;
+}
+
+/** A path as configured and as resolved: a bind may use either. */
+function pathForms(path: string, targets: ProbeTargets): string[] {
+	const real = targets.realpath(path);
+	return real && real !== path ? [path, real] : [path];
+}
+
+/** Every form of the home, each with the toolchain roots seen through it. */
+function homeForms(targets: ProbeTargets): ProbeSpec["homes"] {
+	const roots = targets.toolchainHomeRoots.filter((r) =>
+		r.startsWith(`${targets.home}/`),
+	);
+	return pathForms(targets.home, targets).map((path) => ({
+		path,
+		allowedRoots: [
+			...new Set(
+				roots.flatMap((r) => [
+					`${path}${r.slice(targets.home.length)}`,
+					...pathForms(r, targets).filter((f) => f.startsWith(`${path}/`)),
+				]),
+			),
+		],
+	}));
 }
 
 /** The same selection the compiler mounts for a profile that declares binaries. */
@@ -275,9 +301,6 @@ export function buildProbePlan(
 ): ProbePlan {
 	const options = decodeBwrapOptions(compiled.bwrapArgs);
 	const syscalls = probeSyscallPlan();
-	const allowedRoots = targets.toolchainHomeRoots.filter((r) =>
-		r.startsWith(`${targets.home}/`),
-	);
 	const hookDirs: string[] = [];
 	if (profile.filesystem?.workspace) {
 		hookDirs.push(`${SANDBOX_PATHS.workspace}/.git/hooks`);
@@ -293,8 +316,14 @@ export function buildProbePlan(
 		spec: {
 			nonce: opts.nonce,
 			loopbackPort: opts.loopbackPort,
-			absentPaths: [targets.mfwHome, ...targets.protectedPaths],
-			home: { path: targets.home, allowedRoots },
+			absentPaths: [
+				...new Set(
+					[targets.mfwHome, ...targets.protectedPaths].flatMap((p) =>
+						pathForms(p, targets),
+					),
+				),
+			],
+			homes: homeForms(targets),
 			hookDirs,
 			egressDir: SANDBOX_PATHS.egress,
 			syscalls,
@@ -475,7 +504,10 @@ export interface AttestRequest {
 	runId: string;
 	profile: SandboxProfile;
 	host: CompileHost;
-	targets: Omit<ProbeTargets, "toolchainHomeRoots" | "toolchainBinds">;
+	targets: Omit<
+		ProbeTargets,
+		"toolchainHomeRoots" | "toolchainBinds" | "realpath"
+	>;
 	/** `none` is for tests and always fails `cgroup_limits`. */
 	scope?: "systemd" | "none";
 	timeoutMs?: number;
@@ -527,7 +559,11 @@ export async function attestSandbox(
 			buildProbePlan(
 				profile,
 				compiled,
-				{ ...req.targets, ...probeToolchainTargets(req.host.toolchain) },
+				{
+					...req.targets,
+					...probeToolchainTargets(req.host.toolchain),
+					realpath: req.host.realpath,
+				},
 				{
 					nonce: randomBytes(16).toString("hex"),
 					loopbackPort,

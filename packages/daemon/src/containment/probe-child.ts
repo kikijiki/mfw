@@ -46,8 +46,11 @@ export interface ProbeSpec {
 	loopbackPort: number;
 	/** Paths that must not exist in the sandbox. */
 	absentPaths: string[];
-	/** The real home, and the toolchain roots allowed to recreate part of it. */
-	home: { path: string; allowedRoots: string[] };
+	/**
+	 * Each form of the real home (as configured and resolved), with the toolchain
+	 * roots allowed to recreate part of it.
+	 */
+	homes: { path: string; allowedRoots: string[] }[];
 	/** Hook directories the host's git would execute from. */
 	hookDirs: string[];
 	egressDir: string;
@@ -252,7 +255,7 @@ export async function probeChildMain(): Promise<void> {
 	// ---- absent paths and the real home
 	const absentVisible = spec.absentPaths.filter(present);
 	const homeVisible: string[] = [];
-	const walkHome = (dir: string) => {
+	const walkHome = (dir: string, allowedRoots: readonly string[]) => {
 		let names: string[];
 		try {
 			names = fs.readdirSync(dir);
@@ -263,18 +266,20 @@ export async function probeChildMain(): Promise<void> {
 		}
 		for (const name of names) {
 			const p = `${dir}/${name}`;
-			if (spec.home.allowedRoots.some((r) => under(p, r))) continue;
+			if (allowedRoots.some((r) => under(p, r))) continue;
 			// Only a real directory on the way to an allowed root may exist.
-			const onTheWay = spec.home.allowedRoots.some((r) => under(r, p));
+			const onTheWay = allowedRoots.some((r) => under(r, p));
 			let isDir = false;
 			try {
 				isDir = fs.lstatSync(p).isDirectory();
 			} catch {}
-			if (onTheWay && isDir) walkHome(p);
+			if (onTheWay && isDir) walkHome(p, allowedRoots);
 			else homeVisible.push(p);
 		}
 	};
-	if (present(spec.home.path)) walkHome(spec.home.path);
+	for (const home of spec.homes) {
+		if (present(home.path)) walkHome(home.path, home.allowedRoots);
+	}
 
 	// ---- socket and host-run executable sweep
 	const sockets: string[] = [];

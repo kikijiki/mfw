@@ -8,6 +8,7 @@ import {
 	realpathSync,
 	renameSync,
 	rmSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import net from "node:net";
@@ -267,7 +268,11 @@ describe.skipIf(skip !== null)("the probe in a real sandbox", () => {
 		const plan = buildProbePlan(
 			profile,
 			compiled,
-			{ ...targets(), ...probeToolchainTargets(host.toolchain) },
+			{
+				...targets(),
+				...probeToolchainTargets(host.toolchain),
+				realpath: host.realpath,
+			},
 			{
 				nonce: "live-nonce",
 				loopbackPort: (server.address() as net.AddressInfo).port,
@@ -557,6 +562,43 @@ describe.skipIf(skip !== null)("the probe in a real sandbox", () => {
 		}
 	}, 45_000);
 
+	test("a symlinked home does not hide its real path", async () => {
+		const realHome = join(root, "real-home");
+		mkdirSync(join(realHome, ".ssh"), { recursive: true });
+		writeFileSync(join(realHome, ".ssh/id_canary"), "not a real key\n");
+		const linkHome = join(root, "link-home");
+		symlinkSync(realHome, linkHome);
+		const r = await attestSandbox({
+			db: handle.db,
+			runId: "r1",
+			profile: baseProfile(),
+			host: compileHost({
+				home: linkHome,
+				toolchain: discoverToolchain({
+					home: linkHome,
+					binaries: ["bun"],
+					path: `${resolve(BUN, "..")}:${process.env.PATH ?? ""}`,
+				}),
+			}),
+			targets: {
+				home: linkHome,
+				mfwHome: mfw,
+				protectedPaths: [join(linkHome, ".ssh")],
+			},
+			scope: "none",
+			timeoutMs: 40_000,
+			weaken: beforeRemount(
+				"--ro-bind",
+				join(realHome, ".ssh"),
+				join(realHome, ".ssh"),
+			),
+		});
+		if (!r.ok) throw new Error(r.reason);
+		expect(measured(r.items)).toBe(true);
+		expect(failed(r.items)).toContain("secrets_absent");
+		expect(failed(r.items)).toContain("home_absent");
+	}, 45_000);
+
 	test("exec_sweep finds a planted git hook", async () => {
 		mkdirSync(join(work, ".git/hooks"), { recursive: true });
 		writeFileSync(join(work, ".git/hooks/pre-commit.sample"), "#!/bin/sh\n");
@@ -626,7 +668,11 @@ describe.skipIf(skip !== null)("forged results", () => {
 		const plan = buildProbePlan(
 			profile,
 			compiled,
-			{ ...targets(), ...probeToolchainTargets(host.toolchain) },
+			{
+				...targets(),
+				...probeToolchainTargets(host.toolchain),
+				realpath: host.realpath,
+			},
 			{ nonce: "the-real-nonce", loopbackPort: 1, scope: "systemd" },
 		);
 		return collectProbe(compiled, plan, {
@@ -676,7 +722,11 @@ describe.skipIf(skip !== null)("forged results", () => {
 		const plan = buildProbePlan(
 			profile,
 			compiled,
-			{ ...targets(), ...probeToolchainTargets(host.toolchain) },
+			{
+				...targets(),
+				...probeToolchainTargets(host.toolchain),
+				realpath: host.realpath,
+			},
 			{ nonce: "n", loopbackPort: 1, scope: "systemd" },
 		);
 		const items = await collectProbe(compiled, plan, {
@@ -807,7 +857,11 @@ describe.skipIf(skip !== null)("forged results", () => {
 		const plan = buildProbePlan(
 			profile,
 			compiled,
-			{ ...targets(), ...probeToolchainTargets(host.toolchain) },
+			{
+				...targets(),
+				...probeToolchainTargets(host.toolchain),
+				realpath: host.realpath,
+			},
 			{
 				nonce: "bundled",
 				loopbackPort: (server.address() as net.AddressInfo).port,
