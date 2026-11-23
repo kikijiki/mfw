@@ -16,6 +16,7 @@ import { basename, dirname, join } from "node:path";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
 import type { AgentLaunchRequest } from "./containment/agent-launch.ts";
 import {
+	AGENT_BRIDGED_ENV,
 	AGENT_LAUNCH_ENV,
 	HOST_BUN_FLAGS,
 } from "./containment/agent-launch-argv.ts";
@@ -328,8 +329,10 @@ export class AgentHost {
 		if (
 			SECRET_HANDOFF_SENTINEL in publicEnvironment ||
 			secretEnvironment.names().includes(SECRET_HANDOFF_SENTINEL) ||
-			AGENT_LAUNCH_ENV in publicEnvironment ||
-			secretEnvironment.names().includes(AGENT_LAUNCH_ENV)
+			[AGENT_LAUNCH_ENV, AGENT_BRIDGED_ENV].some(
+				(name) =>
+					name in publicEnvironment || secretEnvironment.names().includes(name),
+			)
 		) {
 			throw new Error("launch environment uses a reserved internal name");
 		}
@@ -395,7 +398,7 @@ export class AgentHost {
 			? // The driver is host code next to agent-written files: bun must not read
 				// any config or `.env` from around it. Its output goes to the log file
 				// and never to the pane, so no agent byte reaches a terminal.
-				`export ${AGENT_LAUNCH_ENV}=${q(bridge.requestPath)}\n${[bunBin, ...HOST_BUN_FLAGS, "run", spec.driverScript, dir].map(q).join(" ")} >> ${q(rawLog)} 2>&1`
+				`export ${AGENT_BRIDGED_ENV}=1 ${AGENT_LAUNCH_ENV}=${q(bridge.requestPath)}\n${[bunBin, ...HOST_BUN_FLAGS, "run", spec.driverScript, dir].map(q).join(" ")} >> ${q(rawLog)} 2>&1`
 			: `${q(bunBin)} run ${q(spec.driverScript)} ${q(dir)}`;
 		if (spec.isolation && !bridge) {
 			if (!(await this.sandbox.bwrapAvailable())) {

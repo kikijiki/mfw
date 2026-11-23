@@ -1,8 +1,11 @@
 /** Shared mfw.app-server/v1 run driver. Provider bridges own vendor protocols. */
 import { appendFileSync, readFileSync } from "node:fs";
 import type { FileSink } from "bun";
-import { agentSpawnCwd } from "../../containment/agent-launch-argv.ts";
-import { driverRunPaths } from "../../containment/run-dir.ts";
+import {
+	agentSpawnCwd,
+	refuseBridgedRunWithoutRequest,
+} from "../../containment/agent-launch-argv.ts";
+import { driverRunPaths, isHostBridged } from "../../containment/run-dir.ts";
 import {
 	type ApprovalDecision,
 	type AppServerEnvelope,
@@ -19,6 +22,7 @@ if (!runDir) {
 	process.exit(2);
 }
 
+refuseBridgedRunWithoutRequest(isHostBridged(runDir));
 const paths = driverRunPaths(runDir);
 const cfg = JSON.parse(readFileSync(paths.config, "utf8")) as {
 	bridgeArgv: string[];

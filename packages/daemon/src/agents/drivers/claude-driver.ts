@@ -15,8 +15,9 @@ import type { FileSink } from "bun";
 import {
 	agentSpawnArgv,
 	agentSpawnCwd,
+	refuseBridgedRunWithoutRequest,
 } from "../../containment/agent-launch-argv.ts";
-import { driverRunPaths } from "../../containment/run-dir.ts";
+import { driverRunPaths, isHostBridged } from "../../containment/run-dir.ts";
 import { limitAgentEvent, stripTerminalControls } from "../event-limits.ts";
 import { isAllowedStatus } from "../rate-limit-claude.ts";
 
@@ -26,6 +27,7 @@ if (!runDir) {
 	process.exit(2);
 }
 
+refuseBridgedRunWithoutRequest(isHostBridged(runDir));
 const paths = driverRunPaths(runDir);
 const cfg = JSON.parse(readFileSync(paths.config, "utf8")) as {
 	argv: string[];

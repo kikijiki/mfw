@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
 	chmodSync,
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	realpathSync,
@@ -334,6 +335,61 @@ describe("agentSpawnArgv", () => {
 	test("is the plain argv without a request", () => {
 		expect(agentSpawnArgv(["claude", "-p"], {})).toEqual(["claude", "-p"]);
 	});
+
+	test("m5: a host-bridged process without its request refuses", () => {
+		expect(() =>
+			agentSpawnArgv(["claude", "-p"], { MFW_AGENT_BRIDGED: "1" }),
+		).toThrow("launch request");
+		expect(() =>
+			agentSpawnArgv(["claude"], {
+				MFW_AGENT_BRIDGED: "1",
+				MFW_AGENT_LAUNCH_REQUEST: "",
+			}),
+		).toThrow("launch request");
+	});
+
+	test("m5: the real driver of a host-bridged run refuses without its request", async () => {
+		const runDir = join(base, "bridged-run");
+		mkdirSync(join(runDir, "control"), { recursive: true });
+		mkdirSync(join(runDir, "outbox"));
+		writeFileSync(join(runDir, "control/host-bridge"), "1\n");
+		const canary = join(base, "agent-ran");
+		const agent = join(base, "agent.sh");
+		writeFileSync(agent, `#!/bin/sh\necho ran > '${canary}'\n`);
+		chmodSync(agent, 0o755);
+		writeFileSync(
+			join(runDir, "control/driver.json"),
+			JSON.stringify({
+				argv: [agent],
+				bridgeArgv: [agent],
+				providerArgv: [],
+				cwd: base,
+				initialMessage: "hi",
+				steer: false,
+			}),
+		);
+		const env = { ...process.env };
+		delete env.MFW_AGENT_LAUNCH_REQUEST;
+		delete env.MFW_AGENT_BRIDGED;
+		for (const name of ["app-server-driver.ts", "claude-driver.ts"]) {
+			const child = Bun.spawn(
+				[
+					process.execPath,
+					"run",
+					join(import.meta.dir, "../src/agents/drivers", name),
+					runDir,
+				],
+				{ cwd: base, env, stdout: "ignore", stderr: "pipe", stdin: "ignore" },
+			);
+			const [stderr, code] = await Promise.all([
+				new Response(child.stderr).text(),
+				child.exited,
+			]);
+			expect({ name, code }).toEqual({ name, code: 78 });
+			expect(stderr).toContain("launch request");
+			expect(existsSync(canary)).toBe(false);
+		}
+	}, 30_000);
 
 	test("puts the hardened launcher in front with a request", () => {
 		const argv = agentSpawnArgv(["claude", "-p"], {
