@@ -19,10 +19,12 @@ import {
 	EGRESS_RELAY,
 	HOST_SCRIPTS_DIR,
 	hostScript,
+	REMOTE_RUNTIME,
 	sha256Hex,
 } from "../src/containment/host-script.ts";
 import { sourceRunRefusal } from "../src/containment/source-run-guard.ts";
 import { git } from "../src/git.ts";
+import { remoteRuntimeEntrypoint } from "../src/remote-execution-support.ts";
 
 const repoRoot = resolve(import.meta.dir, "../../..");
 
@@ -72,6 +74,12 @@ describe("the built host scripts", () => {
 		expect(resolved.startsWith(output)).toBe(true);
 		expect(readFileSync(resolved)).toEqual(before);
 		expect(readFileSync(resolved, "utf8")).not.toContain("agent-authored");
+	});
+
+	test("the remote runtime resolves to its built copy from a bundle chunk", () => {
+		expect(remoteRuntimeEntrypoint(chunk)).toBe(
+			join(output, HOST_SCRIPTS_DIR, builtScriptName(REMOTE_RUNTIME)),
+		);
 	});
 
 	test("the production server refuses a script override", () => {
