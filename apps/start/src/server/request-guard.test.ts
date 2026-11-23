@@ -11,6 +11,8 @@ const run = (
 	env: Record<string, string | undefined> = {},
 	method = "GET",
 ) => checkRequest(req(headers, method), env);
+/** A listener with its own TLS: the one way to take a non-loopback Host directly. */
+const TLS = { NITRO_SSL_CERT: "cert", NITRO_SSL_KEY: "key" };
 
 describe("request guard: Host", () => {
 	for (const host of [
@@ -48,21 +50,20 @@ describe("request guard: Host", () => {
 
 	test("a ts.net host passes only when listed", () => {
 		const host = "box.tail1234.ts.net";
-		expect(run({ host })?.status).toBe(403);
-		expect(run({ host }, { MFW_ALLOWED_HOSTS: "other.ts.net" })?.status).toBe(
+		const listed = (MFW_ALLOWED_HOSTS: string) => ({
+			...TLS,
+			MFW_ALLOWED_HOSTS,
+		});
+		expect(run({ host }, TLS)?.status).toBe(403);
+		expect(run({ host }, listed("other.ts.net"))?.status).toBe(403);
+		expect(run({ host }, listed(host))).toBeNull();
+		expect(run({ host: `${host}:7777` }, listed(host))).toBeNull();
+		expect(
+			run({ host: `${host}:7777` }, listed(`a.b, ${host}:7777`)),
+		).toBeNull();
+		expect(run({ host: `${host}:8888` }, listed(`${host}:7777`))?.status).toBe(
 			403,
 		);
-		expect(run({ host }, { MFW_ALLOWED_HOSTS: host })).toBeNull();
-		expect(
-			run({ host: `${host}:7777` }, { MFW_ALLOWED_HOSTS: host }),
-		).toBeNull();
-		expect(
-			run({ host: `${host}:7777` }, { MFW_ALLOWED_HOSTS: `a.b, ${host}:7777` }),
-		).toBeNull();
-		expect(
-			run({ host: `${host}:8888` }, { MFW_ALLOWED_HOSTS: `${host}:7777` })
-				?.status,
-		).toBe(403);
 	});
 
 	test("a trailing dot does not smuggle a host past the list", () => {
@@ -89,10 +90,11 @@ describe("request guard: Origin and Sec-Fetch-Site", () => {
 		expect(run({ host, origin: "file:///x" })?.status).toBe(403);
 	});
 	test("a listed host with a matching Origin passes", () => {
-		const env = { MFW_ALLOWED_HOSTS: "box.ts.net" };
-		expect(
-			run({ host: "box.ts.net", origin: "https://box.ts.net" }, env),
-		).toBeNull();
+		const env = { ...TLS, MFW_ALLOWED_HOSTS: "box.ts.net" };
+		const r = new Request("https://box.ts.net/api/trpc/x", {
+			headers: { host: "box.ts.net", origin: "https://box.ts.net" },
+		});
+		expect(checkRequest(r, env)).toBeNull();
 	});
 	test("a listed Origin does not pass against a different Host", () => {
 		const env = { MFW_ALLOWED_HOSTS: "box.ts.net" };
@@ -140,12 +142,16 @@ describe("request guard: Origin scheme (reviewer m1)", () => {
 		expect(checkRequest(r, {})).not.toBeNull();
 	});
 
-	test("behind a proxy the external scheme is not known yet, so https passes", () => {
+	test("a listed host without TLS or a trusted proxy is refused", () => {
 		expect(
 			run(
-				{ host: "box.example", origin: "https://box.example" },
+				{
+					host: "box.example",
+					origin: "https://box.example",
+					"x-forwarded-proto": "https",
+				},
 				{ MFW_ALLOWED_HOSTS: "box.example" },
-			),
-		).toBeNull();
+			)?.status,
+		).toBe(403);
 	});
 });

@@ -10,7 +10,7 @@ import { serveTrpc } from "~/server/trpc-handler";
 const endpoint = `${import.meta.env.BASE_URL}api/trpc`.replace(/\/{2,}/g, "/");
 
 const handler = async (req: Request) =>
-	serveTrpc(req, await guard(req, { api: true }), {
+	serveTrpc(req, await guard(req, { api: true, bearer: true }), {
 		auth: await serverAuth(),
 		endpoint,
 		orchestrator: getOrchestrator,

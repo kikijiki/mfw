@@ -1,6 +1,7 @@
 import {
 	type AuthRefused,
 	type AuthService,
+	type AuthSource,
 	isAuthRefused,
 } from "@mfw/daemon/auth/service";
 import {
@@ -12,6 +13,7 @@ import {
 	shadowCookieClears,
 	withCookies,
 } from "./auth-guard";
+import { requestContext } from "./request-guard";
 
 /**
  * `/api/auth/{state,setup,login,logout}`. The caller has already passed the
@@ -31,6 +33,8 @@ const STATUS: Record<AuthRefused["code"], number> = {
 	weak_password: 400,
 	locked: 429,
 	busy: 429,
+	invalid_token_request: 400,
+	too_many_tokens: 409,
 };
 
 function refusal(e: AuthRefused): Response {
@@ -68,14 +72,21 @@ async function readJson(req: Request): Promise<Record<string, unknown> | null> {
 	}
 }
 
-/**
- * The socket peer, as the server adapter reports it. Forwarded headers are
- * deliberately ignored: any client can send them.
- * TODO(C4): honour the forwarded address only from the configured trusted proxy.
- */
+/** The socket peer, as the server adapter reports it. Never a forwarded header. */
 export function peerAddress(req: Request): string | undefined {
 	const ip = (req as Request & { ip?: unknown }).ip;
 	return typeof ip === "string" ? ip : undefined;
+}
+
+/**
+ * Who a failed attempt counts against: the socket peer, or the client a trusted
+ * proxy reported, marked so the service also charges the shared proxied budget.
+ */
+export function throttleIdentity(req: Request): AuthSource | undefined {
+	const context = requestContext(req);
+	if (context.proxied && context.client)
+		return { address: context.client, viaProxy: true };
+	return peerAddress(req);
 }
 
 /** A JSON body and a custom header: a cross-site form can send neither. */
@@ -84,6 +95,18 @@ function hasAuthIntent(req: Request): boolean {
 		req.headers.get(AUTH_INTENT_HEADER) === "1" &&
 		/^application\/json\b/i.test(req.headers.get("content-type") ?? "")
 	);
+}
+
+/** The attached project names, or null when they cannot be read. */
+async function projectNames(
+	projects: (() => Promise<string[]>) | undefined,
+): Promise<Set<string> | null> {
+	if (!projects) return null;
+	try {
+		return new Set(await projects());
+	} catch {
+		return null;
+	}
 }
 
 const badRequest = () =>
@@ -95,8 +118,10 @@ export async function handleAuthAction(
 	guarded: Extract<GuardResult, { ok: true }>,
 	auth: AuthService,
 	base = appBase(),
-	/** The socket peer; injectable for tests. */
-	peer: string | undefined = peerAddress(req),
+	/** The throttle identity; injectable for tests. */
+	peer: AuthSource | undefined = throttleIdentity(req),
+	/** The attached projects, to validate a project-bound token. */
+	projects?: () => Promise<string[]>,
 ): Promise<Response> {
 	const method = req.method.toUpperCase();
 	if (action === "state" && (method === "GET" || method === "HEAD")) {
@@ -142,6 +167,72 @@ export async function handleAuthAction(
 				peer,
 			);
 			return jsonResponse(200, { ok: true });
+		} catch (e) {
+			if (isAuthRefused(e)) return refusal(e);
+			throw e;
+		}
+	}
+
+	// Token management: a private path, so the guard has required the session
+	// and its request key. A bearer token never gets here (`guardBearer`).
+	if (
+		action === "tokens" ||
+		action === "token-revoke" ||
+		action === "token-audit"
+	) {
+		const session = guarded.session;
+		if (!session)
+			return jsonResponse(401, {
+				error: "unauthenticated",
+				message: "sign in to manage API tokens",
+			});
+		if (action === "tokens" && method === "GET") {
+			const names = await projectNames(projects);
+			const tokens = await auth.listTokens();
+			return jsonResponse(200, {
+				tokens: tokens.map((t) => ({
+					...t,
+					// It would gain access if a project of that name were attached later.
+					unbound:
+						names !== null && t.project !== null && !names.has(t.project),
+				})),
+			});
+		}
+		if (action === "token-audit")
+			return method === "GET"
+				? jsonResponse(200, {
+						actions: await auth.listTokenAudit({ limit: 200 }),
+						counters: await auth.tokenAuditCounters(),
+					})
+				: jsonResponse(404, { error: "not_found", message: "not found" });
+		if (method !== "POST")
+			return jsonResponse(404, { error: "not_found", message: "not found" });
+		if (!hasAuthIntent(req)) return badRequest();
+		const body = await readJson(req);
+		if (!body) return badRequest();
+		if (action === "token-revoke") {
+			if (typeof body.id !== "string") return badRequest();
+			return jsonResponse(200, { revoked: await auth.revokeToken(body.id) });
+		}
+		if (body.project !== undefined && body.project !== null) {
+			const names = await projectNames(projects);
+			if (typeof body.project !== "string" || !names?.has(body.project))
+				return jsonResponse(400, {
+					error: "invalid_token_request",
+					message: "there is no project with that name",
+				});
+		}
+		try {
+			const { token, info } = await auth.createToken(
+				{
+					name: body.name,
+					scopes: body.scopes,
+					project: body.project,
+					ttlMs: body.ttlMs,
+				},
+				{ sessionId: session.sessionId },
+			);
+			return jsonResponse(200, { token, info });
 		} catch (e) {
 			if (isAuthRefused(e)) return refusal(e);
 			throw e;

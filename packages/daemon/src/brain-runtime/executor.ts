@@ -127,10 +127,7 @@ export interface BrainExecutorDeps {
 	projectRoot: string;
 	integrationBranch: string;
 	engine: {
-		startGroupRun(
-			spec: GroupRunSpec,
-			opts?: { hostSnapshot?: unknown },
-		): Promise<{ runId: string }>;
+		startGroupRun(spec: GroupRunSpec): Promise<{ runId: string }>;
 		stop(runId: string): Promise<void>;
 		steer(runId: string, message: string): Promise<void>;
 		/** `spawn` role `plan`: a read-only planning run (draft expansion, or a plan from a brief). */
@@ -472,10 +469,7 @@ export class BrainActionExecutor {
 	 * Launch every run of one accepted spawn that has no live row yet. Idempotent
 	 * by the pre-minted run ids: a replay finds the rows and starts nothing twice.
 	 */
-	async launch(
-		actionId: string,
-		ctx: { hostSnapshot?: unknown } = {},
-	): Promise<LaunchOutcome> {
+	async launch(actionId: string): Promise<LaunchOutcome> {
 		const row = await this.action(actionId);
 		if (row?.status !== "accepted") return { outcome: "noop" };
 		const fx = row.effects as SpawnEffects | null;
@@ -495,9 +489,7 @@ export class BrainActionExecutor {
 			if (!spec) continue;
 			await this.deps.crashAt?.("spawn.before_launch");
 			try {
-				await this.deps.engine.startGroupRun(spec, {
-					...(ctx.hostSnapshot ? { hostSnapshot: ctx.hostSnapshot } : {}),
-				});
+				await this.deps.engine.startGroupRun(spec);
 			} catch (e) {
 				const held = heldReason(e);
 				if (held) return { outcome: "held", ...held };

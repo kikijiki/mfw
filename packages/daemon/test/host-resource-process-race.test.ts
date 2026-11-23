@@ -5,10 +5,10 @@ import { createClient } from "@libsql/client";
 import {
 	acquireDaemonLock,
 	DaemonLockError,
-	type HostResourceDefinition,
-	openHostResourceStore,
-} from "../src/host-resources/index.ts";
+} from "../src/resources/daemon-lock.ts";
+import type { HostResourceDefinition } from "../src/resources/host-types.ts";
 import { HostProcessHarness } from "./support/host-resource-process-harness.ts";
+import { openHostResourceStore } from "./support/legacy-host.ts";
 
 let harness: HostProcessHarness;
 
@@ -158,7 +158,7 @@ describe("process-level host grant serialization", () => {
 					?.toString(),
 			);
 
-			const model = await store.readModel();
+			const model = await store.freshModel();
 			const promised = model.leases
 				.filter((lease) => lease.state === "provisional")
 				.reduce((sum, lease) => {
@@ -254,7 +254,7 @@ describe("process-level host grant serialization", () => {
 			});
 			expect(disjointResult.result).toMatchObject({ state: "provisional" });
 			expect(
-				(await store.readModel()).leases.some(
+				(await store.freshModel()).leases.some(
 					(lease) => lease.waiterId === oldResult.waiter.id,
 				),
 			).toBe(false);
@@ -364,11 +364,16 @@ describe("process-global store exclusion and fail-closed startup", () => {
 
 		const newerHome = harness.path("newer-home");
 		harness.trackHome(newerHome);
-		await mkdir(join(newerHome, "host"), { recursive: true });
+		(
+			await openHostResourceStore(newerHome, {
+				processBootId: "older",
+				kernelBootId: "kernel-a",
+			})
+		).close();
 		const raw = createClient({
 			url: `file:${join(newerHome, "host", "host.db")}`,
 		});
-		await raw.execute("PRAGMA user_version=999");
+		await raw.execute("UPDATE rp_schema SET version=999");
 		raw.close();
 		await expect(
 			openHostResourceStore(newerHome, {

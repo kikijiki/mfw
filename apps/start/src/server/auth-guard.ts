@@ -3,10 +3,12 @@ import {
 	type AuthService,
 	authServiceFor,
 	SESSION_ABSOLUTE_MS,
+	type TokenPrincipal,
 } from "@mfw/daemon/auth/service";
+import { type BearerHeader, parseBearer } from "@mfw/daemon/auth/tokens";
 import { mfwHome } from "@mfw/daemon/config";
 import { relativePath } from "../lib/auth-paths";
-import { checkRequest } from "./request-guard";
+import { checkRequest, requestContext } from "./request-guard";
 
 /**
  * The session-aware front of every request: Host and Origin first
@@ -55,17 +57,11 @@ export function appBase(): string {
 }
 
 /**
- * TLS as the browser sees it. A forged `X-Forwarded-Proto` can only make the
- * cookie stricter (`Secure`, which a plain-HTTP browser then refuses to store).
- *
- * TODO(C4): honour `X-Forwarded-Proto` only from the configured trusted proxy.
- * It stays accepted from anyone until then because the documented `tailscale
- * serve` setup depends on it and there is no way yet to name that proxy.
+ * TLS as the browser sees it: this server's own, or reported by a peer named in
+ * `MFW_TRUSTED_PROXIES`. `X-Forwarded-Proto` from anyone else means nothing.
  */
 export function isTls(req: Request): boolean {
-	if (new URL(req.url).protocol === "https:") return true;
-	const forwarded = req.headers.get("x-forwarded-proto");
-	return forwarded?.split(",")[0]?.trim().toLowerCase() === "https";
+	return requestContext(req).scheme === "https:";
 }
 
 /** How many values of the session cookie are considered. */
@@ -225,6 +221,8 @@ export type GuardResult =
 			token: string | null;
 			/** The request carried this session's request key. */
 			keyValid: boolean;
+			/** A verified API token. Then `session` is null: cookies were not read. */
+			apiToken?: TokenPrincipal;
 	  }
 	| { ok: false; response: Response };
 
@@ -237,6 +235,67 @@ export interface GuardDeps {
 	 * looks like (the router also matches spellings such as `/API/...`).
 	 */
 	api?: boolean;
+	/** This handler serves API tokens. Only the tRPC mount sets it. */
+	bearer?: boolean;
+	/**
+	 * Charge this request to the token's rate limit (default). The app-wide
+	 * middleware passes false: the route handler guards the same request again
+	 * and is the one that charges it.
+	 */
+	chargeRate?: boolean;
+}
+
+/**
+ * A request presenting `Authorization: Bearer` is a token request and nothing
+ * else: it never falls back to a cookie, so a bad token cannot ride on a
+ * session and a good one cannot pick up the owner's rights. Host, Origin and
+ * Sec-Fetch-Site have already been checked, so a browser page on another
+ * origin is refused here even with a valid token.
+ */
+async function guardBearer(
+	bearer: Exclude<BearerHeader, { kind: "none" }>,
+	deps: GuardDeps,
+): Promise<GuardResult> {
+	if (!deps.bearer)
+		return {
+			ok: false,
+			response: jsonResponse(403, {
+				error: "token_not_accepted",
+				message: "API tokens are accepted on the tRPC API only",
+			}),
+		};
+	const invalid = (): GuardResult => ({
+		ok: false,
+		response: jsonResponse(
+			401,
+			{
+				error: "invalid_token",
+				message: "unknown, expired or revoked API token",
+			},
+			{ "WWW-Authenticate": "Bearer" },
+		),
+	});
+	if (bearer.kind === "malformed") return invalid();
+	const apiToken = await deps.auth.authenticateToken(bearer.value);
+	if (!apiToken) return invalid();
+	const waitMs =
+		deps.chargeRate === false ? 0 : deps.auth.takeTokenRate(apiToken.tokenId);
+	if (waitMs > 0) {
+		const retry = Math.ceil(waitMs / 1000);
+		return {
+			ok: false,
+			response: jsonResponse(
+				429,
+				{
+					error: "rate_limited",
+					message: "too many requests for this token",
+					retryAfterSeconds: retry,
+				},
+				{ "Retry-After": String(retry) },
+			),
+		};
+	}
+	return { ok: true, session: null, token: null, keyValid: false, apiToken };
 }
 
 function isApiPath(rel: string | null): boolean {
@@ -279,6 +338,14 @@ export async function guardRequest(
 			}),
 		};
 
+	const bearer = parseBearer(req.headers.get("authorization"));
+	// The health probe is public and reads no credential, so monitors may keep one set.
+	if (
+		bearer.kind !== "none" &&
+		!(rel === "api/health" && SAFE_METHODS.has(req.method.toUpperCase()))
+	)
+		return guardBearer(bearer, deps);
+
 	const { session, token, keyValid } = await resolveSession(
 		deps.auth,
 		readSessionTokens(req),
@@ -314,7 +381,7 @@ export function serverAuth(): Promise<AuthService> {
 /** The guard with the server's own service. An auth failure is a refusal. */
 export async function guard(
 	req: Request,
-	opts: { api?: boolean } = {},
+	opts: { api?: boolean; bearer?: boolean; chargeRate?: boolean } = {},
 ): Promise<GuardResult> {
 	try {
 		return await guardRequest(req, { auth: await serverAuth(), ...opts });
@@ -328,6 +395,17 @@ export async function guard(
 			}),
 		};
 	}
+}
+
+/**
+ * The app-wide middleware's guard. It admits a bearer token on the exact tRPC
+ * mount only; the route handler then guards again and enforces the rest.
+ */
+export function guardAppRequest(req: Request): Promise<GuardResult> {
+	const rel = relativePath(new URL(req.url).pathname, appBase());
+	return rel?.startsWith("api/trpc/")
+		? guard(req, { bearer: true, chargeRate: false })
+		: guard(req);
 }
 
 /** For raw routes: null when a signed-in caller may proceed, else the refusal. */

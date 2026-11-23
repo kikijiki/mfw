@@ -11,8 +11,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { boot } from "../src/boot.ts";
 import { git } from "../src/git.ts";
-import { stableProjectIdentity } from "../src/host-resources/index.ts";
 import { silentLogger } from "../src/log.ts";
+import { stableProjectIdentity } from "../src/resources/identity.ts";
 
 const paths: string[] = [];
 afterEach(async () => {
@@ -74,14 +74,9 @@ describe("stable global project registry", () => {
 		// Projects get only the typed port, not scheduler callbacks/backrefs.
 		expect("scheduler" in alpha.hostResources).toBe(false);
 
-		const rows = await orchestrator.hostResources.store.client.execute(
-			"SELECT id,root,display_name,attached FROM projects ORDER BY display_name",
-		);
-		expect(rows.rows.map((r) => r.id)).toEqual([
-			alpha.projectId,
-			beta.projectId,
-		]);
-		expect(rows.rows.every((r) => r.attached === 1n)).toBe(true);
+		const rows = await orchestrator.hostResources.projects();
+		expect(rows.map((r) => r.id)).toEqual([alpha.projectId, beta.projectId]);
+		expect(rows.every((r) => r.attached)).toBe(true);
 		await orchestrator.shutdown();
 	});
 
@@ -107,33 +102,30 @@ describe("stable global project registry", () => {
 			draining: false,
 			version: 1n,
 		});
-		const waiter = await first.hostResources.putWaiter({
+		const coordinator = first.hostResources.coordinator;
+		const waiter = await coordinator.putWaiter({
 			requestKey: "detached-run",
 			projectId: stableId,
-			requirements: [{ resourceId: "gpu", amount: 1n }],
+			claims: [first.hostResources.claimFor("gpu")],
 		});
-		const granted = await first.hostResources.tryGrant(
-			waiter.id,
-			waiter.generation,
-		);
+		const granted = await coordinator.tryGrant(waiter.id);
 		if ("kind" in granted) throw new Error("unexpected hold");
 		await orchestrator.detach("before");
-		expect(
-			(await orchestrator.hostResources.store.lease(granted.id))?.state,
-		).toBe("provisional");
+		expect((await coordinator.store.lease(granted.id))?.state).toBe(
+			"provisional",
+		);
 
 		await rename(original, moved);
 		const again = await orchestrator.attach({ name: "after", root: moved });
 		expect(again.projectId).toBe(stableId);
-		expect(
-			(await orchestrator.hostResources.store.lease(granted.id))?.projectId,
-		).toBe(stableId);
-		const row = await orchestrator.hostResources.store.client.execute({
-			sql: "SELECT root,display_name FROM projects WHERE id=?",
-			args: [stableId],
-		});
-		expect(row.rows[0]?.root).toBe(moved);
-		expect(row.rows[0]?.display_name).toBe("after");
+		expect((await coordinator.store.lease(granted.id))?.projectId).toBe(
+			stableId,
+		);
+		const row = (await orchestrator.hostResources.projects()).find(
+			(p) => p.id === stableId,
+		);
+		expect(row?.root).toBe(moved);
+		expect(row?.displayName).toBe("after");
 		await orchestrator.shutdown();
 	});
 });

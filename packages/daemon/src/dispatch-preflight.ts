@@ -23,6 +23,8 @@ export type PreflightCode =
 	| "sandbox_unavailable"
 	/** The sandbox exists but the minimal probe failed (`containment/minimal-probe.ts`). */
 	| "sandbox_probe_failed"
+	/** Autonomy on a target whose sandbox is not attested; waitingFor = [target kind]. */
+	| "remote_autonomy_unsupported"
 	/** This run kind has no sandbox profile yet, so it cannot run autonomously. */
 	| "sandbox_role_unavailable";
 
@@ -59,6 +61,31 @@ export interface DispatchPreflightDeps {
 }
 
 const MiB = 1024n * 1024n;
+
+/**
+ * The targets whose sandbox mfw can attest. Only `local` is: it has the bwrap
+ * gate above. Any other target, including one added later, is refused until
+ * it is listed here.
+ */
+const ATTESTED_TARGET_KINDS: ReadonlySet<string> = new Set(["local"]);
+
+/**
+ * Refuses an autonomous run on a target with no attested sandbox, before
+ * anything is claimed or leased. The check at remote launch stays as a backstop.
+ */
+export function preflightRemoteAutonomy(
+	targetKind: string,
+	approvalMode: "autonomous" | "interactive",
+): void {
+	if (approvalMode !== "autonomous" || ATTESTED_TARGET_KINDS.has(targetKind)) {
+		return;
+	}
+	throw new DispatchPreflightError(
+		"remote_autonomy_unsupported",
+		[targetKind],
+		`execution target '${targetKind}' cannot run autonomously: it has no attested sandbox`,
+	);
+}
 
 export async function preflightDispatch(
 	deps: DispatchPreflightDeps,

@@ -7,6 +7,7 @@ import { brainTurns } from "@mfw/db/schema";
 import { desc, eq } from "drizzle-orm";
 import type { AdapterRegistry } from "../../src/agents/adapter.ts";
 import { boot, type ProjectConfig } from "../../src/boot.ts";
+import { brainSocketFor } from "../../src/brain-runtime/brain-socket.ts";
 import type { StoredBrainConfig } from "../../src/config.ts";
 import { git } from "../../src/git.ts";
 import { silentLogger } from "../../src/log.ts";
@@ -102,6 +103,8 @@ export async function brainFixture(
 	let orchestrator!: Orchestrator;
 	let svc!: ProjectServices;
 	const start = async () => {
+		// The app wires the router before booting; turns have no other transport.
+		brainSocketFor(home).setHandler(async () => new Response("{}"));
 		orchestrator = await boot({
 			projects: [config],
 			mfwHome: home,

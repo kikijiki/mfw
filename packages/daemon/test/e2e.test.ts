@@ -1,20 +1,17 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { events } from "@mfw/db/schema";
-import {
-	attachProject,
-	boot,
-	type HostResourceAttachPort,
-	type ProjectConfig,
-} from "../src/boot.ts";
+import { attachProject, boot, type ProjectConfig } from "../src/boot.ts";
 import { git } from "../src/git.ts";
 import { acquireKernelLock } from "../src/kernel-lock.ts";
 import { silentLogger } from "../src/log.ts";
+import { BudgetWindows } from "../src/resources/budget-windows.ts";
 import type { ProjectServices } from "../src/services.ts";
 import { brainSpawn, openTurn, STUB_BRAIN } from "./support/brain-spawn.ts";
+import { openTestLedger } from "./support/host-ledger.ts";
 
 /**
  * End-to-end through the REAL composition root: a task goes ready → claimed →
@@ -167,49 +164,27 @@ const cfg = (root: string): ProjectConfig => ({
 	brain: STUB_BRAIN, // a route that never wakes: the tests spawn as the brain would
 });
 
-// These engine tests intentionally exercise attachProject below Orchestrator;
-// host admission is out of their scope. Production boot always supplies the
-// real process-global coordinator (covered by host-resource/boot tests).
-const detachedHost: HostResourceAttachPort = {
-	captureAdmissionSnapshot: () => ({
-		generation: 0n,
-		capturedAt: 0,
-		processBootId: "boot-e2e",
-		kernelBootId: null,
-		definitions: {},
-		bindings: {},
-		health: {},
-		observations: {},
-	}),
-	readModel: () => {
-		throw new Error("host admission is outside this engine test");
-	},
-	putWaiter: async () => {
-		throw new Error("host admission is outside this engine test");
-	},
-	tryGrant: async () => {
-		throw new Error("host admission is outside this engine test");
-	},
-	activate: async () => {
-		throw new Error("host admission is outside this engine test");
-	},
-	renewOrAdopt: async () => {
-		throw new Error("host admission is outside this engine test");
-	},
-	cancelOrRelease: async () => {
-		throw new Error("host admission is outside this engine test");
-	},
-	reconcile: async () => {
-		throw new Error("host recovery is outside this engine test");
-	},
-	registerProject: async () => {},
-	subscribe: () => () => {},
-};
-const directAttach = (root: string, extra: Partial<ProjectConfig> = {}) =>
-	attachProject({ ...cfg(root), ...extra }, silentLogger(), "boot-e2e", {
-		hostResources: detachedHost,
-		mfwHome: join(root, ".git", "test-mfw-home"),
+// These engine tests exercise attachProject below Orchestrator, over a real
+// private ledger; production boot supplies the process-global one.
+const ledgerHomes: string[] = [];
+afterAll(async () => {
+	for (const home of ledgerHomes.splice(0))
+		await rm(home, { recursive: true, force: true });
+});
+const directAttach = async (
+	root: string,
+	extra: Partial<ProjectConfig> = {},
+) => {
+	// Outside the repo: these tests assert that the primary checkout stays clean.
+	const home = await mkdtemp(join(tmpdir(), "mfw-e2e-ledger-"));
+	ledgerHomes.push(home);
+	const { ledger } = await openTestLedger(home, { processBootId: "boot-e2e" });
+	return attachProject({ ...cfg(root), ...extra }, silentLogger(), "boot-e2e", {
+		hostResources: ledger,
+		budgetWindows: new BudgetWindows(ledger.coordinator.store),
+		mfwHome: home,
 	});
+};
 
 describe("v2 end-to-end: goal → verified → merged", () => {
 	test("a passing task is verified and merged to the integration branch", async () => {

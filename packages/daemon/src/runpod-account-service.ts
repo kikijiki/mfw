@@ -16,6 +16,7 @@ import {
 	type RunPodSshEndpoint,
 	scanRunPodDirectSshHostKey,
 } from "./remote-agent-host.ts";
+import type { RunPodCorePort } from "./resources/runpod-bridge.ts";
 import {
 	RunPodAccountStore,
 	type RunPodCleanupRecord,
@@ -140,6 +141,8 @@ export interface RunPodAccountServiceOptions {
 		mode: "create" | "load",
 	) => Promise<EphemeralRunPodSshKey>;
 	resolveSshHostKey?: (host: string, port: number) => Promise<string>;
+	/** The resource core: account capacity and the durable cleanup record. */
+	core?: RunPodCorePort;
 }
 
 export type RunPodOwnerResolution =
@@ -521,11 +524,30 @@ export class RunPodAccountService implements ExecutionAccountServicePort {
 	}
 
 	private async accountStore(): Promise<RunPodAccountStore> {
-		this.store ??= await RunPodAccountStore.open(
-			this.options.mfwHome,
-			this.accountId,
-		);
+		if (!this.store) {
+			const store = await RunPodAccountStore.open(
+				this.options.mfwHome,
+				this.accountId,
+			);
+			store.afterAbsent = (lease) => this.reportAbsent(lease);
+			this.store = store;
+		}
 		return this.store;
+	}
+
+	/**
+	 * The record stays open if this fails, keeping the capacity held, and the
+	 * next reconcile retries. The provider-side result has already committed.
+	 */
+	private async reportAbsent(lease: RunPodLeaseRecord): Promise<void> {
+		try {
+			await this.options.core?.absent(lease.ref, lease.ownershipEncoded);
+		} catch (error) {
+			this.options.log.warn(
+				{ leaseRef: lease.ref, code: safeCode(error) },
+				"RunPod cleanup record could not be closed yet",
+			);
+		}
 	}
 
 	/** Persist explicit project intent before its config entry disappears. */
@@ -1324,6 +1346,7 @@ export class RunPodAccountService implements ExecutionAccountServicePort {
 			kind: "adopt",
 			request: { podId: pod.id },
 		});
+		await this.options.core?.created(lease.ref, pod.id);
 		const observed = observedRunPodShape(pod);
 		const violations = runPodShapeViolations(lease.request, observed);
 		if (
@@ -1668,6 +1691,8 @@ export class RunPodAccountService implements ExecutionAccountServicePort {
 						"RunPod project concurrent Pod ceiling reached",
 					);
 				}
+				// The record commits first, so every create is findable after a crash.
+				await this.options.core?.beforeCreate(lease.owner.runId, lease.ref);
 				const state = await store.recordOperationIntent({
 					operationId: lease.createOperationId,
 					leaseRef: lease.ref,
@@ -2549,6 +2574,7 @@ export class RunPodAccountService implements ExecutionAccountServicePort {
 					throw error;
 				}
 				this.currentPolicy = next;
+				await this.options.core?.policyChanged(next);
 				await store.audit({
 					kind: "operator_policy_updated",
 					detail: {
@@ -3582,6 +3608,10 @@ export class RunPodAccountService implements ExecutionAccountServicePort {
 					}
 				}
 			}
+			await this.options.core?.settle(async (ref) => {
+				const lease = await store.getLease(ref);
+				return lease?.phase === "absent" ? lease.ownershipEncoded : null;
+			});
 			this.openGate();
 			this.lastReconcileAt = Date.now();
 			this.lastReconcileError = null;

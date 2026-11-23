@@ -187,6 +187,82 @@ export async function signOutEverywhere(): Promise<void> {
 	window.location.assign(`${base()}login`);
 }
 
+/** A scoped API token as the owner sees it. Never its secret. */
+export interface ApiToken {
+	id: string;
+	name: string;
+	scopes: string[];
+	project: string | null;
+	createdAt: number;
+	expiresAt: number;
+	lastUsedAt: number | null;
+	status: "active" | "expired" | "revoked";
+	/** Names a project this install does not have. */
+	unbound?: boolean;
+}
+
+export interface ApiTokenAudit {
+	actions: {
+		id: number;
+		name: string;
+		path: string;
+		project: string | null;
+		kind: "mutation" | "stream";
+		outcome: string;
+		at: number;
+	}[];
+	counters: {
+		tokenId: string;
+		name: string;
+		refused: number;
+		lastRefusedPath: string | null;
+		dropped: number;
+	}[];
+}
+
+async function tokenCall<T>(
+	action: "tokens" | "token-revoke" | "token-audit",
+	body?: unknown,
+): Promise<T> {
+	const res = await authedFetch(authUrl(action), {
+		method: body === undefined ? "GET" : "POST",
+		headers:
+			body === undefined
+				? {}
+				: { "content-type": "application/json", "x-mfw-auth": "1" },
+		...(body === undefined ? {} : { body: JSON.stringify(body) }),
+	});
+	const data = (await res.json().catch(() => null)) as
+		| (T & { error?: string; message?: string; retryAfterSeconds?: number })
+		| null;
+	if (!res.ok || data === null)
+		throw new AuthRequestError(
+			data?.message ?? `request failed (${res.status})`,
+			data?.error ?? "error",
+			data?.retryAfterSeconds ?? 0,
+		);
+	return data;
+}
+
+export const readApiTokenAudit = (): Promise<ApiTokenAudit> =>
+	tokenCall<ApiTokenAudit>("token-audit");
+
+export const listApiTokens = async (): Promise<ApiToken[]> =>
+	(await tokenCall<{ tokens: ApiToken[] }>("tokens")).tokens;
+
+/** Returns the secret. The server shows it this once. */
+export const createApiToken = async (draft: {
+	name: string;
+	scopes: string[];
+	project?: string;
+	ttlMs: number;
+}): Promise<string> =>
+	(await tokenCall<{ token: string }>("tokens", draft)).token;
+
+export const revokeApiToken = async (id: string): Promise<void> => {
+	await tokenCall("token-revoke", { id });
+};
+
 /** Change the password. Every other session is revoked by the server. */
 export async function changePassword(
 	current: string,

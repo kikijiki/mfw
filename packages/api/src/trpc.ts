@@ -1,8 +1,10 @@
+import { runAsTokenActor } from "@mfw/daemon/auth/actor";
 import type { Principal } from "@mfw/daemon/auth/service";
 import type { Orchestrator, ProjectServices } from "@mfw/daemon/services";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import { ZodError, z } from "zod";
+import { tokenRefusal } from "./token-access.ts";
 
 /**
  * The context carries the Orchestrator; `projectProcedure` resolves one
@@ -14,6 +16,22 @@ export interface Context {
 	orchestrator: Orchestrator;
 	/** Who is calling. Null means unauthenticated, and every procedure refuses it. */
 	principal: Principal | null;
+	/** Where a token's actions are recorded. A token call without one is refused. */
+	tokenAudit?: TokenAuditSink;
+}
+
+export interface TokenAuditSink {
+	begin(entry: {
+		tokenId: string;
+		name: string;
+		path: string;
+		project: string | null;
+		kind?: "mutation" | "stream";
+		outcome?: string;
+	}): Promise<number>;
+	finish(id: number, outcome: string): Promise<void>;
+	/** Counted, not logged: a flood of refusals must not displace real actions. */
+	refuse(entry: { tokenId: string; name: string; path: string }): Promise<void>;
 }
 
 function refusalFix(
@@ -31,6 +49,9 @@ function refusalFix(
 
 const t = initTRPC.context<Context>().create({
 	transformer: superjson,
+	// Not derived from NODE_ENV, which the packaged unit does not set: with it
+	// unset every error response would carry a stack with server paths.
+	isDev: false,
 	errorFormatter({ shape, error }) {
 		return {
 			...shape,
@@ -103,6 +124,8 @@ const ERROR_CODES: Record<string, TRPCError["code"]> = {
 	RerouteError: "PRECONDITION_FAILED",
 	// Path resolved outside the workspace. FORBIDDEN, not NOT_FOUND, so clients can tell them apart.
 	PathEscapeError: "FORBIDDEN",
+	// An API token's write that the task's current state does not allow.
+	TokenTaskStateError: "FORBIDDEN",
 };
 
 const mapErrors = t.middleware(async ({ next }) => {
@@ -110,18 +133,19 @@ const mapErrors = t.middleware(async ({ next }) => {
 	if (result.ok) return result;
 	const cause = result.error.cause;
 	let code = cause?.name ? ERROR_CODES[cause.name] : undefined;
-	if (cause?.name === "HostStoreError") {
-		const hostCode = (cause as Error & { code?: string }).code;
+	if (cause?.name === "ResourceError") {
+		const resourceCode = (cause as Error & { code?: string }).code;
 		code =
-			hostCode === "NOT_FOUND"
+			resourceCode === "NOT_FOUND"
 				? "NOT_FOUND"
-				: hostCode === "STALE_VERSION" ||
-						hostCode === "STALE_FENCE" ||
-						hostCode === "BUSY"
+				: resourceCode === "CONFLICT" ||
+						resourceCode === "STALE_FENCE" ||
+						resourceCode === "BUSY"
 					? "CONFLICT"
-					: hostCode === "INVALID_TRANSITION"
+					: resourceCode === "INVALID_TRANSITION" ||
+							resourceCode === "FORBIDDEN"
 						? "PRECONDITION_FAILED"
-						: hostCode === "INVALID_REQUEST"
+						: resourceCode === "REFUSED"
 							? "BAD_REQUEST"
 							: undefined;
 	}
@@ -137,6 +161,18 @@ const mapErrors = t.middleware(async ({ next }) => {
 	};
 });
 
+/** The API token behind a call, in the form the task service enforces on. */
+export function tokenAuthor(
+	principal: Principal,
+): { id: string; mayDispatch: boolean } | undefined {
+	return principal.kind === "token"
+		? {
+				id: principal.tokenId,
+				mayDispatch: principal.scopes.includes("runs:act"),
+			}
+		: undefined;
+}
+
 export const createTRPCRouter = t.router;
 export const createCallerFactory = t.createCallerFactory;
 
@@ -147,21 +183,85 @@ const BRAIN_PATHS: ReadonlySet<string> = new Set(["brain.read", "brain.act"]);
  * even if a route forgot its guard. Every procedure derives from this one, so
  * despite the historical name nothing on the router is anonymous.
  */
-const requirePrincipal = t.middleware(({ ctx, path, next }) => {
-	if (!ctx.principal)
-		throw new TRPCError({
-			code: "UNAUTHORIZED",
-			message: "sign in to use the mfw API",
-		});
-	if (ctx.principal.kind === "brain" && !BRAIN_PATHS.has(path))
-		throw new TRPCError({
-			code: "FORBIDDEN",
-			message: `'${path}' is not available to a brain turn`,
-		});
-	return next({ ctx: { ...ctx, principal: ctx.principal } });
-});
+const requirePrincipal = t.middleware(
+	async ({ ctx, path, type, getRawInput, next }) => {
+		const principal = ctx.principal;
+		if (!principal)
+			throw new TRPCError({
+				code: "UNAUTHORIZED",
+				message: "sign in to use the mfw API",
+			});
+		if (principal.kind === "brain" && !BRAIN_PATHS.has(path))
+			throw new TRPCError({
+				code: "FORBIDDEN",
+				message: `'${path}' is not available to a brain turn`,
+			});
+		// Widened: narrowing here would drop `token` from every procedure's context.
+		const authed = { ...ctx, principal: principal as Principal };
+		if (principal.kind !== "token") return next({ ctx: authed });
+
+		const audit = ctx.tokenAudit;
+		if (!audit)
+			throw new TRPCError({
+				code: "FORBIDDEN",
+				message: "this transport cannot audit API tokens",
+			});
+		// After the transformer: exactly what the input parsers will receive.
+		const input = await getRawInput();
+		const claimed = (input as { project?: unknown } | null | undefined)
+			?.project;
+		const entry = {
+			tokenId: principal.tokenId,
+			name: principal.name,
+			path,
+			project: typeof claimed === "string" ? claimed.slice(0, 128) : null,
+		};
+		const refusal = tokenRefusal(principal, path, input);
+		if (refusal) {
+			await audit.refuse(entry).catch(() => {});
+			throw new TRPCError({ code: "FORBIDDEN", message: refusal });
+		}
+		const actor = {
+			kind: "token" as const,
+			id: principal.id,
+			name: principal.name,
+		};
+		const proceed = () => runAsTokenActor(actor, () => next({ ctx: authed }));
+		if (type === "subscription") {
+			await audit.begin({ ...entry, kind: "stream", outcome: "opened" });
+			return proceed();
+		}
+		if (type !== "mutation") return proceed();
+		// Written first: a mutation that cannot be attributed does not happen.
+		const auditId = await audit.begin(entry);
+		const result = await proceed();
+		await audit
+			.finish(auditId, result.ok ? "ok" : "error")
+			.catch((e: Error) =>
+				console.error("[mfw] token audit update failed:", e.message),
+			);
+		return result;
+	},
+);
 
 export const publicProcedure = t.procedure.use(requirePrincipal).use(mapErrors);
+
+/**
+ * `runs:act` means task runs. The one check for every procedure taking a
+ * `runId`: a token gets the same answer for a brain run, any other internal
+ * run and a run that does not exist. Owner calls are unaffected.
+ */
+export const tokenTaskRunOnly = t.middleware(async ({ ctx, input, next }) => {
+	if (ctx.principal?.kind === "token") {
+		const { svc } = ctx as unknown as { svc: ProjectServices };
+		const runId = (input as { runId?: unknown }).runId;
+		const run =
+			typeof runId === "string" ? await svc.registry.get(runId) : null;
+		if (run?.kind !== "task")
+			throw new TRPCError({ code: "NOT_FOUND", message: "no such task run" });
+	}
+	return next();
+});
 
 /** Input shared by every project-scoped procedure. */
 export const projectInput = z.object({ project: z.string().min(1) });
@@ -177,6 +277,16 @@ export const projectProcedure = publicProcedure
 			throw new TRPCError({
 				code: "FORBIDDEN",
 				message: "the token was not issued for that project and turn",
+			});
+		// The second lock on a restricted token, on the parsed input.
+		if (
+			ctx.principal.kind === "token" &&
+			ctx.principal.project !== null &&
+			ctx.principal.project !== input.project
+		)
+			throw new TRPCError({
+				code: "FORBIDDEN",
+				message: "the token was not issued for that project",
 			});
 		let svc: ProjectServices;
 		try {

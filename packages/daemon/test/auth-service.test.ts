@@ -11,6 +11,7 @@ import {
 	FREE_ATTEMPTS,
 	isAuthRefused,
 	LOOPBACK_SOURCE,
+	PROXIED_FREE_FAILURES,
 	SESSION_ABSOLUTE_MS,
 	SESSION_IDLE_MS,
 	SETUP_TOKEN_TTL_MS,
@@ -290,6 +291,16 @@ describe("an attacker cannot lock the owner out (reviewer B2)", () => {
 		expect(throttleSource("2001:db8:1:2::1")).not.toBe(
 			throttleSource("2001:db8:1:3::1"),
 		);
+		// Tailnet nodes share a /64, so each is its own source (review F1).
+		expect(throttleSource("fd7a:115c:a1e0::aaaa")).not.toBe(
+			throttleSource("fd7a:115c:a1e0::bbbb"),
+		);
+		expect(throttleSource("FD7A:115C:A1E0:0::AAAA")).toBe(
+			throttleSource("fd7a:115c:a1e0::aaaa"),
+		);
+		expect(throttleSource("fd7a:115c:a1e1::aaaa")).toBe(
+			throttleSource("fd7a:115c:a1e1::bbbb"),
+		);
 		expect(throttleSource(undefined)).toBe("unknown");
 		expect(throttleSource("")).toBe("unknown");
 	});
@@ -450,6 +461,34 @@ describe("the password queue is bounded (recheck N1)", () => {
 			);
 		} finally {
 			small.close();
+		}
+	});
+});
+
+describe("the proxied budget under concurrency (review F2)", () => {
+	test("concurrent forged clients cannot overshoot the free failures", async () => {
+		const proxied = await AuthService.open(join(dir, "proxied.db"), {
+			passwordCheckIntervalMs: 1,
+			proxiedCheckIntervalMs: 40,
+		});
+		try {
+			await proxied.setup((await proxied.beginFirstRun()) as string, PASSWORD);
+			const results = await Promise.all(
+				Array.from({ length: 60 }, (_, i) =>
+					code(
+						proxied.login("wrong password!", undefined, {
+							address: `203.0.113.${i + 1}`,
+							viaProxy: true,
+						}),
+					),
+				),
+			);
+			const evaluated = results.filter((r) => r === "invalid_password").length;
+			// The free budget, plus at most the bounded queue of paced attempts.
+			expect(evaluated).toBeLessThanOrEqual(PROXIED_FREE_FAILURES + 16);
+			expect(results.filter((r) => r === "busy").length).toBeGreaterThan(0);
+		} finally {
+			proxied.close();
 		}
 	});
 });

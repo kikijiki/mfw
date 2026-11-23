@@ -15,8 +15,17 @@ import tsConfigPaths from "vite-tsconfig-paths";
  */
 const base = process.env.MFW_BASE_PATH ?? "/mfw/";
 
-export default defineConfig({
+export default defineConfig(({ command, isPreview }) => ({
 	base,
+	/**
+	 * Only Vite's own dev server, which has its own bind, skips the start-up
+	 * exposure check. NODE_ENV plays no part: every built bundle enforces it.
+	 */
+	define: {
+		__MFW_VITE_DEV_SERVER__: JSON.stringify(
+			command === "serve" && isPreview !== true,
+		),
+	},
 	server: { port: 7777 },
 	plugins: [
 		tsConfigPaths({ projects: ["./tsconfig.json"] }),
@@ -36,4 +45,4 @@ export default defineConfig({
 		viteReact(),
 		tailwindcss(),
 	],
-});
+}));

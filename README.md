@@ -138,20 +138,26 @@ bun packages/board/src/cli.ts --help
 
 ### Reach it from your phone
 
-Keep the server on loopback and let Tailscale publish it with a real certificate:
+Keep the server on loopback and let Tailscale publish it with a real certificate,
+through a private socket and on an HTTPS port of its own. Start the server with:
 
 ```sh
-tailscale serve --bg --set-path /mfw http://127.0.0.1:7777/mfw
+HOST=127.0.0.1 MFW_LISTEN_SOCKET="$HOME/.local/share/mfw/serve/mfw.sock" \
+  MFW_ALLOWED_HOSTS=<machine>.<tailnet>.ts.net:8443 mfw server
 ```
 
-Open `https://<machine>.<tailnet>.ts.net/mfw` from any device on your tailnet. The
-`/mfw` in the target is deliberate: the app is built to live under that prefix, and
-without it every asset 404s.
+Then publish it (a socket target needs root):
 
-To reach it without a proxy, set `HOST` to the machine's Tailscale IPv4 address (for
-example `HOST="$(tailscale ip -4 | head -n1)"`) and open `http://<machine>:7777/mfw`.
-It is plain HTTP, but the tailnet encrypts it. Never set `HOST=0.0.0.0`: agents run
-with your permissions, so the listener must not be reachable from the LAN.
+```sh
+sudo tailscale serve --bg --https=8443 unix:$HOME/.local/share/mfw/serve/mfw.sock
+```
+
+Open `https://<machine>.<tailnet>.ts.net:8443/mfw/` from any device on your tailnet.
+This has not yet been tested against a real `tailscale serve`.
+
+The server refuses to start on a non-loopback address without TLS or a trusted
+proxy, and never listens on `0.0.0.0`. [docs/exposure.md](docs/exposure.md) covers
+other proxies, why mfw needs its own origin, the threat notes and a manual check.
 
 ### Run it as a service
 
@@ -167,10 +173,12 @@ Both keep the scheduler off until you enable it in the UI.
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `MFW_HOME` | `~/.local/share/mfw` | where mfw keeps its settings, database and run records |
-| `PORT` / `HOST` | `7777` / runtime default | the address the server listens on |
+| `PORT` / `HOST` | `7777` / `127.0.0.1` with `mfw server` or `bun run start` | the address the server listens on; the built server refuses an unset `HOST` |
 | `MFW_BASE_PATH` | `/mfw/` | the URL prefix, fixed when you run `bun run build` (`/` for the root) |
 | `MFW_URL` | `http://localhost:7777/mfw/api/trpc` | where the MCP server finds the app |
-| `MFW_ALLOWED_HOSTS` | none | extra host names the UI may be reached on (comma separated); loopback is always allowed |
+| `MFW_ALLOWED_HOSTS` | none | exact `host` or `host:port` names the UI may be reached on (comma separated, no wildcards); loopback is always allowed |
+| `MFW_LISTEN_SOCKET` | none | a private unix socket under `$MFW_HOME` for a TLS proxy; the recommended way to run behind Tailscale Serve |
+| `MFW_TRUSTED_PROXIES` | none | proxy peer addresses or CIDRs whose forwarded headers are honoured; loopback is not trusted by default |
 
 Agent network access, its per-project settings and its limits are described
 in [docs/egress.md](docs/egress.md).
@@ -190,10 +198,11 @@ Run these on the host, outside any agent sandbox:
 | `mfw auth unlock` | clear failed sign-in attempts, if you are locked out |
 | `mfw auth sign-out-everywhere` | revoke every session, including a stolen one |
 | `mfw auth setup-token` | issue a new first-run token (before an owner exists) |
+| `mfw auth token ...` | create, list and revoke API tokens (see below) |
 | `mfw auth reset --yes` | forget the password and all sessions, then repeat setup |
 
-Failed sign-ins are limited per address, and all of loopback counts as one
-address. Until agents get their own network namespace they share that limit with
+Failed sign-ins are limited per address (behind a trusted proxy, per forwarded
+client), and all of loopback counts as one address. Until agents get their own network namespace they share that limit with
 you, so a misbehaving agent can slow your sign-in on loopback: `mfw auth unlock`
 clears it.
 
@@ -205,8 +214,60 @@ tmux sockets itself, whatever your shell's environment says, and refuses if unsu
 a surviving agent could otherwise claim the owner account during setup. Do not
 delete `auth.db` by hand: that skips this check.
 
-`mfw mcp` over HTTP has no way to sign in yet and is refused until scoped tokens
-land. The project brain is unaffected: it uses its own unix socket.
+### API tokens
+
+MCP clients and scripts use scoped API tokens instead of a session. Create them
+under Settings > API tokens, or on the host:
+
+```sh
+mfw auth token create --name editor --scope board:read --write-file
+mfw auth token list
+mfw auth token revoke <id>
+mfw auth token audit
+```
+
+A token is shown once and stored only as a hash. It expires after 24 hours unless
+you pass `--ttl` (for example `30m`, `7d`, at most `90d`), and `--project` limits it
+to one project, which must exist when you create the token in Settings. The CLI
+warns instead, and both lists mark a token whose project is not attached. Send a
+token only as `Authorization: Bearer <token>`.
+
+| Scope | Allows |
+| --- | --- |
+| `status:read` | health, inbox, what is running |
+| `board:read` | tasks, ADRs, clarifications, audit events |
+| `board:write` | file tasks in backlog; edit the text of tasks parked by hand; change priority and size |
+| `runs:act` | start and stop task runs, read their transcripts, edit dispatchable tasks, move a task to ready |
+
+No scope reaches settings, hosts, triggers, merges, approvals, passwords or token
+management, or the brain's and other internal runs. A token cannot set verification
+commands, routing or review labels. Changing the password or signing out
+everywhere revokes every token.
+
+`board:write` cannot cause work to start. Without `runs:act`, a token can change a
+task's title, body or criteria only while the task is in backlog, parked by hand,
+with no reopen condition. It cannot reword a checked criterion, and it cannot move
+a finished task or one with a reopen condition back to backlog.
+
+**Text written by a token is untrusted.** A task a token has created or edited stays
+marked for good, even if you edit it afterwards. The brain treats it like
+agent-written text, so consequential actions after reading it need your approval.
+
+`mfw auth token audit` and Settings > API tokens show what each token changed and
+which streams it opened. Refused calls are a per-token count, so they cannot push
+real actions out of the log. Successful reads are not recorded.
+
+`mfw mcp` takes its token from `--token-file <path>`, then `MFW_TOKEN`, then
+`$MFW_HOME/mcp-token`, which must be a 0600 file. That stored file is used only for
+the default `http://localhost:7777` URL. For any other `MFW_URL`, name the token
+explicitly, and create the file with `--write-file --origin <url>`: a file that
+records an origin is never sent anywhere else. `mfw mcp` also refuses to send a token over
+plain HTTP except to loopback. The tools need these scopes: `list_tasks`,
+`get_task`, `graph` and `task_trace` need `board:read`; `create_task`, `edit_task`,
+`criteria` and `move_task` need `board:write`; `inbox` and `health` need
+`status:read`; `list_runs` and `run_entries` need `runs:act`.
+
+The project brain does not use tokens: it talks over its own unix socket.
 
 ## How it is built
 

@@ -8,6 +8,15 @@ import { renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { isCommonPassword } from "./common-passwords.ts";
 import { type AuthDb, openAuthDb } from "./store.ts";
+import {
+	isTokenScope,
+	MAX_LIVE_TOKENS,
+	MAX_TOKEN_STREAMS,
+	normalizeTokenRequest,
+	TOKEN_PREFIX,
+	TokenRateLimiter,
+	type TokenScope,
+} from "./tokens.ts";
 
 /**
  * Auth v1: one owner, a first-run setup token, a password, and revocable
@@ -15,7 +24,19 @@ import { type AuthDb, openAuthDb } from "./store.ts";
  * the app's request guard; this module holds the rules.
  */
 
-/** Who is acting. Later scoped tokens add kinds; audit attributes by `id`. */
+/** A scoped API token. Built only from a verified `Authorization: Bearer`. */
+export interface TokenPrincipal {
+	kind: "token";
+	/** `token:<tokenId>`, the id audit records attribute actions to. */
+	id: string;
+	tokenId: string;
+	name: string;
+	scopes: readonly TokenScope[];
+	/** When set, the token reaches this project and no global procedure. */
+	project: string | null;
+}
+
+/** Who is acting. Audit attributes by `id`. */
 export type Principal =
 	| { kind: "owner"; id: string; sessionId: string }
 	| {
@@ -25,8 +46,45 @@ export type Principal =
 			project: string;
 			sessionId: string;
 	  }
+	| TokenPrincipal
 	/** In-process callers only (`createCaller`); never built from a request. */
 	| { kind: "internal"; id: "internal" };
+
+/** What the owner sees of a token. Never the secret or its digest. */
+export interface TokenInfo {
+	id: string;
+	name: string;
+	scopes: TokenScope[];
+	project: string | null;
+	createdAt: number;
+	expiresAt: number;
+	lastUsedAt: number | null;
+	revokedAt: number | null;
+	status: "active" | "expired" | "revoked";
+}
+
+export type TokenAuditKind = "mutation" | "stream";
+
+export interface TokenAuditEntry {
+	id: number;
+	tokenId: string;
+	name: string;
+	path: string;
+	project: string | null;
+	kind: TokenAuditKind;
+	outcome: string;
+	at: number;
+}
+
+export interface TokenAuditCounter {
+	tokenId: string;
+	name: string;
+	refused: number;
+	lastRefusedAt: number | null;
+	lastRefusedPath: string | null;
+	/** Older rows of this token removed by retention. */
+	dropped: number;
+}
 
 export interface AuthenticatedSession {
 	principal: Extract<Principal, { kind: "owner" }>;
@@ -55,7 +113,9 @@ export type AuthRefusalCode =
 	| "invalid_password"
 	| "weak_password"
 	| "locked"
-	| "busy";
+	| "busy"
+	| "invalid_token_request"
+	| "too_many_tokens";
 
 export class AuthRefused extends Error {
 	override readonly name = "AuthRefused";
@@ -98,8 +158,21 @@ const THROTTLE_RESET_MS = 24 * 60 * 60 * 1000;
 const PASSWORD_CHECK_INTERVAL_MS = 100;
 /** About six seconds of waiting at that rate. */
 const MAX_QUEUED_PASSWORD_CHECKS = 64;
+/** Failed proxied attempts, across all clients, before pacing starts. */
+export const PROXIED_FREE_FAILURES = 20;
+/** Once paced, proxied attempts run at most this often. It delays, never locks. */
+const PROXIED_CHECK_INTERVAL_MS = 2000;
+const MAX_QUEUED_PROXIED_CHECKS = 16;
 /** How often an open stream re-checks its session (revocation is immediate). */
 const STREAM_RECHECK_MS = 15 * 1000;
+/** A token can be revoked from the CLI, another process: notice within a second. */
+const TOKEN_STREAM_RECHECK_MS = 1000;
+const TOKEN_TOUCH_EVERY_MS = 60 * 1000;
+/** Rows kept per token, per kind. */
+const TOKEN_AUDIT_RETENTION = { mutations: 20_000, streams: 2_000 };
+const TOKEN_AUDIT_PRUNE_EVERY = 64;
+/** Dead tokens stay listed this long, then go. Their audit rows remain. */
+const TOKEN_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
@@ -119,10 +192,18 @@ export interface AuthServiceOptions {
 	now?: () => number;
 	/** How often an open stream re-checks its session. */
 	streamRecheckMs?: number;
+	/** How often an open stream re-checks its API token. */
+	tokenStreamRecheckMs?: number;
+	/** Per-token request limit (tests that make many calls raise it). */
+	tokenRate?: { perSecond: number; burst: number };
+	/** Audit rows kept per token and kind (tests lower it). */
+	tokenAuditRetention?: { mutations: number; streams: number };
 	/** Minimum spacing of password hash checks, across all sources. */
 	passwordCheckIntervalMs?: number;
 	/** Password checks allowed to wait at once; further ones are refused. */
 	maxQueuedPasswordChecks?: number;
+	/** Minimum spacing of proxied attempts once the shared budget is spent. */
+	proxiedCheckIntervalMs?: number;
 	/** Runs after a password verifies, before anything is written (tests). */
 	afterPasswordCheck?: () => Promise<void>;
 	/** Where a first-run setup token is written (0600). */
@@ -162,15 +243,30 @@ function ipv6Groups(raw: string): number[] | null {
 export const LOOPBACK_SOURCE = "loopback";
 
 /**
+ * A socket peer, or a client address reported by a trusted proxy. The second
+ * can be forged by anything able to connect from the proxy's address (a local
+ * process, when the proxy is on loopback), so per-address limits alone do not
+ * bound it: every proxied attempt also draws on one shared budget.
+ */
+export type AuthSource = string | { address: string; viaProxy: true };
+
+/** Not addresses, so no client can land in these buckets by choosing one. */
+const PROXIED_LOGIN_SCOPE = "login:via-proxy";
+const PROXIED_SETUP_SCOPE = "setup:via-proxy";
+
+const sourceAddress = (source: AuthSource | undefined) =>
+	typeof source === "object" ? source.address : source;
+const isProxied = (source: AuthSource | undefined) =>
+	typeof source === "object";
+
+/**
  * Addresses to one throttle key. All of loopback is ONE source: any local
  * process can bind any 127.x address, so separate keys would let it rotate past
  * the lock. Agents therefore share the owner's bucket until their network
  * namespace lands (E7b); `mfw auth unlock` is the owner's way back in.
  * IPv4-mapped IPv6 becomes IPv4, and IPv6 its /64 (one host commonly controls a
- * whole /64). A missing or unparseable address is one shared bucket.
- *
- * TODO(C4): behind a trusted proxy every peer is the proxy. Trusted-proxy mode
- * must pass the forwarded client address here, and only from that proxy.
+ * whole /64), except Tailscale's range, which is keyed by full address. A missing or unparseable address is one shared bucket. Behind a
+ * trusted proxy this receives the forwarded client (see `AuthSource`).
  */
 export function throttleSource(address: string | null | undefined): string {
 	const raw = address
@@ -203,6 +299,10 @@ export function throttleSource(address: string | null | undefined): string {
 		if (first === 127) return LOOPBACK_SOURCE;
 		return `${first}.${g6 & 255}.${g7 >> 8}.${g7 & 255}`;
 	}
+	// Tailscale allocates every node from this /48, so nodes normally share a
+	// /64 and one must not be able to lock out the owner's other devices.
+	if (g0 === 0xfd7a && g1 === 0x115c && g2 === 0xa1e0)
+		return g.map((n) => n.toString(16)).join(":");
 	return `${g
 		.slice(0, 4)
 		.map((n) => n.toString(16))
@@ -251,11 +351,18 @@ class PasswordCheckQueue {
 export class AuthService {
 	private readonly now: () => number;
 	private readonly streamRecheckMs: number;
+	private readonly tokenStreamRecheckMs: number;
+	private readonly tokenRate: TokenRateLimiter;
+	private readonly tokenAuditRetention: { mutations: number; streams: number };
+	private readonly tokenAuditInserts = new Map<string, number>();
 	private readonly listeners = new Map<string, Set<() => void>>();
 	/** The 0600 file holding a pending setup token, under the masked `$MFW_HOME`. */
 	readonly setupTokenFile: string | null;
 	private readonly afterPasswordCheck: (() => Promise<void>) | undefined;
 	private readonly passwordChecks: PasswordCheckQueue;
+	private readonly proxiedChecks: PasswordCheckQueue;
+	/** Proxied attempts started and not yet recorded. */
+	private readonly proxiedInFlight = { setup: 0, login: 0 };
 	/** Throttle scopes with an attempt in flight: one per source at a time. */
 	private readonly inFlight = new Set<string>();
 
@@ -265,11 +372,23 @@ export class AuthService {
 	) {
 		this.now = opts.now ?? Date.now;
 		this.streamRecheckMs = opts.streamRecheckMs ?? STREAM_RECHECK_MS;
+		this.tokenStreamRecheckMs =
+			opts.tokenStreamRecheckMs ?? TOKEN_STREAM_RECHECK_MS;
+		this.tokenAuditRetention =
+			opts.tokenAuditRetention ?? TOKEN_AUDIT_RETENTION;
+		this.tokenRate = new TokenRateLimiter(
+			opts.tokenRate?.perSecond,
+			opts.tokenRate?.burst,
+		);
 		this.setupTokenFile = opts.setupTokenFile ?? null;
 		this.afterPasswordCheck = opts.afterPasswordCheck;
 		this.passwordChecks = new PasswordCheckQueue(
 			opts.passwordCheckIntervalMs ?? PASSWORD_CHECK_INTERVAL_MS,
 			opts.maxQueuedPasswordChecks ?? MAX_QUEUED_PASSWORD_CHECKS,
+		);
+		this.proxiedChecks = new PasswordCheckQueue(
+			opts.proxiedCheckIntervalMs ?? PROXIED_CHECK_INTERVAL_MS,
+			MAX_QUEUED_PROXIED_CHECKS,
 		);
 	}
 
@@ -351,10 +470,11 @@ export class AuthService {
 	 */
 	async resetOwner(): Promise<void> {
 		const live = await this.db.client.execute(
-			"SELECT id FROM auth_sessions WHERE revoked_at IS NULL",
+			"SELECT id FROM auth_sessions WHERE revoked_at IS NULL UNION ALL SELECT id FROM api_tokens WHERE revoked_at IS NULL",
 		);
 		await this.db.client.batch(
 			[
+				"DELETE FROM api_tokens",
 				"DELETE FROM auth_sessions",
 				"DELETE FROM principals",
 				"DELETE FROM setup_tokens",
@@ -370,13 +490,12 @@ export class AuthService {
 	async setup(
 		setupToken: string,
 		password: string,
-		source?: string,
+		source?: AuthSource,
 	): Promise<IssuedSession> {
 		if (await this.hasOwner())
 			throw new AuthRefused("already_set_up", "setup is already complete");
-		const scope = `setup:${throttleSource(source)}`;
-		return this.oneAtATime(scope, async () => {
-			await this.assertNotLocked(scope);
+		const scope = `setup:${throttleSource(sourceAddress(source))}`;
+		return this.oneAtATime("setup", scope, source, async () => {
 			const now = this.now();
 			const row = await this.db.client.execute(
 				"SELECT token_hash, expires_at FROM setup_tokens WHERE id = 1",
@@ -388,6 +507,7 @@ export class AuthService {
 				safeEqual(sha(setupToken), String(stored.token_hash));
 			if (!valid) {
 				await this.recordFailure(scope);
+				if (isProxied(source)) await this.recordFailure(PROXIED_SETUP_SCOPE);
 				throw new AuthRefused(
 					"invalid_token",
 					"that setup token is not valid; run `mfw auth setup-token` for a new one",
@@ -431,16 +551,16 @@ export class AuthService {
 	async login(
 		password: string,
 		presented?: string,
-		source?: string,
+		source?: AuthSource,
 	): Promise<IssuedSession> {
 		if (!(await this.hasOwner()))
 			throw new AuthRefused("setup_required", "finish first-run setup");
-		const scope = `login:${throttleSource(source)}`;
-		return this.oneAtATime(scope, async () => {
-			await this.assertNotLocked(scope);
+		const scope = `login:${throttleSource(sourceAddress(source))}`;
+		return this.oneAtATime("login", scope, source, async () => {
 			const owner = await this.checkOwnerPassword(password);
 			if (!owner) {
 				await this.recordFailure(scope);
+				if (isProxied(source)) await this.recordFailure(PROXIED_LOGIN_SCOPE);
 				throw new AuthRefused("invalid_password", "wrong password");
 			}
 			await this.afterPasswordCheck?.();
@@ -483,16 +603,16 @@ export class AuthService {
 		current: string,
 		next: string,
 		keepSessionId: string,
-		source?: string,
+		source?: AuthSource,
 	): Promise<void> {
 		if (!(await this.hasOwner()))
 			throw new AuthRefused("setup_required", "finish first-run setup");
-		const scope = `login:${throttleSource(source)}`;
-		await this.oneAtATime(scope, async () => {
-			await this.assertNotLocked(scope);
+		const scope = `login:${throttleSource(sourceAddress(source))}`;
+		await this.oneAtATime("login", scope, source, async () => {
 			const owner = await this.checkOwnerPassword(current);
 			if (!owner) {
 				await this.recordFailure(scope);
+				if (isProxied(source)) await this.recordFailure(PROXIED_LOGIN_SCOPE);
 				throw new AuthRefused("invalid_password", "wrong password");
 			}
 			await this.afterPasswordCheck?.();
@@ -502,7 +622,7 @@ export class AuthService {
 			const now = this.now();
 			// One atomic step, and only from the epoch that was verified: the
 			// revocation applies only if this call's update did.
-			const [updated, revoked] = await this.db.client.batch(
+			const [updated, revoked, revokedTokens] = await this.db.client.batch(
 				[
 					{
 						sql: `UPDATE principals SET password_hash = ?, updated_at = ?,
@@ -517,6 +637,14 @@ export class AuthService {
 							RETURNING id`,
 						args: [now, keepSessionId, owner.id, owner.epoch + 1, hash],
 					},
+					// A stolen session could have minted one: eviction must reach it.
+					{
+						sql: `UPDATE api_tokens SET revoked_at = ?
+							WHERE revoked_at IS NULL
+							AND EXISTS (SELECT 1 FROM principals WHERE id = ? AND credential_epoch = ? AND password_hash = ?)
+							RETURNING id`,
+						args: [now, owner.id, owner.epoch + 1, hash],
+					},
 				],
 				"write",
 			);
@@ -526,6 +654,7 @@ export class AuthService {
 					"the password was just changed; use the new one",
 				);
 			for (const r of revoked?.rows ?? []) this.notifyEnded(String(r.id));
+			for (const r of revokedTokens?.rows ?? []) this.endToken(String(r.id));
 		});
 	}
 
@@ -544,21 +673,348 @@ export class AuthService {
 	}
 
 	/**
-	 * Revoke every session, and bump the epoch so a login already past its
-	 * password check cannot create a new one afterwards.
+	 * Revoke every session and API token, and bump the epoch so a login already
+	 * past its password check cannot create a new session afterwards.
 	 */
 	async revokeAll(): Promise<void> {
-		const [, revoked] = await this.db.client.batch(
+		const now = this.now();
+		const [, revoked, revokedTokens] = await this.db.client.batch(
 			[
 				"UPDATE principals SET credential_epoch = credential_epoch + 1",
 				{
 					sql: "UPDATE auth_sessions SET revoked_at = ? WHERE revoked_at IS NULL RETURNING id",
-					args: [this.now()],
+					args: [now],
+				},
+				{
+					sql: "UPDATE api_tokens SET revoked_at = ? WHERE revoked_at IS NULL RETURNING id",
+					args: [now],
 				},
 			],
 			"write",
 		);
 		for (const row of revoked?.rows ?? []) this.notifyEnded(String(row.id));
+		for (const row of revokedTokens?.rows ?? []) this.endToken(String(row.id));
+	}
+
+	/**
+	 * Create a scoped token. The secret is returned once and stored as a digest.
+	 * With `sessionId`, the insert happens only while that session is live, in
+	 * one statement, so a sign-out-everywhere cannot miss a token being minted.
+	 * Only owner paths call this: no route that accepts a token reaches it.
+	 */
+	async createToken(
+		input: {
+			name?: unknown;
+			scopes?: unknown;
+			project?: unknown;
+			ttlMs?: unknown;
+		},
+		opts: { sessionId?: string } = {},
+	): Promise<{ token: string; info: TokenInfo }> {
+		const request = normalizeTokenRequest(input);
+		if (typeof request === "string")
+			throw new AuthRefused("invalid_token_request", request);
+		const owner = await this.db.client.execute(
+			"SELECT id FROM principals WHERE kind = 'owner' LIMIT 1",
+		);
+		const ownerId = owner.rows[0]?.id;
+		if (ownerId === undefined || ownerId === null)
+			throw new AuthRefused("setup_required", "finish first-run setup");
+		const now = this.now();
+		await this.db.client.execute({
+			sql: "DELETE FROM api_tokens WHERE (revoked_at IS NOT NULL AND revoked_at < ?) OR expires_at < ?",
+			args: [now - TOKEN_RETENTION_MS, now - TOKEN_RETENTION_MS],
+		});
+		const token = `${TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
+		const id = `tok_${randomUUID()}`;
+		const expiresAt = now + request.ttlMs;
+		const sessionClause = opts.sessionId
+			? "AND EXISTS (SELECT 1 FROM auth_sessions WHERE id = ? AND revoked_at IS NULL AND expires_at > ?)"
+			: "";
+		const inserted = await this.db.client.execute({
+			sql: `INSERT INTO api_tokens (id, name, token_hash, principal_id, scopes, project, created_at, expires_at)
+				SELECT ?, ?, ?, ?, ?, ?, ?, ?
+				WHERE (SELECT COUNT(*) FROM api_tokens WHERE revoked_at IS NULL AND expires_at > ?) < ?
+				${sessionClause}`,
+			args: [
+				id,
+				request.name,
+				sha(token),
+				String(ownerId),
+				JSON.stringify(request.scopes),
+				request.project,
+				now,
+				expiresAt,
+				now,
+				MAX_LIVE_TOKENS,
+				...(opts.sessionId ? [opts.sessionId, now] : []),
+			],
+		});
+		if (inserted.rowsAffected !== 1)
+			throw new AuthRefused(
+				"too_many_tokens",
+				opts.sessionId && !(await this.isSessionLive(opts.sessionId))
+					? "this session has ended; sign in again"
+					: `at most ${MAX_LIVE_TOKENS} live tokens; revoke one first`,
+			);
+		return {
+			token,
+			info: {
+				id,
+				name: request.name,
+				scopes: [...request.scopes],
+				project: request.project,
+				createdAt: now,
+				expiresAt,
+				lastUsedAt: null,
+				revokedAt: null,
+				status: "active",
+			},
+		};
+	}
+
+	/** Every token the owner can still see, newest first. Never a secret. */
+	async listTokens(): Promise<TokenInfo[]> {
+		const r = await this.db.client.execute(
+			`SELECT id, name, scopes, project, created_at, expires_at, last_used_at, revoked_at
+				FROM api_tokens ORDER BY created_at DESC, rowid DESC`,
+		);
+		const now = this.now();
+		return r.rows.map((row) => {
+			const revokedAt = row.revoked_at === null ? null : Number(row.revoked_at);
+			const expiresAt = Number(row.expires_at);
+			return {
+				id: String(row.id),
+				name: String(row.name),
+				scopes: parseScopes(row.scopes) ?? [],
+				project: row.project === null ? null : String(row.project),
+				createdAt: Number(row.created_at),
+				expiresAt,
+				lastUsedAt: row.last_used_at === null ? null : Number(row.last_used_at),
+				revokedAt,
+				status:
+					revokedAt !== null
+						? "revoked"
+						: expiresAt <= now
+							? "expired"
+							: "active",
+			};
+		});
+	}
+
+	/** Revoke one token and end its open streams. False if it was not live. */
+	async revokeToken(id: string): Promise<boolean> {
+		const r = await this.db.client.execute({
+			sql: "UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL RETURNING id",
+			args: [this.now(), id],
+		});
+		if (r.rows.length === 0) return false;
+		this.endToken(id);
+		return true;
+	}
+
+	private endToken(id: string): void {
+		this.tokenRate.forget(id);
+		this.notifyEnded(id);
+	}
+
+	/** The principal for a presented bearer token, or null. Fails closed. */
+	async authenticateToken(
+		token: string | null | undefined,
+	): Promise<TokenPrincipal | null> {
+		if (!token) return null;
+		const now = this.now();
+		const r = await this.db.client.execute({
+			sql: `SELECT id, name, scopes, project, expires_at, last_used_at, revoked_at
+				FROM api_tokens WHERE token_hash = ?`,
+			args: [sha(token)],
+		});
+		const row = r.rows[0];
+		if (!row || row.revoked_at !== null || Number(row.expires_at) <= now)
+			return null;
+		const scopes = parseScopes(row.scopes);
+		if (!scopes) return null;
+		const tokenId = String(row.id);
+		if (
+			row.last_used_at === null ||
+			now - Number(row.last_used_at) >= TOKEN_TOUCH_EVERY_MS
+		)
+			await this.db.client.execute({
+				sql: "UPDATE api_tokens SET last_used_at = ? WHERE id = ?",
+				args: [now, tokenId],
+			});
+		return {
+			kind: "token",
+			id: `token:${tokenId}`,
+			tokenId,
+			name: String(row.name),
+			scopes,
+			project: row.project === null ? null : String(row.project),
+		};
+	}
+
+	/** Charge one request to a token. 0 when allowed, else ms until retry. */
+	takeTokenRate(tokenId: string): number {
+		return this.tokenRate.take(tokenId, this.now());
+	}
+
+	/** True while the token exists, is unrevoked and unexpired. */
+	async isTokenLive(tokenId: string): Promise<boolean> {
+		const r = await this.db.client.execute({
+			sql: "SELECT expires_at, revoked_at FROM api_tokens WHERE id = ?",
+			args: [tokenId],
+		});
+		const row = r.rows[0];
+		return (
+			!!row && row.revoked_at === null && Number(row.expires_at) > this.now()
+		);
+	}
+
+	/** True when this token may open another stream. */
+	tokenStreamAvailable(tokenId: string): boolean {
+		return (this.listeners.get(tokenId)?.size ?? 0) < MAX_TOKEN_STREAMS;
+	}
+
+	/**
+	 * Watch a token's long-lived response: `onEnd` runs at once on revocation in
+	 * this process, and within a second on expiry or a revocation by the CLI.
+	 */
+	watchToken(tokenId: string, onEnd: () => void): () => void {
+		return this.watch(
+			tokenId,
+			() => this.isTokenLive(tokenId),
+			this.tokenStreamRecheckMs,
+			onEnd,
+		);
+	}
+
+	/** Record a token's action before it runs. Throws if it cannot be recorded. */
+	async beginTokenAction(entry: {
+		tokenId: string;
+		name: string;
+		path: string;
+		project: string | null;
+		kind?: TokenAuditKind;
+		outcome?: string;
+	}): Promise<number> {
+		const kind = entry.kind ?? "mutation";
+		const r = await this.db.client.execute({
+			sql: `INSERT INTO token_audit (token_id, token_name, path, project, kind, outcome, at)
+				VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+			args: [
+				entry.tokenId,
+				entry.name,
+				entry.path,
+				entry.project,
+				kind,
+				entry.outcome ?? "started",
+				this.now(),
+			],
+		});
+		const id = Number(r.rows[0]?.id);
+		const keep =
+			kind === "stream"
+				? this.tokenAuditRetention.streams
+				: this.tokenAuditRetention.mutations;
+		// Counted per token and kind: the shared row id could skip one forever.
+		const key = `${entry.tokenId}:${kind}`;
+		const inserts = (this.tokenAuditInserts.get(key) ?? 0) + 1;
+		if (inserts >= Math.min(TOKEN_AUDIT_PRUNE_EVERY, keep)) {
+			this.tokenAuditInserts.delete(key);
+			await this.pruneTokenAudit(entry.tokenId, entry.name, kind, keep);
+		} else this.tokenAuditInserts.set(key, inserts);
+		return id;
+	}
+
+	/**
+	 * Retention is per token and per kind, so no token's volume can erase
+	 * another's record or its own mutations with cheap calls. What a token's
+	 * own mutations do push out is counted, so the loss is visible.
+	 */
+	private async pruneTokenAudit(
+		tokenId: string,
+		name: string,
+		kind: TokenAuditKind,
+		keep: number,
+	): Promise<void> {
+		const r = await this.db.client.execute({
+			sql: `DELETE FROM token_audit WHERE token_id = ? AND kind = ? AND id <= (
+					SELECT id FROM token_audit WHERE token_id = ? AND kind = ?
+					ORDER BY id DESC LIMIT 1 OFFSET ?
+				)`,
+			args: [tokenId, kind, tokenId, kind, keep],
+		});
+		if (r.rowsAffected === 0) return;
+		await this.db.client.execute({
+			sql: `INSERT INTO token_audit_counters (token_id, token_name, dropped) VALUES (?, ?, ?)
+				ON CONFLICT (token_id) DO UPDATE SET dropped = dropped + excluded.dropped`,
+			args: [tokenId, name, r.rowsAffected],
+		});
+	}
+
+	async finishTokenAction(id: number, outcome: string): Promise<void> {
+		await this.db.client.execute({
+			sql: "UPDATE token_audit SET outcome = ? WHERE id = ?",
+			args: [outcome, id],
+		});
+	}
+
+	/** Count a refused call. One row per token, however many refusals. */
+	async recordTokenRefusal(entry: {
+		tokenId: string;
+		name: string;
+		path: string;
+	}): Promise<void> {
+		const now = this.now();
+		await this.db.client.execute({
+			sql: `INSERT INTO token_audit_counters (token_id, token_name, refused, last_refused_at, last_refused_path)
+				VALUES (?, ?, 1, ?, ?)
+				ON CONFLICT (token_id) DO UPDATE SET refused = refused + 1,
+					last_refused_at = excluded.last_refused_at,
+					last_refused_path = excluded.last_refused_path`,
+			args: [entry.tokenId, entry.name, now, entry.path],
+		});
+	}
+
+	/** Mutations and stream opens, newest first. */
+	async listTokenAudit(
+		opts: { limit?: number; tokenId?: string } = {},
+	): Promise<TokenAuditEntry[]> {
+		const limit = Math.min(Math.max(1, opts.limit ?? 100), 1000);
+		const r = await this.db.client.execute({
+			sql: `SELECT id, token_id, token_name, path, project, kind, outcome, at
+				FROM token_audit ${opts.tokenId ? "WHERE token_id = ?" : ""}
+				ORDER BY id DESC LIMIT ?`,
+			args: opts.tokenId ? [opts.tokenId, limit] : [limit],
+		});
+		return r.rows.map((row) => ({
+			id: Number(row.id),
+			tokenId: String(row.token_id),
+			name: String(row.token_name),
+			path: String(row.path),
+			project: row.project === null ? null : String(row.project),
+			kind: row.kind === "stream" ? "stream" : "mutation",
+			outcome: String(row.outcome),
+			at: Number(row.at),
+		}));
+	}
+
+	/** Per-token refusal and retention counts. */
+	async tokenAuditCounters(): Promise<TokenAuditCounter[]> {
+		const r = await this.db.client.execute(
+			`SELECT token_id, token_name, refused, last_refused_at, last_refused_path, dropped
+				FROM token_audit_counters ORDER BY token_name, token_id`,
+		);
+		return r.rows.map((row) => ({
+			tokenId: String(row.token_id),
+			name: String(row.token_name),
+			refused: Number(row.refused),
+			lastRefusedAt:
+				row.last_refused_at === null ? null : Number(row.last_refused_at),
+			lastRefusedPath:
+				row.last_refused_path === null ? null : String(row.last_refused_path),
+			dropped: Number(row.dropped),
+		}));
 	}
 
 	/** The live session for a cookie value, or null. Fails closed. */
@@ -616,22 +1072,40 @@ export class AuthService {
 	 * The returned function stops the watch without calling `onEnd`.
 	 */
 	watchSession(sessionId: string, onEnd: () => void): () => void {
-		const listeners = this.listeners.get(sessionId) ?? new Set<() => void>();
-		this.listeners.set(sessionId, listeners);
+		return this.watch(
+			sessionId,
+			() => this.isSessionLive(sessionId),
+			this.streamRecheckMs,
+			onEnd,
+		);
+	}
+
+	private watch(
+		key: string,
+		isLive: () => Promise<boolean>,
+		recheckMs: number,
+		onEnd: () => void,
+	): () => void {
+		const listeners = this.listeners.get(key) ?? new Set<() => void>();
+		this.listeners.set(key, listeners);
+		let ended = false;
 		const release = () => {
 			clearInterval(timer);
 			listeners.delete(end);
-			if (listeners.size === 0) this.listeners.delete(sessionId);
+			if (listeners.size === 0 && this.listeners.get(key) === listeners)
+				this.listeners.delete(key);
 		};
 		const end = () => {
+			if (ended) return;
+			ended = true;
 			release();
 			onEnd();
 		};
 		const timer = setInterval(() => {
-			this.isSessionLive(sessionId).then((live) => {
+			isLive().then((live) => {
 				if (!live) end();
 			}, end);
-		}, this.streamRecheckMs);
+		}, recheckMs);
 		(timer as unknown as { unref?: () => void }).unref?.();
 		listeners.add(end);
 		return release;
@@ -704,7 +1178,9 @@ export class AuthService {
 
 	/** A source has one attempt in flight, so parallel guesses cannot race its count. */
 	private async oneAtATime<T>(
+		kind: "setup" | "login",
 		scope: string,
+		source: AuthSource | undefined,
 		run: () => Promise<T>,
 	): Promise<T> {
 		if (this.inFlight.has(scope))
@@ -714,11 +1190,40 @@ export class AuthService {
 				1000,
 			);
 		this.inFlight.add(scope);
+		const proxied = isProxied(source);
+		// Taken before the first await: every earlier attempt is either counted
+		// here or already recorded, so concurrent requests cannot overshoot.
+		const earlier = proxied ? this.proxiedInFlight[kind]++ : 0;
 		try {
+			await this.assertNotLocked(scope);
+			if (proxied) await this.paceProxied(kind, earlier);
 			return await run();
 		} finally {
+			if (proxied) this.proxiedInFlight[kind]--;
 			this.inFlight.delete(scope);
 		}
+	}
+
+	/**
+	 * Forged client addresses each get a fresh per-address bucket, so proxied
+	 * attempts share one failure count. Past it they are spaced out rather than
+	 * locked: a lock here would let a forger keep the real owner out.
+	 */
+	private async paceProxied(
+		kind: "setup" | "login",
+		inFlightBefore: number,
+	): Promise<void> {
+		const r = await this.db.client.execute({
+			sql: "SELECT failures, last_failure_at FROM auth_throttle WHERE scope = ?",
+			args: [kind === "setup" ? PROXIED_SETUP_SCOPE : PROXIED_LOGIN_SCOPE],
+		});
+		const row = r.rows[0];
+		const recorded =
+			row && this.now() - Number(row.last_failure_at) < THROTTLE_RESET_MS
+				? Number(row.failures)
+				: 0;
+		if (recorded + inFlightBefore >= PROXIED_FREE_FAILURES)
+			await this.proxiedChecks.run(async () => undefined);
 	}
 
 	private async assertNotLocked(scope: string): Promise<void> {
@@ -781,6 +1286,20 @@ function isLive(row: Record<string, unknown>, now: number): boolean {
 		Number(row.expires_at) > now &&
 		now - Number(row.last_seen_at) < SESSION_IDLE_MS
 	);
+}
+
+/** Stored scopes, or null if anything is outside the closed set. */
+function parseScopes(raw: unknown): TokenScope[] | null {
+	try {
+		const parsed: unknown = JSON.parse(String(raw));
+		return Array.isArray(parsed) &&
+			parsed.length > 0 &&
+			parsed.every(isTokenScope)
+			? parsed
+			: null;
+	} catch {
+		return null;
+	}
 }
 
 export function assertPasswordPolicy(password: string): void {

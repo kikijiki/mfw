@@ -10,24 +10,22 @@ import {
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { DispatchPreflightError } from "./dispatch-preflight.ts";
 import type { ResolvedExecutionTarget } from "./execution-target.ts";
-import type {
-	HostAdmissionSnapshot,
-	HostHoldDiagnostic,
-	HostLease,
-	HostRequirement,
-	HostResourceCoordinatorPort,
-	HostResourceReadModel,
-	Waiter,
-} from "./host-resources/index.ts";
-import { REMOTE_RUN_SESSION_PREFIX } from "./host-resources/liveness.ts";
-import {
-	parseIecBytes,
-	parseIntegerQuantity,
-	QuantityParseError,
-} from "./host-resources/quantity.ts";
 import type { Logger } from "./log.ts";
-import type { ProjectResourceSlots } from "./project-resource-slots.ts";
 import { type RefusalFix, refusalFix } from "./refusal-fix.ts";
+import { projectClaim } from "./resources/claims.ts";
+import type { ResourceCoordinator } from "./resources/coordinator.ts";
+import { poolIdOf } from "./resources/host-definitions.ts";
+import type { HostResourceReadModel } from "./resources/host-types.ts";
+import { QuantityParseError } from "./resources/quantity.ts";
+import {
+	type Blocker,
+	type Claim,
+	REMOTE_RUN_SESSION_PREFIX,
+	ResourceError,
+	type ResourceLease,
+	type ResourceWaiter,
+	type RunIdentity,
+} from "./resources/types.ts";
 import type { RunEngine, TaskDispatchAdmissionPort } from "./run-engine.ts";
 import type { RunRegistry } from "./run-registry.ts";
 import {
@@ -42,6 +40,35 @@ type AuthoredHostRequirement = {
 	resourceId: string;
 	amount?: number | string;
 };
+
+/** The coordinator surface one project's admission saga uses. */
+export type AdmissionLedger = Pick<
+	ResourceCoordinator,
+	| "readModel"
+	| "putWaiter"
+	| "tryGrant"
+	| "activate"
+	| "renewOrAdopt"
+	| "cancelWaiter"
+	| "release"
+>;
+
+/** The refusal code for what stands between a claim set and its grant. */
+function blockerCode(blocker: Blocker | undefined): string {
+	switch (blocker?.code) {
+		case "held":
+			return blocker.detail === "budget" ? "budget_exhausted" : "pool_held";
+		case "exhausted":
+			return "budget_exhausted";
+		case "unknown-pool":
+		case "unknown-dimension":
+			return "definition";
+		case "fifo":
+			return "fifo";
+		default:
+			return "capacity";
+	}
+}
 
 const OPEN_STATES: DispatchAdmissionState[] = [
 	"resolving",
@@ -78,8 +105,7 @@ export class AdmissionHeldError extends Error {
 		readonly waitingFor: string[],
 		readonly code: string,
 		message: string,
-		readonly diagnostics: HostHoldDiagnostic[] = [],
-		readonly snapshotGeneration: bigint | null = null,
+		readonly diagnostics: Blocker[] = [],
 	) {
 		super(message);
 		this.name = "AdmissionHeldError";
@@ -147,8 +173,17 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 			tasks: TaskService;
 			registry: RunRegistry;
 			engine: RunEngine;
-			host: HostResourceCoordinatorPort;
-			projectSlots: ProjectResourceSlots;
+			host: AdmissionLedger;
+			/** Resolves a host requirement; refuses anything it cannot honour. */
+			claimFor: (resourceId: string, amount?: number | string) => Claim;
+			/** Capacity a target reserves on its provider's account pool. */
+			targetClaims?: (target: ResolvedExecutionTarget) => Claim[];
+			/** The project semaphores a lease holds, for their audit events. */
+			/** The operator read model: incidents and host-unit allocations. */
+			hostModel: () => HostResourceReadModel;
+			projectSlotsOf?: (
+				leaseId: string,
+			) => Promise<{ resourceId: string; slot: number }[]>;
 			sessionId: (runId: string) => string;
 			log: Logger;
 		},
@@ -162,7 +197,6 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 		opts: {
 			model?: string;
 			actor?: StatusActor;
-			hostSnapshot?: HostAdmissionSnapshot;
 		} = {},
 	): Promise<{ runId: string }> {
 		const actor = opts.actor ?? "scheduler";
@@ -181,6 +215,7 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 					),
 				].sort(),
 				host: [],
+				account: [],
 				hash: createHash("sha256").update(JSON.stringify(target)).digest("hex"),
 			};
 		}
@@ -225,26 +260,6 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 						error.message,
 					);
 				}
-				const preflight = await this.deps.projectSlots.plan(
-					normalized.project,
-					taskId,
-				);
-				if ("blockedBy" in preflight) {
-					const held = await this.hold(
-						row,
-						"project",
-						preflight.blockedBy,
-						"capacity",
-						`project resource capacity is unavailable: ${preflight.blockedBy.join(", ")}`,
-					);
-					if (row.waiterId) {
-						await this.cancelWaiting(
-							(await this.byId(row.id)) ?? row,
-							"project resource became unavailable while waiting for host capacity",
-						);
-					}
-					throw held;
-				}
 			}
 			return await this.continue(row, target, normalized, opts);
 		} catch (error) {
@@ -258,7 +273,6 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 					error.code,
 					error.message,
 					error.diagnostics,
-					error.snapshotGeneration,
 				);
 			}
 			if (error instanceof InjectedAdmissionCrashError) throw error;
@@ -266,10 +280,6 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 			await this.compensate(row.id, `admission failed: ${message(error)}`);
 			throw error;
 		}
-	}
-
-	captureAdmissionSnapshot(): HostAdmissionSnapshot {
-		return this.deps.host.captureAdmissionSnapshot();
 	}
 
 	/**
@@ -310,29 +320,6 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 			);
 		}
 		try {
-			const existing = await this.deps.registry.get(row.runId);
-			if (!existing && !row.hostLeaseId) {
-				const preflight = await this.deps.projectSlots.plan(
-					normalized.project,
-					input.taskId,
-				);
-				if ("blockedBy" in preflight) {
-					const held = await this.hold(
-						row,
-						"project",
-						preflight.blockedBy,
-						"capacity",
-						`project resource capacity is unavailable: ${preflight.blockedBy.join(", ")}`,
-					);
-					if (row.waiterId) {
-						await this.cancelWaiting(
-							(await this.byId(row.id)) ?? row,
-							"project resource became unavailable while waiting for host capacity",
-						);
-					}
-					throw held;
-				}
-			}
 			return await this.continue(
 				row,
 				input.target,
@@ -351,7 +338,6 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 					error.code,
 					error.message,
 					error.diagnostics,
-					error.snapshotGeneration,
 				);
 			}
 			if (error instanceof InjectedAdmissionCrashError) throw error;
@@ -374,7 +360,6 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 		runId: string;
 		target: ResolvedExecutionTarget;
 		prepare: () => Promise<import("./run-engine.ts").PreparedTaskRun>;
-		hostSnapshot?: HostAdmissionSnapshot;
 	}): Promise<{ runId: string }> {
 		const normalized = this.normalize(input.target);
 		let row = await this.byRun(input.runId);
@@ -397,35 +382,12 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 			);
 		}
 		try {
-			const existing = await this.deps.registry.get(row.runId);
-			if (!existing && !row.hostLeaseId) {
-				const preflight = await this.deps.projectSlots.plan(
-					normalized.project,
-					input.taskId,
-				);
-				if ("blockedBy" in preflight) {
-					const held = await this.hold(
-						row,
-						"project",
-						preflight.blockedBy,
-						"capacity",
-						`project resource capacity is unavailable: ${preflight.blockedBy.join(", ")}`,
-					);
-					if (row.waiterId) {
-						await this.cancelWaiting(
-							(await this.byId(row.id)) ?? row,
-							"project resource became unavailable while waiting for host capacity",
-						);
-					}
-					throw held;
-				}
-			}
 			try {
 				return await this.continue(
 					row,
 					input.target,
 					normalized,
-					input.hostSnapshot ? { hostSnapshot: input.hostSnapshot } : {},
+					{},
 					input.prepare,
 				);
 			} catch (error) {
@@ -452,7 +414,6 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 					error.code,
 					error.message,
 					error.diagnostics,
-					error.snapshotGeneration,
 				);
 			}
 			if (error instanceof InjectedAdmissionCrashError) throw error;
@@ -468,6 +429,7 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 	private normalize(target: ResolvedExecutionTarget): {
 		project: string[];
 		host: AuthoredHostRequirement[];
+		account: Claim[];
 		hash: string;
 	} {
 		const project = [
@@ -493,6 +455,18 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 				};
 			})
 			.sort((a, b) => a.resourceId.localeCompare(b.resourceId));
+		let account: Claim[];
+		try {
+			account = this.deps.targetClaims?.(target) ?? [];
+		} catch (error) {
+			throw new AdmissionHeldError(
+				"",
+				"host",
+				[target.kind],
+				"definition",
+				message(error),
+			);
+		}
 		const canonical = JSON.stringify({
 			kind: target.kind,
 			project,
@@ -500,102 +474,63 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 				item.resourceId,
 				item.amount === undefined ? null : item.amount,
 			]),
+			...(account.length > 0 ? { account } : {}),
 		});
 		return {
 			project,
 			host,
+			account,
 			hash: createHash("sha256").update(canonical).digest("hex"),
 		};
 	}
 
-	private validateDefinitions(
+	/** Every requirement as one claim set; an unusable one is a hold with a fix. */
+	private claimsOf(
 		taskId: string,
-		host: readonly AuthoredHostRequirement[],
-	): { model: HostResourceReadModel; host: HostRequirement[] } {
+		normalized: {
+			project: string[];
+			host: AuthoredHostRequirement[];
+			account?: readonly Claim[];
+		},
+	): Claim[] {
 		if (!this.hostDispatchReady) {
 			throw new AdmissionHeldError(
 				taskId,
 				"host",
-				host.map((item) => item.resourceId),
+				[
+					...normalized.project,
+					...normalized.host.map((item) => item.resourceId),
+				],
 				"reconciliation",
-				"host admission recovery has not completed; project-only work remains available",
+				"resource recovery has not completed; work needing no resources remains available",
 			);
 		}
-		const model = this.deps.host.readModel();
-		const definitions = new Map(
-			model.definitions.map((item) => [item.id, item]),
+		const claims = normalized.project.map((name) =>
+			projectClaim(this.deps.projectId, name),
 		);
-		const normalized: HostRequirement[] = [];
-		for (const requirement of host) {
-			const definition = definitions.get(requirement.resourceId);
-			let reason: string | null = null;
-			if (!definition) reason = "is not registered on this host";
-			else if (!definition.enabled) reason = "is disabled";
-			else if (definition.draining) reason = "is draining";
-			else if (definition.provisioning === "dynamic") {
-				reason =
-					"is dynamic but no provisioner is installed; dynamic is lifecycle metadata, not free capacity";
-			}
-			if (reason) {
-				throw new AdmissionHeldError(
-					taskId,
-					"host",
-					[requirement.resourceId],
-					"definition",
-					`host resource '${requirement.resourceId}' ${reason}`,
-				);
-			}
-			if (!definition) continue;
+		claims.push(...(normalized.account ?? []));
+		for (const requirement of normalized.host) {
 			try {
-				if (definition.accounting === "slot") {
-					if (requirement.amount !== undefined && requirement.amount !== 1) {
-						throw new QuantityParseError(
-							"slot resources must omit amount or request the numeric value 1",
-						);
-					}
-					normalized.push({ resourceId: requirement.resourceId, amount: 1n });
-				} else if (definition.quantityUnit === "integer") {
-					if (requirement.amount === undefined) {
-						throw new QuantityParseError(
-							"integer quantity resources require an explicit amount",
-						);
-					}
-					normalized.push({
-						resourceId: requirement.resourceId,
-						amount: parseIntegerQuantity(
-							requirement.amount,
-							`amount for '${requirement.resourceId}'`,
-						),
-					});
-				} else if (definition.quantityUnit === "bytes") {
-					if (requirement.amount === undefined) {
-						throw new QuantityParseError(
-							"RAM quantity resources require an explicit IEC byte amount",
-						);
-					}
-					normalized.push({
-						resourceId: requirement.resourceId,
-						amount: parseIecBytes(
-							requirement.amount,
-							`RAM amount for '${requirement.resourceId}'`,
-						),
-					});
-				} else {
-					throw new QuantityParseError(
-						"quantity definition has no canonical base unit",
-					);
-				}
+				claims.push(
+					this.deps.claimFor(requirement.resourceId, requirement.amount),
+				);
 			} catch (error) {
+				if (
+					!(error instanceof ResourceError) &&
+					!(error instanceof QuantityParseError)
+				) {
+					throw error;
+				}
 				throw new AdmissionHeldError(
 					taskId,
 					"host",
 					[requirement.resourceId],
-					"invalid_amount",
-					`host resource '${requirement.resourceId}' has an invalid amount: ${error instanceof Error ? error.message : String(error)}`,
+					error instanceof QuantityParseError ? "invalid_amount" : "definition",
+					`host resource '${requirement.resourceId}': ${error.message}`,
 				);
 			}
 		}
-		return { model, host: normalized };
+		return claims;
 	}
 
 	private async continue(
@@ -605,20 +540,14 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 		opts: {
 			model?: string;
 			actor?: StatusActor;
-			hostSnapshot?: HostAdmissionSnapshot;
 		},
 		prepare?: () => Promise<import("./run-engine.ts").PreparedTaskRun>,
 	): Promise<{ runId: string }> {
 		let row = (await this.byId(initial.id)) ?? initial;
-		let lease: HostLease | null = null;
-		if (normalized.host.length > 0) {
-			const validated = this.validateDefinitions(row.taskId, normalized.host);
-			const grant = await this.ensureGrant(
-				row,
-				validated.host,
-				validated.model,
-				opts.hostSnapshot,
-			);
+		let lease: ResourceLease | null = null;
+		if (normalized.host.length + normalized.project.length > 0) {
+			const claims = this.claimsOf(row.taskId, normalized);
+			const grant = await this.ensureGrant(row, claims);
 			row = grant.row;
 			lease = grant.lease;
 		} else if (row.state === "resolving" || row.state === "waiting_host") {
@@ -647,15 +576,6 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 		if (row.state === "host_granted")
 			row = await this.transition(row, "prepared");
 
-		const slots = await this.deps.projectSlots.ensure(
-			row.runId,
-			normalized.project,
-		);
-		if (slots.blockedBy.length > 0) {
-			throw new Error(
-				`project slot race after preparation: ${slots.blockedBy.join(", ")}`,
-			);
-		}
 		if (row.state === "prepared") {
 			row = await this.transition(row, "project_acquired");
 		}
@@ -668,8 +588,7 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 			if (lease.state === "provisional") {
 				try {
 					lease = await this.deps.host.activate(
-						lease.id,
-						lease.fence,
+						lease,
 						this.runRef(row.runId, target.kind),
 					);
 				} catch (error) {
@@ -684,7 +603,9 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 			if (lease.state !== "active") {
 				throw new Error(`host lease ${lease.id} is ${lease.state}`);
 			}
+			const firstActivation = row.state !== "host_active";
 			row = await this.linkLease(row, lease, "host_active");
+			if (firstActivation) await this.announceLocked(row.runId, lease.id);
 		} else if (row.state === "project_acquired") {
 			row = await this.transition(row, "host_active");
 		}
@@ -696,20 +617,32 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 
 	private async ensureGrant(
 		row: AdmissionRow,
-		requirements: readonly HostRequirement[],
-		model: HostResourceReadModel,
-		snapshot?: HostAdmissionSnapshot,
-	): Promise<{ row: AdmissionRow; lease: HostLease }> {
+		claims: readonly Claim[],
+	): Promise<{ row: AdmissionRow; lease: ResourceLease }> {
+		const model = this.deps.host.readModel();
 		let waiter = row.waiterId
 			? model.waiters.find((item) => item.id === row.waiterId)
 			: model.waiters.find((item) => item.requestKey === row.requestKey);
 		if (!waiter) {
-			waiter = await this.deps.host.putWaiter({
-				requestKey: row.requestKey,
-				projectId: this.deps.projectId,
-				requirements,
-				metadata: { taskId: row.taskId, runId: row.runId },
-			});
+			try {
+				waiter = await this.deps.host.putWaiter({
+					requestKey: row.requestKey,
+					projectId: this.deps.projectId,
+					claims,
+				});
+			} catch (error) {
+				if (!(error instanceof ResourceError) || error.code !== "REFUSED") {
+					throw error;
+				}
+				// An unknown pool or an underivable estimate never admits.
+				throw await this.hold(
+					row,
+					"host",
+					claims.map((item) => item.poolId),
+					"definition",
+					error.message,
+				);
+			}
 			row = await this.linkWaiter(row, waiter);
 		}
 		const existing = this.leaseFor(row, waiter.id);
@@ -733,66 +666,74 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 				) {
 					linked = await this.linkLease(row, existing, "host_active");
 				}
+				return { row: linked, lease: existing };
+			}
+			throw new Error(`lease ${existing.id} is already ${existing.state}`);
+		}
+		try {
+			const result = await this.deps.host.tryGrant(waiter.id);
+			if (!("kind" in result)) {
 				return {
-					row: linked,
-					lease: existing,
+					row: await this.linkLease(row, result, "host_granted"),
+					lease: result,
 				};
 			}
-			throw new Error(`host lease ${existing.id} is already ${existing.state}`);
-		}
-
-		for (let attempt = 0; attempt < 2; attempt++) {
-			const generation =
-				snapshot?.generation ?? this.deps.host.readModel().generation;
-			try {
-				const result = await this.deps.host.tryGrant(
-					waiter.id,
-					generation,
-					snapshot,
-				);
-				if (!("kind" in result)) {
-					return {
-						row: await this.linkLease(row, result, "host_granted"),
-						lease: result,
-					};
-				}
-				if (result.reason === "generation" && attempt === 0 && !snapshot)
-					continue;
-				throw await this.hold(
-					row,
-					"host",
-					result.blockedBy.length > 0
-						? result.blockedBy
-						: requirements.map((item) => item.resourceId),
-					result.diagnostics[0]?.reason ?? result.reason,
-					result.diagnostics[0]?.message ??
-						`host admission is waiting (${result.reason})`,
-					result.diagnostics,
-					result.generation,
-				);
-			} catch (error) {
-				if (error instanceof AdmissionHeldError) throw error;
-				const persisted = this.leaseFor(row, waiter.id);
-				if (persisted?.state === "provisional") {
-					await this.linkLease(row, persisted, "host_granted");
-					throw new InjectedAdmissionCrashError("host_granted", error);
-				}
-				throw await this.hold(
-					row,
-					"host",
-					requirements.map((item) => item.resourceId),
-					"coordinator",
-					`host coordinator is unavailable: ${message(error)}`,
-				);
+			const first = result.blockers[0];
+			const waitingFor = [...new Set(result.blockers.map((b) => b.poolId))];
+			throw await this.hold(
+				row,
+				"host",
+				waitingFor.length > 0 ? waitingFor : claims.map((c) => c.poolId),
+				this.hostHoldCode(first, claims),
+				`admission is ${result.status}: ${result.blockers
+					.map((b) => `${b.poolId} (${b.detail ?? b.code})`)
+					.join(", ")}`,
+				result.blockers,
+			);
+		} catch (error) {
+			if (error instanceof AdmissionHeldError) throw error;
+			const persisted = this.leaseFor(row, waiter.id);
+			if (persisted?.state === "provisional") {
+				await this.linkLease(row, persisted, "host_granted");
+				throw new InjectedAdmissionCrashError("host_granted", error);
 			}
+			throw await this.hold(
+				row,
+				"host",
+				claims.map((item) => item.poolId),
+				"coordinator",
+				`resource coordinator is unavailable: ${message(error)}`,
+			);
 		}
-		throw new Error("unreachable host grant retry");
+	}
+
+	/**
+	 * Names RAM that the quota still allows but the machine cannot give, so
+	 * the fix says to free memory instead of waiting for another run.
+	 */
+	private hostHoldCode(
+		blocker: Blocker | undefined,
+		claims: readonly Claim[],
+	): string {
+		const code = blockerCode(blocker);
+		if (code !== "capacity" || !blocker) return code;
+		const formula = this.deps
+			.hostModel()
+			.effectiveCapacities.find(
+				(item) => poolIdOf(item.resourceId) === blocker.poolId,
+			)?.ramFormula;
+		const claim = claims.find((item) => item.poolId === blocker.poolId);
+		if (!formula || claim?.amount == null) return code;
+		const requested = BigInt(Math.ceil(claim.amount)) * 1024n * 1024n;
+		return formula.quotaRemainingBytes >= requested
+			? "headroom-exhausted"
+			: code;
 	}
 
 	private leaseFor(
 		row: AdmissionRow,
 		waiterId = row.waiterId,
-	): HostLease | null {
+	): ResourceLease | null {
 		const model = this.deps.host.readModel();
 		return (
 			model.leases.find((item) => item.id === row.hostLeaseId) ??
@@ -807,7 +748,7 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 	 * remote marker and no kernel boot id: local evidence never frees its
 	 * slot, project recovery adopts or releases it (`liveness.ts`).
 	 */
-	private runRef(runId: string, targetKind?: string) {
+	private runRef(runId: string, targetKind?: string): RunIdentity {
 		const model = this.deps.host.readModel();
 		const remote = targetKind === "ssh";
 		return {
@@ -827,10 +768,7 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 	async releaseRun(runId: string, reason = "run reached a terminal state") {
 		if (await this.deps.registry.hasPendingCleanup(runId)) return;
 		const row = await this.byRun(runId);
-		if (!row) {
-			await this.deps.projectSlots.release(runId);
-			return;
-		}
+		if (!row) return;
 		if (["released", "cancelled", "failed"].includes(row.state)) return;
 		await this.beginCompensation(row, "released", reason);
 	}
@@ -842,13 +780,11 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 		if (!lease || (lease.state !== "active" && lease.state !== "uncertain")) {
 			return;
 		}
-		const model = this.deps.host.readModel();
 		try {
-			await this.deps.host.renewOrAdopt(lease.id, lease.fence, {
-				...this.runRef(runId, this.targetKindOf(row)),
-				processBootId: model.processBootId,
-				observedAt: this.now(),
-			});
+			await this.deps.host.renewOrAdopt(
+				lease,
+				this.runRef(runId, this.targetKindOf(row)),
+			);
 			if (row.holdCode === "renewal_uncertain") {
 				await this.deps.handle.db
 					.update(dispatchAdmissions)
@@ -992,8 +928,8 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 
 	async health() {
 		const rows = await this.openRows();
-		const hostIncidents = this.deps.host
-			.readModel()
+		const hostIncidents = this.deps
+			.hostModel()
 			.incidents.filter((incident) => incident.state === "open");
 		const byState: Record<string, number> = {};
 		for (const row of rows) byState[row.state] = (byState[row.state] ?? 0) + 1;
@@ -1021,7 +957,7 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 				fix: refusalFix(row.holdCode),
 				updatedAt: row.updatedAt,
 			}));
-		const model = this.deps.host.readModel();
+		const model = this.deps.hostModel();
 		for (const incident of model.incidents.filter(
 			(item) => item.state === "open",
 		)) {
@@ -1075,7 +1011,7 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 
 	private async ensureRecoveryOwnership(
 		row: AdmissionRow,
-		lease: HostLease | null,
+		lease: ResourceLease | null,
 	): Promise<void> {
 		const target = row.resolution as unknown as ResolvedExecutionTarget;
 		const normalized = this.normalize(target);
@@ -1084,22 +1020,8 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 		const adoptable =
 			lease?.state === "active" ||
 			(lease?.state === "uncertain" && target.kind === "ssh");
-		if (normalized.host.length > 0 && !adoptable) {
-			throw new Error(`live run ${row.runId} has no active fenced host lease`);
-		}
-		const slots = await this.deps.projectSlots.ensure(
-			row.runId,
-			normalized.project,
-		);
-		if (slots.blockedBy.length > 0) {
-			await this.setIssue(
-				row,
-				"project_slot_recovery",
-				`live/prepared run ${row.runId} is missing project capacity for: ${slots.blockedBy.join(", ")}`,
-			);
-			throw new Error(
-				`cannot adopt or launch ${row.runId}; expected project slots are unavailable: ${slots.blockedBy.join(", ")}`,
-			);
+		if (normalized.host.length + normalized.project.length > 0 && !adoptable) {
+			throw new Error(`live run ${row.runId} has no active fenced lease`);
 		}
 		if (
 			[
@@ -1211,10 +1133,6 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 		const reason = current.holdReason ?? `complete ${target} compensation`;
 		try {
 			await this.releaseHostForCompensation(current, reason);
-			await this.deps.projectSlots.release(current.runId);
-			if ((await this.deps.projectSlots.held(current.runId)).length > 0) {
-				throw new Error("project resource slots remain after release");
-			}
 			if (target !== "released") {
 				await this.deps.engine.abortPreparedTaskRun(
 					current.taskId,
@@ -1305,38 +1223,71 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 		row: AdmissionRow,
 		reason: string,
 	): Promise<void> {
-		let model = this.deps.host.readModel();
-		let lease =
-			model.leases.find((item) => item.id === row.hostLeaseId) ??
-			model.leases.find((item) => item.waiterId === row.waiterId) ??
-			null;
-		if (lease && !isReleasedLease(lease)) {
-			await this.deps.host.cancelOrRelease(lease.id, lease.fence, reason);
-			model = this.deps.host.readModel();
-			lease = model.leases.find((item) => item.id === lease?.id) ?? null;
-			if (!lease || !isReleasedLease(lease)) {
-				throw new Error("host lease release is not durably proven");
+		const lease = this.leaseFor(row);
+		if (lease) {
+			if (isReleasedLease(lease)) return;
+			const slots = (await this.deps.projectSlotsOf?.(lease.id)) ?? [];
+			await this.deps.host.release(lease, reason);
+			const after = this.leaseFor(row);
+			if (!after || !isReleasedLease(after)) {
+				throw new Error("lease release is not durably proven");
 			}
+			await this.announceReleased(row.runId, slots);
 			return;
 		}
-		if (lease) return;
 		if (!row.waiterId) return;
-		let waiter = model.waiters.find((item) => item.id === row.waiterId);
-		if (!waiter) throw new Error("host waiter is missing from the coordinator");
+		const find = (): ResourceWaiter | undefined =>
+			this.deps.host.readModel().waiters.find((w) => w.id === row.waiterId);
+		const waiter = find();
+		if (!waiter) throw new Error("waiter is missing from the coordinator");
 		if (waiter.state === "waiting") {
-			await this.deps.host.cancelOrRelease(
-				waiter.id,
-				waiter.generation,
-				reason,
-			);
-			model = this.deps.host.readModel();
-			waiter = model.waiters.find((item) => item.id === row.waiterId);
+			await this.deps.host.cancelWaiter(waiter.id, reason);
 		}
-		if (waiter?.state !== "cancelled") {
+		const after = find();
+		if (after?.state !== "cancelled") {
 			throw new Error(
-				`host waiter cancellation is not proven (state ${waiter?.state ?? "missing"})`,
+				`waiter cancellation is not proven (state ${after?.state ?? "missing"})`,
 			);
 		}
+	}
+
+	private async announceLocked(runId: string, leaseId: string): Promise<void> {
+		const slots = (await this.deps.projectSlotsOf?.(leaseId)) ?? [];
+		if (slots.length === 0) return;
+		const emitted = await this.deps.handle.withTx(async (tx) => {
+			const out = [];
+			for (const slot of slots) {
+				out.push(
+					await appendEvent(tx, {
+						type: "resource.locked",
+						runId,
+						payload: slot,
+					}),
+				);
+			}
+			return out;
+		});
+		this.deps.bus.publish(emitted);
+	}
+
+	private async announceReleased(
+		runId: string,
+		slots: readonly { resourceId: string; slot: number }[],
+	): Promise<void> {
+		if (slots.length === 0) return;
+		const emitted = await this.deps.handle.withTx(async (tx) => {
+			const out = [];
+			for (const slot of slots) {
+				out.push(
+					await appendEvent(tx, {
+						type: "resource.released",
+						payload: { ...slot, runId, forced: false },
+					}),
+				);
+			}
+			return out;
+		});
+		this.deps.bus.publish(emitted);
 	}
 
 	private async compensate(admissionId: string, reason: string): Promise<void> {
@@ -1426,14 +1377,14 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 
 	private async linkWaiter(
 		row: AdmissionRow,
-		waiter: Waiter,
+		waiter: ResourceWaiter,
 	): Promise<AdmissionRow> {
 		const emitted = await this.deps.handle.withTx(async (tx) => {
 			const [next] = await tx
 				.update(dispatchAdmissions)
 				.set({
 					waiterId: waiter.id,
-					waiterGeneration: waiter.generation.toString(),
+					waiterGeneration: waiter.sequence.toString(),
 					state: "waiting_host",
 					updatedAt: new Date(this.now()),
 				})
@@ -1462,7 +1413,7 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 
 	private async linkLease(
 		row: AdmissionRow,
-		lease: HostLease,
+		lease: ResourceLease,
 		state: "host_granted" | "host_active",
 	): Promise<AdmissionRow> {
 		const emitted = await this.deps.handle.withTx(async (tx) => {
@@ -1502,8 +1453,7 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 		waitingFor: string[],
 		code: string,
 		reason: string,
-		diagnostics: HostHoldDiagnostic[] = [],
-		snapshotGeneration: bigint | null = null,
+		diagnostics: Blocker[] = [],
 	): Promise<AdmissionHeldError> {
 		const key = `${scope}:${code}:${[...waitingFor].sort().join(",")}:${reason}`;
 		const previous =
@@ -1530,14 +1480,7 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 						reason,
 						code,
 						fix: refusalFix(code, waitingFor),
-						snapshotGeneration: snapshotGeneration?.toString(),
-						diagnostics: diagnostics.map((diagnostic) =>
-							JSON.parse(
-								JSON.stringify(diagnostic, (_key, value) =>
-									typeof value === "bigint" ? value.toString() : value,
-								),
-							),
-						),
+						diagnostics: diagnostics.map((item) => ({ ...item })),
 					},
 				});
 				const state =
@@ -1565,7 +1508,6 @@ export class ProjectDispatchAdmission implements TaskDispatchAdmissionPort {
 			code,
 			reason,
 			diagnostics,
-			snapshotGeneration,
 		);
 	}
 
@@ -1646,6 +1588,6 @@ function message(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
-function isReleasedLease(lease: HostLease): boolean {
+function isReleasedLease(lease: ResourceLease): boolean {
 	return ["released", "reclaimed", "force_released"].includes(lease.state);
 }

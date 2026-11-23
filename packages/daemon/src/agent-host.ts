@@ -36,6 +36,7 @@ import {
 	PROXY_MAX_OPEN_FILES,
 	prepareRunEgress,
 } from "./containment/egress-run.ts";
+import { EGRESS_PROXY, hostScript } from "./containment/host-script.ts";
 import {
 	driverRunPaths,
 	ensureRunDirLayout,
@@ -229,12 +230,6 @@ interface HostBridge {
 	providerArgv: string[];
 	env: Record<string, string>;
 }
-
-const EGRESS_PROXY_MAIN = join(
-	import.meta.dir,
-	"containment",
-	"egress-proxy-main.ts",
-);
 
 /** 0.05 s each: how long `run.sh` waits for the proxy socket. */
 const EGRESS_START_POLLS = 400;
@@ -664,7 +659,7 @@ export class AgentHost {
 			bunBin,
 			...HOST_BUN_FLAGS,
 			"run",
-			EGRESS_PROXY_MAIN,
+			hostScript(import.meta.url, EGRESS_PROXY),
 			egress.configPath,
 		]
 			.map(q)

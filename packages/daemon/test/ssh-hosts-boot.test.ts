@@ -10,6 +10,7 @@ import {
 import { git } from "../src/git.ts";
 import { HostRegistry } from "../src/host-registry.ts";
 import { silentLogger } from "../src/log.ts";
+import { AdmissionHeldError } from "../src/project-dispatch-admission.ts";
 import type { ProjectServices } from "../src/services.ts";
 import { RemoteTransportError } from "../src/ssh-transport.ts";
 
@@ -127,58 +128,103 @@ function useDriver(service: ProjectServices, path: string) {
 	adapters.buildArgv = () => ["true"];
 }
 
+async function boxFixture(approvalMode: "autonomous" | "interactive") {
+	const home = await mkdtemp(join(tmpdir(), "mfw-ssh-boot-home-"));
+	roots.push(home);
+	const boxHome = join(home, "box-home");
+	await mkdir(boxHome);
+	const registry = HostRegistry.at(home, {
+		keygenPath: Bun.which("ssh-keygen") as string,
+	});
+	await registry.put({
+		id: "box-a",
+		address: "box-a.example.invalid",
+		user: "agent",
+		hostKey: `ssh-ed25519 ${Buffer.alloc(32, 5).toString("base64")}`,
+		trust: "owned",
+		sandbox: "none",
+		slots: 1,
+	});
+	await registry.recordObservation("box-a", {
+		checkedAt: Date.now(),
+		health: "ok",
+		problems: [],
+		uid: 1001,
+		user: "agent",
+		home: boxHome,
+		path: `${dirname(process.execPath)}:/usr/bin:/bin`,
+		bunPath: process.execPath,
+		gitPath: Bun.which("git") as string,
+		setsidPath: "/usr/bin/setsid",
+		bwrapPath: null,
+		sudo: "refused",
+		bwrap: false,
+		harnesses: { "claude-cli": { version: "2", auth: true } },
+		gpus: 0,
+		diskFreeBytes: null,
+		memAvailableBytes: null,
+	});
+	const driverDir = await mkdtemp(join(tmpdir(), "mfw-ssh-boot-driver-"));
+	roots.push(driverDir);
+	const driver = join(driverDir, "driver.ts");
+	await writeFile(driver, DRIVER);
+	const project: ProjectConfig = {
+		name: "demo",
+		root: await repo(),
+		integrationBranch: "main",
+		maxConcurrent: 4,
+		approvalMode,
+		assistance: {
+			changeReview: "human",
+		},
+	};
+	return { home, driver, project };
+}
+
 describe("registry SSH hosts through boot", () => {
+	test("an autonomous run on a remote target is refused at preflight, with the fix", async () => {
+		const { home, driver, project } = await boxFixture("autonomous");
+		const orchestrator = await boot({
+			projects: [project],
+			mfwHome: home,
+			autostart: false,
+			log: silentLogger(),
+			sshTransport: localBox(),
+		});
+		orchestrators.push(orchestrator);
+		const service = orchestrator.get("demo");
+		useDriver(service, driver);
+		const task = await service.tasks.create({
+			title: "autonomous remote",
+			executionTarget: "ssh:box-a",
+		});
+		await service.tasks.move(task.id, "ready", "human");
+
+		const refused = await service.engine.startTask(task.id).then(
+			() => null,
+			(error: unknown) => error,
+		);
+		expect(refused).toBeInstanceOf(AdmissionHeldError);
+		expect(refused).toMatchObject({
+			code: "remote_autonomy_unsupported",
+			waitingFor: ["ssh"],
+			fix: { kind: "setting", text: expect.stringContaining("interactive") },
+		});
+
+		// Refused before anything was claimed, queued, leased or launched.
+		expect(await service.registry.list({ taskId: task.id })).toEqual([]);
+		expect((await service.tasks.get(task.id))?.claimedByRunId).toBeNull();
+		const model = orchestrator.hostResources.readModel();
+		expect(model.waiters).toEqual([]);
+		expect(model.leases).toEqual([]);
+		expect(orchestrator.hosts.free("box-a")).toBe(1);
+		const [issue] = await service.admission.issues();
+		expect(issue?.fix?.text).toContain("interactive");
+	}, 60_000);
+
 	test("a task pinned to ssh:<host> is placed, holds remote.<host>.slots and records host_id", async () => {
-		const home = await mkdtemp(join(tmpdir(), "mfw-ssh-boot-home-"));
-		roots.push(home);
-		const boxHome = join(home, "box-home");
-		await mkdir(boxHome);
-		const registry = HostRegistry.at(home, {
-			keygenPath: Bun.which("ssh-keygen") as string,
-		});
-		await registry.put({
-			id: "box-a",
-			address: "box-a.example.invalid",
-			user: "agent",
-			hostKey: `ssh-ed25519 ${Buffer.alloc(32, 5).toString("base64")}`,
-			trust: "owned",
-			sandbox: "none",
-			slots: 1,
-		});
-		await registry.recordObservation("box-a", {
-			checkedAt: Date.now(),
-			health: "ok",
-			problems: [],
-			uid: 1001,
-			user: "agent",
-			home: boxHome,
-			path: `${dirname(process.execPath)}:/usr/bin:/bin`,
-			bunPath: process.execPath,
-			gitPath: Bun.which("git") as string,
-			setsidPath: "/usr/bin/setsid",
-			bwrapPath: null,
-			sudo: "refused",
-			bwrap: false,
-			harnesses: { "claude-cli": { version: "2", auth: true } },
-			gpus: 0,
-			diskFreeBytes: null,
-			memAvailableBytes: null,
-		});
-		const driverDir = await mkdtemp(join(tmpdir(), "mfw-ssh-boot-driver-"));
-		roots.push(driverDir);
-		const driver = join(driverDir, "driver.ts");
-		await writeFile(driver, DRIVER);
-		const project: ProjectConfig = {
-			name: "demo",
-			root: await repo(),
-			integrationBranch: "main",
-			maxConcurrent: 4,
-			// Remote targets refuse autonomous runs (remote-experimental.ts).
-			approvalMode: "interactive",
-			assistance: {
-				changeReview: "human",
-			},
-		};
+		// Remote targets refuse autonomous runs (remote-experimental.ts).
+		const { home, driver, project } = await boxFixture("interactive");
 		const orchestrator = await boot({
 			projects: [project],
 			mfwHome: home,

@@ -1,15 +1,12 @@
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { createClient } from "@libsql/client";
-import { dispatchAdmissions, events, resourceSlots } from "@mfw/db/schema";
+import { dispatchAdmissions, events } from "@mfw/db/schema";
 import { boot, type ProjectConfig } from "../../src/boot.ts";
-import { acquireDaemonLock } from "../../src/host-resources/daemon-lock.ts";
-import {
-	type ImmutableHostRequest,
-	openHostResourceStore,
-} from "../../src/host-resources/index.ts";
 import { silentLogger } from "../../src/log.ts";
 import type { AdmissionTransition } from "../../src/project-dispatch-admission.ts";
+import { acquireDaemonLock } from "../../src/resources/daemon-lock.ts";
 import type { ProjectServices } from "../../src/services.ts";
+import { openHostResourceStore } from "./legacy-host.ts";
 
 type Common = {
 	readyPath: string;
@@ -22,7 +19,9 @@ type GrantConfig = Common & {
 	barrierPath: string;
 	processBootId: string;
 	kernelBootId: string | null;
-	request: Omit<ImmutableHostRequest, "requirements"> & {
+	request: {
+		requestKey: string;
+		projectId: string;
 		requirements: Array<{
 			resourceId: string;
 			amount: string;
@@ -161,7 +160,7 @@ async function holdWrite(config: HoldWriteConfig): Promise<void> {
 	const tx = await client.transaction("write");
 	try {
 		await tx.execute(
-			"UPDATE host_meta SET updated_at=updated_at WHERE singleton=1",
+			"UPDATE rp_host_meta SET generation=generation WHERE singleton=1",
 		);
 		await publish(config.readyPath, { state: "write-lock-held" });
 		await waitForFile(config.releasePath);
@@ -247,7 +246,23 @@ async function recoverDaemon(config: DaemonConfig): Promise<void> {
 			host: orchestrator.hostResources.readModel(),
 			admissions: await owner.handle.db.select().from(dispatchAdmissions),
 			events: await owner.handle.db.select().from(events),
-			slots: await owner.handle.db.select().from(resourceSlots),
+			slots: (
+				await Promise.all(
+					orchestrator.hostResources
+						.readModel()
+						.leases.filter((lease) =>
+							["provisional", "active", "uncertain", "releasing"].includes(
+								lease.state,
+							),
+						)
+						.map((lease) =>
+							orchestrator.hostResources.projectSlotsOf(
+								owner.projectId,
+								lease.id,
+							),
+						),
+				)
+			).flat(),
 			runs: await owner.registry.list({ taskId: config.taskId }),
 			auditBeforeRun,
 		};

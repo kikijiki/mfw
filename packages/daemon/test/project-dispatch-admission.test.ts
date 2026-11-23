@@ -3,11 +3,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ulid } from "@mfw/db/ids";
-import { dispatchAdmissions, events, resourceSlots } from "@mfw/db/schema";
+import { dispatchAdmissions, events } from "@mfw/db/schema";
 import { boot, type ProjectConfig } from "../src/boot.ts";
 import { git } from "../src/git.ts";
-import type { HostResourceDefinition } from "../src/host-resources/index.ts";
-import { RAM_OBSERVATION_MAX_AGE_MS } from "../src/host-resources/index.ts";
 import { silentLogger } from "../src/log.ts";
 import {
 	AdmissionCompensationPendingError,
@@ -16,6 +14,8 @@ import {
 	InjectedAdmissionCrashError,
 } from "../src/project-dispatch-admission.ts";
 import { REFUSAL_FIXES, refusalFix } from "../src/refusal-fix.ts";
+import type { HostResourceDefinition } from "../src/resources/host-types.ts";
+import { RAM_OBSERVATION_MAX_AGE_MS } from "../src/resources/quantity.ts";
 import type { ProjectServices } from "../src/services.ts";
 import { TaskOwnershipHeldError } from "../src/tasks/index.ts";
 import { brainSpawn, STUB_BRAIN } from "./support/brain-spawn.ts";
@@ -200,16 +200,28 @@ async function admissions(service: ProjectServices) {
 	return service.handle.db.select().from(dispatchAdmissions);
 }
 
-function projectSlotOwner(service: ProjectServices) {
-	return (
-		service.admission as unknown as {
-			deps: {
-				projectSlots: {
-					release(runId: string): Promise<number>;
-				};
-			};
-		}
-	).deps.projectSlots;
+const LIVE_LEASE = ["provisional", "active", "uncertain", "releasing"];
+
+function ledgerOf(service: ProjectServices) {
+	const owner = orchestrators.find((item) => item.list().includes(service));
+	if (!owner) throw new Error(`no orchestrator owns ${service.name}`);
+	return owner.hostResources;
+}
+
+/** The project semaphores held by live leases, optionally for one run. */
+async function heldSlots(service: ProjectServices, runId?: string) {
+	const ledger = ledgerOf(service);
+	const leases = ledger
+		.readModel()
+		.leases.filter(
+			(lease) =>
+				LIVE_LEASE.includes(lease.state) &&
+				(runId === undefined || lease.run?.runId === runId),
+		);
+	const slots = await Promise.all(
+		leases.map((lease) => ledger.projectSlotsOf(service.projectId, lease.id)),
+	);
+	return slots.flat();
 }
 
 describe("every refusal carries its exact fix", () => {
@@ -296,7 +308,7 @@ describe("project-to-host task admission", () => {
 			state: "waiting_host",
 			holdCode: "headroom-exhausted",
 		});
-		expect(await loser.handle.db.select().from(resourceSlots)).toEqual([]);
+		expect(await heldSlots(loser)).toEqual([]);
 		const heldBefore = (await loser.handle.db.select().from(events)).filter(
 			(event) => event.type === "task.held_for_resource",
 		).length;
@@ -413,8 +425,7 @@ describe("project-to-host task admission", () => {
 				.leases.filter((lease) => lease.state === "active"),
 		).toHaveLength(1);
 		expect(
-			(await alpha.handle.db.select().from(resourceSlots)).length +
-				(await beta.handle.db.select().from(resourceSlots)).length,
+			(await heldSlots(alpha)).length + (await heldSlots(beta)).length,
 		).toBe(1);
 
 		const winnerIndex = stats.findIndex((item) => item.started.length === 1);
@@ -468,7 +479,7 @@ describe("project-to-host task admission", () => {
 			expect(
 				(await service.registry.list({ taskId: task.id })).map((run) => run.id),
 			).toEqual([started.runId]);
-			expect(await service.scheduler.heldSlots(started.runId)).toHaveLength(1);
+			expect(await heldSlots(service, started.runId)).toHaveLength(1);
 			expect(
 				orchestrator.hostResources
 					.readModel()
@@ -529,7 +540,7 @@ describe("project-to-host task admission", () => {
 		const { runId } = await service.engine.startTask(task.id, {
 			actor: "human",
 		});
-		expect(await service.scheduler.heldSlots(runId)).toHaveLength(1);
+		expect(await heldSlots(service, runId)).toHaveLength(1);
 		expect(
 			orchestrator.hostResources
 				.readModel()
@@ -597,7 +608,7 @@ describe("project-to-host task admission", () => {
 				.readModel()
 				.leases.filter((lease) => lease.state !== "released"),
 		).toEqual([]);
-		expect(await service.handle.db.select().from(resourceSlots)).toEqual([]);
+		expect(await heldSlots(service)).toEqual([]);
 		expect((await service.registry.list({ taskId: task.id }))[0]?.outcome).toBe(
 			"start_failed",
 		);
@@ -614,8 +625,8 @@ describe("project-to-host task admission", () => {
 		const originalLaunch = service.engine.launchPreparedRun.bind(
 			service.engine,
 		);
-		const originalCancel = orchestrator.hostResources.cancelOrRelease.bind(
-			orchestrator.hostResources,
+		const originalCancel = orchestrator.hostResources.coordinator.release.bind(
+			orchestrator.hostResources.coordinator,
 		);
 		let failLaunch = true;
 		service.engine.launchPreparedRun = async (prepared) => {
@@ -625,7 +636,7 @@ describe("project-to-host task admission", () => {
 			}
 			return originalLaunch(prepared);
 		};
-		orchestrator.hostResources.cancelOrRelease = async () => {
+		orchestrator.hostResources.coordinator.release = async () => {
 			throw new Error("injected host release failure");
 		};
 
@@ -633,9 +644,7 @@ describe("project-to-host task admission", () => {
 			AdmissionCompensationPendingError,
 		);
 		expect((await admissions(service))[0]?.state).toBe("compensating");
-		expect(await service.handle.db.select().from(resourceSlots)).toHaveLength(
-			1,
-		);
+		expect(await heldSlots(service)).toHaveLength(1);
 		expect((await service.tasks.get(task.id))?.claimedByRunId).not.toBeNull();
 		expect(
 			orchestrator.hostResources
@@ -662,11 +671,11 @@ describe("project-to-host task admission", () => {
 		);
 		expect(await service.registry.list({ taskId: fencedHost.id })).toEqual([]);
 
-		orchestrator.hostResources.cancelOrRelease = originalCancel;
+		orchestrator.hostResources.coordinator.release = originalCancel;
 		service.engine.launchPreparedRun = originalLaunch;
 		await service.admission.reconcile();
 		expect((await admissions(service))[0]?.state).toBe("failed");
-		expect(await service.handle.db.select().from(resourceSlots)).toEqual([]);
+		expect(await heldSlots(service)).toEqual([]);
 		expect((await service.tasks.get(task.id))?.claimedByRunId).toBeNull();
 		await expect(
 			service.engine.startTask(fencedHost.id),
@@ -677,16 +686,18 @@ describe("project-to-host task admission", () => {
 		const orchestrator = await startFixture(["demo"]);
 		await orchestrator.hostResources.putDefinition(slotDefinition("gpu"));
 		const service = orchestrator.get("demo");
+		await service.resources.register({ id: "serial", maxConcurrent: 2 });
 		const holder = await hostTask(service, "holder");
 		await service.engine.startTask(holder.id);
 		const waiting = await hostTask(service, "waiting cancellation");
 		await expect(service.engine.startTask(waiting.id)).rejects.toBeInstanceOf(
 			AdmissionHeldError,
 		);
-		const originalCancel = orchestrator.hostResources.cancelOrRelease.bind(
-			orchestrator.hostResources,
-		);
-		orchestrator.hostResources.cancelOrRelease = async () => {
+		const originalCancel =
+			orchestrator.hostResources.coordinator.cancelWaiter.bind(
+				orchestrator.hostResources.coordinator,
+			);
+		orchestrator.hostResources.coordinator.cancelWaiter = async () => {
 			throw new Error("injected waiter cancel failure");
 		};
 
@@ -704,7 +715,7 @@ describe("project-to-host task admission", () => {
 				.waiters.find((item) => item.id === row?.waiterId)?.state,
 		).toBe("waiting");
 
-		orchestrator.hostResources.cancelOrRelease = originalCancel;
+		orchestrator.hostResources.coordinator.cancelWaiter = originalCancel;
 		await service.admission.reconcile();
 		expect(
 			(await admissions(service)).find((item) => item.taskId === waiting.id)
@@ -712,19 +723,19 @@ describe("project-to-host task admission", () => {
 		).toBe("cancelled");
 	});
 
-	test("project-slot release failure stays open after host release, then retries", async () => {
+	test("a failed lease release keeps host and project claims together, then retries", async () => {
 		const orchestrator = await startFixture(["demo"]);
 		await orchestrator.hostResources.putDefinition(slotDefinition("gpu"));
 		const service = orchestrator.get("demo");
 		await service.resources.register({ id: "serial", maxConcurrent: 1 });
 		const task = await hostTask(service, "project release failure");
-		const slots = projectSlotOwner(service);
-		const originalRelease = slots.release.bind(slots);
+		const { coordinator } = orchestrator.hostResources;
+		const originalRelease = coordinator.release.bind(coordinator);
 		const originalLaunch = service.engine.launchPreparedRun.bind(
 			service.engine,
 		);
-		slots.release = async () => {
-			throw new Error("injected project release failure");
+		coordinator.release = async () => {
+			throw new Error("injected lease release failure");
 		};
 		service.engine.launchPreparedRun = async () => {
 			throw new Error("trigger compensation");
@@ -734,20 +745,24 @@ describe("project-to-host task admission", () => {
 			AdmissionCompensationPendingError,
 		);
 		expect((await admissions(service))[0]?.state).toBe("compensating");
-		expect(await service.handle.db.select().from(resourceSlots)).toHaveLength(
-			1,
-		);
+		// One lease carries both claims, so neither can leak without the other.
+		expect(await heldSlots(service)).toHaveLength(1);
 		expect(
 			orchestrator.hostResources
 				.readModel()
-				.leases.every((lease) => lease.state === "released"),
+				.leases.some((lease) => LIVE_LEASE.includes(lease.state)),
 		).toBe(true);
 
-		slots.release = originalRelease;
+		coordinator.release = originalRelease;
 		service.engine.launchPreparedRun = originalLaunch;
 		await service.admission.reconcile();
 		expect((await admissions(service))[0]?.state).toBe("failed");
-		expect(await service.handle.db.select().from(resourceSlots)).toEqual([]);
+		expect(await heldSlots(service)).toEqual([]);
+		expect(
+			orchestrator.hostResources
+				.readModel()
+				.leases.every((lease) => !LIVE_LEASE.includes(lease.state)),
+		).toBe(true);
 	});
 
 	test("claim-abort failure stays open after both resource layers release", async () => {
@@ -773,7 +788,7 @@ describe("project-to-host task admission", () => {
 			AdmissionCompensationPendingError,
 		);
 		expect((await admissions(service))[0]?.state).toBe("compensating");
-		expect(await service.handle.db.select().from(resourceSlots)).toEqual([]);
+		expect(await heldSlots(service)).toEqual([]);
 		expect((await service.tasks.get(task.id))?.claimedByRunId).not.toBeNull();
 		expect(
 			orchestrator.hostResources
@@ -804,10 +819,11 @@ describe("project-to-host task admission", () => {
 		});
 		await service.tasks.move(cleanupTask.id, "ready", "human");
 		const cleanup = await service.engine.startTask(cleanupTask.id);
-		const originalRenew = orchestrator.hostResources.renewOrAdopt.bind(
-			orchestrator.hostResources,
-		);
-		orchestrator.hostResources.renewOrAdopt = async () => {
+		const originalRenew =
+			orchestrator.hostResources.coordinator.renewOrAdopt.bind(
+				orchestrator.hostResources.coordinator,
+			);
+		orchestrator.hostResources.coordinator.renewOrAdopt = async () => {
 			throw new Error("injected renewal uncertainty");
 		};
 
@@ -835,7 +851,7 @@ describe("project-to-host task admission", () => {
 			hostDispatchReady: false,
 		});
 
-		orchestrator.hostResources.renewOrAdopt = originalRenew;
+		orchestrator.hostResources.coordinator.renewOrAdopt = originalRenew;
 		await service.admission.renewRun(live.runId);
 		expect((await service.health.snapshot()).admission).toMatchObject({
 			hostDispatchReady: true,
@@ -852,9 +868,8 @@ describe("project-to-host task admission", () => {
 		const before = first.get("demo");
 		await before.resources.register({ id: "serial", maxConcurrent: 1 });
 		const task = await hostTask(before, "restart cleanup retry");
-		const slots = projectSlotOwner(before);
-		slots.release = async () => {
-			throw new Error("injected project release failure");
+		first.hostResources.coordinator.release = async () => {
+			throw new Error("injected lease release failure");
 		};
 		before.engine.launchPreparedRun = async () => {
 			throw new Error("trigger compensation");
@@ -876,7 +891,7 @@ describe("project-to-host task admission", () => {
 		orchestrators.push(restarted);
 		const after = restarted.get("demo");
 		expect((await admissions(after))[0]?.state).toBe("failed");
-		expect(await after.handle.db.select().from(resourceSlots)).toEqual([]);
+		expect(await heldSlots(after)).toEqual([]);
 		expect((await after.tasks.get(task.id))?.claimedByRunId).toBeNull();
 		expect((await after.health.snapshot()).admission).toMatchObject({
 			hostDispatchReady: true,
@@ -925,8 +940,8 @@ describe("project-to-host task admission", () => {
 		expect(leases.find((lease) => lease.run?.runId === childRunId)?.state).toBe(
 			"active",
 		);
-		expect(await service.scheduler.heldSlots(parent.runId)).toEqual([]);
-		expect(await service.scheduler.heldSlots(childRunId)).toHaveLength(1);
+		expect(await heldSlots(service, parent.runId)).toEqual([]);
+		expect(await heldSlots(service, childRunId)).toHaveLength(1);
 		const child = await service.registry.get(childRunId);
 		expect(child?.parentRunId).toBe(parent.runId);
 		expect(child?.relation).toBe("continue");
@@ -968,7 +983,7 @@ describe("project-to-host task admission", () => {
 					),
 				),
 		).toEqual([]);
-		expect(await after.handle.db.select().from(resourceSlots)).toEqual([]);
+		expect(await heldSlots(after)).toEqual([]);
 		expect((await after.registry.list({ taskId: task.id }))[0]?.outcome).toBe(
 			"start_failed",
 		);
@@ -990,8 +1005,6 @@ describe("project-to-host task admission", () => {
 		);
 		const run = (await before.registry.list({ taskId: task.id }))[0];
 		expect(run?.state).toBe("running");
-		await before.handle.db.delete(resourceSlots);
-		expect(await before.handle.db.select().from(resourceSlots)).toEqual([]);
 		const home = first.mfwHome;
 		const root = before.root;
 		await first.shutdown();
@@ -1008,8 +1021,8 @@ describe("project-to-host task admission", () => {
 			.leases.find((item) => item.run?.runId === run?.id);
 		expect(lease?.state).toBe("active");
 		expect(lease?.ownerProcessBootId).toBe(restarted.bootId);
-		expect(
-			await restarted.get("demo").scheduler.heldSlots(run?.id ?? ""),
-		).toHaveLength(1);
+		expect(await heldSlots(restarted.get("demo"), run?.id ?? "")).toHaveLength(
+			1,
+		);
 	});
 });

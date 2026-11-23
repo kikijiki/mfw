@@ -15,11 +15,11 @@ import {
 import { type StoredBudgets, saveConfig } from "../src/config.ts";
 import { InboxService } from "../src/inbox.ts";
 import { silentLogger } from "../src/log.ts";
-import { ProviderHoldStore } from "../src/provider-holds.ts";
 import { type RoutingSettings, routeRun } from "../src/routing.ts";
 import { type BrainFixture, brainFixture } from "./support/brain-fixture.ts";
 import { brainSpawn, STUB_BRAIN } from "./support/brain-spawn.ts";
 import { type BrainUnit, brainUnit } from "./support/brain-unit.ts";
+import { openTestBudgetStores } from "./support/host-ledger.ts";
 
 let u: BrainUnit | undefined;
 afterEach(async () => {
@@ -40,7 +40,10 @@ async function harness(
 	if (opts.machine) {
 		await saveConfig({ projects: [], budgets: opts.machine }, home);
 	}
-	const holds = ProviderHoldStore.at(home, () => u?.clock.t ?? 0);
+	const { holds, windows } = await openTestBudgetStores(
+		home,
+		() => u?.clock.t ?? 0,
+	);
 	const stops: string[] = [];
 	const svc = new BudgetService({
 		handle: u.handle,
@@ -50,6 +53,7 @@ async function harness(
 		project: "unit",
 		stored: budgets,
 		holds,
+		windows,
 		registry: u.registry,
 		stopRun: async (id) => {
 			stops.push(id);
@@ -68,6 +72,7 @@ async function harness(
 		u: unit,
 		home,
 		holds,
+		windows,
 		stops,
 		svc,
 		inbox,
@@ -325,6 +330,7 @@ describe("resource budgets (P5a)", () => {
 			mfwHome: h.home,
 			project: "unit",
 			holds: h.holds,
+			windows: h.windows,
 			registry: h.u.registry,
 			stopRun: async () => {},
 			ledgers: () => [h.u.handle, other],
@@ -504,6 +510,7 @@ describe("brain budget", () => {
 			project: "unit",
 			stored: { brain: { window: "day", limitUsd: 1 } },
 			holds: h.holds,
+			windows: h.windows,
 			registry: h.u.registry,
 			stopRun: async () => {},
 			pauseBrain: async (p) => {
@@ -543,6 +550,7 @@ describe("brain budget", () => {
 			project: "unit",
 			stored: { brain: { window: "day", limitUsd: 1 } },
 			holds: h.holds,
+			windows: h.windows,
 			registry: h.u.registry,
 			stopRun: async () => {},
 			pauseBrain: async (p) => {

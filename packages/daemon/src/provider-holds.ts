@@ -1,23 +1,19 @@
-import { mkdir, readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { writeFileAtomic } from "@mfw/core/fsatomic";
+import { createHash } from "node:crypto";
 import { z } from "zod";
+import type { ResourceStore } from "./resources/store.ts";
+import { ResourceError } from "./resources/types.ts";
 import type { ProviderHold } from "./routing.ts";
-import { serializeFileMutation } from "./serialized-file-mutation.ts";
 
 /**
- * Machine-wide rate-limit holds, one per provider account, in
- * `$MFW_HOME/provider-holds.json`. A quota belongs to an account, and one
- * account serves every project on this machine, so a hold is not project
- * state: a Claude limit hit in project A holds Claude in project B too, and
- * never holds Codex anywhere.
+ * Machine-wide holds on provider accounts, as pool holds in the resource core.
+ * A quota belongs to an account and one account serves every project here, so
+ * a Claude limit hit in project A holds Claude in project B and never Codex.
  *
- * Keys are `routing.holdKeyOf(harness, endpoint)`: the harness id for the
- * subscription/CLI account (`claude-cli`, `codex-cli`) and `codex-cli@<id>` for
- * an OpenAI-compatible endpoint. Atomic replace + serialized mutate, as
- * `credentials.ts`; an absent file means no holds. The project-level
- * `dispatch_hold` (manual quiet periods, trigger `hold_dispatch`) still holds
- * every provider of that one project.
+ * Keys are `routing.holdKeyOf(harness, endpoint)`. Each key is one pool, so a
+ * hold parks exactly the work that needs that account. An unreadable hold
+ * throws: it never reads as "no hold". The project-level `dispatch_hold`
+ * (manual quiet periods, trigger `hold_dispatch`) still holds every provider
+ * of that one project.
  *
  * A rate-limit or login message from a run is sandbox-reported: an agent can
  * forge it. {@link ProviderHoldStore.report} therefore holds only the reporting
@@ -38,93 +34,144 @@ export function projectHoldKey(key: string, project: string): string {
 	return `${key}#project:${project}`;
 }
 
-const HoldSchema = z.object({
-	until: z.number(),
+const HoldDetailSchema = z.object({
+	key: z.string(),
 	reason: z.string(),
 	runId: z.string().optional(),
 	project: z.string().optional(),
 	since: z.number().optional(),
 });
 
-const FileSchema = z.object({
-	version: z.literal(1),
-	holds: z.record(z.string(), HoldSchema),
-	/** Recent agent reports per account, for the two-project confirmation. */
-	reports: z
-		.record(
-			z.string(),
-			z.array(z.object({ project: z.string(), at: z.number() })),
-		)
-		.optional(),
-});
+export interface StoredProviderHold {
+	until: number;
+	reason: string;
+	runId?: string;
+	project?: string;
+	since?: number;
+}
 
-type HoldFile = z.infer<typeof FileSchema>;
-export type StoredProviderHold = z.infer<typeof HoldSchema>;
+const POOL_PREFIX = "provider.";
+
+/** One pool per key; a hash keeps two keys that slug alike apart. */
+export function providerPoolId(key: string): string {
+	const slug = key
+		.toLowerCase()
+		.replace(/[^a-z0-9_-]+/g, "-")
+		.replace(/^[^a-z0-9]+/, "")
+		.slice(0, 48);
+	const hash = createHash("sha256").update(key).digest("hex").slice(0, 8);
+	return `${POOL_PREFIX}${slug || "x"}-${hash}`;
+}
 
 export class ProviderHoldStore {
+	private chain: Promise<unknown> = Promise.resolve();
+
 	constructor(
-		private readonly path: string,
+		private readonly store: ResourceStore,
 		private readonly now: () => number = () => Date.now(),
 	) {}
 
-	static at(mfwHome: string, now?: () => number): ProviderHoldStore {
-		return new ProviderHoldStore(join(mfwHome, "provider-holds.json"), now);
+	private serialized<T>(fn: () => Promise<T>): Promise<T> {
+		const run = this.chain.then(fn, fn);
+		this.chain = run.catch(() => {});
+		return run;
 	}
 
-	private async load(): Promise<HoldFile> {
-		let raw: string;
-		try {
-			raw = await readFile(this.path, "utf8");
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT")
-				return { version: 1, holds: {} };
-			throw error;
+	private async read(): Promise<
+		Map<
+			string,
+			StoredProviderHold & { pool: string; kind: "budget" | "rate_limit" }
+		>
+	> {
+		const out = new Map<
+			string,
+			StoredProviderHold & { pool: string; kind: "budget" | "rate_limit" }
+		>();
+		for (const hold of await this.store.holds()) {
+			if (!hold.poolId.startsWith(POOL_PREFIX)) continue;
+			if (hold.reason !== "budget" && hold.reason !== "rate_limit") continue;
+			let detail: z.infer<typeof HoldDetailSchema>;
+			try {
+				detail = HoldDetailSchema.parse(JSON.parse(hold.detail));
+			} catch {
+				throw new ResourceError(
+					`unreadable provider hold on ${hold.poolId}`,
+					"CORRUPT",
+				);
+			}
+			if (hold.until === null) {
+				throw new ResourceError(
+					`provider hold on ${hold.poolId} has no expiry`,
+					"CORRUPT",
+				);
+			}
+			const current = out.get(detail.key);
+			if (current && current.until >= hold.until) continue;
+			out.set(detail.key, {
+				until: hold.until,
+				reason: detail.reason,
+				pool: hold.poolId,
+				kind: hold.reason,
+				...(detail.runId ? { runId: detail.runId } : {}),
+				...(detail.project ? { project: detail.project } : {}),
+				...(detail.since === undefined ? {} : { since: detail.since }),
+			});
 		}
-		try {
-			return FileSchema.parse(JSON.parse(raw));
-		} catch {
-			// A corrupt holds file must not wedge dispatch; holds are advisory
-			// timers, and the next rate limit writes a fresh one.
-			return { version: 1, holds: {} };
-		}
+		return out;
 	}
 
-	private place(
-		file: HoldFile,
+	private public(hold: StoredProviderHold): StoredProviderHold {
+		return {
+			until: hold.until,
+			reason: hold.reason,
+			...(hold.runId ? { runId: hold.runId } : {}),
+			...(hold.project ? { project: hold.project } : {}),
+			...(hold.since === undefined ? {} : { since: hold.since }),
+		};
+	}
+
+	private async place(
 		key: string,
 		hold: { until: number; reason: string; runId?: string; project?: string },
-	): StoredProviderHold {
-		const now = this.now();
-		for (const [k, h] of Object.entries(file.holds))
-			if (h.until <= now) delete file.holds[k];
-		const current = file.holds[key];
-		const next =
-			current && current.until >= hold.until
-				? current
-				: { ...hold, since: current?.since ?? now };
-		file.holds[key] = next;
-		return next;
-	}
-
-	private async save(file: HoldFile): Promise<void> {
-		await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
-		await writeFileAtomic(this.path, `${JSON.stringify(file, null, "\t")}\n`);
+	): Promise<StoredProviderHold> {
+		const current = (await this.read()).get(key);
+		if (current && current.until >= hold.until) return this.public(current);
+		const poolId = providerPoolId(key);
+		await this.store.definePool({
+			id: poolId,
+			title: key,
+			dimensions: [{ kind: "meter", name: "usage" }],
+		});
+		const kind = hold.reason === "budget" ? "budget" : "rate_limit";
+		if (current && current.kind !== kind) {
+			await this.store.clearHold(poolId, current.kind, "core");
+		}
+		const since = current?.since ?? this.now();
+		await this.store.placeHold({
+			poolId,
+			reason: kind,
+			actor: "core",
+			until: hold.until,
+			detail: JSON.stringify({
+				key,
+				reason: hold.reason,
+				since,
+				...(hold.runId ? { runId: hold.runId } : {}),
+				...(hold.project ? { project: hold.project } : {}),
+			}),
+		});
+		return this.public({ ...hold, since });
 	}
 
 	/**
 	 * Hold `key` machine-wide until `until`, keeping the furthest existing
 	 * `until`. For host-observed facts only; an agent's claim goes to `report`.
 	 */
-	async hold(
+	hold(
 		key: string,
 		hold: { until: number; reason: string; runId?: string; project?: string },
 	): Promise<StoredProviderHold> {
-		return serializeFileMutation(this.path, async () => {
-			const file = await this.load();
-			const next = this.place(file, key, hold);
-			await this.save(file);
-			return next;
-		});
+		return this.serialized(() => this.place(key, hold));
 	}
 
 	/**
@@ -132,7 +179,7 @@ export class ProviderHoldStore {
 	 * covers the reporting project, unless another project reported the same
 	 * account recently. `confirmedUntil` applies only to that confirmed case.
 	 */
-	async report(
+	report(
 		key: string,
 		report: {
 			project: string;
@@ -142,31 +189,27 @@ export class ProviderHoldStore {
 			confirmedUntil?: number;
 		},
 	): Promise<{ scope: "project" | "machine"; key: string; until: number }> {
-		return serializeFileMutation(this.path, async () => {
-			const file = await this.load();
+		return this.serialized(async () => {
 			const now = this.now();
-			const recent = (file.reports?.[key] ?? []).filter(
-				(r) => now - r.at <= REPORT_CONFIRM_WINDOW_MS && r.at <= now,
-			);
-			recent.push({ project: report.project, at: now });
-			file.reports = {
-				...file.reports,
-				[key]: recent.slice(-MAX_REPORTS_PER_KEY),
-			};
-			const confirmed = new Set(recent.map((r) => r.project)).size >= 2;
+			const projects = await this.store.recordProviderReport({
+				key,
+				project: report.project,
+				windowMs: REPORT_CONFIRM_WINDOW_MS,
+				maxPerKey: MAX_REPORTS_PER_KEY,
+			});
+			const confirmed = projects.length >= 2;
 			const usable = Number.isFinite(report.until) && report.until > now;
 			const clamped = usable
 				? Math.min(report.until, now + MAX_REPORTED_HOLD_MS)
 				: now + REPORTED_HOLD_FALLBACK_MS;
 			const until = confirmed ? (report.confirmedUntil ?? clamped) : clamped;
 			const holdKey = confirmed ? key : projectHoldKey(key, report.project);
-			const next = this.place(file, holdKey, {
+			const next = await this.place(holdKey, {
 				until,
 				reason: report.reason,
 				project: report.project,
 				...(report.runId ? { runId: report.runId } : {}),
 			});
-			await this.save(file);
 			return {
 				scope: confirmed ? "machine" : "project",
 				key: holdKey,
@@ -195,21 +238,19 @@ export class ProviderHoldStore {
 		};
 	}
 
-	async clear(key: string): Promise<void> {
-		await serializeFileMutation(this.path, async () => {
-			const file = await this.load();
-			if (!(key in file.holds)) return;
-			delete file.holds[key];
-			await writeFileAtomic(this.path, `${JSON.stringify(file, null, "\t")}\n`);
+	clear(key: string): Promise<void> {
+		return this.serialized(async () => {
+			const poolId = providerPoolId(key);
+			await this.store.clearHold(poolId, "rate_limit", "core");
+			await this.store.clearHold(poolId, "budget", "core");
 		});
 	}
 
 	/** Every hold still in force. */
 	async active(): Promise<Record<string, StoredProviderHold>> {
-		const file = await serializeFileMutation(this.path, () => this.load());
-		const now = this.now();
+		const held = await this.read();
 		return Object.fromEntries(
-			Object.entries(file.holds).filter(([, h]) => h.until > now),
+			[...held].map(([key, hold]) => [key, this.public(hold)]),
 		);
 	}
 

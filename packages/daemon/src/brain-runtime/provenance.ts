@@ -87,23 +87,35 @@ export async function memoryTainted(handle: Db): Promise<boolean> {
 	return (await read(handle.db)).everTainted;
 }
 
-/**
- * Who wrote a task. Only a task a person created through mfw counts as the
- * owner's: a board file can arrive through a merge, so it does not.
- */
-export function taskProvenance(t: {
+interface TaskAuthorship {
 	source?: string | null;
 	createdBy?: string | null;
-}): Provenance {
-	if (t.createdBy?.startsWith("brain:")) return "agent";
+	editedBy?: string | null;
+	/** Set once any API token has written to the task; never cleared. */
+	tokenAuthoredBy?: string | null;
+}
+
+/** A token holder is not the owner, so anything a token wrote is untrusted. */
+function tokenTouched(t: TaskAuthorship): boolean {
+	return (
+		!!t.tokenAuthoredBy ||
+		!!t.createdBy?.startsWith("token:") ||
+		!!t.editedBy?.startsWith("token:")
+	);
+}
+
+/**
+ * Who wrote a task. Only a task a person created through mfw, and no API token
+ * has written to since, counts as the owner's: a board file can arrive through
+ * a merge, so it does not.
+ */
+export function taskProvenance(t: TaskAuthorship): Provenance {
+	if (t.createdBy?.startsWith("brain:") || tokenTouched(t)) return "agent";
 	return t.source === "human" ? "owner_board" : "agent";
 }
 
-/** False only for a task known to come from the brain or a run (`RightsFacts.ownerAuthored`). */
-export function knownNonOwnerTask(t: {
-	source?: string | null;
-	createdBy?: string | null;
-}): boolean {
-	if (t.createdBy?.startsWith("brain:")) return true;
+/** False only for a task known to come from the brain, a run or a token (`RightsFacts.ownerAuthored`). */
+export function knownNonOwnerTask(t: TaskAuthorship): boolean {
+	if (t.createdBy?.startsWith("brain:") || tokenTouched(t)) return true;
 	return ["brain", "planner", "followup"].includes(t.source ?? "");
 }
