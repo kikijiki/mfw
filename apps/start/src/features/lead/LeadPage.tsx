@@ -13,6 +13,7 @@ import { BRAIN_OFF_HINT, brainLine } from "../brain/brain";
 import { LiveSection } from "../home/LiveSection";
 import { NeedsQueue } from "../home/NeedsQueue";
 import { useInbox } from "../inbox/useInbox";
+import { AskBrain } from "./AskBrain";
 import { GiveDirection } from "./GiveDirection";
 import {
 	brainParagraph,
@@ -174,6 +175,7 @@ export function LeadPage({ project }: { project: string }) {
 							project={project}
 							brainOff={brain ? !brain.enabled : false}
 						/>
+						<AskBrain project={project} />
 					</section>
 
 					<section
