@@ -110,6 +110,22 @@ describe("mfw auth setup-token", () => {
 	});
 });
 
+describe("mfw auth sign-out-everywhere (reviewer M4)", () => {
+	test("revokes every session", async () => {
+		const auth = await AuthService.open(join(home, "auth.db"));
+		try {
+			const s = await auth.setup(
+				(await auth.beginFirstRun()) as string,
+				PASSWORD,
+			);
+			expect(await run("sign-out-everywhere")).toBe(0);
+			expect(await auth.authenticate(s.token)).toBeNull();
+		} finally {
+			auth.close();
+		}
+	});
+});
+
 describe("mfw auth reset (reviewer B3)", () => {
 	const withOwner = async () => {
 		const auth = await AuthService.open(join(home, "auth.db"));

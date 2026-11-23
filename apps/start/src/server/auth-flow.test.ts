@@ -353,6 +353,68 @@ describe("a stolen cookie is not enough (reviewer B1)", () => {
 	});
 });
 
+describe("password change and sign out everywhere over HTTP (reviewer M4)", () => {
+	const signedIn = async () => {
+		const token = (await auth.beginFirstRun()) as string;
+		const res = await action("setup", { token, password: PASSWORD });
+		const { requestKey } = (await res.json()) as { requestKey: string };
+		return { cookie: cookieOf(res), key: requestKey };
+	};
+	const NEXT = "a different long passphrase";
+
+	test("a stolen cookie without the key cannot change the password", async () => {
+		const { cookie } = await signedIn();
+		const res = await action(
+			"password",
+			{ current: PASSWORD, next: NEXT },
+			{ cookie },
+		);
+		expect(res.status).toBe(403);
+	});
+
+	test("the owner can change it, and other sessions die", async () => {
+		const { cookie, key } = await signedIn();
+		const other = await action("login", { password: PASSWORD });
+		const otherCookie = cookieOf(other);
+		const res = await action(
+			"password",
+			{ current: PASSWORD, next: NEXT },
+			{ cookie, [REQUEST_KEY_HEADER]: key },
+		);
+		expect(res.status).toBe(200);
+		expect(await auth.authenticate(otherCookie.split("=")[1])).toBeNull();
+		expect(await auth.authenticate(cookie.split("=")[1])).not.toBeNull();
+	});
+
+	test("a wrong current password is a 401 and changes nothing", async () => {
+		const { cookie, key } = await signedIn();
+		const res = await action(
+			"password",
+			{ current: "wrong password!", next: NEXT },
+			{ cookie, [REQUEST_KEY_HEADER]: key },
+		);
+		expect(res.status).toBe(401);
+		expect((await action("login", { password: PASSWORD })).status).toBe(200);
+	});
+
+	test("sign out everywhere ends this session too and clears the cookie", async () => {
+		const { cookie, key } = await signedIn();
+		const other = await action("login", { password: PASSWORD });
+		const res = await action(
+			"sign-out-everywhere",
+			{},
+			{
+				cookie,
+				[REQUEST_KEY_HEADER]: key,
+			},
+		);
+		expect(res.status).toBe(200);
+		expect(res.headers.get("set-cookie")).toContain("Max-Age=0");
+		expect(await auth.authenticate(cookie.split("=")[1])).toBeNull();
+		expect(await auth.authenticate(cookieOf(other).split("=")[1])).toBeNull();
+	});
+});
+
 describe("stream lifetime (reviewer M1)", () => {
 	const orchestrator = {
 		usage: { subscribe: () => () => {}, snapshot: () => [] },

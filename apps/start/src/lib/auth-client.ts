@@ -176,3 +176,42 @@ export async function signOut(): Promise<void> {
 	writeRequestKey(null);
 	window.location.assign(`${base()}login`);
 }
+
+/** Revokes every session, this one included. */
+export async function signOutEverywhere(): Promise<void> {
+	await fetch(authUrl("sign-out-everywhere"), {
+		method: "POST",
+		credentials: "same-origin",
+		headers: keyHeaders(),
+	});
+	writeRequestKey(null);
+	window.location.assign(`${base()}login`);
+}
+
+/** Change the password. Every other session is revoked by the server. */
+export async function changePassword(
+	current: string,
+	next: string,
+): Promise<void> {
+	const res = await fetch(authUrl("password"), {
+		method: "POST",
+		credentials: "same-origin",
+		headers: {
+			...keyHeaders(),
+			"content-type": "application/json",
+			"x-mfw-auth": "1",
+		},
+		body: JSON.stringify({ current, next }),
+	});
+	if (res.ok) return;
+	const data = (await res.json().catch(() => null)) as {
+		error?: string;
+		message?: string;
+		retryAfterSeconds?: number;
+	} | null;
+	throw new AuthRequestError(
+		data?.message ?? `request failed (${res.status})`,
+		data?.error ?? "error",
+		data?.retryAfterSeconds ?? 0,
+	);
+}

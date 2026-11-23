@@ -293,6 +293,64 @@ describe("an attacker cannot lock the owner out (reviewer B2)", () => {
 	});
 });
 
+describe("evicting a stolen session (reviewer M4)", () => {
+	const NEXT = "a different long passphrase";
+
+	test("a password change needs the current password", async () => {
+		const s = await owner();
+		expect(
+			await code(auth.changePassword("wrong password!", NEXT, s.sessionId)),
+		).toBe("invalid_password");
+		expect(await code(auth.login(PASSWORD))).toBe("ok");
+	});
+
+	test("it revokes every other session and keeps this one", async () => {
+		const mine = await owner();
+		const stolen = await auth.login(PASSWORD);
+		await auth.changePassword(PASSWORD, NEXT, mine.sessionId);
+		expect(await auth.authenticate(stolen.token)).toBeNull();
+		expect(await auth.authenticate(mine.token)).not.toBeNull();
+		expect(await code(auth.login(PASSWORD))).toBe("invalid_password");
+		expect(await code(auth.login(NEXT))).toBe("ok");
+	});
+
+	test("it ends the other sessions' open streams", async () => {
+		const mine = await owner();
+		const stolen = await auth.login(PASSWORD);
+		let ended = 0;
+		auth.watchSession(stolen.sessionId, () => ended++);
+		await auth.changePassword(PASSWORD, NEXT, mine.sessionId);
+		expect(ended).toBe(1);
+	});
+
+	test("the new password must meet the policy", async () => {
+		const s = await owner();
+		expect(
+			await code(auth.changePassword(PASSWORD, "short", s.sessionId)),
+		).toBe("weak_password");
+		expect(await code(auth.login(PASSWORD))).toBe("ok");
+	});
+
+	test("wrong current passwords are throttled like logins", async () => {
+		const s = await owner();
+		for (let i = 0; i < FREE_ATTEMPTS; i++)
+			await code(
+				auth.changePassword("wrong password!", NEXT, s.sessionId, "10.0.0.9"),
+			);
+		expect(
+			await code(auth.changePassword(PASSWORD, NEXT, s.sessionId, "10.0.0.9")),
+		).toBe("locked");
+	});
+
+	test("sign out everywhere revokes every session", async () => {
+		const a = await owner();
+		const b = await auth.login(PASSWORD);
+		await auth.revokeAll();
+		expect(await auth.authenticate(a.token)).toBeNull();
+		expect(await auth.authenticate(b.token)).toBeNull();
+	});
+});
+
 describe("isAuthRefused", () => {
 	test("recognises a copy of the class from another bundle chunk", () => {
 		class CopiedChunkError extends Error {

@@ -1,11 +1,10 @@
 import { Page, PageHeader, Panel, Scroller } from "../../components/Page";
-import { Button } from "../../components/ui/button";
-import { signOut } from "../../lib/auth-client";
 import { useTheme } from "../../lib/theme";
 import { Segmented, Setting } from "./controls";
 import { OpenRouterSettingsPanel } from "./OpenRouterSettingsPanel";
 import { ProvidersPanel } from "./ProvidersPanel";
 import { RunPodSettingsPanel } from "./RunPodSettingsPanel";
+import { SessionPanel } from "./SessionPanel";
 
 /** Global machine/browser settings. Project policy stays on each project. */
 
@@ -71,9 +70,7 @@ export function SettingsPage({ tab, onTabChange }: SettingsPageProps) {
 					</Panel>
 				</section>
 				<Panel title="Session">
-					<Button variant="outline" size="sm" onClick={() => void signOut()}>
-						Sign out
-					</Button>
+					<SessionPanel />
 				</Panel>
 			</Scroller>
 		</Page>

@@ -14,6 +14,7 @@ export const AUTH_USAGE = [
 	"usage: mfw auth <command>",
 	"",
 	"  unlock        clear failed sign-in attempts for every address",
+	"  sign-out-everywhere   revoke every session, including stolen ones",
 	"  setup-token   print a new first-run setup token (before an owner exists)",
 	"  reset --yes   remove the owner and all sessions, then repeat first-run setup;",
 	"                refused while the server or any agent session is alive",
@@ -124,6 +125,12 @@ export async function runAuthCommand(
 			return withStore(d, async (auth) => {
 				await auth.unlock();
 				d.out("mfw auth: cleared all failed sign-in attempts.");
+				return 0;
+			});
+		case "sign-out-everywhere":
+			return withStore(d, async (auth) => {
+				await auth.revokeAll();
+				d.out("mfw auth: every session is signed out.");
 				return 0;
 			});
 		case "setup-token":

@@ -75,6 +75,14 @@ export function peerAddress(req: Request): string | undefined {
 	return typeof ip === "string" ? ip : undefined;
 }
 
+/** A JSON body and a custom header: a cross-site form can send neither. */
+function hasAuthIntent(req: Request): boolean {
+	return (
+		req.headers.get(AUTH_INTENT_HEADER) === "1" &&
+		/^application\/json\b/i.test(req.headers.get("content-type") ?? "")
+	);
+}
+
 const badRequest = () =>
 	jsonResponse(400, { error: "bad_request", message: "malformed request" });
 
@@ -103,13 +111,42 @@ export async function handleAuthAction(
 		);
 	}
 
-	if ((action === "setup" || action === "login") && method === "POST") {
-		const type = req.headers.get("content-type") ?? "";
-		if (
-			req.headers.get(AUTH_INTENT_HEADER) !== "1" ||
-			!/^application\/json\b/i.test(type)
-		)
+	if (action === "sign-out-everywhere" && method === "POST") {
+		await auth.revokeAll();
+		return jsonResponse(
+			200,
+			{ state: "login" },
+			{ "Set-Cookie": clearSessionCookie(req, base) },
+		);
+	}
+
+	if (action === "password" && method === "POST") {
+		// Private path: the guard has already required the session and its key.
+		if (!guarded.session)
+			return jsonResponse(401, {
+				error: "unauthenticated",
+				message: "sign in to change the password",
+			});
+		if (!hasAuthIntent(req)) return badRequest();
+		const body = await readJson(req);
+		if (typeof body?.current !== "string" || typeof body.next !== "string")
 			return badRequest();
+		try {
+			await auth.changePassword(
+				body.current,
+				body.next,
+				guarded.session.sessionId,
+				peerAddress(req),
+			);
+			return jsonResponse(200, { ok: true });
+		} catch (e) {
+			if (isAuthRefused(e)) return refusal(e);
+			throw e;
+		}
+	}
+
+	if ((action === "setup" || action === "login") && method === "POST") {
+		if (!hasAuthIntent(req)) return badRequest();
 		const body = await readJson(req);
 		if (!body || typeof body.password !== "string") return badRequest();
 		const peer = peerAddress(req);

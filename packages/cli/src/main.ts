@@ -34,7 +34,7 @@ export interface Deps {
 export const USAGE = [
 	"usage: mfw <command> [args]",
 	"",
-	"  auth ...      owner recovery: unlock (run on the host, outside any sandbox)",
+	"  auth ...      owner recovery: unlock, setup-token, sign-out-everywhere, reset",
 	"  board ...     the markdown board (runs mfw-board; no server needed)",
 	"  mcp [--brain <sessionId>]   MCP server over stdio (no server process needed)",
 	"  server        run the orchestrator + web UI in the foreground",

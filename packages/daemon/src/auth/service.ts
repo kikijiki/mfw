@@ -380,6 +380,56 @@ export class AuthService {
 		});
 	}
 
+	/**
+	 * Change the password, proving the current one, and revoke every session
+	 * except `keepSessionId`. This is how the owner evicts a stolen session.
+	 */
+	async changePassword(
+		current: string,
+		next: string,
+		keepSessionId: string,
+		source?: string,
+	): Promise<void> {
+		const row = await this.db.client.execute(
+			"SELECT id, password_hash FROM principals WHERE kind = 'owner' LIMIT 1",
+		);
+		const owner = row.rows[0];
+		if (!owner)
+			throw new AuthRefused("setup_required", "finish first-run setup");
+		const scope = `login:${throttleSource(source)}`;
+		await this.oneAtATime(scope, async () => {
+			await this.assertNotLocked(scope);
+			const ok =
+				current.length > 0 &&
+				current.length <= PASSWORD_MAX &&
+				(await this.passwordChecks.run(() =>
+					Bun.password.verify(current, String(owner.password_hash)),
+				));
+			if (!ok) {
+				await this.recordFailure(scope);
+				throw new AuthRefused("invalid_password", "wrong password");
+			}
+			await this.clearThrottle(scope);
+			assertPasswordPolicy(next);
+			const hash = await Bun.password.hash(next, { algorithm: "argon2id" });
+			const now = this.now();
+			const [, revoked] = await this.db.client.batch(
+				[
+					{
+						sql: "UPDATE principals SET password_hash = ?, updated_at = ? WHERE id = ?",
+						args: [hash, now, String(owner.id)],
+					},
+					{
+						sql: "UPDATE auth_sessions SET revoked_at = ? WHERE revoked_at IS NULL AND id != ? RETURNING id",
+						args: [now, keepSessionId],
+					},
+				],
+				"write",
+			);
+			for (const r of revoked?.rows ?? []) this.notifyEnded(String(r.id));
+		});
+	}
+
 	/** Clear every failed-attempt record. The owner's way back in (`mfw auth unlock`). */
 	async unlock(): Promise<void> {
 		await this.db.client.execute("DELETE FROM auth_throttle");
