@@ -208,7 +208,7 @@ export const REFUSAL_FIXES: Record<RefusalCode, FixFor> = {
 	}),
 	sandbox_role_unavailable: (waitingFor) => ({
 		kind: "setting",
-		text: `${waitingFor[0] ?? "This"} runs have no sandbox profile yet, so they cannot run autonomously. Set approvalMode to interactive for this project to run them with a human approving each action. Task and repair runs are not affected.`,
+		text: `${waitingFor[0] ?? "This"} runs have no sandbox role, so they cannot start in a sandbox. This is a bug in mfw or a run kind from a newer version: update mfw. The run stays refused until then.`,
 	}),
 	memory_floor: (waitingFor) => ({
 		kind: "setting",

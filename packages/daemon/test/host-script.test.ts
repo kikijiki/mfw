@@ -5,7 +5,9 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
 	AGENT_LAUNCHER,
+	BRAIN_TRANSCRIPT,
 	EGRESS_PROXY,
+	EGRESS_PROXY_BESIDE,
 	EGRESS_RELAY,
 	hostScript,
 	WIP_HELPER,
@@ -36,8 +38,26 @@ describe("host-side scripts in the bundled server (review F5)", () => {
 	});
 
 	test("every script names a real file in the checkout", () => {
-		for (const s of [AGENT_LAUNCHER, EGRESS_PROXY, EGRESS_RELAY, WIP_HELPER])
+		for (const s of [
+			AGENT_LAUNCHER,
+			BRAIN_TRANSCRIPT,
+			EGRESS_PROXY,
+			EGRESS_PROXY_BESIDE,
+			EGRESS_RELAY,
+			WIP_HELPER,
+		])
 			expect(Bun.file(join(repoRoot, s.fromRoot)).size).toBeGreaterThan(0);
+	});
+
+	test("each script is found from the module that asks for it", () => {
+		const src = join(repoRoot, "packages/daemon/src");
+		const from = (rel: string) => pathToFileURL(join(src, rel)).href;
+		expect(hostScript(from("agent-host.ts"), BRAIN_TRANSCRIPT)).toBe(
+			join(repoRoot, BRAIN_TRANSCRIPT.fromRoot),
+		);
+		expect(
+			hostScript(from("containment/oneshot-agent.ts"), EGRESS_PROXY_BESIDE),
+		).toBe(join(repoRoot, EGRESS_PROXY.fromRoot));
 	});
 
 	test("from source, the file beside the module wins", () => {

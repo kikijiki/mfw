@@ -1,17 +1,27 @@
-import { access } from "node:fs/promises";
-import { join } from "node:path";
+import { access, lstat } from "node:fs/promises";
+import { join, posix } from "node:path";
+import {
+	type CheckRunner,
+	CheckSandboxRefusal,
+} from "./containment/check-runner.ts";
+import type { VerifyRole } from "./containment/role-profiles.ts";
 import {
 	type ActionableFailureClass,
 	classifyCheckFailure,
 } from "./failure-class.ts";
 import { git } from "./git.ts";
-import { runProc } from "./proc.ts";
+import { type ProcResult, runProc } from "./proc.ts";
 import type { VerifierClones } from "./run-workspace/verifier-clone.ts";
 import { requireHostTool } from "./sandbox.ts";
 import type { DefinitionOfDone, DoDCheck } from "./tasks/types.ts";
 
 /**
  * Runs a task's DoD checks and never trusts the agent's transcript.
+ *
+ * A candidate's checks run in the attested verifier sandbox, through
+ * {@link verifyInClone}, which has no host fallback. The plain {@link verify}
+ * path runs on the host and is only for trees that are not a candidate from an
+ * autonomous run: an interactive worktree, or the merged integration tip.
  *
  * Entering the project's dev environment is the operator's declared
  * `checkPrefix` (`"direnv exec ."`, `"nix develop -c"`, ...), composed with the
@@ -106,6 +116,33 @@ export interface VerifyOptions {
 	 * and runs no git in it.
 	 */
 	candidateSha?: string;
+	/**
+	 * Run each check in the verifier sandbox. `run: null` means none is
+	 * available, and every check is then refused rather than run on the host.
+	 */
+	sandbox?: { run: CheckRunner | null; role: VerifyRole };
+	/**
+	 * The only way a check runs on the host: an interactive worktree run, where
+	 * a person approved what the agent did. Maintenance and the merge queue never
+	 * pass it, and without it (or `sandbox`) every `run` check is refused.
+	 */
+	hostExecution?: "interactive-worktree";
+	/**
+	 * The tree has a dependency manifest but no installed dependencies, which P8
+	 * will supply. A failing check then says nothing about the code.
+	 */
+	dependenciesUnavailable?: boolean;
+	/** Answers `files_exist` from the candidate commit, with host git. */
+	fileInCommit?: (path: string) => Promise<boolean>;
+}
+
+/** The host-execution option for a run, from the project's approval mode. */
+export function worktreeHostExecution(
+	approvalMode: "autonomous" | "interactive" | undefined,
+): Pick<VerifyOptions, "hostExecution"> {
+	return approvalMode === "interactive"
+		? { hostExecution: "interactive-worktree" }
+		: {};
 }
 
 const DEFAULT_CHECK_TIMEOUT_MS = 10 * 60_000;
@@ -176,14 +213,19 @@ export function scrubEnv(
 /** Human/model-readable account of the verifier context. Values are omitted:
  * diagnosis needs to know what was available, not receive credentials. */
 export function describeVerificationEnvironment(opts: VerifyOptions): string {
-	const runner = opts.checkPrefix?.trim()
+	const shell = opts.checkPrefix?.trim()
 		? `declared check prefix: ${opts.checkPrefix.trim()}`
 		: "direct non-interactive shell (no check prefix)";
-	const ambient = opts.envPolicy?.inherit
-		? "ambient environment inherited by project policy"
-		: `scrubbed environment; allowed ambient names: ${(
-				opts.envPolicy?.allow ?? DEFAULT_ENV_ALLOWLIST
-			).join(", ")}`;
+	const runner = opts.sandbox
+		? `attested verifier sandbox with no network; ${shell}`
+		: shell;
+	const ambient = opts.sandbox
+		? "no ambient environment"
+		: opts.envPolicy?.inherit
+			? "ambient environment inherited by project policy"
+			: `scrubbed environment; allowed ambient names: ${(
+					opts.envPolicy?.allow ?? DEFAULT_ENV_ALLOWLIST
+				).join(", ")}`;
 	const extras = Object.keys(opts.env ?? {});
 	return [
 		runner,
@@ -267,6 +309,39 @@ export function buildRunner(
 	return (c) => [sh, "-c", c];
 }
 
+/** A declared path as a clean path inside the tree, or null if it leaves it. */
+function treePath(path: string): string | null {
+	if (path === "" || path.startsWith("/") || path.includes("\0")) return null;
+	if (path.split("/").includes("..")) return null;
+	const clean = posix.normalize(path).replace(/\/+$/, "");
+	return clean === "" || clean === "." ? null : clean;
+}
+
+function runSandboxed(
+	sandbox: NonNullable<VerifyOptions["sandbox"]>,
+	tree: string,
+	command: string,
+	timeoutMs: number,
+	opts: VerifyOptions,
+): Promise<ProcResult> {
+	if (!sandbox.run) {
+		throw new CheckSandboxRefusal(
+			"no_verifier_sandbox",
+			"this project has no verifier sandbox, and a candidate's code never runs on the host",
+			"attach the project with its run workspace settings",
+		);
+	}
+	return sandbox.run({
+		role: sandbox.role,
+		tree,
+		command,
+		...(opts.checkPrefix ? { prefix: opts.checkPrefix } : {}),
+		timeoutMs,
+		maxOutputBytes: MAX_CHECK_OUTPUT,
+		...(opts.signal ? { signal: opts.signal } : {}),
+	});
+}
+
 export async function verify(
 	cwd: string,
 	dod: DefinitionOfDone,
@@ -274,8 +349,18 @@ export async function verify(
 	opts: VerifyOptions = {},
 ): Promise<VerificationResult> {
 	const checks: CheckOutcome[] = [];
-	const runner = buildRunner(opts);
-	const env = scrubEnv(process.env, opts.env, opts.envPolicy);
+	const hostAllowed =
+		!opts.sandbox && opts.hostExecution === "interactive-worktree";
+	const runner = hostAllowed ? buildRunner(opts) : null;
+	const env = hostAllowed
+		? scrubEnv(process.env, opts.env, opts.envPolicy)
+		: {};
+	const refused = (label: string, err: CheckSandboxRefusal): CheckOutcome => ({
+		check: label,
+		ok: false,
+		classification: "crashed",
+		detail: `not run: the verifier sandbox refused (${err.code}): ${err.message}. Fix: ${err.fix}`,
+	});
 
 	for (const check of dod.checks) {
 		const label = describe(check);
@@ -288,28 +373,75 @@ export async function verify(
 				? check.timeout * 1000
 				: (opts.defaultTimeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS);
 			const expected = check.expect_exit ?? 0;
-			const runOnce = () =>
-				runProc(runner(check.run), {
+			const sandbox = opts.sandbox;
+			const runOnce = async (): Promise<ProcResult> => {
+				if (sandbox) {
+					return runSandboxed(sandbox, cwd, check.run, timeoutMs, opts);
+				}
+				if (!runner) {
+					throw new CheckSandboxRefusal(
+						"host_execution_refused",
+						"this check has no verifier sandbox, and only an interactive worktree run may execute on the host",
+						"verify the commit through a verifier clone",
+					);
+				}
+				return runProc(runner(check.run), {
 					cwd,
 					env,
 					timeoutMs,
 					maxOutputBytes: MAX_CHECK_OUTPUT,
 					signal: opts.signal,
 				});
+			};
 
-			let r = await runOnce();
+			let r: ProcResult;
+			try {
+				r = await runOnce();
+			} catch (err) {
+				if (!(err instanceof CheckSandboxRefusal)) throw err;
+				// Not a result about the code, so it reads as a crash and is not retried.
+				checks.push(refused(label, err));
+				continue;
+			}
 			if (opts.signal?.aborted) throw new Error("verification preempted");
 			let crashed = diedFromSignal(r, expected);
 			// A signal death (SIGILL, SIGSEGV, SIGKILL/OOM, ...) says something
 			// about this invocation, not the code (MFW-47). One retry tells them
 			// apart: observed crashes all cleared on an immediate rerun.
 			if (crashed) {
-				r = await runOnce();
+				try {
+					r = await runOnce();
+				} catch (err) {
+					if (!(err instanceof CheckSandboxRefusal)) throw err;
+					checks.push(refused(label, err));
+					continue;
+				}
 				if (opts.signal?.aborted) throw new Error("verification preempted");
 				crashed = diedFromSignal(r, expected);
 			}
 
 			const ok = !r.timedOut && !crashed && r.exitCode === expected;
+			// In the sandbox a missing tool or dependency is the environment's
+			// fault until P8, so it is reported as infrastructure and never rerun
+			// on the host. It can only ever fail the check, never pass it.
+			if (
+				!ok &&
+				sandbox &&
+				!r.timedOut &&
+				!crashed &&
+				(r.exitCode === 126 ||
+					r.exitCode === 127 ||
+					opts.dependenciesUnavailable)
+			) {
+				checks.push({
+					check: label,
+					ok: false,
+					exitCode: r.exitCode,
+					classification: "crashed",
+					detail: `could not run in the verifier sandbox (a tool or dependency is unavailable until P8): ${lastLines(r.stdout + r.stderr, 5)}`,
+				});
+				continue;
+			}
 			checks.push(
 				ok
 					? { check: label, ok }
@@ -337,23 +469,42 @@ export async function verify(
 			);
 		} else if ("files_exist" in check) {
 			const missing: string[] = [];
+			const uninstalled: string[] = [];
 			for (const f of check.files_exist) {
-				try {
-					await access(join(cwd, f));
-				} catch {
+				const rel = treePath(f);
+				if (rel === null) {
 					missing.push(f);
+				} else if (opts.fileInCommit) {
+					// From the commit: no candidate link is followed, and nothing an
+					// earlier check wrote can satisfy it.
+					if (await opts.fileInCommit(rel)) continue;
+					if (rel.split("/").includes("node_modules")) uninstalled.push(f);
+					else missing.push(f);
+				} else {
+					try {
+						await access(join(cwd, rel));
+					} catch {
+						missing.push(f);
+					}
 				}
 			}
-			const ok = missing.length === 0;
+			const ok = missing.length === 0 && uninstalled.length === 0;
 			checks.push(
 				ok
 					? { check: label, ok }
-					: {
-							check: label,
-							ok,
-							classification: "missing-file",
-							detail: `missing: ${missing.join(", ")}`,
-						},
+					: missing.length === 0
+						? {
+								check: label,
+								ok,
+								classification: "crashed",
+								detail: `cannot be answered until the sandbox has installed dependencies (P8): ${uninstalled.join(", ")}`,
+							}
+						: {
+								check: label,
+								ok,
+								classification: "missing-file",
+								detail: `missing: ${[...missing, ...uninstalled].join(", ")}`,
+							},
 			);
 		} else {
 			if (!check.diff_against_base) {
@@ -406,14 +557,35 @@ export async function verify(
  * checks never run in the run's workspace or the integration worktree.
  */
 export async function verifyInClone(
-	clones: Pick<VerifierClones, "with">,
+	clones: Pick<VerifierClones, "with" | "checkRunner" | "fileInCommit">,
 	rev: string,
 	label: string,
 	dod: DefinitionOfDone,
 	baseSha: string,
-	opts: VerifyOptions = {},
+	opts: VerifyOptions & { role?: VerifyRole } = {},
 ): Promise<VerificationResult> {
-	return clones.with(rev, label, (clone) =>
-		verify(clone.path, dod, baseSha, { ...opts, candidateSha: clone.sha }),
+	// A clone is never host-executed, whatever the caller passed.
+	const { role = "verifier", hostExecution: _never, ...rest } = opts;
+	return clones.with(rev, label, async (clone) =>
+		verify(clone.path, dod, baseSha, {
+			...rest,
+			candidateSha: clone.sha,
+			sandbox: { run: clones.checkRunner, role },
+			dependenciesUnavailable: await lacksDependencies(clone.path),
+			fileInCommit: (path) => clones.fileInCommit(clone.sha, path),
+		}),
+	);
+}
+
+/** A package manifest with no installed `node_modules` beside it. */
+async function lacksDependencies(tree: string): Promise<boolean> {
+	const kind = async (name: string) =>
+		lstat(join(tree, name)).then(
+			(st) => (st.isDirectory() ? "dir" : st.isFile() ? "file" : "other"),
+			() => null,
+		);
+	return (
+		(await kind("package.json")) === "file" &&
+		(await kind("node_modules")) !== "dir"
 	);
 }

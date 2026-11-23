@@ -5,9 +5,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-	bwrapAvailable,
 	controlRootPath,
-	probeSandbox,
+	pinnedTool,
 	resetBwrapAvailableCache,
 } from "../../src/sandbox.ts";
 
@@ -50,9 +49,22 @@ async function cleanup() {
 }
 
 export async function usable(): Promise<string | null> {
-	if (!(await bwrapAvailable())) return "no bwrap";
-	const r = await probeSandbox({ mode: "bwrap", hidePaths: [] });
-	return r.ok ? null : `bwrap cannot run here (${r.detail})`;
+	const bwrap = pinnedTool("bwrap");
+	if (!bwrap) return "no bwrap";
+	const r = Bun.spawnSync([
+		bwrap,
+		"--unshare-all",
+		"--ro-bind",
+		"/",
+		"/",
+		"--proc",
+		"/proc",
+		"--dev",
+		"/dev",
+		"--",
+		"true",
+	]);
+	return r.exitCode === 0 ? null : "bwrap cannot run here";
 }
 
 export async function fakeHome() {
@@ -105,5 +117,4 @@ export const baseSpec = (
 	env: {},
 	steer: false,
 	approvalMode: "interactive" as const,
-	isolation: { mode: "bwrap" as const, hidePaths: [] },
 });

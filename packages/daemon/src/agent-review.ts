@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,34 +8,23 @@ import type {
 	InferenceReply,
 } from "./brain.ts";
 import { claudeEnvelopeUsage } from "./brain.ts";
-import { PROBE_SENTINEL } from "./containment/minimal-probe.ts";
+import { runOneShotAgent } from "./containment/oneshot-agent.ts";
 import { git, gitComplete } from "./git.ts";
 import { type ProcOpts, type ProcResult, runProc } from "./proc.ts";
-import {
-	agentSandboxPath,
-	bwrapCore,
-	cleanEnvSetenvArgs,
-	controlRootPath,
-	maskedRuntimePaths,
-	pinnedTool,
-	probeScriptFor,
-	resolveBwrapPath,
-	SANDBOX_ENV_ALLOWLIST,
-	SandboxUnavailableError,
-	safeHostPath,
-} from "./sandbox.ts";
+import { createRoleClone } from "./run-workspace/role-clone.ts";
+import { SandboxUnavailableError } from "./sandbox.ts";
 
 /**
  * Agent review: a reviewer agent that can read code and run commands, in its
- * own detached checkout of the run branch tip.
+ * own private copy of the run branch tip.
  *
- * It must not change the work it judges, and we never trust it to say so.
- * Before the agent starts we record the branch tip and the run worktree's
- * state; afterwards the checkout must be clean at the same commit, the branch
- * tip unmoved, and the run worktree identical. Any difference throws
+ * It must not change the work it judges, and we never trust it to say so. The
+ * copy is mounted read-only in the `reviewer` role, through the same probe,
+ * attestation and single-use gate as every launch (`containment/role-profiles`).
+ * Before it starts we record the branch tip and the run worktree's state;
+ * afterwards both must be unchanged. Any difference throws
  * `ReviewerModifiedError` and the verdict is discarded (the task goes to a
- * human). The agent also runs under `bwrap` (refused without it) with the project
- * root, the checkout and the run worktree bound read-only.
+ * human).
  */
 
 export class ReviewerModifiedError extends Error {
@@ -63,12 +51,14 @@ export interface AgentReviewOpts {
 	subject: AgentReviewSubject;
 	harness: "claude-cli" | "codex-cli";
 	bin?: string;
-	/** Paths masked inside bwrap (the daemon's home). */
-	hidePaths?: string[];
-	/** "auto": always bwrap, refusing when it is missing; "off": never (tests). */
+	/** What the reviewer role needs from the host. Required unless `sandbox` is "off". */
+	host?: { mfwHome: string; stateDir: string };
+	/** "auto": always the reviewer role, refusing without it; "off": never (tests). */
 	sandbox?: "auto" | "off";
-	/** Test seam: runs the reviewer process. */
+	/** Test seam: runs the reviewer process when `sandbox` is "off". */
 	run?: AgentRunner;
+	/** Test seam: the sandboxed launch. */
+	launch?: typeof runOneShotAgent;
 	tmpRoot?: string;
 }
 
@@ -106,6 +96,9 @@ export class AgentReviewInference implements InferenceClient {
 		const runBefore = subject.runWorktree
 			? await worktreeState(subject.runWorktree)
 			: null;
+		if (this.opts.sandbox !== "off") {
+			return this.completeSandboxed(prompt, opts, tip, runBefore);
+		}
 		const dir = await mkdtemp(
 			join(this.opts.tmpRoot ?? tmpdir(), "mfw-review-"),
 		);
@@ -114,8 +107,18 @@ export class AgentReviewInference implements InferenceClient {
 			subject.projectRoot,
 		);
 		try {
-			const reply = await this.runAgent(prompt, opts, dir);
-			const changes = await this.postCheck(tip, dir, runBefore);
+			const run = this.opts.run ?? runProc;
+			const result = await run(this.argv(prompt, opts), {
+				cwd: dir,
+				timeoutMs: opts.timeoutMs,
+				maxOutputBytes: MAX_OUTPUT_BYTES,
+				...(opts.signal ? { signal: opts.signal } : {}),
+			});
+			const reply = this.reply(result, opts);
+			const changes = [
+				...(await this.checkoutChanges(tip, dir)),
+				...(await this.subjectChanges(tip, runBefore)),
+			];
 			if (changes.length > 0) throw new ReviewerModifiedError(changes);
 			return reply;
 		} finally {
@@ -130,20 +133,49 @@ export class AgentReviewInference implements InferenceClient {
 		}
 	}
 
-	/** Every way the reviewer could have changed the work, as human text. */
-	private async postCheck(
+	/** The real path: a private clone, read-only, in the attested reviewer role. */
+	private async completeSandboxed(
+		prompt: string,
+		opts: InferenceOpts,
 		tip: string,
-		dir: string,
 		runBefore: string | null,
-	): Promise<string[]> {
-		const { subject } = this.opts;
+	): Promise<InferenceReply> {
+		const { subject, host } = this.opts;
+		if (!host) {
+			throw new SandboxUnavailableError(
+				"agent review has no sandbox host settings",
+			);
+		}
+		const id = `review-${randomUUID()}`;
+		const clone = await createRoleClone(subject.projectRoot, id, tip);
+		try {
+			const result = await (this.opts.launch ?? runOneShotAgent)({
+				role: "reviewer",
+				cli: this.opts.harness === "codex-cli" ? "codex" : "claude",
+				tree: clone.tree,
+				projectRoot: subject.projectRoot,
+				stateDir: host.stateDir,
+				mfwHome: host.mfwHome,
+				argv: this.stdinArgv(opts),
+				prompt,
+				timeoutMs: opts.timeoutMs,
+				maxOutputBytes: MAX_OUTPUT_BYTES,
+				...(opts.signal ? { signal: opts.signal } : {}),
+			});
+			const reply = this.reply(result, opts);
+			const changes = await this.subjectChanges(tip, runBefore);
+			if (changes.length > 0) throw new ReviewerModifiedError(changes);
+			return reply;
+		} finally {
+			await rm(clone.root, { recursive: true, force: true }).catch(
+				() => undefined,
+			);
+		}
+	}
+
+	/** The test seam's writable checkout; the real one is mounted read-only. */
+	private async checkoutChanges(tip: string, dir: string): Promise<string[]> {
 		const changes: string[] = [];
-		const branchNow = await git(
-			["rev-parse", "--verify", `${subject.branch}^{commit}`],
-			subject.projectRoot,
-		);
-		if (branchNow.stdout.trim() !== tip)
-			changes.push(`branch ${subject.branch} moved off ${tip.slice(0, 12)}`);
 		const head = await git(["rev-parse", "HEAD"], dir);
 		if (head.stdout.trim() !== tip)
 			changes.push("the review checkout's HEAD moved");
@@ -159,11 +191,37 @@ export class AgentReviewInference implements InferenceClient {
 					.slice(0, 5)
 					.join(", ")}`,
 			);
+		return changes;
+	}
+
+	/** What a reviewer must never move: the branch and the run's own worktree. */
+	private async subjectChanges(
+		tip: string,
+		runBefore: string | null,
+	): Promise<string[]> {
+		const { subject } = this.opts;
+		const changes: string[] = [];
+		const branchNow = await git(
+			["rev-parse", "--verify", `${subject.branch}^{commit}`],
+			subject.projectRoot,
+		);
+		if (branchNow.stdout.trim() !== tip)
+			changes.push(`branch ${subject.branch} moved off ${tip.slice(0, 12)}`);
 		if (subject.runWorktree && runBefore !== null) {
 			const runAfter = await worktreeState(subject.runWorktree);
 			if (runAfter !== runBefore) changes.push("the run worktree changed");
 		}
 		return changes;
+	}
+
+	/** The same command with the prompt on stdin, as the sandboxed launch sends it. */
+	private stdinArgv(opts: InferenceOpts): string[] {
+		const marker = "\0prompt";
+		const argv = this.argv(marker, opts);
+		const at = argv.indexOf(marker);
+		if (this.opts.harness === "codex-cli") argv[at] = "-";
+		else argv.splice(at, 1);
+		return argv;
 	}
 
 	private argv(prompt: string, opts: InferenceOpts): string[] {
@@ -197,88 +255,7 @@ export class AgentReviewInference implements InferenceClient {
 		];
 	}
 
-	/**
-	 * Fail closed: with `sandbox: "auto"` a missing bwrap is a refusal, not an
-	 * unsandboxed reviewer. The reviewer gets the same clean environment and
-	 * masks as a run (`sandbox.ts`), with the checkouts bound read-only.
-	 */
-	private async sandboxed(argv: string[], dir: string): Promise<string[]> {
-		if (this.opts.sandbox === "off") return argv;
-		const bwrapPath = await resolveBwrapPath();
-		if (!bwrapPath) {
-			throw new SandboxUnavailableError(
-				"agent review requires `bwrap`, which is not on PATH",
-			);
-		}
-		const { subject } = this.opts;
-		const readOnly = [subject.projectRoot, dir, subject.runWorktree].filter(
-			(p): p is string => typeof p === "string",
-		);
-		const env = process.env;
-		const control = controlRootPath();
-		const isolation = {
-			mode: "bwrap" as const,
-			// The host-only control dir is masked here too, wherever `TMPDIR` points (security review X15).
-			hidePaths: [
-				...(this.opts.hidePaths ?? []),
-				...(existsSync(control) ? [control] : []),
-			],
-		};
-		const masks = maskedRuntimePaths(env);
-		const envPath = pinnedTool("env");
-		const shellPath = pinnedTool("bash");
-		if (!envPath || !shellPath) {
-			throw new SandboxUnavailableError("env or bash is not on a trusted PATH");
-		}
-		return [
-			envPath,
-			"-i",
-			`PATH=${safeHostPath()}`,
-			...bwrapCore({
-				bwrapPath,
-				cwd: dir,
-				runDir: dir,
-				isolation,
-				readOnly,
-				masks,
-			}),
-			...cleanEnvSetenvArgs(
-				env,
-				SANDBOX_ENV_ALLOWLIST.filter((n) => n !== "PATH"),
-			),
-			// The probe runs with trusted entries only; the agent's PATH follows it (security review X7).
-			"--setenv",
-			"PATH",
-			safeHostPath(),
-			"--setenv",
-			PROBE_SENTINEL,
-			"1",
-			"--chdir",
-			dir,
-			"--",
-			// The same minimal probe a run gets, before the reviewer starts (review G9);
-			// a failed probe exits 78 and the reviewer never runs.
-			shellPath,
-			"-c",
-			`${probeScriptFor(isolation, SANDBOX_ENV_ALLOWLIST, masks)}\nPATH='${agentSandboxPath(env.PATH).replace(/'/g, `'\\''`)}'; export PATH\nexec "$@"`,
-			"reviewer",
-			...argv,
-		];
-	}
-
-	private async runAgent(
-		prompt: string,
-		opts: InferenceOpts,
-		dir: string,
-	): Promise<InferenceReply> {
-		const argv = await this.sandboxed(this.argv(prompt, opts), dir);
-		const run = this.opts.run ?? runProc;
-		const r = await run(argv, {
-			cwd: dir,
-			timeoutMs: opts.timeoutMs,
-			maxOutputBytes: MAX_OUTPUT_BYTES,
-			...(opts.signal ? { signal: opts.signal } : {}),
-		});
+	private reply(r: ProcResult, opts: InferenceOpts): InferenceReply {
 		if (r.timedOut) throw new Error("agent reviewer timed out");
 		if (opts.signal?.aborted) throw new Error("agent reviewer aborted");
 		if (r.exitCode !== 0)

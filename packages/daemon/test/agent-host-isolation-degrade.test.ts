@@ -36,14 +36,7 @@ describe("AgentHost fails closed when bwrap is unavailable", () => {
 					signalCode: null,
 				};
 			},
-			sandbox: {
-				bwrapAvailable: async () => false,
-				wrapWithBwrap: () => {
-					throw new Error(
-						"wrapWithBwrap must not be called when bwrap is unavailable",
-					);
-				},
-			},
+			sandbox: { bwrapAvailable: async () => false },
 		});
 		const runId = `t${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
 		await expect(

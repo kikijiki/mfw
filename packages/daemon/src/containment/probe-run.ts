@@ -13,9 +13,9 @@
  * which is the agent-writable workspace, and a planted preload would run inside
  * the probe and could forge its result.
  *
- * A profile whose toolchain does not declare `bun` cannot be probed and is
- * refused: adding a runtime only for the probe would attest a different
- * sandbox from the one the agent gets.
+ * That bun is the host's, inherited as sealed descriptors (probe-runtime.ts).
+ * Nothing is mounted for it, so the probe attests the agent's exact mount table
+ * and a profile needs no runtime of its own.
  *
  * {@link attestSandbox} is the only path that records an attestation, and it
  * takes no way to stub an observation or alter the compiled sandbox. The tests
@@ -32,6 +32,7 @@ import {
 	type CompileHost,
 	type CompileRefusal,
 	compileBwrap,
+	FIRST_PINNED_FD,
 	SANDBOX_PATHS,
 } from "./compile-bwrap.ts";
 import type { PinIdentity } from "./pinned-binds.ts";
@@ -46,6 +47,11 @@ import {
 	type ProbeItemResult,
 	probeOutcome,
 } from "./probe-evaluate.ts";
+import {
+	ProbeRuntimeError,
+	type SealedProbeRuntime,
+	sealProbeRuntime,
+} from "./probe-runtime.ts";
 import {
 	effectiveLimits,
 	memoryBytes,
@@ -63,6 +69,9 @@ import {
 	PROBED_DENIED_FAMILIES,
 } from "./seccomp.ts";
 import type { ToolchainPlan } from "./toolchain.ts";
+
+/** The socket's name inside a turn's directory (brain-socket.ts). */
+export const BRAIN_SOCKET_NAME = "brain.sock";
 
 const CLONE_THREAD = 0x10000;
 const SWEEP_MAX_ENTRIES = 1_000_000;
@@ -256,6 +265,12 @@ export function expectedWritableMounts(compiled: CompiledSandbox): string[] {
 		SANDBOX_PATHS.home,
 	]);
 	if (options.includes(SANDBOX_PATHS.scratch)) out.add(SANDBOX_PATHS.scratch);
+	options.forEach((option, i) => {
+		const next = options[i + 1];
+		if (option === "--tmpfs" && next?.startsWith(`${SANDBOX_PATHS.fleet}/`)) {
+			out.add(next);
+		}
+	});
 	for (const pin of compiled.pinnedBinds) {
 		if (pin.writable) out.add(pin.dest);
 	}
@@ -345,7 +360,13 @@ export function buildProbePlan(
 	profile: SandboxProfile,
 	compiled: CompiledSandbox,
 	targets: ProbeTargets,
-	opts: { nonce: string; loopbackPort: number; scope: "systemd" | "none" },
+	opts: {
+		nonce: string;
+		loopbackPort: number;
+		scope: "systemd" | "none";
+		/** The child descriptors of the sealed runtime. */
+		sealedFds?: readonly number[];
+	},
 ): ProbePlan {
 	const options = decodeBwrapOptions(compiled.bwrapArgs);
 	const syscalls = probeSyscallPlan();
@@ -416,6 +437,10 @@ export function buildProbePlan(
 			},
 			sweepTolerated: targets.toolchainBinds.map(escapedPath),
 			fleetExecBaseline: targets.fleetExecBaseline,
+			...(opts.sealedFds ? { sealedFds: opts.sealedFds } : {}),
+			...(profile.filesystem?.brainSocket
+				? { brainSocket: `${SANDBOX_PATHS.brain}/${BRAIN_SOCKET_NAME}` }
+				: {}),
 		},
 	};
 }
@@ -481,16 +506,43 @@ export interface AttestRequest {
 	tmpDir?: string;
 }
 
-/** The command that runs the probe with the sandbox's own bun. */
+/** Bun's arguments for the probe: no config, `.env` or cwd from the sandbox. */
+const probeBunArgs = (): string[] => [
+	"--cwd=/",
+	"--config=/dev/null",
+	"--no-env-file",
+	"-e",
+	probeChildSource(),
+];
+
+/** The probe command for a bun already inside the sandbox (lower-level tests). */
 export function probeCommand(bunPath: string): string[] {
-	return [
-		bunPath,
-		"--cwd=/",
-		"--config=/dev/null",
-		"--no-env-file",
-		"-e",
-		probeChildSource(),
-	];
+	return [bunPath, ...probeBunArgs()];
+}
+
+export interface SealedProbeCommand {
+	compiled: CompiledSandbox;
+	/** The child descriptors of the runtime, right after the pinned binds. */
+	sealedFds: number[];
+}
+
+/** Compile the profile around the sealed runtime's command. */
+export function compileSealedProbe(
+	profile: SandboxProfile,
+	host: CompileHost,
+	runtime: Pick<SealedProbeRuntime, "fds" | "command">,
+): SealedProbeCommand | CompileRefusal {
+	// The pins depend on the profile alone, so this fixes the descriptor numbers.
+	const shape = compileBwrap(profile, ["/proc/self/exe"], host);
+	if (!shape.ok) return shape;
+	const first = FIRST_PINNED_FD + shape.pinnedBinds.length;
+	const compiled = compileBwrap(
+		profile,
+		runtime.command(first, probeBunArgs()),
+		host,
+	);
+	if (!compiled.ok) return compiled;
+	return { compiled, sealedFds: runtime.fds.map((_, i) => first + i) };
 }
 
 /**
@@ -501,48 +553,62 @@ export async function attestSandbox(
 	req: AttestRequest,
 ): Promise<AttestResult | AttestRefusal> {
 	const profile = parseSandboxProfile(req.profile);
-	const declared = profile.filesystem?.toolchain?.binaries ?? [];
-	const bun = req.host.toolchain.resolved.find((b) => b.name === "bun");
-	if (!bun || !declared.includes("bun")) {
+	let runtime: SealedProbeRuntime;
+	try {
+		runtime = sealProbeRuntime();
+	} catch (err) {
+		if (!(err instanceof ProbeRuntimeError)) throw err;
 		return {
 			ok: false,
 			code: "probe_runtime_missing",
-			reason:
-				"the profile's toolchain does not declare bun, which runs the probe",
-			fix: 'add "bun" to filesystem.toolchain.binaries',
+			reason: `the probe's sealed runtime is unavailable: ${err.message}`,
+			fix: "run on glibc 2.30 or newer with vm.memfd_noexec at 0 or 1",
 		};
 	}
-	const compiled = compileBwrap(profile, probeCommand(bun.path), req.host);
-	if (!compiled.ok) return compileRefused(compiled);
+	let compiled: CompiledSandbox;
 	const scope = req.scope ?? "systemd";
 	let pins: PinIdentity[] = [];
-	const items = await withLoopbackCanary((loopbackPort) =>
-		collectProbe(
-			compiled,
-			buildProbePlan(
-				profile,
-				compiled,
+	let items: ProbeItemResult[];
+	try {
+		const sealed = compileSealedProbe(profile, req.host, runtime);
+		if ("ok" in sealed) return compileRefused(sealed);
+		compiled = sealed.compiled;
+		const launched = compiled;
+		items = await withLoopbackCanary((loopbackPort) =>
+			collectProbe(
+				launched,
+				buildProbePlan(
+					profile,
+					launched,
+					{
+						...req.targets,
+						...probeToolchainTargets(req.host.toolchain),
+						realpath: req.host.realpath,
+					},
+					{
+						nonce: randomBytes(16).toString("hex"),
+						loopbackPort,
+						scope,
+						sealedFds: sealed.sealedFds,
+					},
+				),
 				{
-					...req.targets,
-					...probeToolchainTargets(req.host.toolchain),
-					realpath: req.host.realpath,
-				},
-				{
-					nonce: randomBytes(16).toString("hex"),
-					loopbackPort,
 					scope,
+					timeoutMs: req.timeoutMs,
+					tmpDir: req.tmpDir,
+					sealed: runtime,
+					observePins: (seen) => {
+						pins = seen;
+					},
 				},
 			),
-			{
-				scope,
-				timeoutMs: req.timeoutMs,
-				tmpDir: req.tmpDir,
-				observePins: (seen) => {
-					pins = seen;
-				},
-			},
-		),
-	);
+		);
+	} finally {
+		runtime.close();
+	}
+	// Bun owns a spawned child's descriptors and closes them when it finalizes
+	// the subprocess. These hold a 100 MB runtime, so that must not wait.
+	Bun.gc(true);
 	const outcome = probeOutcome(items);
 	// Of what actually ran, so a changed sandbox can never inherit this record.
 	const fingerprint = sandboxFingerprint(profile, compiled);

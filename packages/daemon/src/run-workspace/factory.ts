@@ -14,17 +14,24 @@ export type RunWorkspaceKind = "worktree" | "clone";
 /**
  * A1.6 gate: the default stays `worktree` until all of these hold.
  *
- *  1. DoD checks run in the attested no-network sandbox (P7). Today
- *     `verifier.ts` runs `sh -c <check>` on the host, so a verified clone still
- *     executes the candidate's code as the daemon user (review WIPW H4). Until
- *     then autonomous clone runs must be refused unless a sandboxing
- *     `checkPrefix` is set.
- *  2. The death proof (`run-liveness.ts`) and the memory limits are exercised
- *     under a real systemd scope and real tmux.
- *  3. Host git that touches merged content runs without the operator's global
+ *  1. The death proof (`run-liveness.ts`) and the memory limits are exercised
+ *     under a real systemd scope and real tmux, including a real fork bomb and
+ *     memory limit in the verifier role. No caged test proves those limits.
+ *  2. Host git that touches merged content runs without the operator's global
  *     filters, or the integration step disables them.
- *  4. The launch, probe and import path passes on real Claude and Codex CLIs,
- *     on NixOS and Ubuntu.
+ *  3. The launch, probe, resume and import path passes on real Claude and Codex
+ *     CLIs, on NixOS and Ubuntu, with no skips under MFW_REQUIRE_LIVE_SANDBOX=1.
+ *  4. P8 supplies dependencies and the dev shell. Until then a check that needs
+ *     them is an infrastructure result, so real projects cannot go green.
+ *  5. W4-2 pins the check entry points. Until then a passing check proves only
+ *     what candidate-controlled code reported.
+ *
+ * What P7 does establish: DoD checks for clone runs, the merge queue's checks,
+ * the regression sweep, its corroboration rerun and armed reopen checks all run
+ * in the attested no-network verifier roles. The one remaining host execution
+ * of a `run` check is `verify()` with `hostExecution`, which only the finalize
+ * of an interactive worktree run passes. Armed trigger scripts are separate
+ * owner-approved host commands.
  */
 
 interface ProjectSetting {
@@ -105,6 +112,11 @@ export function workspaceForRun(
 	return new CloneRunWorkspace(resolve(projectRoot), clone);
 }
 
+/** Where a project's clones live; registered for worktree projects too. */
+export function workspaceRootOf(projectRoot: string): string | null {
+	return settings.get(resolve(projectRoot))?.clone?.workspaceRoot ?? null;
+}
+
 /**
  * The disposable verification clones for a project, or null when it runs on
  * worktrees (verification then happens in the run's own worktree, as before).
@@ -115,15 +127,35 @@ export function createVerifierClones(
 	run?: RunWorkspaceFacts,
 ): VerifierClones | null {
 	const setting = settings.get(resolve(projectRoot));
-	if (!setting?.clone) return null;
-	const kind = run ? runWorkspaceKind(projectRoot, run) : setting.kind;
+	const kind = run
+		? runWorkspaceKind(projectRoot, run)
+		: (setting?.kind ?? "worktree");
 	if (kind !== "clone") return null;
+	const clones = createCheckClones(projectRoot);
+	// Null would send a caller to verify this agent-writable path directly.
+	if (!clones && run) {
+		throw new Error(
+			`run workspace ${run.worktreePath ?? "(unknown)"} is a clone, but this project has no clone settings`,
+		);
+	}
+	return clones;
+}
+
+/**
+ * Verification clones whatever the project's workspace kind. Maintenance and
+ * the merge queue use these for committed code, because they never execute a
+ * check on the host. Null when the project has no workspace settings.
+ */
+export function createCheckClones(projectRoot: string): VerifierClones | null {
+	const clone = settings.get(resolve(projectRoot))?.clone;
+	if (!clone) return null;
 	return new VerifierClones({
-		workspaceRoot: setting.clone.workspaceRoot,
+		workspaceRoot: clone.workspaceRoot,
 		primaryRoot: resolve(projectRoot),
-		...(setting.clone.caches ? { caches: setting.clone.caches } : {}),
-		...(setting.clone.gitBin ? { gitBin: setting.clone.gitBin } : {}),
-		...(setting.clone.log ? { log: setting.clone.log } : {}),
+		...(clone.caches ? { caches: clone.caches } : {}),
+		...(clone.gitBin ? { gitBin: clone.gitBin } : {}),
+		...(clone.log ? { log: clone.log } : {}),
+		...(clone.checkRunner ? { checkRunner: clone.checkRunner } : {}),
 	});
 }
 

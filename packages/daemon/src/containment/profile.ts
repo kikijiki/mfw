@@ -97,6 +97,8 @@ const WorkspaceSection = z.strictObject({
 	/** Kept outside the work tree (design "Placement"); same access as the tree. */
 	gitDir: AbsolutePath.optional(),
 	access: Access,
+	/** Holds the gitdir read-only under a writable tree (the verifier's clone). */
+	gitAccess: z.literal("ro").optional(),
 });
 
 const CacheSection = z.strictObject({
@@ -105,17 +107,24 @@ const CacheSection = z.strictObject({
 	access: Access,
 });
 
-const FleetConfigSection = z.strictObject({
-	cli: z.enum(["claude", "codex"]),
-	source: AbsolutePath,
-	/** Directories under `source` that stay writable; everything else is read-only. */
-	writable: z.array(RelativeDir).max(64),
-	/**
-	 * Where those directories really live for this run. They are mounted over
-	 * the shared ones, so nothing a run writes reaches another run.
-	 */
-	privateState: AbsolutePath.optional(),
-});
+const FleetConfigSection = z
+	.strictObject({
+		cli: z.enum(["claude", "codex"]),
+		source: AbsolutePath,
+		/** Directories under `source` that stay writable; everything else is read-only. */
+		writable: z.array(RelativeDir).max(64),
+		/**
+		 * Where those directories really live for this run. They are mounted over
+		 * the shared ones, so nothing a run writes reaches another run.
+		 */
+		privateState: AbsolutePath.optional(),
+		/** Directories under `source` the CLI may use but nothing keeps. */
+		tmpfs: z.array(RelativeDir).max(64).optional(),
+	})
+	.refine(
+		(f) => !f.tmpfs?.some((d) => f.writable.includes(d)),
+		"a fleet directory cannot be both persisted and tmpfs",
+	);
 
 /**
  * The run directory (`run-dir.ts`). Only its `control/` (always read-only) and
@@ -143,6 +152,8 @@ const FilesystemSection = z.strictObject({
 		.strictObject({ binaries: z.array(BinaryName).max(128) })
 		.optional(),
 	fleetConfig: FleetConfigSection.optional(),
+	/** A directory holding one turn's brain socket and token. Brain role only. */
+	brainSocket: z.strictObject({ source: AbsolutePath }).optional(),
 	/** Host paths no bind may equal, contain or sit inside. Deny wins. */
 	deny: z.array(AbsolutePath).max(256).optional(),
 });
@@ -219,12 +230,63 @@ const LifecycleSection = z.strictObject({
 });
 
 /**
- * Roles enforced read-only at the mount level (design "Role profiles"): no
- * host path they can reach may be writable. Their tmpfs mounts stay writable
- * and vanish with the sandbox. Harness read-only flags are only a second layer.
+ * Roles enforced read-only at the mount level (design "Role profiles"). The
+ * workspace and caches are read-only. The only host paths they may write are
+ * the run's own outbox, whose contents are claims, and a per-run private copy
+ * of the CLI's session directories, which no other run ever mounts. Their tmpfs
+ * mounts stay writable and vanish with the sandbox. Harness read-only flags are
+ * only a second layer.
  */
 export const READ_ONLY_ROLES: ReadonlySet<(typeof PROFILE_ROLES)[number]> =
 	new Set(["reviewer", "plan", "import", "brain", "trigger"]);
+
+/**
+ * Roles that execute a candidate's code: a writable disposable tree and nothing
+ * else. No network, no credentials, no fleet config, no run directory, and a
+ * gitdir they cannot change.
+ */
+export const VERIFY_ROLES: ReadonlySet<(typeof PROFILE_ROLES)[number]> =
+	new Set(["verifier", "merge-verify"]);
+
+type Role = (typeof PROFILE_ROLES)[number];
+type Deny = (path: (string | number)[], what: string) => void;
+type Filesystem = z.infer<typeof FilesystemSection> | undefined;
+
+function readOnlyCeiling(fs: Filesystem, deny: Deny): void {
+	if (fs?.workspace?.access === "rw") {
+		deny(["workspace", "access"], "a writable workspace");
+	}
+	fs?.caches?.forEach((cache, i) => {
+		if (cache.access === "rw") {
+			deny(["caches", i, "access"], "a writable cache");
+		}
+	});
+	if (fs?.fleetConfig?.writable.length && !fs.fleetConfig.privateState) {
+		deny(["fleetConfig", "writable"], "writable shared fleet directories");
+	}
+}
+
+function verifyCeiling(
+	profile: { network?: { mode: string }; process?: { env?: object } },
+	fs: Filesystem,
+	deny: Deny,
+): void {
+	if (profile.network && profile.network.mode !== "none") {
+		deny(["network"], "network access");
+	}
+	if (fs?.fleetConfig) deny(["fleetConfig"], "agent config");
+	if (fs?.runDir) deny(["runDir"], "a run directory");
+	if (fs?.caches?.some((c) => c.access === "rw")) {
+		deny(["caches"], "a writable cache");
+	}
+	if (fs?.workspace?.gitDir && fs.workspace.gitAccess !== "ro") {
+		deny(["workspace", "gitAccess"], "a writable gitdir");
+	}
+	const names = Object.keys(profile.process?.env ?? {});
+	if (names.some((n) => n.startsWith("MFW_GRANT_") || n.endsWith("_API_KEY"))) {
+		deny(["process", "env"], "credentials");
+	}
+}
 
 export const SandboxProfileSchema = z
 	.strictObject({
@@ -238,28 +300,20 @@ export const SandboxProfileSchema = z
 		lifecycle: LifecycleSection.optional(),
 	})
 	.superRefine((profile, ctx) => {
-		if (!READ_ONLY_ROLES.has(profile.role)) return;
-		const deny = (path: (string | number)[], what: string) =>
+		const role: Role = profile.role;
+		const kind = READ_ONLY_ROLES.has(role) ? "read-only" : "restricted";
+		const deny: Deny = (path, what) =>
 			ctx.addIssue({
 				code: "custom",
 				path: ["filesystem", ...path],
-				message: `role ${profile.role} is read-only and cannot have ${what}`,
+				message: `role ${role} is ${kind} and cannot have ${what}`,
 			});
 		const fs = profile.filesystem;
-		if (fs?.workspace?.access === "rw") {
-			deny(["workspace", "access"], "a writable workspace");
+		if (fs?.brainSocket && role !== "brain") {
+			deny(["brainSocket"], "the brain socket");
 		}
-		if (fs?.runDir?.outbox === "rw") {
-			deny(["runDir", "outbox"], "a writable outbox");
-		}
-		fs?.caches?.forEach((cache, i) => {
-			if (cache.access === "rw") {
-				deny(["caches", i, "access"], "a writable cache");
-			}
-		});
-		if (fs?.fleetConfig?.writable.length) {
-			deny(["fleetConfig", "writable"], "writable fleet directories");
-		}
+		if (READ_ONLY_ROLES.has(role)) readOnlyCeiling(fs, deny);
+		if (VERIFY_ROLES.has(role)) verifyCeiling(profile, fs, deny);
 	});
 
 export type SandboxProfile = z.infer<typeof SandboxProfileSchema>;

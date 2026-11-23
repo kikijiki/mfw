@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, statSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { BrainSocket } from "../src/brain-runtime/brain-socket.ts";
 import { type BrainUnit, brainUnit } from "./support/brain-unit.ts";
 
@@ -43,13 +43,13 @@ describe("a brain turn's MCP server", () => {
 		const t = await started();
 		const { env } = t.launch.mcp;
 		expect(env.MFW_URL).toBeUndefined();
-		expect(env.MFW_SOCKET).toBe(join(home ?? "", "run", "brain.sock"));
+		expect(env.MFW_SOCKET?.startsWith(join(home ?? "", "run", "b"))).toBe(true);
+		expect(env.MFW_SOCKET?.endsWith("/brain.sock")).toBe(true);
 		expect(env.MFW_BRAIN_TURN).toBe(t.runId);
 		expect(env.MFW_PROJECT).toBe("unit");
 		const file = env.MFW_BRAIN_TOKEN_FILE;
-		expect(file).toBe(
-			join(home ?? "", "run", "brain-turn", `${t.runId}.token`),
-		);
+		// Beside the socket: that directory is all a turn's sandbox is given.
+		expect(dirname(file ?? "")).toBe(dirname(env.MFW_SOCKET ?? ""));
 		expect(statSync(file ?? "").mode & 0o777).toBe(0o600);
 
 		// The generated config (what claude --mcp-config and MFW_ACP_MCP_CONFIG read) is the same
@@ -93,9 +93,10 @@ describe("the unix socket is the brain's only transport", () => {
 		process.env.MFW_BRAIN_TCP = "1";
 		const t = await started();
 		expect(t.launch.mcp.env.MFW_URL).toBeUndefined();
-		expect(t.launch.mcp.env.MFW_SOCKET).toBe(
-			join(home ?? "", "run", "brain.sock"),
-		);
+		expect(
+			t.launch.mcp.env.MFW_SOCKET?.startsWith(join(home ?? "", "run")),
+		).toBe(true);
+		expect(t.launch.mcp.env.MFW_SOCKET?.endsWith("/brain.sock")).toBe(true);
 	});
 
 	test("with no router wired to the socket no turn is launched and no token is minted", async () => {

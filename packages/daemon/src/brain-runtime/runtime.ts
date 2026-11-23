@@ -44,6 +44,7 @@ import {
 	mfwHome as configuredMfwHome,
 	type StoredBrainConfig,
 } from "../config.ts";
+import { removeBrainTranscripts } from "../containment/brain-transcript.ts";
 import { ensureRunDirLayout } from "../containment/run-dir.ts";
 import { HumanOverrideService } from "../human-override.ts";
 import type { Logger } from "../log.ts";
@@ -58,6 +59,7 @@ import {
 	type DigestInput,
 	type DigestRunFact,
 	renderDigest,
+	verifyFacts,
 } from "./digest.ts";
 import { BrainDirections } from "./directions.ts";
 import { BrainActionExecutor, type BrainExecutorDeps } from "./executor.ts";
@@ -694,6 +696,12 @@ export class BrainRuntime {
 			);
 		});
 		this.deps.bus.publish(published);
+		// The old generation is never resumed, so its transcript has no use left.
+		if (this.deps.mfwHome) {
+			await removeBrainTranscripts(this.deps.mfwHome, sessionId).catch((err) =>
+				this.deps.log.warn({ err, sessionId }, "brain transcript not removed"),
+			);
+		}
 		return this.currentSession();
 	}
 
@@ -1183,7 +1191,6 @@ export class BrainRuntime {
 		const report = done("ingest_report") as
 			| { report?: { status?: string; summary?: string; question?: string } }
 			| undefined;
-		const failing = verify?.checks?.filter((c) => !c.ok) ?? [];
 		return {
 			runId,
 			taskId: run.taskId,
@@ -1198,11 +1205,7 @@ export class BrainRuntime {
 			durationMs: run.finishedAt
 				? run.finishedAt.getTime() - run.startedAt.getTime()
 				: null,
-			verify: verify
-				? verify.passed
-					? "passed"
-					: `failed: ${failing.map((c) => `${c.check}${c.detail ? ` (${c.detail.slice(0, 120)})` : ""}`).join("; ") || "unknown"}`
-				: null,
+			...verifyFacts(verify),
 			scope: scope
 				? `${String(scope.files ?? "?")} files, ${String(scope.outside ?? 0)} outside owns`
 				: null,

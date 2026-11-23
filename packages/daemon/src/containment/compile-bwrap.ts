@@ -61,6 +61,7 @@ export const SANDBOX_PATHS = {
 	caches: "/cache",
 	fleet: "/fleet",
 	egress: "/run/mfw/egress",
+	brain: "/run/mfw/brain",
 	runControl: "/mfw-run/control",
 	runOutbox: "/mfw-run/outbox",
 } as const;
@@ -173,7 +174,11 @@ function profileSources(profile: SandboxProfile): SourceBind[] {
 		const writable = fs.workspace.access === "rw";
 		out.push({ label: "workspace", source: fs.workspace.source, writable });
 		if (fs.workspace.gitDir) {
-			out.push({ label: "gitDir", source: fs.workspace.gitDir, writable });
+			out.push({
+				label: "gitDir",
+				source: fs.workspace.gitDir,
+				writable: writable && fs.workspace.gitAccess !== "ro",
+			});
 		}
 	}
 	if (fs?.runDir) {
@@ -206,6 +211,13 @@ function profileSources(profile: SandboxProfile): SourceBind[] {
 				writable: true,
 			});
 		}
+	}
+	if (fs?.brainSocket) {
+		out.push({
+			label: "brain socket dir",
+			source: fs.brainSocket.source,
+			writable: false,
+		});
 	}
 	if (profile.network?.mode === "proxy") {
 		out.push({
@@ -416,6 +428,16 @@ function checkSources(
 
 	const fleet = profile.filesystem?.fleetConfig;
 	if (fleet) {
+		for (const rel of fleet.tmpfs ?? []) {
+			const full = joinUnder(fleet.source, rel);
+			if (full === null || host.realpath(full) !== full) {
+				return refuse(
+					"path_not_canonical",
+					`fleet directory ${rel} is missing, leaves ${fleet.source} or is a symlink`,
+					"create it as a real directory",
+				);
+			}
+		}
 		for (const rel of fleet.writable) {
 			// The shared directory is the mount point, the private one the source.
 			for (const root of [fleet.source, fleet.privateState]) {
@@ -639,7 +661,7 @@ function buildMounts(
 		if (fs.workspace.gitDir) {
 			mount(
 				"gitDir",
-				fs.workspace.access,
+				fs.workspace.gitAccess ?? fs.workspace.access,
 				fs.workspace.gitDir,
 				SANDBOX_PATHS.gitDir,
 			);
@@ -682,6 +704,12 @@ function buildMounts(
 				),
 			);
 		}
+		for (const rel of [...(fs.fleetConfig.tmpfs ?? [])].sort()) {
+			after.push("--tmpfs", joinUnder(dest, rel) as string);
+		}
+	}
+	if (fs?.brainSocket) {
+		mount("brain socket dir", "ro", fs.brainSocket.source, SANDBOX_PATHS.brain);
 	}
 	if (profile.network?.mode === "proxy") {
 		mount(

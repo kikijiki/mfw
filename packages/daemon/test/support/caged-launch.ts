@@ -4,20 +4,18 @@ import net from "node:net";
 import { realLaunchSteps } from "../../src/containment/agent-launch.ts";
 import type { LauncherSteps } from "../../src/containment/agent-launch-run.ts";
 import { recordAttestation } from "../../src/containment/attestation-store.ts";
-import {
-	type CompileHost,
-	compileBwrap,
-} from "../../src/containment/compile-bwrap.ts";
+import type { CompileHost } from "../../src/containment/compile-bwrap.ts";
 import type { Check } from "../../src/containment/host-caps.ts";
 import type { PinIdentity } from "../../src/containment/pinned-binds.ts";
 import { collectProbe } from "../../src/containment/probe-collect.ts";
 import { probeOutcome } from "../../src/containment/probe-evaluate.ts";
 import {
 	buildProbePlan,
-	probeCommand,
+	compileSealedProbe,
 	probeToolchainTargets,
 	sandboxFingerprint,
 } from "../../src/containment/probe-run.ts";
+import { sealProbeRuntime } from "../../src/containment/probe-runtime.ts";
 import {
 	effectiveLimits,
 	memoryBytes,
@@ -90,17 +88,18 @@ export function cagedSteps(cage: CageConfig): LauncherSteps {
 
 	const attest = (async (req) => {
 		const profile = parseSandboxProfile(req.profile);
-		const bun = req.host.toolchain.resolved.find((b) => b.name === "bun");
-		if (!bun) throw new Error("no bun in the caged toolchain");
-		const compiled = compileBwrap(profile, probeCommand(bun.path), req.host);
-		if (!compiled.ok) {
+		const runtime = sealProbeRuntime();
+		const sealed = compileSealedProbe(profile, req.host, runtime);
+		if ("ok" in sealed) {
+			runtime.close();
 			return {
 				ok: false,
 				code: "compile_refused",
-				reason: compiled.reason,
-				fix: compiled.fix,
+				reason: sealed.reason,
+				fix: sealed.fix,
 			};
 		}
+		const { compiled } = sealed;
 		const limits = effectiveLimits(profile);
 		const server = net.createServer((s) => s.destroy());
 		await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -119,10 +118,12 @@ export function cagedSteps(cage: CageConfig): LauncherSteps {
 					nonce: randomBytes(16).toString("hex"),
 					loopbackPort: (server.address() as net.AddressInfo).port,
 					scope: "systemd",
+					sealedFds: sealed.sealedFds,
 				},
 			),
 			{
 				scope: "systemd",
+				sealed: runtime,
 				timeoutMs: 40_000,
 				readCgroup: () => ({
 					path: "/user.slice/caged.scope",
@@ -135,6 +136,7 @@ export function cagedSteps(cage: CageConfig): LauncherSteps {
 				},
 			},
 		);
+		runtime.close();
 		await new Promise<void>((r) => server.close(() => r()));
 		const outcome = probeOutcome(items);
 		const fingerprint = sandboxFingerprint(profile, compiled);

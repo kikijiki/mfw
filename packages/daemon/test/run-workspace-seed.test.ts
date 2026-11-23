@@ -28,13 +28,12 @@ async function tmp(base = tmpdir()): Promise<string> {
 	return d;
 }
 
+// Declared caches still travel by reflink.
 const REFLINK = await (async () => {
 	const d = await tmp();
 	await writeFile(join(d, "a"), "x".repeat(8192));
 	return (await reflinkCopy(join(d, "a"), join(d, "b"))).ok;
 })();
-if (!REFLINK) console.log("skip: filesystem cannot reflink; reflink tests off");
-const reflinkTest = REFLINK ? test : test.skip;
 const SHM = existsSync("/dev/shm");
 if (!SHM) console.log("skip: no /dev/shm; tmpfs link-count test off");
 const tmpfsTest = SHM ? test : test.skip;
@@ -119,8 +118,8 @@ async function files(dir: string): Promise<string[]> {
 const modeOf = async (p: string) => (await stat(p)).mode & 0o777;
 
 describe("seedWorkspace", () => {
-	for (const strategy of ["auto", "clone"] as const) {
-		test(`layout, tracked content only, minimal config (${strategy})`, async () => {
+	for (const history of ["full", "tip"] as const) {
+		test(`layout, tracked content only, minimal config (${history})`, async () => {
 			const f = await fixture();
 			const logs: string[] = [];
 			const r = await seedWorkspace({
@@ -128,14 +127,14 @@ describe("seedWorkspace", () => {
 				workspaceRoot: f.workspaces,
 				primaryRoot: f.primary,
 				baseSha: f.sha,
-				strategy,
+				history,
 				log: (m) => logs.push(m),
 			});
 			expect(r.dir).toBe(join(f.workspaces, "run1"));
 			expect(r.gitDir).toBe(join(r.dir, "git"));
 			expect(r.treeDir).toBe(join(r.dir, "tree"));
 			expect(logs.join("\n")).toContain(`strategy ${r.strategy}`);
-			if (strategy === "clone") expect(r.strategy).toBe("clone");
+			expect(r.strategy).toBe("pack");
 			for (const d of [f.workspaces, r.dir, r.gitDir, r.treeDir]) {
 				expect(await modeOf(d)).toBe(0o700);
 			}
@@ -158,13 +157,16 @@ describe("seedWorkspace", () => {
 
 			// the gitdir is minimal: no primary config, hooks, remote or other branches
 			const gitEntries = (await readdir(r.gitDir)).sort();
-			expect(gitEntries).toEqual([
-				"HEAD",
-				"config",
-				"index",
-				"objects",
-				"refs",
-			]);
+			expect(gitEntries).toEqual(
+				[
+					"HEAD",
+					"config",
+					"index",
+					"objects",
+					"refs",
+					...(history === "tip" ? ["shallow"] : []),
+				].sort(),
+			);
 			const cfg = await readFile(join(r.gitDir, "config"), "utf8");
 			expect(cfg).not.toMatch(/remote|fsmonitor|hook|url|user/);
 			const gd = { GIT_DIR: r.gitDir };
@@ -218,30 +220,26 @@ describe("seedWorkspace", () => {
 		expect(withDir.exitCode).toBe(0);
 	});
 
-	reflinkTest(
-		"auto picks a reflink copy and shares no inode with the primary",
-		async () => {
-			const f = await fixture();
-			const r = await seedWorkspace({
-				runId: "run1",
-				workspaceRoot: f.workspaces,
-				primaryRoot: f.primary,
-				baseSha: f.sha,
-			});
-			expect(r.strategy).toBe("reflink");
-			expect(r.strategyReason).toBe("reflink_ok");
-			const inodes = new Set<number>();
-			for (const p of await files(join(f.primary, ".git", "objects"))) {
-				inodes.add((await stat(p)).ino);
-			}
-			for (const p of await files(join(r.gitDir, "objects"))) {
-				expect(inodes.has((await stat(p)).ino)).toBe(false);
-			}
-		},
-	);
+	test("the new store shares no inode with the primary", async () => {
+		const f = await fixture();
+		const r = await seedWorkspace({
+			runId: "run1",
+			workspaceRoot: f.workspaces,
+			primaryRoot: f.primary,
+			baseSha: f.sha,
+		});
+		expect(r.strategyReason).toBe("reachable");
+		const inodes = new Set<number>();
+		for (const p of await files(join(f.primary, ".git", "objects"))) {
+			inodes.add((await stat(p)).ino);
+		}
+		for (const p of await files(join(r.gitDir, "objects"))) {
+			expect(inodes.has((await stat(p)).ino)).toBe(false);
+		}
+	});
 
 	tmpfsTest(
-		"on tmpfs the clone fallback leaves every object at link count 1",
+		"on tmpfs every object of the new store is at link count 1",
 		async () => {
 			const f = await fixture("/dev/shm");
 			const r = await seedWorkspace({
@@ -250,9 +248,6 @@ describe("seedWorkspace", () => {
 				primaryRoot: f.primary,
 				baseSha: f.sha,
 			});
-			// tmpfs cannot reflink: auto falls back, and says why
-			expect(r.strategy).toBe("clone");
-			expect(r.strategyReason).toStartWith("reflink_unavailable");
 			let count = 0;
 			for (const p of await files(join(r.gitDir, "objects"))) {
 				const st = await stat(p);

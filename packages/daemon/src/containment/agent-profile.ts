@@ -180,8 +180,8 @@ export function ensureFleetPrivateState(
 	tree: string,
 	cli: FleetCli,
 	fleetDir: string,
+	state: string = fleetPrivateState(tree, cli),
 ): void {
-	const state = fleetPrivateState(tree, cli);
 	for (const rel of TEMPORARY_FLEET_WRITABLE[cli]) {
 		mkdirSync(join(state, rel), { recursive: true, mode: 0o700 });
 		if (isRealDir(fleetDir)) {
