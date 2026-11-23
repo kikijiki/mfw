@@ -5,30 +5,12 @@ import { appendEvent, type EventBus } from "@mfw/db/eventlog";
 import { engineKv, type MergeJobState, mergeJobs, runs } from "@mfw/db/schema";
 import { and, asc, eq, inArray, lt } from "drizzle-orm";
 import { readProtectedBoardPaths } from "./board-layout.ts";
-import { gitComplete as plainGitComplete, git as plainGit } from "./git.ts";
+import { git, gitComplete } from "./git.ts";
 import { quarantineRef } from "./host-git/fetch.ts";
 import { hardenedPush } from "./host-git/push.ts";
+import { repoConfigRefusal } from "./host-git/repo-config.ts";
 import type { Logger } from "./log.ts";
 import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
-
-/**
- * Every git call here shares the primary's gitdir, whose hooks a merge would
- * otherwise fire (`pre-merge-commit`, `commit-msg`, `post-merge`, ...). The queue
- * needs none of them, so none run (backstage architecture.md, "Host-executed
- * paths").
- */
-const git: typeof plainGit = (args, cwd, opts) =>
-	plainGit(
-		["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args],
-		cwd,
-		opts,
-	);
-const gitComplete: typeof plainGitComplete = (args, cwd, opts) =>
-	plainGitComplete(
-		["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args],
-		cwd,
-		opts,
-	);
 
 /**
  * One FIFO worker per project, one in-flight job, merging into the recorded
@@ -767,6 +749,11 @@ export class MergeQueue {
 	): Promise<
 		{ status: "pushed" | "no-remote" } | { status: "error"; reason: string }
 	> {
+		const refused = await repoConfigRefusal(this.deps.projectRoot);
+		if (refused) {
+			await this.recordPushRefusal(branch, refused.message);
+			return { status: "error", reason: refused.message };
+		}
 		const remotes = await git(["remote"], this.deps.projectRoot);
 		if (remotes.exitCode !== 0) {
 			return {

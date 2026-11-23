@@ -20,6 +20,7 @@ import {
 	runDirLayout,
 	runStateRoot,
 } from "./containment/run-dir.ts";
+import { sandboxGitBinds } from "./host-git/repo-config.ts";
 import { runProc } from "./proc.ts";
 
 /**
@@ -354,6 +355,22 @@ export function bwrapCore(o: BwrapCoreOptions): string[] {
 		tokens.push("--bind", layout.outbox, layout.outbox);
 	}
 	for (const p of new Set(o.readOnly ?? [])) tokens.push("--ro-bind", p, p);
+	// The writable HOME must not reach the repository's gitdir: its config and
+	// hooks are what the host's git reads.
+	const gitBinds = sandboxGitBinds(o.cwd);
+	if (gitBinds) {
+		for (const p of gitBinds.writable) tokens.push("--bind", p, p);
+		for (const p of gitBinds.readOnly) tokens.push("--ro-bind", p, p);
+		for (const p of gitBinds.reopened) tokens.push("--bind", p, p);
+		// The worktree's links back to the primary stay fixed inside its gitdir.
+		for (const p of gitBinds.reopened.slice(0, 1)) {
+			for (const name of ["commondir", "gitdir"]) {
+				if (existsSync(join(p, name))) {
+					tokens.push("--ro-bind", join(p, name), join(p, name));
+				}
+			}
+		}
+	}
 	// After every writable bind, so a masked path under one overlays it.
 	for (const p of new Set([...(o.masks ?? []), ...o.isolation.hidePaths])) {
 		tokens.push("--tmpfs", p);

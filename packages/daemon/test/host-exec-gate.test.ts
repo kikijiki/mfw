@@ -331,12 +331,14 @@ describe("merges", () => {
 		const remote = join(base, "remote.git");
 		await gitOk(["init", "-q", "--bare", "-b", "main", remote], base);
 		await gitOk(["remote", "add", "origin", remote], root);
-		await gitOk(["config", "core.sshCommand", join(base, "evil-ssh")], root);
-		const q = queue({ enabled: true, remote: "origin" });
+		const q = queue({ enabled: false, remote: "origin" });
 		const tasks = await makeTasks(handle, bus, join(root, ".mfw"));
 		const box = new InboxService({ handle, project: "demo", tasks });
 
 		await landBranch(q, "mfw/one", "one.txt", "1\n");
+		q.setPushOnMerge(true);
+		await gitOk(["config", "core.sshCommand", join(base, "evil-ssh")], root);
+		await q.publishBranch("main");
 		const card = (await box.list()).find((i) => i.kind === "push_refused");
 		expect(card?.detail).toContain("core.sshcommand");
 		expect(card?.detail).toContain("Fix:");

@@ -1,5 +1,50 @@
+import { repoConfigRefusal } from "./host-git/repo-config.ts";
 import { runProc } from "./proc.ts";
 import { requireHostTool } from "./sandbox.ts";
+
+/**
+ * The hardened runner for host git in a repository the daemon did not create
+ * (backstage architecture.md, "Host-executed paths"). Each call refuses a
+ * repository config outside the allowlist, pins the keys below, and ignores
+ * `refs/replace`, so a planted replacement cannot forge what a commit contains.
+ */
+export const HOST_GIT_OVERRIDES: readonly string[] = [
+	"-c",
+	"core.hooksPath=/dev/null",
+	"-c",
+	"core.fsmonitor=false",
+	"-c",
+	"core.alternateRefsCommand=",
+	"-c",
+	"protocol.ext.allow=never",
+];
+
+export function hostGitEnv(
+	extra?: Record<string, string>,
+): Record<string, string> {
+	return {
+		...(process.env as Record<string, string>),
+		GIT_NO_REPLACE_OBJECTS: "1",
+		...extra,
+	};
+}
+
+/** These read or write the config itself, or create a repository: nothing to audit. */
+const UNAUDITED = new Set(["config", "init", "clone", "version"]);
+
+function subcommand(args: readonly string[]): string | undefined {
+	for (let i = 0; i < args.length; i++) {
+		const a = args[i] as string;
+		if (a === "-c" || a === "-C") i++;
+		else if (!a.startsWith("-")) return a;
+	}
+	return undefined;
+}
+
+async function refusal(args: string[], cwd: string): Promise<string | null> {
+	if (UNAUDITED.has(subcommand(args) ?? "")) return null;
+	return (await repoConfigRefusal(cwd))?.message ?? null;
+}
 
 /** Thin git helper: run a git command in a cwd, capture stdout/exit. */
 export async function git(
@@ -7,12 +52,14 @@ export async function git(
 	cwd: string,
 	opts: { env?: Record<string, string> } = {},
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+	const refused = await refusal(args, cwd);
+	if (refused) return { exitCode: 128, stdout: "", stderr: refused };
 	// Git is fast and bounded; a hung invocation must not wedge a finalize
 	// step, so it inherits runProc's mandatory timeout.
-	const r = await runProc([requireHostTool("git"), ...args], {
-		cwd,
-		...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
-	});
+	const r = await runProc(
+		[requireHostTool("git"), ...HOST_GIT_OVERRIDES, ...args],
+		{ cwd, env: hostGitEnv(opts.env) },
+	);
 	return {
 		exitCode: r.exitCode ?? -1,
 		stdout: r.stdout.trim(),
@@ -43,10 +90,12 @@ export async function gitComplete(
 	cwd: string,
 	opts: { env?: Record<string, string> } = {},
 ): Promise<string> {
-	const r = await runProc([requireHostTool("git"), ...args], {
-		cwd,
-		...(opts.env ? { env: { ...process.env, ...opts.env } } : {}),
-	});
+	const refused = await refusal(args, cwd);
+	if (refused) throw new Error(refused);
+	const r = await runProc(
+		[requireHostTool("git"), ...HOST_GIT_OVERRIDES, ...args],
+		{ cwd, env: hostGitEnv(opts.env) },
+	);
 	if (r.exitCode !== 0) {
 		throw new Error(
 			`git ${args[0]} failed (${r.exitCode ?? r.signalCode}): ${r.stderr.trim() || r.stdout.trim()}`,
