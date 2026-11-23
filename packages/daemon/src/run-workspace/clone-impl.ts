@@ -154,6 +154,11 @@ const PROTECTED_NAMES = new Set([
 
 /** A result changing more paths than this is refused rather than half-read. */
 export const MAX_RESULT_ENTRIES = 20_000;
+/** A whole tree may be far larger than a change; only its symlinks are kept. */
+const MAX_TREE_ENTRIES = 2_000_000;
+const MAX_TREE_SYMLINKS = 5_000;
+const MAX_LINK_HOPS = 40;
+const MAX_LINK_TARGET_BYTES = 4096;
 
 /**
  * The default bounds on a fetched result, checked in the bare repo with no
@@ -175,6 +180,7 @@ export async function validateRunResult(
 			{ maxRecords: MAX_RESULT_ENTRIES * 2 },
 			(record) => parts.push(record),
 		);
+		const addedLinks: string[] = [];
 		for (let i = 0; i + 1 < parts.length; i += 2) {
 			const meta = (parts[i] ?? "").split(" ");
 			const path = parts[i + 1] ?? "";
@@ -194,35 +200,100 @@ export async function validateRunResult(
 					`the run added a gitlink at ${JSON.stringify(path.slice(0, 120))}`,
 				);
 			}
-			if (newMode === MODE_SYMLINK) {
-				const target = await ctx.host.runOk(["cat-file", "-p", newSha], {
-					cwd: ctx.bareRepo,
-					repo: ctx.bareRepo,
-				});
-				if (symlinkEscapes(path, target.trimEnd())) {
-					throw new HostGitError(
-						"validation",
-						`the run added a symlink that leaves the tree: ${JSON.stringify(path.slice(0, 120))}`,
-					);
-				}
-			}
+			if (newMode === MODE_SYMLINK) addedLinks.push(path);
+		}
+		if (addedLinks.length > 0) {
+			await assertLinksStayInTree(ctx, ref, addedLinks);
 		}
 	}
 }
 
-/** True when a symlink at `path` pointing to `target` resolves outside the tree. */
-function symlinkEscapes(path: string, target: string): boolean {
-	if (target.startsWith("/")) return true;
-	const stack = dirname(path) === "." ? [] : dirname(path).split("/");
-	for (const part of target.split("/")) {
-		if (part === "" || part === ".") continue;
-		if (part === "..") {
-			if (stack.pop() === undefined) return true;
-		} else {
-			stack.push(part);
+/** Read a symlink's target exactly; a target past the output cap is refused. */
+async function readLinkTarget(
+	ctx: FetchValidationContext,
+	sha: string,
+): Promise<string> {
+	const r = await ctx.host.run(["cat-file", "-p", sha], {
+		cwd: ctx.bareRepo,
+		repo: ctx.bareRepo,
+		maxOutputBytes: MAX_LINK_TARGET_BYTES,
+	});
+	if (r.exitCode !== 0 || r.raw.truncated) {
+		throw new HostGitError("validation", "a symlink target cannot be read");
+	}
+	return r.raw.stdout;
+}
+
+/**
+ * Resolve each added symlink against the result tree, component by component
+ * and following the tree's other symlinks, as a checkout would. Refuses a
+ * target that leaves the tree, enters a `.git`, loops, or has a `..` after a
+ * symlink (its meaning then depends on where that link points).
+ */
+async function assertLinksStayInTree(
+	ctx: FetchValidationContext,
+	ref: string,
+	added: readonly string[],
+): Promise<void> {
+	const blobs = new Map<string, string>();
+	await ctx.host.records(
+		["ls-tree", "-r", "-z", "--full-tree", ref],
+		{ cwd: ctx.bareRepo, repo: ctx.bareRepo },
+		{ maxRecords: MAX_TREE_ENTRIES },
+		(record) => {
+			if (!record.startsWith(`${MODE_SYMLINK} `)) return;
+			const tab = record.indexOf("\t");
+			blobs.set(
+				record.slice(tab + 1),
+				record.slice(0, tab).split(" ")[2] ?? "",
+			);
+			if (blobs.size > MAX_TREE_SYMLINKS) {
+				throw new HostGitError(
+					"validation",
+					"the result has too many symlinks",
+				);
+			}
+		},
+	);
+	const targets = new Map<string, string>();
+	const targetOf = async (path: string): Promise<string> => {
+		const known = targets.get(path);
+		if (known !== undefined) return known;
+		const text = await readLinkTarget(ctx, blobs.get(path) as string);
+		targets.set(path, text);
+		return text;
+	};
+	for (const link of added) {
+		const refuse = (why: string): never => {
+			throw new HostGitError(
+				"validation",
+				`the run added a symlink that ${why}: ${JSON.stringify(link.slice(0, 120))}`,
+			);
+		};
+		const first = await targetOf(link);
+		if (first.startsWith("/")) refuse("leaves the tree");
+		const at = dirname(link) === "." ? [] : dirname(link).split("/");
+		const rest = first.split("/");
+		let hops = 0;
+		while (rest.length > 0) {
+			const part = rest.shift() as string;
+			if (part === "" || part === ".") continue;
+			if (part === "..") {
+				if (at.pop() === undefined) refuse("leaves the tree");
+				continue;
+			}
+			if (part.toLowerCase() === ".git") refuse("points into .git");
+			at.push(part);
+			const here = at.join("/");
+			if (!blobs.has(here)) continue;
+			if (rest.includes("..")) refuse("has .. after a symlink");
+			if (++hops > MAX_LINK_HOPS) refuse("loops");
+			const next = await targetOf(here);
+			if (next.startsWith("/")) refuse("leaves the tree");
+			at.pop();
+			rest.unshift(...next.split("/"));
 		}
 	}
-	return false;
 }
 
 /** The helper's ack for request `id`, or null while there is none (or it is for another request). */

@@ -351,3 +351,56 @@ describe("H2: a WIP ref name outside the pattern is refused before the primary",
 		expect(await b.refs()).toContain("refs/mfw/quarantine/r1");
 	});
 });
+
+describe("M2: symlink targets resolve against the result tree", () => {
+	const LINK = "120000";
+	async function verdict(links: Record<string, string>) {
+		const b = await bare();
+		const entries: [string, string, string][] = [
+			[EMPTY_MODE, "a.txt", b.one],
+			[EMPTY_MODE, "d/file.txt", b.one],
+		];
+		for (const [path, target] of Object.entries(links)) {
+			entries.push([LINK, path, await b.blob(target)]);
+		}
+		await b.commit(entries, b.ctx.headRef, b.base);
+		return refusal(validateRunResult(b.ctx, b.base));
+	}
+
+	test("a chain through a symlink cannot climb out", async () => {
+		expect(
+			await verdict({ "d/l1": "..", "d/l2": "l1/../../outside-secret" }),
+		).toBe("validation");
+	});
+
+	test("a target through a symlinked directory cannot climb out", async () => {
+		expect(await verdict({ "e/f/up": "../..", "e/f/out": "up/../x" })).toBe(
+			"validation",
+		);
+	});
+
+	test.each([
+		".git/config",
+		"d/.git/hooks/pre-commit",
+		"../.GIT/config",
+	])("a target inside %s is refused", async (target) => {
+		expect(await verdict({ "d/l": target })).toBe("validation");
+	});
+
+	test("a symlink loop is refused", async () => {
+		expect(await verdict({ "d/x": "y", "d/y": "x" })).toBe("validation");
+	});
+
+	test("ordinary relative links and chains still pass", async () => {
+		expect(
+			await verdict({
+				"d/up": "../a.txt",
+				"d/near": "file.txt",
+				"chain-a": "chain-b",
+				"chain-b": "d/file.txt",
+				"dir-link": "d",
+				through: "dir-link/file.txt",
+			}),
+		).toBeNull();
+	});
+});
