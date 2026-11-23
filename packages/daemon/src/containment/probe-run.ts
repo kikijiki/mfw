@@ -606,6 +606,9 @@ export async function attestSandbox(
 	} finally {
 		runtime.close();
 	}
+	// Bun owns a spawned child's descriptors and closes them when it finalizes
+	// the subprocess. These hold a 100 MB runtime, so that must not wait.
+	Bun.gc(true);
 	const outcome = probeOutcome(items);
 	// Of what actually ran, so a changed sandbox can never inherit this record.
 	const fingerprint = sandboxFingerprint(profile, compiled);
