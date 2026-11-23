@@ -4,31 +4,29 @@ import type { Orchestrator } from "@mfw/daemon/services";
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
 import { type GuardResult, jsonResponse } from "./auth-guard";
 
-const procedures = (
-	appRouter as unknown as {
-		_def: { procedures: Record<string, { _def: { type: string } }> };
-	}
-)._def.procedures;
+const PROCEDURE_LIST =
+	/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*(,[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*)*$/;
 
-/** True when the URL names a subscription, i.e. a long-lived SSE response. */
-export function isSubscriptionPath(
+/**
+ * Exactly `<endpoint>/<procedure>[,<procedure>...]`. tRPC finds the procedure
+ * by slicing the pathname, so it also serves other spellings (a case variant
+ * of the mount, a trailing slash, percent-encoding); none of them is ours.
+ */
+export function isCanonicalTrpcPath(
 	pathname: string,
 	endpoint: string,
 ): boolean {
 	const prefix = `${endpoint.replace(/\/$/, "")}/`;
-	if (!pathname.startsWith(prefix)) return false;
-	let names: string[];
-	try {
-		names = decodeURIComponent(pathname.slice(prefix.length)).split(",");
-	} catch {
-		return false;
-	}
-	return names.some((n) => procedures[n]?._def.type === "subscription");
+	return (
+		pathname.startsWith(prefix) &&
+		PROCEDURE_LIST.test(pathname.slice(prefix.length))
+	);
 }
 
 /**
  * Serve one authenticated tRPC request. The session's principal goes into the
- * context, and an SSE stream gets a signal that ends it on logout or expiry.
+ * context. Whether a response is a stream is read from the response itself,
+ * never guessed from the URL, and every stream ends with its session.
  */
 export async function serveTrpc(
 	req: Request,
@@ -37,6 +35,8 @@ export async function serveTrpc(
 		auth: AuthService;
 		endpoint: string;
 		orchestrator: () => Promise<Orchestrator>;
+		/** Replaces the tRPC handler (tests). */
+		handle?: (req: Request) => Promise<Response>;
 	},
 ): Promise<Response> {
 	if (!guarded.ok) return guarded.response;
@@ -46,67 +46,105 @@ export async function serveTrpc(
 			error: "unauthenticated",
 			message: "sign in to use the mfw API",
 		});
+	if (!isCanonicalTrpcPath(new URL(req.url).pathname, deps.endpoint))
+		return jsonResponse(404, { error: "not_found", message: "not found" });
 	const orchestrator = await deps.orchestrator();
-	const isStream = isSubscriptionPath(new URL(req.url).pathname, deps.endpoint);
-	const watch = isStream
-		? deps.auth.streamSignal(session.sessionId, req.signal)
-		: null;
-	const scoped = watch ? new Request(req, { signal: watch.signal }) : req;
-	const response = await fetchRequestHandler({
-		endpoint: deps.endpoint,
-		router: appRouter,
-		req: scoped,
-		createContext: () => ({ orchestrator, principal: session.principal }),
-		onError({ error, path }) {
-			console.error(`[mfw] tRPC error on '${path}':`, error.message);
-		},
+
+	// A body cannot be re-wrapped cheaply, and only GET opens a subscription.
+	const ac = new AbortController();
+	const forward = () => ac.abort();
+	const canWrap = req.method === "GET" || req.method === "HEAD";
+	if (canWrap) {
+		if (req.signal.aborted) ac.abort();
+		else req.signal.addEventListener("abort", forward, { once: true });
+	}
+	const scoped = canWrap ? new Request(req, { signal: ac.signal }) : req;
+
+	const response = await (deps.handle
+		? deps.handle(scoped)
+		: fetchRequestHandler({
+				endpoint: deps.endpoint,
+				router: appRouter,
+				req: scoped,
+				createContext: () => ({ orchestrator, principal: session.principal }),
+				onError({ error, path }) {
+					console.error(`[mfw] tRPC error on '${path}':`, error.message);
+				},
+			}));
+
+	const isStream = (response.headers.get("content-type") ?? "")
+		.toLowerCase()
+		.startsWith("text/event-stream");
+	if (!isStream || !response.body) {
+		req.signal.removeEventListener("abort", forward);
+		return response;
+	}
+	return endingWithSession(response, response.body, {
+		ac,
+		parent: req.signal,
+		forward,
+		watch: (onEnd) => deps.auth.watchSession(session.sessionId, onEnd),
 	});
-	return watch ? releasingWhenDone(response, watch) : response;
 }
 
 /**
- * Pass a stream through, ending it when the session ends and dropping the
- * session watch however it finishes (a client gone, the server done).
+ * Pass a stream through, closing it when the session ends and dropping the
+ * session watch however it finishes (client gone, server done).
  */
-function releasingWhenDone(
+function endingWithSession(
 	response: Response,
-	watch: { signal: AbortSignal; release: () => void },
+	source: ReadableStream<Uint8Array>,
+	o: {
+		ac: AbortController;
+		parent: AbortSignal;
+		forward: () => void;
+		watch: (onEnd: () => void) => () => void;
+	},
 ): Response {
-	if (!response.body) {
-		watch.release();
-		return response;
-	}
-	const reader = response.body.getReader();
+	const reader = source.getReader();
+	let closed = false;
+	let release = () => {};
+	const finish = () => {
+		closed = true;
+		release();
+		o.parent.removeEventListener("abort", o.forward);
+		o.parent.removeEventListener("abort", stop);
+		o.ac.abort();
+	};
+	let stop = () => {};
 	const body = new ReadableStream<Uint8Array>({
 		start(controller) {
-			watch.signal.addEventListener(
-				"abort",
-				() => {
-					void reader.cancel().catch(() => undefined);
-					try {
-						controller.close();
-					} catch {
-						// already closed
-					}
-				},
-				{ once: true },
-			);
+			stop = () => {
+				if (closed) return;
+				finish();
+				void reader.cancel().catch(() => undefined);
+				try {
+					controller.close();
+				} catch {
+					// already closed
+				}
+			};
+			release = o.watch(stop);
+			if (o.parent.aborted) stop();
+			else o.parent.addEventListener("abort", stop, { once: true });
 		},
 		async pull(controller) {
 			try {
 				const { done, value } = await reader.read();
-				if (watch.signal.aborted) return;
+				if (closed) return;
 				if (done) {
-					watch.release();
+					finish();
 					controller.close();
 				} else controller.enqueue(value);
 			} catch (e) {
-				watch.release();
-				if (!watch.signal.aborted) controller.error(e);
+				if (closed) return;
+				finish();
+				controller.error(e);
 			}
 		},
 		cancel(reason) {
-			watch.release();
+			if (closed) return;
+			finish();
 			return reader.cancel(reason);
 		},
 	});

@@ -298,23 +298,21 @@ export class AuthService {
 	}
 
 	/**
-	 * A signal for a long-lived response: aborts when `parent` does, at once on
-	 * revocation, and within one recheck of expiry. A failed recheck aborts too.
-	 * `release` ends the watch when the response finishes by itself.
+	 * Watch a long-lived response's session: `onEnd` runs once, at once on
+	 * revocation and within one recheck of expiry. A failed recheck ends it too.
+	 * The returned function stops the watch without calling `onEnd`.
 	 */
-	streamSignal(
-		sessionId: string,
-		parent: AbortSignal,
-	): { signal: AbortSignal; release: () => void } {
-		const ac = new AbortController();
+	watchSession(sessionId: string, onEnd: () => void): () => void {
 		const listeners = this.listeners.get(sessionId) ?? new Set<() => void>();
 		this.listeners.set(sessionId, listeners);
-		const end = () => {
+		const release = () => {
 			clearInterval(timer);
-			parent.removeEventListener("abort", end);
 			listeners.delete(end);
 			if (listeners.size === 0) this.listeners.delete(sessionId);
-			ac.abort();
+		};
+		const end = () => {
+			release();
+			onEnd();
 		};
 		const timer = setInterval(() => {
 			this.isSessionLive(sessionId).then((live) => {
@@ -323,9 +321,7 @@ export class AuthService {
 		}, this.streamRecheckMs);
 		(timer as unknown as { unref?: () => void }).unref?.();
 		listeners.add(end);
-		if (parent.aborted) end();
-		else parent.addEventListener("abort", end, { once: true });
-		return { signal: ac.signal, release: end };
+		return release;
 	}
 
 	/** Open stream watches (tests and status). */

@@ -223,41 +223,28 @@ describe("isAuthRefused", () => {
 	});
 });
 
-describe("stream signal", () => {
-	test("aborts at once on logout, and stops watching", async () => {
+describe("session watch", () => {
+	test("ends at once on logout, and stops watching", async () => {
 		const s = await owner();
-		const { signal } = auth.streamSignal(
-			s.sessionId,
-			new AbortController().signal,
-		);
-		expect(signal.aborted).toBe(false);
+		let ended = 0;
+		auth.watchSession(s.sessionId, () => ended++);
 		expect(auth.watchedStreams).toBe(1);
 		await auth.logout(s.token);
-		expect(signal.aborted).toBe(true);
+		expect(ended).toBe(1);
 		expect(auth.watchedStreams).toBe(0);
 	});
 
-	test("follows the parent", async () => {
+	test("release stops the watch without ending it", async () => {
 		const s = await owner();
-		const parent = new AbortController();
-		const { signal } = auth.streamSignal(s.sessionId, parent.signal);
-		parent.abort();
-		expect(signal.aborted).toBe(true);
-		expect(auth.watchedStreams).toBe(0);
-	});
-
-	test("release ends the watch", async () => {
-		const s = await owner();
-		const { signal, release } = auth.streamSignal(
-			s.sessionId,
-			new AbortController().signal,
-		);
+		let ended = 0;
+		const release = auth.watchSession(s.sessionId, () => ended++);
 		release();
-		expect(signal.aborted).toBe(true);
+		await auth.logout(s.token);
+		expect(ended).toBe(0);
 		expect(auth.watchedStreams).toBe(0);
 	});
 
-	test("aborts when the session expires", async () => {
+	test("ends when the session expires", async () => {
 		const quick = await AuthService.open(join(dir, "quick.db"), {
 			now: () => clock,
 			streamRecheckMs: 5,
@@ -265,16 +252,12 @@ describe("stream signal", () => {
 		try {
 			const token = (await quick.beginFirstRun()) as string;
 			const s = await quick.setup(token, PASSWORD);
-			const { signal } = quick.streamSignal(
-				s.sessionId,
-				new AbortController().signal,
+			const ended = new Promise<boolean>((done) =>
+				quick.watchSession(s.sessionId, () => done(true)),
 			);
 			clock += SESSION_IDLE_MS + 1;
-			const aborted = new Promise<boolean>((done) =>
-				signal.addEventListener("abort", () => done(true)),
-			);
 			expect(
-				await Promise.race([aborted, Bun.sleep(2000).then(() => false)]),
+				await Promise.race([ended, Bun.sleep(2000).then(() => false)]),
 			).toBe(true);
 		} finally {
 			quick.close();

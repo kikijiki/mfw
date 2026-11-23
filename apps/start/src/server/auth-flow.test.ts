@@ -238,6 +238,76 @@ describe("authenticated SSE", () => {
 	});
 });
 
+describe("stream lifetime (reviewer M1)", () => {
+	const orchestrator = {
+		usage: { subscribe: () => () => {}, snapshot: () => [] },
+	} as unknown as Orchestrator;
+	const open = async (path: string, cookie: string) => {
+		const req = new Request(`${ORIGIN}${path}`, {
+			headers: { host: "localhost:7777", cookie },
+		});
+		return serveTrpc(
+			req,
+			await guardRequest(req, { auth, base: "/", env: {} }),
+			{
+				auth,
+				endpoint: "/api/trpc",
+				orchestrator: async () => orchestrator,
+			},
+		);
+	};
+
+	for (const path of [
+		"/api/trpc/usage.changes/",
+		"/api/TRPC/usage.changes",
+		"/API/trpc/usage.changes",
+		"/api/trpc/usage%2Echanges",
+		"/api/trpc//usage.changes",
+	])
+		test(`refuses the non-canonical spelling ${path}`, async () => {
+			const token = (await auth.beginFirstRun()) as string;
+			const s = await auth.setup(token, PASSWORD);
+			const res = await open(path, `mfw_session=${s.token}`);
+			await res.body?.cancel();
+			expect(res.status).toBe(404);
+		});
+
+	test("any event-stream response ends on logout, whatever its URL", async () => {
+		const token = (await auth.beginFirstRun()) as string;
+		const s = await auth.setup(token, PASSWORD);
+		const req = new Request(`${ORIGIN}/api/trpc/system.projects`, {
+			headers: { host: "localhost:7777", cookie: `mfw_session=${s.token}` },
+		});
+		const res = await serveTrpc(
+			req,
+			await guardRequest(req, { auth, base: "/", env: {} }),
+			{
+				auth,
+				endpoint: "/api/trpc",
+				orchestrator: async () => orchestrator,
+				handle: async () =>
+					new Response(
+						new ReadableStream({
+							start(c) {
+								c.enqueue(new TextEncoder().encode(": open\n\n"));
+							},
+						}),
+						{ headers: { "content-type": "text/event-stream" } },
+					),
+			},
+		);
+		const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+		const first = await reader.read();
+		expect(new TextDecoder().decode(first.value)).toBe(": open\n\n");
+		await auth.logout(s.token);
+		const closed = await Promise.race([
+			reader.read().then((r) => r.done),
+			Bun.sleep(1500).then(() => false),
+		]);
+		expect(closed).toBe(true);
+	});
+});
+
 describe("safeNext", () => {
 	for (const bad of [
 		null,
