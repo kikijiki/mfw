@@ -5,6 +5,14 @@ import { join } from "node:path";
 import { gitComplete, gitOk } from "../src/git.ts";
 import { HostGit, HostGitError } from "../src/host-git/runner.ts";
 import { validateRunResult } from "../src/run-workspace/clone-impl.ts";
+import {
+	assessScope,
+	changedFilesInRef,
+	DEFAULT_SCOPE_POLICY,
+	finishScope,
+	MAX_SCOPE_PATHS,
+	scopeKill,
+} from "../src/scope-watchdog.ts";
 
 /** Regressions for the security review of the clone result path. */
 
@@ -178,4 +186,63 @@ describe("B1: a large diff cannot hide an entry from the validator", () => {
 			),
 		).rejects.toThrow("more output than the cap");
 	}, 60_000);
+});
+
+describe("H1: long paths cannot hide an out-of-scope edit", () => {
+	const longPaths = (n: number, sha: string): [string, string, string][] =>
+		Array.from({ length: n }, (_, i) => [
+			EMPTY_MODE,
+			`src/${"d".repeat(200)}/`.repeat(38) + `f-${i}`,
+			sha,
+		]);
+
+	test("a listing past the old 1 MiB tail still shows the outside file", async () => {
+		const b = await bare();
+		const head = await b.commit(
+			[
+				[EMPTY_MODE, "a.txt", b.one],
+				[EMPTY_MODE, "a-outside.txt", b.one],
+				...longPaths(140, b.one),
+			],
+			"refs/heads/run",
+			b.base,
+		);
+		const listed = await changedFilesInRef(b.repo, b.base, head);
+		expect(listed.truncated).toBe(false);
+		expect(listed.files).toContain("a-outside.txt");
+		expect(finishScope(["src/"], listed).outsideFiles).toContain(
+			"a-outside.txt",
+		);
+	}, 60_000);
+
+	test("a listing over the path cap is reported as truncated", async () => {
+		const b = await bare();
+		const head = await b.commit(
+			[[EMPTY_MODE, "a.txt", b.one], ...fillers(MAX_SCOPE_PATHS + 5, b.one)],
+			"refs/heads/run",
+			b.base,
+		);
+		const listed = await changedFilesInRef(b.repo, b.base, head);
+		expect(listed.truncated).toBe(true);
+	}, 60_000);
+
+	test("a truncated listing is a violation at finish, whatever it shows", () => {
+		const r = finishScope(["src/"], { files: ["src/a.ts"], truncated: true });
+		expect(r.outside).toBeGreaterThan(0);
+		expect(r.truncated).toBe(true);
+	});
+
+	test("a truncated listing warns live and kills in kill mode", () => {
+		const policy = { ...DEFAULT_SCOPE_POLICY, mode: "kill" as const };
+		const sample = assessScope(
+			["src/a.ts"],
+			{ owns: ["src/"], others: [] },
+			policy,
+			1,
+			true,
+		);
+		expect(sample.level).toBe("violation");
+		expect(scopeKill(sample, policy)).toBe("watchdog-files");
+		expect(scopeKill(sample, { ...policy, mode: "warn" })).toBeNull();
+	});
 });

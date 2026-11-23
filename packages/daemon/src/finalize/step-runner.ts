@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { access, lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { normalizeOwnsPattern, validateOwnsPattern } from "@mfw/board";
-import { filesOutsideOwns } from "@mfw/board-core";
 import type { BackgroundJob } from "@mfw/core/activity";
 import type { SettleClass } from "@mfw/core/events";
 import type { TaskStatus } from "@mfw/core/types";
@@ -62,6 +61,7 @@ import type { WorktreeReportIdentity } from "../run-workspace/run-workspace.ts";
 import {
 	changedFiles,
 	changedFilesInRef,
+	finishScope,
 	SCOPE_KILL_REASONS,
 	type ScopePolicy,
 } from "../scope-watchdog.ts";
@@ -312,6 +312,8 @@ interface ScopeCheckResult {
 	files: number;
 	outside: number;
 	outsideFiles: string[];
+	/** The listing did not fit: `outside` is at least 1 and the run goes to review. */
+	truncated?: boolean;
 }
 
 /** `archive_wip`: where a scope-killed run's work was saved (null = nothing beyond base). */
@@ -2032,7 +2034,10 @@ export class StepRunner {
 	private async scopeCheck(built: Built): Promise<ScopeCheckResult> {
 		const { run, task } = built;
 		const owns = task?.owns ?? [];
-		let files: string[] = [];
+		let listed: { files: string[]; truncated: boolean } = {
+			files: [],
+			truncated: false,
+		};
 		const wt = run.worktreePath;
 		const workspace = workspaceForRun(this.deps.projectRoot, run);
 		const present =
@@ -2049,37 +2054,22 @@ export class StepRunner {
 				baseSha: run.baseSha,
 			});
 			if (imported.sha) {
-				files = (
-					await changedFilesInRef(
-						this.deps.projectRoot,
-						run.baseSha,
-						imported.ref,
-					)
-				).files;
+				listed = await changedFilesInRef(
+					this.deps.projectRoot,
+					run.baseSha,
+					imported.ref,
+				);
 			}
 		} else if (present && wt && run.baseSha) {
-			files = (await changedFiles(wt, run.baseSha)).files;
+			listed = await changedFiles(wt, run.baseSha);
 		} else if (run.branch && run.baseSha) {
-			const diff = await git(
-				[
-					"diff",
-					"--name-only",
-					"--no-renames",
-					"-z",
-					`${run.baseSha}..${run.branch}`,
-				],
+			listed = await changedFilesInRef(
 				this.deps.projectRoot,
+				run.baseSha,
+				run.branch,
 			);
-			if (diff.exitCode !== 0)
-				throw new Error(`could not list the run's changes: ${diff.stderr}`);
-			files = diff.stdout.split("\0").filter(Boolean);
 		}
-		const outside = filesOutsideOwns(owns, files);
-		return {
-			files: files.length,
-			outside: outside.length,
-			outsideFiles: outside.slice(0, 20),
-		};
+		return finishScope(owns, listed);
 	}
 
 	private async clearStall(built: Built): Promise<unknown> {

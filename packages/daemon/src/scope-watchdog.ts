@@ -1,6 +1,6 @@
 import { filesOutsideOwns, ownsPath } from "@mfw/board-core";
 import { PROJECT_DEFAULTS } from "./config.ts";
-import { runProc } from "./proc.ts";
+import { runProcRecords } from "./proc.ts";
 
 /**
  * Diff-scope watchdog. While a local run works, the supervisor samples what
@@ -110,27 +110,36 @@ function isBookkeeping(path: string): boolean {
 }
 
 const GIT_TIMEOUT_MS = 10_000;
-const GIT_MAX_OUTPUT = 1024 * 1024;
+/** A longer path is not a path git can check out; it ends the listing as truncated. */
+const GIT_MAX_PATH_BYTES = 64 * 1024;
 
+/**
+ * Read a `-z` listing in full. It keeps the head and never a tail, and a
+ * listing past `MAX_SCOPE_PATHS` is reported as `truncated`.
+ */
 async function gitList(
 	args: string[],
 	cwd: string,
 ): Promise<{ paths: string[]; truncated: boolean }> {
-	const r = await runProc(["git", ...args], {
-		cwd,
-		env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-		timeoutMs: GIT_TIMEOUT_MS,
-		maxOutputBytes: GIT_MAX_OUTPUT,
-	});
+	const paths: string[] = [];
+	const r = await runProcRecords(
+		["git", ...args],
+		{
+			cwd,
+			env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+			timeoutMs: GIT_TIMEOUT_MS,
+			maxRecords: MAX_SCOPE_PATHS,
+			maxRecordBytes: GIT_MAX_PATH_BYTES,
+		},
+		(path) => paths.push(path),
+	);
+	if (r.overflow) return { paths: paths.filter(Boolean), truncated: true };
 	if (r.exitCode !== 0) {
 		throw new Error(
 			`git ${args[0]} failed (${r.exitCode ?? r.signalCode}): ${r.stderr.trim()}`,
 		);
 	}
-	const parts = r.stdout.split("\0").filter(Boolean);
-	// A tail-kept, truncated listing starts mid-path: drop the partial head.
-	if (r.truncated) parts.shift();
-	return { paths: parts, truncated: r.truncated };
+	return { paths: paths.filter(Boolean), truncated: false };
 }
 
 /**
@@ -180,6 +189,31 @@ export async function changedFilesInRef(
 	return { files, truncated: diff.truncated };
 }
 
+/** The most changed paths a scope listing reads; past it the listing is `truncated`. */
+export const MAX_SCOPE_PATHS = 20_000;
+
+/**
+ * The finish-time scope fact. A truncated listing cannot prove the run stayed
+ * in scope, so it counts as outside whatever the visible paths show.
+ */
+export function finishScope(
+	owns: readonly string[],
+	listed: { files: readonly string[]; truncated: boolean },
+): {
+	files: number;
+	outside: number;
+	outsideFiles: string[];
+	truncated?: true;
+} {
+	const outside = filesOutsideOwns(owns, [...listed.files]);
+	return {
+		files: listed.files.length,
+		outside: listed.truncated ? Math.max(outside.length, 1) : outside.length,
+		outsideFiles: outside.slice(0, LISTED),
+		...(listed.truncated ? { truncated: true as const } : {}),
+	};
+}
+
 /** Classify a changed-file set against the run's and other tasks' `owns`. */
 export function assessScope(
 	files: readonly string[],
@@ -201,7 +235,7 @@ export function assessScope(
 		if (owner) foreign.push({ path, taskId: owner.taskId });
 	}
 	const level: ScopeLevel =
-		files.length > policy.maxFiles || foreign.length > 0
+		truncated || files.length > policy.maxFiles || foreign.length > 0
 			? "violation"
 			: outside.length > 0
 				? "warn"
@@ -227,13 +261,16 @@ export function scopeKill(
 	if (policy.mode !== "kill") return null;
 	if (sample.foreign > 0 && policy.foreignOwned === "kill")
 		return "watchdog-scope";
-	if (sample.files > policy.maxFiles) return "watchdog-files";
+	// A listing that did not fit cannot show the run is within its limits.
+	if (sample.truncated || sample.files > policy.maxFiles) {
+		return "watchdog-files";
+	}
 	return null;
 }
 
 /** Counts identity: a sample is persisted only when this changes. */
 export function scopeSignature(sample: ScopeSample): string {
-	return `${sample.level}:${sample.files}:${sample.outside}:${sample.foreign}`;
+	return `${sample.level}:${sample.files}:${sample.outside}:${sample.foreign}:${sample.truncated ? 1 : 0}`;
 }
 
 /** Read `runs.scope_sample` back defensively (it is JSON from an older daemon too). */
