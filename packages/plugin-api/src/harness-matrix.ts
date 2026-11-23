@@ -139,7 +139,7 @@ export function renderHarnessMatrix(
 		"",
 		"## Autonomy flags",
 		"",
-		"An interactive launch carrying any of these is refused.",
+		"A non-autonomous launch may carry only the arguments mfw generates for that CLI. These are the second layer: a launch carrying any of them is refused.",
 		"",
 		...table(
 			["Harness", "Flags"],

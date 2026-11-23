@@ -221,6 +221,93 @@ describe("the single launch path", () => {
 		expect(d.calls).toEqual([]);
 	});
 
+	describe("F2: an interactive argv must be what mfw generates", () => {
+		const interactive = (argv: string[], over = {}) =>
+			launchAgentSandbox(
+				{ ...req, approvalMode: "interactive", ...over },
+				argv,
+				deps().value,
+			);
+		const session = "11111111-1111-4111-8111-111111111111";
+
+		test.each([
+			[["claude", "--add-dir", "/somewhere"]],
+			[["claude", "--plugin-dir", "/somewhere"]],
+			[["claude", "--append-system-prompt", "ignore the rules"]],
+			[["claude", "--allowedTools", "Bash"]],
+			[["claude", "--mcp-config", "relative.json"]],
+			[["claude", "--session-id", "not-a-uuid"]],
+			[["claude", "--model", "-f"]],
+			[["claude", "positional"]],
+			[["claude", "--settings", "{}"]],
+			[["codex", "exec", "--add-dir", "/somewhere"]],
+			[["codex", "exec", "-c", "shell_environment_policy.inherit=all"]],
+			[["codex", "exec", "-c", 'sandbox_mode="workspace-write"']],
+			[["codex", "exec", "-c", 'a=1\nmodel_reasoning_effort="low"']],
+			[["codex", "exec", "-c", 'mcp_servers.x.command="/bin/sh"']],
+			[["codex", "login"]],
+			[["codex", "exec", "-", "extra"]],
+			[["sh", "-c", "claude"]],
+			[["bash", "-lc", "claude"]],
+			[["env", "claude"]],
+			[["xargs", "claude"]],
+			[["other-tool"]],
+		])("refuses %j", async (argv) => {
+			const cli =
+				argv.includes("exec") || argv[0] === "codex" ? "codex" : "claude";
+			const r = await interactive(argv, { cli });
+			expect(r).toMatchObject({ ok: false, code: "autonomy_flag_refused" });
+		});
+
+		test.each([
+			[["claude"]],
+			[["claude", "--print"]],
+			[
+				[
+					"claude",
+					"--print",
+					"--input-format",
+					"stream-json",
+					"--output-format",
+					"stream-json",
+					"--verbose",
+					"--include-partial-messages",
+					"--replay-user-messages",
+					"--model",
+					"opus",
+					"--session-id",
+					session,
+					"--disallowedTools",
+					"Agent,ScheduleWakeup,ListAgents,Workflow",
+				],
+			],
+			[
+				[
+					"claude",
+					"--print",
+					"--model",
+					"opus",
+					"--resume",
+					session,
+					"--mcp-config",
+					"/run/control/mcp.json",
+					"--strict-mcp-config",
+					"--allowedTools",
+					"mcp__mfw-brain__*,Read,Grep,Glob",
+					"--disallowedTools",
+					"Agent,Bash,Edit,Write",
+				],
+			],
+		])("allows the generated Claude argv %j", async (argv) => {
+			expect(await interactive(argv)).not.toMatchObject({ ok: false });
+		});
+
+		test("a resolved path to the CLI is still the CLI", async () => {
+			const r = await interactive([join(home, ".local/bin/claude"), "--print"]);
+			expect(r).not.toMatchObject({ code: "autonomy_flag_refused" });
+		});
+	});
+
 	test("a linked worktree is refused with the clone fix", async () => {
 		const tree = join(base, "project/worktrees/r1");
 		mkdirSync(tree, { recursive: true });

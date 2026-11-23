@@ -1,9 +1,21 @@
 import type { HarnessAutonomy } from "./harness.ts";
 
 /**
- * Recognises the arguments that make an agent CLI act without asking. Pure and
- * table-driven: the table is {@link KNOWN_AUTONOMY} joined with what the loaded
- * manifests declare, so a manifest can add to it and can never remove from it.
+ * A DENYLIST of the arguments that make an agent CLI act without asking. It is
+ * defence in depth and cannot be complete: a vendor can add a spelling at any
+ * release. What keeps a non-autonomous launch honest is the POSITIVE check in
+ * `harness-launch.ts`, which refuses anything mfw did not generate.
+ *
+ * Covered here: exact flags, the name patterns below, `--opt=value`, attached
+ * short values (`-anever`), clustered short flags (`-yd`), case and `_`/`-`
+ * variants of long names and values, `-c` values read as TOML (quoted keys,
+ * triple quotes, comments, several lines), config indirection (`--settings`,
+ * `--profile`, `-c profile=`) and a command hidden behind a wrapper (`sh -c`,
+ * `env`, `xargs`). Not covered: what a config FILE or an environment variable
+ * turns on, and a bypass spelled in a way no rule here anticipates.
+ *
+ * The table is {@link KNOWN_AUTONOMY} joined with what the loaded manifests
+ * declare, so a manifest can add to it and can never remove from it.
  */
 
 export interface AutonomyTable {
@@ -88,6 +100,55 @@ export function looksAutonomous(arg: string): boolean {
 	return AUTONOMY_NAME_PATTERNS.some((re) => re.test(name ?? ""));
 }
 
+/** Options that load settings from elsewhere, so any value can grant autonomy. */
+const CONFIG_INDIRECTION: ReadonlySet<string> = new Set([
+	"--settings",
+	"--profile",
+]);
+
+/** `-c` roots that change approvals or the sandbox whatever their value. */
+const CONFIG_ROOTS: ReadonlySet<string> = new Set([
+	"profile",
+	"profiles",
+	"approvals_reviewer",
+	"sandbox_workspace_write",
+]);
+
+/** Programs that run another command, which hides that command's flags. */
+const WRAPPERS: ReadonlySet<string> = new Set([
+	"ash",
+	"bash",
+	"busybox",
+	"command",
+	"dash",
+	"doas",
+	"env",
+	"exec",
+	"fish",
+	"ionice",
+	"ksh",
+	"nice",
+	"nohup",
+	"setsid",
+	"sh",
+	"stdbuf",
+	"sudo",
+	"timeout",
+	"unshare",
+	"xargs",
+	"zsh",
+]);
+
+export function isWrapperCommand(command: string): boolean {
+	return WRAPPERS.has(command.slice(command.lastIndexOf("/") + 1));
+}
+
+/** A long option's name in one spelling; a short option is case-sensitive. */
+const optionName = (name: string) =>
+	name.startsWith("--") ? name.toLowerCase().replace(/_/g, "-") : name;
+
+const optionValue = (value: string) => value.toLowerCase().replace(/_/g, "-");
+
 export function buildAutonomyTable(
 	declared: readonly AutonomyData[],
 ): AutonomyTable {
@@ -101,9 +162,10 @@ export function buildAutonomyTable(
 		map.set(key, set);
 	};
 	for (const data of [KNOWN_AUTONOMY, ...declared]) {
-		for (const f of data.flags) flags.add(f);
-		for (const v of data.values) add(values, v.option, v.value);
-		for (const c of data.config) add(config, c.key, c.value);
+		for (const f of data.flags) flags.add(optionName(f));
+		for (const v of data.values)
+			add(values, optionName(v.option), optionValue(v.value));
+		for (const c of data.config) add(config, c.key, optionValue(c.value));
 		for (const o of data.configOptions) configOptions.add(o);
 	}
 	return { flags, values, config, configOptions };
@@ -111,11 +173,54 @@ export function buildAutonomyTable(
 
 const unquoted = (value: string) => value.trim().replace(/^["']|["']$/g, "");
 
+/** Every `dotted.key` and scalar value in a parsed TOML table. */
+function tomlLeaves(
+	value: unknown,
+	path: string[] = [],
+): [string[], unknown][] {
+	if (value === null || typeof value !== "object" || Array.isArray(value))
+		return [[path, value]];
+	return Object.entries(value).flatMap(([key, inner]) =>
+		tomlLeaves(inner, [...path, key]),
+	);
+}
+
+function settingGrantsAutonomy(
+	table: AutonomyTable,
+	path: readonly string[],
+	value: unknown,
+): boolean {
+	if (CONFIG_ROOTS.has(path[0] ?? "")) return true;
+	const wanted = table.config.get(path.join("."));
+	return (
+		typeof value === "string" && (wanted?.has(optionValue(value)) ?? false)
+	);
+}
+
+/**
+ * Read as TOML and also as the raw `key=value` text, because Codex takes a value
+ * that is not valid TOML as a plain string. Either reading can trip this.
+ */
 function isAutonomyConfig(table: AutonomyTable, setting: string): boolean {
 	const at = setting.indexOf("=");
 	if (at < 0) return false;
-	const wanted = table.config.get(setting.slice(0, at).trim());
-	return wanted?.has(unquoted(setting.slice(at + 1))) ?? false;
+	const key = unquoted(setting.slice(0, at));
+	if (
+		settingGrantsAutonomy(
+			table,
+			key.split("."),
+			unquoted(setting.slice(at + 1)),
+		)
+	)
+		return true;
+	try {
+		return tomlLeaves(Bun.TOML.parse(setting)).some(([path, value]) =>
+			settingGrantsAutonomy(table, path, value),
+		);
+	} catch {
+		// Several lines that do not parse cannot be read, so they cannot be cleared.
+		return setting.includes("\n");
+	}
 }
 
 /** How many arguments at `i` grant autonomy: 0, 1, or 2 for an option and value. */
@@ -125,30 +230,45 @@ function autonomySpan(
 	i: number,
 ): number {
 	const arg = argv[i] as string;
+	if (i === 0 && isWrapperCommand(arg)) return 1;
 	const eqAt = arg.indexOf("=");
-	if (table.flags.has(eqAt < 0 ? arg : arg.slice(0, eqAt))) return 1;
+	const name = optionName(eqAt < 0 ? arg : arg.slice(0, eqAt));
 	const next = argv[i + 1];
+	if (table.flags.has(name)) return 1;
+	if (CONFIG_INDIRECTION.has(name)) {
+		return eqAt < 0 && next !== undefined && !next.startsWith("-") ? 2 : 1;
+	}
 	if (looksAutonomous(arg)) {
 		// `--auto-approve true`: the value goes with the flag.
 		return eqAt < 0 && next !== undefined && /^(true|yes|1)$/i.test(next)
 			? 2
 			: 1;
 	}
-	const wanted = table.values.get(arg);
+	const wanted = table.values.get(name);
 	if (wanted) {
-		return next !== undefined && wanted.has(unquoted(next)) ? 2 : 0;
+		if (eqAt >= 0)
+			return wanted.has(optionValue(unquoted(arg.slice(eqAt + 1)))) ? 1 : 0;
+		return next !== undefined && wanted.has(optionValue(unquoted(next)))
+			? 2
+			: 0;
 	}
-	if (table.configOptions.has(arg)) {
+	if (table.configOptions.has(name)) {
+		if (eqAt >= 0) return isAutonomyConfig(table, arg.slice(eqAt + 1)) ? 1 : 0;
 		return next !== undefined && isAutonomyConfig(table, next) ? 2 : 0;
 	}
-	if (eqAt < 0) return 0;
-	const name = arg.slice(0, eqAt);
-	const value = arg.slice(eqAt + 1);
-	const wantedValue = table.values.get(name);
-	if (wantedValue) return wantedValue.has(unquoted(value)) ? 1 : 0;
-	return table.configOptions.has(name) && isAutonomyConfig(table, value)
-		? 1
-		: 0;
+	if (!/^-[A-Za-z]./.test(arg)) return 0;
+	// A short option with its value attached: `-anever`, `-capproval_policy=never`.
+	const short = arg.slice(0, 2);
+	const attached = arg.slice(2);
+	const shortValues = table.values.get(short);
+	if (shortValues?.has(optionValue(unquoted(attached)))) return 1;
+	if (table.configOptions.has(short) && isAutonomyConfig(table, attached))
+		return 1;
+	// A cluster of short switches: `-yd`, `-fp`.
+	if (/^-[A-Za-z]{2,}$/.test(arg))
+		for (const letter of arg.slice(1))
+			if (table.flags.has(`-${letter}`)) return 1;
+	return 0;
 }
 
 export function findAutonomyFlags(
