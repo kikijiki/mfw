@@ -68,6 +68,12 @@ const trim = (s: string | undefined) => s?.trim();
 /** The oldest bwrap with `--disable-userns`. */
 export const BWRAP_MIN_VERSION = "0.8.0";
 
+/**
+ * The first upstream release with `--bind-fd` and `--ro-bind-fd`. Distributions
+ * backported them to older versions, so `--help` is checked first.
+ */
+export const BWRAP_BIND_FD_MIN_VERSION = "0.10.0";
+
 /** Controllers the limits need delegated to the user manager. */
 export const REQUIRED_CONTROLLERS = ["cpu", "memory", "pids"] as const;
 
@@ -134,10 +140,21 @@ export async function detectUserns(
 export interface BwrapValue {
 	version?: string;
 	disableUserns: boolean;
+	/** Whether `--help` lists `--bind-fd` and `--ro-bind-fd`; absent if unreadable. */
+	bindFd?: boolean;
 }
 
 export function parseBwrapVersion(out: string): string | undefined {
 	return /(\d+\.\d+\.\d+)/.exec(out)?.[1];
+}
+
+/** Help output wins, because of backports; otherwise the version decides. */
+export function bwrapSupportsBindFd(value: BwrapValue): boolean {
+	if (value.bindFd !== undefined) return value.bindFd;
+	return (
+		value.version !== undefined &&
+		versionAtLeast(value.version, BWRAP_BIND_FD_MIN_VERSION)
+	);
 }
 
 /** True when `a` is at least `b`; both are `x.y.z`. */
@@ -172,6 +189,15 @@ export async function detectBwrap(
 	const disableUserns =
 		help?.stdout.includes("--disable-userns") === true ||
 		(version !== undefined && versionAtLeast(version, BWRAP_MIN_VERSION));
+	const helpText = help?.code === 0 ? help.stdout : undefined;
+	const bindFd =
+		helpText === undefined
+			? undefined
+			: helpText.includes("--bind-fd") && helpText.includes("--ro-bind-fd");
+	const value: BwrapValue =
+		bindFd === undefined
+			? { version, disableUserns }
+			: { version, disableUserns, bindFd };
 	if (
 		!disableUserns ||
 		(version && !versionAtLeast(version, BWRAP_MIN_VERSION))
@@ -179,7 +205,7 @@ export async function detectBwrap(
 		return {
 			ok: false,
 			severity,
-			value: { version, disableUserns },
+			value,
 			detail: `bwrap ${version ?? "(unknown version)"} lacks --disable-userns`,
 			fix: `upgrade bubblewrap to ${BWRAP_MIN_VERSION} or newer`,
 		};
@@ -187,7 +213,7 @@ export async function detectBwrap(
 	return {
 		ok: true,
 		severity,
-		value: { version, disableUserns },
+		value,
 		detail: `bwrap ${version}`,
 	};
 }

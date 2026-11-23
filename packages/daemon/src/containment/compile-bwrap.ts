@@ -18,20 +18,25 @@
  * fleet config, which keep their own access mode.
  *
  * bwrap follows a bind source that is a symlink, so every profile source must
- * already be its own real path. The caller passes the returned seccomp bytes
- * as the child's fd 3 and the returned options as its fd 4.
+ * already be its own real path, and is mounted from a descriptor opened at
+ * launch (`--bind-fd`, see pinned-binds.ts). The caller passes the returned
+ * seccomp bytes as the child's fd 3, the options as its fd 4, and each entry
+ * of `pinnedBinds` on exactly its `fd`.
  */
 
 import { posix } from "node:path";
 import { egressClientEnv } from "./egress-env.ts";
-import type {
-	Arch,
-	BwrapValue,
-	Check,
-	SystemdUserValue,
-	UsernsValue,
+import {
+	type Arch,
+	BWRAP_BIND_FD_MIN_VERSION,
+	type BwrapValue,
+	bwrapSupportsBindFd,
+	type Check,
+	type SystemdUserValue,
+	type UsernsValue,
 } from "./host-caps.ts";
 import { planLimits } from "./limits.ts";
+import type { PinnedBind } from "./pinned-binds.ts";
 import {
 	effectiveLimits,
 	ProfileRejectedError,
@@ -64,6 +69,9 @@ const EMPTY_PATH = "/nonexistent";
 
 /** The child's descriptor for the bwrap options (3 is the seccomp program). */
 export const BWRAP_ARGS_FD = 4;
+
+/** The child's first descriptor for a pinned bind source. */
+export const FIRST_PINNED_FD = 5;
 
 export interface CompileHost {
 	caps: {
@@ -115,6 +123,8 @@ export interface CompiledSandbox {
 	seccomp: Buffer;
 	/** NUL-terminated bwrap options, including env values. Pass as the child's fd 4. */
 	bwrapArgs: Buffer;
+	/** Sources to open at launch and pass on exactly these child descriptors. */
+	pinnedBinds: PinnedBind[];
 	/** The environment set inside the sandbox, for the audit trail. */
 	env: Record<string, string>;
 	cwd: string;
@@ -197,6 +207,13 @@ function checkHost(host: CompileHost): CompileRefusal | null {
 				check.fix ?? "run `mfw doctor`",
 			);
 		}
+	}
+	if (!bwrapSupportsBindFd(host.caps.bwrap.value)) {
+		return refuse(
+			"host_unsupported",
+			`bwrap ${host.caps.bwrap.value.version ?? "(unknown version)"} lacks --bind-fd and --ro-bind-fd, so bind sources cannot be pinned`,
+			`upgrade bubblewrap to ${BWRAP_BIND_FD_MIN_VERSION} or newer`,
+		);
 	}
 	for (const [name, p] of [
 		["bwrapPath", host.bwrapPath],
@@ -493,8 +510,19 @@ function buildEnv(
 function buildMounts(
 	profile: SandboxProfile,
 	host: CompileHost,
-): { before: string[]; after: string[] } {
+): { before: string[]; after: string[]; pinnedBinds: PinnedBind[] } {
 	const fs = profile.filesystem;
+	const pinnedBinds: PinnedBind[] = [];
+	const pin = (
+		label: string,
+		writable: boolean,
+		source: string,
+		dest: string,
+	): string[] => {
+		const fd = FIRST_PINNED_FD + pinnedBinds.length;
+		pinnedBinds.push({ fd, source, dest, writable, label });
+		return [writable ? "--bind-fd" : "--ro-bind-fd", String(fd), dest];
+	};
 	const before: string[] = [
 		"--proc",
 		"/proc",
@@ -517,36 +545,64 @@ function buildMounts(
 	if (fs?.scratch) before.push("--tmpfs", SANDBOX_PATHS.scratch);
 
 	const after: string[] = [];
-	const mount = (access: "ro" | "rw", src: string, dest: string) => {
+	const mount = (
+		label: string,
+		access: "ro" | "rw",
+		src: string,
+		dest: string,
+	) => {
 		before.push("--dir", dest);
-		after.push(access === "rw" ? "--bind" : "--ro-bind", src, dest);
+		after.push(...pin(label, access === "rw", src, dest));
 	};
 	if (fs?.workspace) {
-		mount(fs.workspace.access, fs.workspace.source, SANDBOX_PATHS.workspace);
+		mount(
+			"workspace",
+			fs.workspace.access,
+			fs.workspace.source,
+			SANDBOX_PATHS.workspace,
+		);
 		if (fs.workspace.gitDir) {
-			mount(fs.workspace.access, fs.workspace.gitDir, SANDBOX_PATHS.gitDir);
+			mount(
+				"gitDir",
+				fs.workspace.access,
+				fs.workspace.gitDir,
+				SANDBOX_PATHS.gitDir,
+			);
 		}
 	}
 	for (const c of fs?.caches ?? []) {
-		mount(c.access, c.source, `${SANDBOX_PATHS.caches}/${c.name}`);
+		mount(
+			`cache ${c.name}`,
+			c.access,
+			c.source,
+			`${SANDBOX_PATHS.caches}/${c.name}`,
+		);
 	}
 	if (fs?.fleetConfig) {
 		const dest = `${SANDBOX_PATHS.fleet}/${fs.fleetConfig.cli}`;
-		mount("ro", fs.fleetConfig.source, dest);
+		mount("fleet config", "ro", fs.fleetConfig.source, dest);
 		// Sorted, so a parent is mounted before its children.
 		for (const rel of [...fs.fleetConfig.writable].sort()) {
 			after.push(
-				"--bind",
-				// checkSources refused any path that leaves the source.
-				joinUnder(fs.fleetConfig.source, rel) as string,
-				joinUnder(dest, rel) as string,
+				...pin(
+					`fleet directory ${rel}`,
+					true,
+					// checkSources refused any path that leaves the source.
+					joinUnder(fs.fleetConfig.source, rel) as string,
+					joinUnder(dest, rel) as string,
+				),
 			);
 		}
 	}
 	if (profile.network?.mode === "proxy") {
-		mount("ro", profile.network.socketDir, SANDBOX_PATHS.egress);
+		mount(
+			"egress socket dir",
+			"ro",
+			profile.network.socketDir,
+			SANDBOX_PATHS.egress,
+		);
 	}
-	return { before, after };
+	return { before, after, pinnedBinds };
 }
 
 /**
@@ -621,7 +677,7 @@ export function compileBwrap(
 	const cwd = profile.filesystem?.workspace
 		? SANDBOX_PATHS.workspace
 		: SANDBOX_PATHS.home;
-	const { before, after } = buildMounts(profile, host);
+	const { before, after, pinnedBinds } = buildMounts(profile, host);
 	const setenv = Object.keys(env)
 		.sort()
 		.flatMap((k) => ["--setenv", k, env[k] as string]);
@@ -671,6 +727,7 @@ export function compileBwrap(
 		],
 		seccomp,
 		bwrapArgs: Buffer.from(options.map((o) => `${o}\0`).join("")),
+		pinnedBinds,
 		env,
 		cwd,
 	};

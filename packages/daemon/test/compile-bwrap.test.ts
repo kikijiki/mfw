@@ -276,29 +276,38 @@ describe("argv snapshots", () => {
 			"/run/mfw/egress",
 			"--remount-ro",
 			"/",
-			"--bind",
-			`${R}/work`,
+			"--bind-fd",
+			"5",
 			"/work",
-			"--bind",
-			`${R}/git`,
+			"--bind-fd",
+			"6",
 			"/git",
-			"--ro-bind",
-			`${R}/cargo`,
+			"--ro-bind-fd",
+			"7",
 			"/cache/cargo",
-			"--ro-bind",
-			`${R}/fleet`,
+			"--ro-bind-fd",
+			"8",
 			"/fleet/codex",
-			"--bind",
-			`${R}/fleet/cache`,
+			"--bind-fd",
+			"9",
 			"/fleet/codex/cache",
-			"--bind",
-			`${R}/fleet/sessions`,
+			"--bind-fd",
+			"10",
 			"/fleet/codex/sessions",
-			"--ro-bind",
-			`${R}/egress`,
+			"--ro-bind-fd",
+			"11",
 			"/run/mfw/egress",
 			"--remount-ro",
 			"/run",
+		]);
+		expect(r.pinnedBinds.map((p) => [p.fd, p.source, p.writable])).toEqual([
+			[5, `${R}/work`, true],
+			[6, `${R}/git`, true],
+			[7, `${R}/cargo`, false],
+			[8, `${R}/fleet`, false],
+			[9, `${R}/fleet/cache`, true],
+			[10, `${R}/fleet/sessions`, true],
+			[11, `${R}/egress`, false],
 		]);
 		expect(r.argv.slice(-5)).toEqual([
 			"--chdir",
@@ -346,7 +355,51 @@ describe("argv snapshots", () => {
 			withFs({ workspace: { source: `${R}/work`, access: "ro" } }),
 		);
 		expect(argv).not.toContain("--bind");
-		expect(argv).toContain("--ro-bind");
+		expect(argv).not.toContain("--bind-fd");
+		expect(argv).toContain("--ro-bind-fd");
+	});
+
+	test("a cast reviewer with a writable workspace does not compile", () => {
+		const forged = {
+			version: 1,
+			role: "reviewer",
+			filesystem: { workspace: { source: `${R}/work`, access: "rw" } },
+		} as unknown as SandboxProfile;
+		const r = compileBwrap(forged, ["agent"], host());
+		expect(r.ok).toBe(false);
+		if (!r.ok) expect(r.code).toBe("invalid_profile");
+	});
+
+	test("no profile source is bound by path", () => {
+		const { argv } = compiled(full());
+		for (const dir of ["work", "git", "cargo", "fleet", "egress"]) {
+			expect(argv).not.toContain(`${R}/${dir}`);
+		}
+	});
+
+	test.each([
+		["an old bwrap", { version: "0.9.0", disableUserns: true }],
+		[
+			"help without the flag",
+			{ version: "0.11.0", disableUserns: true, bindFd: false },
+		],
+		["an unknown version", { disableUserns: true }],
+	])("refuses %s, which cannot pin binds", (_name, value) => {
+		const h = host();
+		h.caps.bwrap = pass(value);
+		const r = refusal(minimal(), h);
+		expect(r.code).toBe("host_unsupported");
+		expect(r.fix).toContain("0.10.0");
+	});
+
+	test("accepts an older version whose help lists the backported flags", () => {
+		const h = host();
+		h.caps.bwrap = pass({
+			version: "0.8.0",
+			disableUserns: true,
+			bindFd: true,
+		});
+		expect(compileBwrap(minimal(), ["agent"], h).ok).toBe(true);
 	});
 
 	test("/run is remounted read-only after the egress bind", () => {
@@ -366,7 +419,7 @@ describe("argv snapshots", () => {
 	test("every writable bind comes after the root is remounted read-only", () => {
 		const { argv } = compiled(full());
 		const remount = argv.indexOf("--remount-ro");
-		expect(argv.indexOf("--bind")).toBeGreaterThan(remount);
+		expect(argv.indexOf("--bind-fd")).toBeGreaterThan(remount);
 	});
 
 	test("no env value reaches the process argv", () => {

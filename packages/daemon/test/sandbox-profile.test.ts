@@ -5,6 +5,7 @@ import {
 	MINIMAL_LIMITS,
 	memoryBytes,
 	narrowProfile,
+	PROFILE_ROLES,
 	ProfileRejectedError,
 	parseSandboxProfile,
 	type SandboxProfile,
@@ -226,6 +227,119 @@ describe("schema", () => {
 	test("memoryBytes", () => {
 		expect(memoryBytes("512M")).toBe(512 * 1024 ** 2);
 		expect(memoryBytes("2G")).toBe(2 * 1024 ** 3);
+	});
+});
+
+describe("role ceilings", () => {
+	const WRITING = ["task", "repair", "verifier", "merge-verify"] as const;
+	const READ_ONLY = ["reviewer", "plan", "import", "brain", "trigger"] as const;
+
+	const roFs = {
+		workspace: { source: "/r/work", gitDir: "/r/git", access: "ro" },
+		scratch: "tmpfs",
+		caches: [{ name: "cargo", source: "/r/cargo", access: "ro" }],
+		fleetConfig: { cli: "codex", source: "/r/fleet", writable: [] },
+	};
+	const withRole = (role: string, filesystem: unknown = roFs) => ({
+		version: 1,
+		role,
+		filesystem,
+	});
+
+	test("every role is classified", () => {
+		expect([...WRITING, ...READ_ONLY].sort()).toEqual(
+			[...PROFILE_ROLES].sort(),
+		);
+	});
+
+	test.each([...WRITING])("%s may hold every writable grant", (role) => {
+		const p = parseSandboxProfile({ ...base(), role });
+		expect(p.filesystem?.workspace?.access).toBe("rw");
+		expect(p.filesystem?.fleetConfig?.writable).toEqual(["sessions", "cache"]);
+	});
+
+	describe.each([...READ_ONLY])("%s", (role) => {
+		test("accepts a read-only profile with a tmpfs scratch", () => {
+			const p = parseSandboxProfile(withRole(role));
+			expect(p.filesystem?.workspace?.access).toBe("ro");
+		});
+
+		test("accepts no filesystem at all", () => {
+			expect(parseSandboxProfile({ version: 1, role }).role).toBe(role);
+		});
+
+		test("rejects a writable workspace", () => {
+			rejects(
+				withRole(role, {
+					...roFs,
+					workspace: { ...roFs.workspace, access: "rw" },
+				}),
+			);
+		});
+
+		test("rejects a writable cache", () => {
+			rejects(
+				withRole(role, {
+					...roFs,
+					caches: [{ name: "cargo", source: "/r/cargo", access: "rw" }],
+				}),
+			);
+		});
+
+		test("rejects writable fleet directories", () => {
+			rejects(
+				withRole(role, {
+					...roFs,
+					fleetConfig: { ...roFs.fleetConfig, writable: ["sessions"] },
+				}),
+			);
+		});
+
+		test("a narrowing cannot widen it", () => {
+			const p = parseSandboxProfile(withRole(role));
+			for (const input of [
+				{ workspaceAccess: "rw" },
+				{ role: "task" },
+				{ fleetWritable: ["sessions"] },
+				{ readOnlyCaches: ["other"] },
+			]) {
+				expect(() => narrowProfile(p, input)).toThrow(ProfileRejectedError);
+			}
+			const narrowed = narrowProfile(p, {
+				workspaceAccess: "ro",
+				readOnlyCaches: ["cargo"],
+				fleetWritable: [],
+			});
+			expect(narrowed.role).toBe(role);
+			expect(narrowed.filesystem?.workspace?.access).toBe("ro");
+			expect(narrowed.filesystem?.fleetConfig?.writable).toEqual([]);
+		});
+
+		test("a cast cannot carry a writable grant past a re-parse", () => {
+			const p = parseSandboxProfile(withRole(role));
+			const forged = structuredClone(p) as SandboxProfile;
+			(forged.filesystem?.workspace as { access: string }).access = "rw";
+			expect(() => narrowProfile(forged, {})).toThrow(ProfileRejectedError);
+		});
+	});
+
+	test("the brain keeps its egress while read-only", () => {
+		const p = parseSandboxProfile({
+			...withRole("brain"),
+			network: { mode: "proxy", socketDir: "/r/egress" },
+		});
+		expect(p.network?.mode).toBe("proxy");
+	});
+
+	test("a writing role narrowed to read-only stays valid", () => {
+		const n = narrowProfile(base(), {
+			workspaceAccess: "ro",
+			readOnlyCaches: ["cargo", "npm"],
+			fleetWritable: [],
+		});
+		expect(parseSandboxProfile({ ...n, role: "reviewer" }).role).toBe(
+			"reviewer",
+		);
 	});
 });
 
