@@ -255,6 +255,13 @@ function checkSeccomp(o: ProbeObservations, e: ProbeExpectation): Verdict {
 	}
 	if (!o.syscallControl) return "the syscall control failed";
 	if (e.syscalls.length === 0) return "no syscalls were planned";
+	// Exactly one entry per planned name, or a right answer could hide a wrong one.
+	const names = o.syscalls.map((s) => s.name);
+	const repeated = names.filter((n, i) => names.indexOf(n) !== i);
+	if (repeated.length) return `reported twice: ${list(repeated)}`;
+	const planned = new Set(e.syscalls.map((s) => s.name));
+	const unplanned = names.filter((n) => !planned.has(n));
+	if (unplanned.length) return `not planned: ${list(unplanned)}`;
 	const got = new Map(o.syscalls.map((s) => [s.name, s.errno]));
 	const wrong = e.syscalls
 		.filter((s) => got.get(s.name) !== s.expect)

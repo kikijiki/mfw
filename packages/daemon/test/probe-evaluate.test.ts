@@ -235,6 +235,27 @@ const NEGATIVES: Negative[] = [
 	},
 	{
 		item: "seccomp_eperm",
+		name: "a wrong result hidden by a later right one",
+		weaken: (o) => {
+			o.syscalls.unshift({ name: "bpf", errno: 22 });
+		},
+	},
+	{
+		item: "seccomp_eperm",
+		name: "a syscall reported twice",
+		weaken: (o) => {
+			o.syscalls.push({ name: "bpf", errno: 1 });
+		},
+	},
+	{
+		item: "seccomp_eperm",
+		name: "a syscall that was not planned",
+		weaken: (o) => {
+			o.syscalls.push({ name: "getpid", errno: 1 });
+		},
+	},
+	{
+		item: "seccomp_eperm",
 		name: "no filter is installed",
 		weaken: (o) => {
 			o.proc.seccomp = "0";
