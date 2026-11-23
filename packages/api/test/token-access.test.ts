@@ -367,6 +367,38 @@ describe("write rules", () => {
 	});
 });
 
+describe("API errors", () => {
+	test("never carry a stack, whatever NODE_ENV says", async () => {
+		const saved = process.env.NODE_ENV;
+		try {
+			for (const value of [undefined, "development", "test"]) {
+				if (value === undefined) delete process.env.NODE_ENV;
+				else process.env.NODE_ENV = value;
+				const res = await fetchRequestHandler({
+					endpoint: "/trpc",
+					router: appRouter,
+					req: new Request(
+						`http://localhost/trpc/settings.get?input=${encodeURIComponent(JSON.stringify({ json: { project: "a" } }))}`,
+					),
+					createContext: () => ({
+						orchestrator,
+						principal: token(["status:read"]),
+						tokenAudit: sink(),
+					}),
+					onError() {},
+				});
+				const text = await res.text();
+				expect(text).toContain("FORBIDDEN");
+				expect(text).not.toContain('"stack"');
+				expect(text).not.toContain(import.meta.dir);
+			}
+		} finally {
+			if (saved === undefined) delete process.env.NODE_ENV;
+			else process.env.NODE_ENV = saved;
+		}
+	});
+});
+
 describe("audit", () => {
 	test("a mutation is recorded before it runs, with its outcome", async () => {
 		const audit = sink();

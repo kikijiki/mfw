@@ -46,6 +46,9 @@ function refusalFix(
 
 const t = initTRPC.context<Context>().create({
 	transformer: superjson,
+	// Not derived from NODE_ENV, which the packaged unit does not set: with it
+	// unset every error response would carry a stack with server paths.
+	isDev: false,
 	errorFormatter({ shape, error }) {
 		return {
 			...shape,

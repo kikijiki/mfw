@@ -1010,6 +1010,18 @@ async function scopedTokens(
 		})) === 403,
 	);
 
+	const refusedBody = await raw(
+		port,
+		trpcRequest("query", "settings.get", project, bearer(reader.token)),
+	);
+	check(
+		"tokens: an API error carries no stack or server path",
+		refusedBody.status === 403 &&
+			!refusedBody.body.includes('"stack"') &&
+			!refusedBody.body.includes(ROOT),
+		refusedBody.body.slice(0, 200),
+	);
+
 	const inCookie = await raw(
 		port,
 		trpcRequest("query", "tasks.list", project, {
