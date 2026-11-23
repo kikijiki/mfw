@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
 	chmodSync,
+	existsSync,
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
@@ -145,5 +146,121 @@ describe("init --write refuses a save that would lose something", () => {
 		const cfg = await loadConfig(s.home);
 		expect(cfg.projects).toHaveLength(2);
 		expect(cfg.dispatchPaused).toBe(true);
+	});
+});
+
+describe("init validates what it would write", () => {
+	const write = (s: ReturnType<typeof setup>, ...extra: string[]) =>
+		runInitCommand(["--project", s.repo, ...extra, "--write"], s.deps);
+
+	for (const name of [
+		"../../evil name",
+		"a/b",
+		"-x",
+		"a b",
+		"",
+		"a\nb",
+		"x".repeat(65),
+	]) {
+		test(`the project name ${JSON.stringify(name.slice(0, 20))} is refused`, async () => {
+			const s = setup();
+			expect(await write(s, "--name", name)).not.toBe(0);
+			expect(existsSync(s.config)).toBe(false);
+		});
+	}
+
+	for (const branch of [
+		"-x;touch pwn",
+		"a b",
+		"a..b",
+		"x.lock",
+		"$(touch pwn)",
+		"@{-1}",
+	]) {
+		test(`the branch ${JSON.stringify(branch)} is refused`, async () => {
+			const s = setup();
+			expect(await write(s, "--branch", branch)).not.toBe(0);
+			expect(existsSync(s.config)).toBe(false);
+		});
+	}
+
+	test("a directory name that is not a valid project name asks for --name", async () => {
+		const s = setup();
+		const odd = join(s.base, "my repo");
+		mkdirSync(odd);
+		git(odd, "init", "-q", "-b", "main");
+		expect(await runInitCommand(["--project", odd], s.deps)).not.toBe(0);
+		expect(s.err.join("")).toContain("--name");
+	});
+
+	test("the reviewer's case: the same repository through a symlink", async () => {
+		const s = setup();
+		await write(s);
+		const link = join(s.base, "link");
+		symlinkSync(s.repo, link);
+		const code = await runInitCommand(
+			["--project", link, "--name", "other", "--write"],
+			s.deps,
+		);
+		expect(code).toBe(1);
+		expect(s.err.join("")).toContain("already uses");
+		expect((await loadConfig(s.home)).projects).toHaveLength(1);
+	});
+
+	test("an entry stored through a symlink is still a duplicate", async () => {
+		const s = setup();
+		const link = join(s.base, "link");
+		symlinkSync(s.repo, link);
+		writeFileSync(
+			s.config,
+			JSON.stringify({ projects: [{ name: "a", root: link }] }),
+		);
+		expect(await write(s, "--name", "b")).toBe(1);
+		expect(s.err.join("")).toContain("already uses");
+	});
+
+	test("the entry stores the resolved root", async () => {
+		const s = setup();
+		const link = join(s.base, "link");
+		symlinkSync(s.repo, link);
+		await runInitCommand(["--project", link, "--name", "x", "--write"], s.deps);
+		expect((await loadConfig(s.home)).projects[0]?.root).toBe(s.repo);
+	});
+
+	test("a project root containing MFW_HOME is refused", async () => {
+		const s = setup();
+		git(s.base, "init", "-q", "-b", "main");
+		const code = await runInitCommand(
+			["--project", s.base, "--name", "x", "--write"],
+			s.deps,
+		);
+		expect(code).toBe(1);
+		expect(s.err.join("")).toContain("MFW_HOME");
+		expect(existsSync(s.config)).toBe(false);
+	});
+
+	test("a project root inside MFW_HOME is refused", async () => {
+		const s = setup();
+		const inner = join(s.home, "inner");
+		mkdirSync(inner);
+		git(inner, "init", "-q", "-b", "main");
+		const code = await runInitCommand(
+			["--project", inner, "--name", "x", "--write"],
+			s.deps,
+		);
+		expect(code).toBe(1);
+		expect(s.err.join("")).toContain("MFW_HOME");
+	});
+
+	test("L3: a refused repo config is named, and --branch does not bypass it", async () => {
+		const s = setup();
+		writeFileSync(
+			join(s.repo, ".git", "config"),
+			"[core]\n\tsshCommand = /bin/false\n",
+		);
+		expect(await write(s, "--branch", "main")).toBe(1);
+		expect(s.err.join("")).toContain("core.sshcommand");
+		expect(s.err.join("")).not.toContain("detached");
+		expect(existsSync(s.config)).toBe(false);
 	});
 });

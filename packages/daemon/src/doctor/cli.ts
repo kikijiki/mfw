@@ -1,14 +1,15 @@
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { lstat, mkdir, readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import {
 	configKeysLostOnSave,
 	configPath,
 	mutateConfig,
-	normalizeRoot,
 	type StoredProjectConfig,
 } from "../config.ts";
 import { gitRaw } from "../git.ts";
+import { repoConfigRefusal } from "../host-git/repo-config.ts";
+import { validateRefName } from "../repo-view.ts";
 import {
 	acquireDaemonLock,
 	DaemonLockError,
@@ -143,7 +144,7 @@ function parseInit(args: readonly string[]): InitArgs | string {
 		else if (a === "--harness-versions") out.harnessVersions = true;
 		else if (a === "--project" || a === "--name" || a === "--branch") {
 			const value = args[++i];
-			if (value === undefined || value.startsWith("--")) {
+			if (value === undefined || (a !== "--name" && value.startsWith("--"))) {
 				return `${a} needs a value`;
 			}
 			if (a === "--project") out.project = value;
@@ -179,6 +180,51 @@ async function currentBranch(root: string): Promise<string | null> {
 	return r?.ok ? r.stdout.trim() || null : null;
 }
 
+/** Says the server is running only when another process really holds the lock. */
+export function lockRefusal(e: unknown): string {
+	return e instanceof DaemonLockError && e.busy
+		? "the server is running. Stop it, or add the project in the web UI"
+		: `could not take the daemon lock: ${(e as Error).message}`;
+}
+
+const PROJECT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+const realOrSelf = (p: string): string => {
+	try {
+		return realpathSync(p);
+	} catch {
+		return resolve(p);
+	}
+};
+
+const isWithin = (path: string, root: string) =>
+	path === root || path.startsWith(root === "/" ? "/" : `${root}/`);
+
+/** Why this resolved root cannot be a project of this home, or null. */
+async function projectRootProblem(
+	root: string,
+	home: string,
+): Promise<string | null> {
+	if (!existsSync(join(root, ".git"))) return `${root} is not a git repository`;
+	const realHome = realOrSelf(home);
+	if (isWithin(realHome, root)) {
+		return `${root} contains $MFW_HOME, and agents would be able to write to it. Choose another project root or MFW_HOME`;
+	}
+	if (isWithin(root, realHome)) {
+		return `${root} is inside $MFW_HOME, which holds this install's secrets. Move the project out`;
+	}
+	// Before the branch, so a refused config is named and --branch cannot skip it.
+	const refused = await repoConfigRefusal(root).catch(
+		(e: unknown) =>
+			({
+				message: `could not audit its git config: ${(e as Error).message}`,
+			}) as {
+				message: string;
+			},
+	);
+	return refused?.message ?? null;
+}
+
 /** Why saving over the current config would lose or redirect something. */
 async function configSaveProblem(home: string): Promise<string | null> {
 	const path = configPath(home);
@@ -212,16 +258,14 @@ async function writeEntry(
 			timeoutMs: 500,
 		});
 	} catch (e) {
-		return e instanceof DaemonLockError && e.busy
-			? "the server is running. Stop it, or add the project in the web UI"
-			: `could not take the daemon lock: ${(e as Error).message}`;
+		return lockRefusal(e);
 	}
 	try {
 		const unsafe = await configSaveProblem(home);
 		if (unsafe) return unsafe;
 		return await mutateConfig(home, (config) => {
 			const clash = config.projects.find(
-				(p) => p.name === entry.name || p.root === entry.root,
+				(p) => p.name === entry.name || realOrSelf(p.root) === entry.root,
 			);
 			if (clash) {
 				throw new InitRefused(
@@ -285,10 +329,18 @@ export async function runInitCommand(
 	let wrote = false;
 	const notes: string[] = [];
 	if (parsed.project) {
-		const root = normalizeRoot(resolve(parsed.project));
-		if (!existsSync(join(root, ".git"))) {
-			d.err(`mfw init: ${sanitizeText(root)} is not a git repository.`);
+		const root = realOrSelf(parsed.project);
+		const rootProblem = await projectRootProblem(root, d.home);
+		if (rootProblem) {
+			d.err(`mfw init: ${sanitizeText(rootProblem)}`);
 			return 1;
+		}
+		const name = parsed.name ?? basename(root);
+		if (!PROJECT_NAME.test(name)) {
+			d.err(
+				"mfw init: a project name is 1 to 64 letters, digits, dots, dashes or underscores, starting with a letter or digit. Pass --name <name>.",
+			);
+			return 2;
 		}
 		const branch = parsed.branch ?? (await currentBranch(root));
 		if (!branch) {
@@ -297,11 +349,13 @@ export async function runInitCommand(
 			);
 			return 1;
 		}
-		entry = minimalProjectEntry({
-			name: parsed.name ?? basename(root),
-			root,
-			branch,
-		});
+		try {
+			validateRefName(branch);
+		} catch (e) {
+			d.err(`mfw init: invalid branch: ${sanitizeText((e as Error).message)}`);
+			return 2;
+		}
+		entry = minimalProjectEntry({ name, root, branch });
 		const facts = await probes.project(entry);
 		if (facts.hasEnvrc) {
 			notes.push(

@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runInitCommand } from "../src/doctor/cli.ts";
+import { lockRefusal, runInitCommand } from "../src/doctor/cli.ts";
 import { acquireKernelLock, KernelLockError } from "../src/kernel-lock.ts";
 import {
 	acquireDaemonLock,
@@ -133,20 +133,14 @@ describe("init --write words a lock failure truthfully", () => {
 		expect(err.join("")).toContain("the server is running");
 	});
 
-	test("a missing lock tool does not", async () => {
-		const d = tmp();
-		const home = join(d, "home");
-		mkdirSync(home, { mode: 0o700 });
-		const r = repo(d);
-		const err: string[] = [];
-		process.env.PATH = "";
-		resetBwrapAvailableCache();
-		// Git cannot run either, so the branch is given.
-		await runInitCommand(
-			["--project", r, "--branch", "main", "--write"],
-			deps(home, err),
+	test("any other lock failure does not", () => {
+		const text = lockRefusal(
+			new DaemonLockError("/x", "flock is missing", false),
 		);
-		expect(err.join("")).not.toContain("the server is running");
-		expect(err.join("")).toContain("lock");
+		expect(text).not.toContain("the server is running");
+		expect(text).toContain("could not take the daemon lock");
+		expect(lockRefusal(new DaemonLockError("/x", "held", true))).toContain(
+			"the server is running",
+		);
 	});
 });
