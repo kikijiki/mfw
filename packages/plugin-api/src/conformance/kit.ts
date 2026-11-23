@@ -352,8 +352,7 @@ async function simpleSuite(
 
 /**
  * Runs the suite for one kind against a subject. The harness kind is a data
- * manifest checked by `HarnessManifestSchema`, not a runtime plugin, so it
- * has no suite here.
+ * manifest, not a runtime plugin: its suite is `runHarnessConformance`.
  */
 export async function runConformance(
 	kind: PluginKind,
@@ -516,7 +515,7 @@ export async function runConformance(
 		case "harness":
 			r.skip(
 				"harness manifests",
-				"validated by HarnessManifestSchema; no runtime suite",
+				"a manifest is data: use runHarnessConformance (conformance/harness.ts)",
 			);
 			break;
 	}
