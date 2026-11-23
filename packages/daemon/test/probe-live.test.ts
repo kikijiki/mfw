@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	realpathSync,
+	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -32,6 +34,7 @@ import {
 	collectProbe,
 	decodeBwrapOptions,
 	probeCommand,
+	probeToolchainTargets,
 	sandboxFingerprint,
 } from "../src/containment/probe-run.ts";
 import {
@@ -264,7 +267,7 @@ describe.skipIf(skip !== null)("the probe in a real sandbox", () => {
 		const plan = buildProbePlan(
 			profile,
 			compiled,
-			{ ...targets(), toolchainHomeRoots: [] },
+			{ ...targets(), ...probeToolchainTargets(host.toolchain) },
 			{
 				nonce: "live-nonce",
 				loopbackPort: (server.address() as net.AddressInfo).port,
@@ -508,6 +511,52 @@ describe.skipIf(skip !== null)("the probe in a real sandbox", () => {
 		}
 	}, 45_000);
 
+	test("socket_sweep follows a directory whose name is not UTF-8", async () => {
+		const plain = join(work, "plain");
+		mkdirSync(plain);
+		const server = net.createServer();
+		await new Promise<void>((r) => server.listen(join(plain, "s.sock"), r));
+		const raw = Buffer.concat([
+			Buffer.from(`${work}/`),
+			Buffer.from([0xff, 0xfe]),
+		]);
+		renameSync(plain, raw);
+		try {
+			const r = await attest();
+			expect(measured(r.items)).toBe(true);
+			expect(failed(r.items)).toContain("socket_sweep");
+		} finally {
+			renameSync(raw, plain);
+			await new Promise<void>((r) => server.close(() => r()));
+		}
+	}, 45_000);
+
+	test("socket_sweep refuses an execute-only directory in a read-only bind", async () => {
+		const cache = join(mfw, "runs/r1/cache");
+		const hidden = join(cache, "hidden");
+		mkdirSync(hidden, { recursive: true });
+		const server = net.createServer();
+		await new Promise<void>((r) => server.listen(join(hidden, "s.sock"), r));
+		chmodSync(hidden, 0o111);
+		try {
+			const r = await attest(
+				undefined,
+				baseProfile({
+					filesystem: {
+						workspace: { source: work, access: "rw" },
+						caches: [{ name: "shared", source: cache, access: "ro" }],
+						toolchain: { binaries: ["bun"] },
+					},
+				}),
+			);
+			expect(measured(r.items)).toBe(true);
+			expect(failed(r.items)).toContain("socket_sweep");
+		} finally {
+			chmodSync(hidden, 0o755);
+			await new Promise<void>((r) => server.close(() => r()));
+		}
+	}, 45_000);
+
 	test("exec_sweep finds a planted git hook", async () => {
 		mkdirSync(join(work, ".git/hooks"), { recursive: true });
 		writeFileSync(join(work, ".git/hooks/pre-commit.sample"), "#!/bin/sh\n");
@@ -577,7 +626,7 @@ describe.skipIf(skip !== null)("forged results", () => {
 		const plan = buildProbePlan(
 			profile,
 			compiled,
-			{ ...targets(), toolchainHomeRoots: [] },
+			{ ...targets(), ...probeToolchainTargets(host.toolchain) },
 			{ nonce: "the-real-nonce", loopbackPort: 1, scope: "systemd" },
 		);
 		return collectProbe(compiled, plan, {
@@ -627,7 +676,7 @@ describe.skipIf(skip !== null)("forged results", () => {
 		const plan = buildProbePlan(
 			profile,
 			compiled,
-			{ ...targets(), toolchainHomeRoots: [] },
+			{ ...targets(), ...probeToolchainTargets(host.toolchain) },
 			{ nonce: "n", loopbackPort: 1, scope: "systemd" },
 		);
 		const items = await collectProbe(compiled, plan, {
@@ -758,7 +807,7 @@ describe.skipIf(skip !== null)("forged results", () => {
 		const plan = buildProbePlan(
 			profile,
 			compiled,
-			{ ...targets(), toolchainHomeRoots: [] },
+			{ ...targets(), ...probeToolchainTargets(host.toolchain) },
 			{
 				nonce: "bundled",
 				loopbackPort: (server.address() as net.AddressInfo).port,

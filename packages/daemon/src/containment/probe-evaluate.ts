@@ -21,8 +21,9 @@
  * - With seccomp on, the filter answers first, so `--disable-userns` cannot be
  *   observed separately. `compiled_flags` checks that it was passed.
  * - The sweep skips `/nix/store`: the store is read-only and the NAR format has
- *   no socket type. A directory the sandbox cannot list (host-owned, read-only)
- *   is not swept; one inside a writable mount is a failure.
+ *   no socket type. A directory the sandbox cannot list is a failure, except
+ *   inside a toolchain or system bind, where host-owned private directories are
+ *   normal. An execute-only directory there could still hide a socket.
  * - Bun implements `stdio: "pipe"` as a unix socketpair, so 0-2 may be sockets.
  *   From here a socketpair to the launcher looks like any other connected
  *   socket. The launcher is what guarantees these are its own: it accepts only
@@ -146,6 +147,12 @@ export interface ProbeExpectation {
 	syscalls: readonly { name: string; expect: number }[];
 	scope: "systemd" | "none";
 	limits: { tasksMax: number; memoryMaxBytes: number };
+	/**
+	 * Toolchain and system binds, in the child's escaped path form. Only here may
+	 * a directory be unlistable. Anywhere else (workspace, gitDir, caches, fleet,
+	 * egress, tmpfs) it could hide a socket reachable by its known name.
+	 */
+	sweepTolerated: readonly string[];
 }
 
 const EPERM = 1;
@@ -216,13 +223,10 @@ function checkSockets(o: ProbeObservations, e: ProbeExpectation): Verdict {
 	if (o.sweep.truncated) {
 		return `the sweep stopped after ${o.sweep.entries} entries`;
 	}
-	const writable = o.mounts
-		.filter((m) => m.options.includes("rw"))
-		.map((m) => m.mountPoint);
-	const blind = o.sweep.unreadable.filter((p) =>
-		writable.some((m) => under(p, m)),
+	const blind = o.sweep.unreadable.filter(
+		(p) => !e.sweepTolerated.some((t) => under(p, t)),
 	);
-	if (blind.length) return `cannot sweep writable paths: ${list(blind)}`;
+	if (blind.length) return `cannot sweep: ${list(blind)}`;
 	const allowed =
 		e.egress === "proxy" && o.egress.entries[0]?.type === "socket"
 			? `${e.egressDir}/${o.egress.entries[0].name}`

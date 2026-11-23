@@ -60,6 +60,7 @@ const expectation = (
 	],
 	scope: "systemd",
 	limits: { tasksMax: 256, memoryMaxBytes: 1024 ** 3 },
+	sweepTolerated: [],
 	...over,
 });
 
@@ -338,6 +339,13 @@ const NEGATIVES: Negative[] = [
 		},
 	},
 	{
+		item: "socket_sweep",
+		name: "a read-only profile bind could not be swept",
+		weaken: (o) => {
+			o.sweep.unreadable.push("/cache/shared/hidden");
+		},
+	},
+	{
 		item: "exec_sweep",
 		name: "a planted git hook",
 		weaken: (o) => {
@@ -562,6 +570,20 @@ describe("probe evaluation", () => {
 		o.sweep.sockets.push("/run/mfw/egress/other.sock");
 		const again = evaluateProbe(o, expectation({ egress: "proxy" }), scope());
 		expect(again.find((i) => i.id === "socket_sweep")?.status).toBe("fail");
+	});
+
+	test("an unlistable directory is tolerated only in a toolchain bind", () => {
+		const o = good();
+		o.sweep.unreadable = ["/usr/lib/private"];
+		const at = (tolerated: string[]) =>
+			evaluateProbe(
+				o,
+				expectation({ sweepTolerated: tolerated }),
+				scope(),
+			).find((i) => i.id === "socket_sweep")?.status;
+		expect(at(["/usr"])).toBe("pass");
+		expect(at([])).toBe("fail");
+		expect(at(["/us"])).toBe("fail");
 	});
 
 	test("a wrong nonce fails every item", () => {

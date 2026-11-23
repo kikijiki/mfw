@@ -64,6 +64,7 @@ import {
 	ENOSYS_SYSCALLS,
 	EPERM,
 } from "./seccomp.ts";
+import type { ToolchainPlan } from "./toolchain.ts";
 
 const CLONE_THREAD = 0x10000;
 const MAX_OUTPUT = 8 * 1024 * 1024;
@@ -230,6 +231,34 @@ export interface ProbeTargets {
 	 * that bound `~/.ssh` would approve itself.
 	 */
 	toolchainHomeRoots: readonly string[];
+	/** Every toolchain and system bind: the only place an unlistable directory is tolerated. */
+	toolchainBinds: readonly string[];
+}
+
+/** The same selection the compiler mounts for a profile that declares binaries. */
+export function probeToolchainTargets(
+	plan: ToolchainPlan,
+): Pick<ProbeTargets, "toolchainHomeRoots" | "toolchainBinds"> {
+	const mounted = plan.binds.filter(
+		(b) => !(b.source === "home" && b.optional),
+	);
+	return {
+		toolchainHomeRoots: mounted
+			.filter((b) => b.source === "home")
+			.map((b) => b.path),
+		toolchainBinds: mounted.map((b) => b.path),
+	};
+}
+
+/** The child's escaped form of a path, so the two can be compared. */
+function escapedPath(path: string): string {
+	let out = "";
+	for (const c of Buffer.from(path)) {
+		if (c === 0x5c) out += "\\\\";
+		else if (c >= 0x20 && c < 0x7f) out += String.fromCharCode(c);
+		else out += `\\x${c.toString(16).padStart(2, "0")}`;
+	}
+	return out;
 }
 
 export interface ProbePlan {
@@ -269,7 +298,8 @@ export function buildProbePlan(
 			hookDirs,
 			egressDir: SANDBOX_PATHS.egress,
 			syscalls,
-			sweepSkip: ["/proc", "/dev", "/nix/store"],
+			// `/sys` holds no sockets and is its own failing item if it is mounted at all.
+			sweepSkip: ["/proc", "/dev", "/sys", "/nix/store"],
 			maxEntries: SWEEP_MAX_ENTRIES,
 			deadlineMs: SWEEP_DEADLINE_MS,
 		},
@@ -288,6 +318,7 @@ export function buildProbePlan(
 				tasksMax: limits.tasksMax,
 				memoryMaxBytes: memoryBytes(limits.memoryMax),
 			},
+			sweepTolerated: targets.toolchainBinds.map(escapedPath),
 		},
 	};
 }
@@ -444,7 +475,7 @@ export interface AttestRequest {
 	runId: string;
 	profile: SandboxProfile;
 	host: CompileHost;
-	targets: Omit<ProbeTargets, "toolchainHomeRoots">;
+	targets: Omit<ProbeTargets, "toolchainHomeRoots" | "toolchainBinds">;
 	/** `none` is for tests and always fails `cgroup_limits`. */
 	scope?: "systemd" | "none";
 	timeoutMs?: number;
@@ -490,17 +521,13 @@ export async function attestSandbox(
 	if (!result.ok) return compileRefused(result);
 	const compiled = req.weaken ? req.weaken(result) : result;
 	const scope = req.scope ?? "systemd";
-	// The same selection the compiler mounts: roots a declared binary lives in.
-	const toolchainHomeRoots = req.host.toolchain.binds
-		.filter((b) => b.source === "home" && !b.optional)
-		.map((b) => b.path);
 	const items = await withLoopbackCanary((loopbackPort) =>
 		collectProbe(
 			compiled,
 			buildProbePlan(
 				profile,
 				compiled,
-				{ ...req.targets, toolchainHomeRoots },
+				{ ...req.targets, ...probeToolchainTargets(req.host.toolchain) },
 				{
 					nonce: randomBytes(16).toString("hex"),
 					loopbackPort,

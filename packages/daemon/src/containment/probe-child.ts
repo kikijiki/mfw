@@ -134,6 +134,29 @@ export async function probeChildMain(): Promise<void> {
 	const under = (p: string, dir: string) =>
 		p === dir || p.startsWith(dir === "/" ? "/" : `${dir}/`);
 
+	// File names are bytes. Decoding one as UTF-8 and using it again names a
+	// different path, so everything below walks raw names and only escapes them
+	// (injectively) for the report.
+	const pathText = (bytes: Uint8Array) => {
+		let out = "";
+		for (const c of bytes) {
+			if (c === 0x5c) out += "\\\\";
+			else if (c >= 0x20 && c < 0x7f) out += String.fromCharCode(c);
+			else out += `\\x${c.toString(16).padStart(2, "0")}`;
+		}
+		return out;
+	};
+	const listRaw = (dir: Buffer) =>
+		(
+			fs.readdirSync(dir, { encoding: "buffer" }) as unknown as Uint8Array[]
+		).map((n) => Buffer.from(n));
+	const joinRaw = (dir: Buffer, name: Buffer) =>
+		Buffer.concat(
+			dir.length === 1 && dir[0] === 0x2f
+				? [dir, name]
+				: [dir, Buffer.from("/"), name],
+		);
+
 	// ---- network
 	// Routes on a real device. The loopback's own IPv6 entries are always there.
 	const routesOff = (
@@ -162,16 +185,22 @@ export async function probeChildMain(): Promise<void> {
 		.filter(Boolean);
 	// ---- egress directory
 	let egressEntries: { name: string; type: string }[] = [];
+	let egressSocketPath: Buffer | null = null;
 	const egressPresent = present(spec.egressDir);
 	let egressConnect: string | null = null;
 	if (egressPresent) {
 		try {
-			egressEntries = fs
-				.readdirSync(spec.egressDir, { withFileTypes: true })
-				.map((e) => ({
-					name: e.name,
-					type: e.isSocket() ? "socket" : e.isDirectory() ? "dir" : "other",
-				}));
+			const dir = Buffer.from(spec.egressDir);
+			egressEntries = listRaw(dir).map((name) => {
+				const st = fs.lstatSync(joinRaw(dir, name));
+				const type = st.isSocket()
+					? "socket"
+					: st.isDirectory()
+						? "dir"
+						: "other";
+				if (type === "socket") egressSocketPath ??= joinRaw(dir, name);
+				return { name: pathText(name), type };
+			});
 		} catch {
 			egressEntries = [{ name: "(unreadable)", type: "other" }];
 		}
@@ -254,38 +283,45 @@ export async function probeChildMain(): Promise<void> {
 	let entries = 0;
 	let truncated = false;
 	const deadline = Date.now() + spec.deadlineMs;
-	const stack = ["/"];
+	const stack = [Buffer.from("/")];
 	while (stack.length > 0 && !truncated) {
-		const dir = stack.pop() as string;
-		let list: import("node:fs").Dirent[];
+		const dir = stack.pop() as Buffer;
+		let list: Buffer[];
 		try {
-			list = fs.readdirSync(dir, { withFileTypes: true });
-		} catch (err) {
-			if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-				unreadable.push(dir);
-			}
+			list = listRaw(dir);
+		} catch {
+			// This directory was just listed by its parent, so even ENOENT means
+			// the sweep did not see inside it.
+			unreadable.push(pathText(dir));
 			continue;
 		}
-		for (const e of list) {
+		for (const name of list) {
 			if (++entries > spec.maxEntries || Date.now() > deadline) {
 				truncated = true;
 				break;
 			}
-			const p = dir === "/" ? `/${e.name}` : `${dir}/${e.name}`;
+			const raw = joinRaw(dir, name);
+			const p = pathText(raw);
 			if (spec.sweepSkip.some((s) => under(p, s))) continue;
-			if (e.isSocket()) sockets.push(p);
-			else if (e.isDirectory()) stack.push(p);
-			else if (e.isFile() && inWritable(p)) {
-				try {
-					if (fs.lstatSync(p).mode & 0o6000) hostRun.push(`${p} (setuid)`);
-				} catch {}
+			let st: import("node:fs").Stats;
+			try {
+				st = fs.lstatSync(raw);
+			} catch {
+				unreadable.push(p);
+				continue;
+			}
+			if (st.isSocket()) sockets.push(p);
+			else if (st.isDirectory()) stack.push(raw);
+			else if (st.isFile() && inWritable(p) && st.mode & 0o6000) {
+				hostRun.push(`${p} (setuid)`);
 			}
 		}
 	}
 	for (const dir of spec.hookDirs) {
-		let names: string[] = [];
+		const rawDir = Buffer.from(dir);
+		let names: Buffer[] = [];
 		try {
-			names = fs.readdirSync(dir);
+			names = listRaw(rawDir);
 		} catch (err) {
 			const code = (err as NodeJS.ErrnoException).code;
 			if (code !== "ENOENT" && code !== "ENOTDIR") {
@@ -293,7 +329,9 @@ export async function probeChildMain(): Promise<void> {
 			}
 		}
 		for (const name of names) {
-			if (!name.endsWith(".sample")) hostRun.push(`${dir}/${name}`);
+			if (!name.toString("latin1").endsWith(".sample")) {
+				hostRun.push(pathText(joinRaw(rawDir, name)));
+			}
 		}
 	}
 
@@ -357,26 +395,24 @@ export async function probeChildMain(): Promise<void> {
 	};
 	// Bun also reports a connect the peer closes at once as refused, so the
 	// egress socket is judged by the syscall too.
-	const rawUnixConnect = (path: string) => {
+	const rawUnixConnect = (path: Buffer) => {
 		const AF_UNIX = 1;
 		const SOCK_STREAM_NONBLOCK = 1 | 0o4000;
 		const sock = raw(41, AF_UNIX, SOCK_STREAM_NONBLOCK, 0);
 		if (sock.rc < 0) return `socket:${sock.errno}`;
 		const addr = Buffer.alloc(110);
 		addr.writeUInt16LE(AF_UNIX, 0);
-		const length = addr.write(path, 2);
+		const length = path.length;
 		if (length > 107) {
 			raw(3, sock.rc);
 			return "path too long";
 		}
+		addr.set(path, 2);
 		const r = raw(42, sock.rc, Number(ffi.ptr(addr)), 2 + length + 1);
 		raw(3, sock.rc);
 		return r.rc === 0 ? "connected" : `errno:${r.errno}`;
 	};
-	const egressSocket = egressEntries.find((e) => e.type === "socket");
-	if (egressSocket) {
-		egressConnect = rawUnixConnect(`${spec.egressDir}/${egressSocket.name}`);
-	}
+	if (egressSocketPath) egressConnect = rawUnixConnect(egressSocketPath);
 	const loopback = rawConnect([127, 0, 0, 1], spec.loopbackPort, true);
 	// TEST-NET-1: never routable, so nothing real is contacted.
 	const external = rawConnect([192, 0, 2, 1], 9, false);
