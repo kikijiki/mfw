@@ -47,6 +47,9 @@ export async function liveCompileHost(
 			home,
 			binaries,
 			path: process.env.PATH ?? "",
+			// The runtime the launcher itself runs on: a CLI installed outside the
+			// store links against it. Taken from this process, not from any file.
+			storeRoots: [realOrNull(process.execPath) ?? process.execPath],
 		}),
 		home,
 		mfwHome: req.mfwHome,

@@ -38,7 +38,6 @@ import {
 	scanFileText,
 	scanStoreClosure,
 	storePathOf,
-	storeRefsIn,
 } from "./store-closure.ts";
 
 /** Where a bind came from, for the doctor and the audit trail. */
@@ -90,6 +89,12 @@ export interface ToolchainOptions {
 	root?: string;
 	/** The `/etc` entries to bind; defaults to {@link DEFAULT_ETC_ENTRIES}. */
 	etcEntries?: readonly string[];
+	/**
+	 * Store paths the host itself vouches for, bound as data with their
+	 * executables hidden: the runtime a binary outside the store links against.
+	 * Never derived from the contents of a file outside the store.
+	 */
+	storeRoots?: readonly string[];
 	/** Computes the store closure; throws when it cannot. Defaults to the host's. */
 	closure?: (roots: readonly string[]) => StoreClosure;
 }
@@ -397,32 +402,6 @@ function launchChain(fs: Fs, entry: string): string[] {
 	return [...out];
 }
 
-const fileRefCache = new Map<string, string[]>();
-
-/**
- * Store paths a binary outside the store depends on (its loader and RPATH),
- * read from the file. Needed as data, so they are not kept executable. A string
- * naming a path this host does not have is not a dependency.
- */
-function fileStoreRefs(fs: Fs, file: string): string[] {
-	try {
-		const st = statSync(fs.host(file));
-		const key = `${fs.host(file)}:${st.size}:${st.mtimeMs}`;
-		let refs = fileRefCache.get(key);
-		if (!refs) {
-			const found = new Set<string>();
-			scanFileText(fs.host(file), (text) => {
-				for (const r of storeRefsIn(text)) found.add(r);
-			});
-			refs = [...found];
-			fileRefCache.set(key, refs);
-		}
-		return refs.filter((r) => exists(fs, r));
-	} catch {
-		return [];
-	}
-}
-
 /** The store paths the `/etc/ssl` links point at: CA bundles, as data. */
 function certRoots(fs: Fs): string[] {
 	const out = new Set<string>();
@@ -544,11 +523,12 @@ export function discoverToolchain(opts: ToolchainOptions): ToolchainPlan {
 		resolved.push({ name, path: found, realPath: real });
 		const dir = posix.dirname(found);
 		if (!pathDirs.includes(dir)) pathDirs.push(dir);
-		// A script outside the store can still start something inside it.
-		if (isDir(fs, NIX_STORE)) {
-			for (const p of launchChain(fs, found)) launchRoots.add(p);
-			for (const p of fileStoreRefs(fs, real)) dataRoots.add(p);
-		}
+		// Nothing is read from a file outside the store: it may be writable by
+		// a run, and the paths it names would widen every later sandbox.
+	}
+	for (const root of opts.storeRoots ?? []) {
+		const store = storePathOf(root);
+		if (store && exists(fs, store)) dataRoots.add(store);
 	}
 
 	let masks: string[] = [];

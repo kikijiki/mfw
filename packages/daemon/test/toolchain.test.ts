@@ -124,6 +124,44 @@ describe("toolchain discovery", () => {
 		expect(plan.masks ?? []).toEqual([]);
 	});
 
+	test("a file in HOME cannot widen the closure by naming store paths", async () => {
+		const root = await fixture();
+		const home = "/users/u";
+		await exe(root, `nix/store/${GIT}/bin/git`);
+		await exe(root, `nix/store/${PY}/bin/python3`);
+		await exe(root, `nix/store/${CURL}/bin/curl`);
+		await exe(
+			root,
+			`${home}/.local/bin/claude`,
+			`#!/nix/store/${PY}/bin/python3\nexec /nix/store/${CURL}/bin/curl\n`,
+		);
+		const plan = discoverToolchain({
+			home,
+			binaries: ["git", "claude"],
+			path: `/nix/store/${GIT}/bin:${home}/.local/bin`,
+			root,
+		});
+		expect(plan.resolved.map((b) => b.name).sort()).toEqual(["claude", "git"]);
+		expect(paths(plan)).not.toContain(`/nix/store/${PY}`);
+		expect(paths(plan)).not.toContain(`/nix/store/${CURL}`);
+	});
+
+	test("declared store roots are bound as data, with their executables hidden", async () => {
+		const root = await fixture();
+		const home = "/users/u";
+		await exe(root, `nix/store/${PY}/bin/python3`);
+		await exe(root, `${home}/.local/bin/tool`);
+		const plan = discoverToolchain({
+			home,
+			binaries: ["tool"],
+			path: `${home}/.local/bin`,
+			root,
+			storeRoots: [`/nix/store/${PY}/bin/python3`, "/etc/not-in-the-store"],
+		});
+		expect(paths(plan)).toContain(`/nix/store/${PY}`);
+		expect(plan.masks).toEqual([`/nix/store/${PY}/bin`]);
+	});
+
 	test("NixOS: refuses when the closure cannot be computed", async () => {
 		const root = await fixture();
 		await exe(root, `nix/store/${GIT}/bin/git`);
