@@ -5,6 +5,8 @@ import {
 	listRunFacts,
 	type RunExitProvenance,
 } from "@mfw/db/run-facts";
+import type { RenderedClaim } from "./claims.ts";
+import { hostClaimsForRun } from "./claims-evidence.ts";
 
 /** What a run view may say about a run's facts and who vouches for each. */
 export interface RunProvenanceView {
@@ -12,6 +14,8 @@ export interface RunProvenanceView {
 	/** The status in the agent's report: always a claim. Null when absent or malformed. */
 	reportStatus: string | null;
 	facts: { fact: RunFactKind; provenance: FactProvenance }[];
+	/** Strong words the host's own records back for this run. */
+	claims?: RenderedClaim[];
 }
 
 const REPORT_STATUS = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/;
@@ -31,5 +35,6 @@ export async function runProvenanceView(
 		reportStatus:
 			typeof status === "string" && REPORT_STATUS.test(status) ? status : null,
 		facts: facts.map(({ fact, provenance }) => ({ fact, provenance })),
+		claims: await hostClaimsForRun(db, runId),
 	};
 }
