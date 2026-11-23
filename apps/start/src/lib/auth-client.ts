@@ -199,8 +199,27 @@ export interface ApiToken {
 	status: "active" | "expired" | "revoked";
 }
 
+export interface ApiTokenAudit {
+	actions: {
+		id: number;
+		name: string;
+		path: string;
+		project: string | null;
+		kind: "mutation" | "stream";
+		outcome: string;
+		at: number;
+	}[];
+	counters: {
+		tokenId: string;
+		name: string;
+		refused: number;
+		lastRefusedPath: string | null;
+		dropped: number;
+	}[];
+}
+
 async function tokenCall<T>(
-	action: "tokens" | "token-revoke",
+	action: "tokens" | "token-revoke" | "token-audit",
 	body?: unknown,
 ): Promise<T> {
 	const res = await authedFetch(authUrl(action), {
@@ -222,6 +241,9 @@ async function tokenCall<T>(
 		);
 	return data;
 }
+
+export const readApiTokenAudit = (): Promise<ApiTokenAudit> =>
+	tokenCall<ApiTokenAudit>("token-audit");
 
 export const listApiTokens = async (): Promise<ApiToken[]> =>
 	(await tokenCall<{ tokens: ApiToken[] }>("tokens")).tokens;

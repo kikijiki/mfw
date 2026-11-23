@@ -67,6 +67,8 @@ export async function serveTrpc(
 					deps.auth.beginTokenAction(entry),
 				finish: (id: number, outcome: string) =>
 					deps.auth.finishTokenAction(id, outcome),
+				refuse: (entry: Parameters<AuthService["recordTokenRefusal"]>[0]) =>
+					deps.auth.recordTokenRefusal(entry),
 			}
 		: undefined;
 

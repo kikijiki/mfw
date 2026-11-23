@@ -142,6 +142,70 @@ describe("mfw auth token", () => {
 	});
 });
 
+describe("mfw auth token audit", () => {
+	async function activity() {
+		const auth = await AuthService.open(authDbPath(home));
+		const { token, info } = await auth.createToken({
+			name: "ci",
+			scopes: ["board:write"],
+		});
+		const other = await auth.createToken({
+			name: "other",
+			scopes: ["board:read"],
+		});
+		await auth.beginTokenAction({
+			tokenId: info.id,
+			name: "ci",
+			path: "tasks.create",
+			project: "alpha",
+			outcome: "ok",
+		});
+		await auth.beginTokenAction({
+			tokenId: other.info.id,
+			name: "other",
+			path: "live.events",
+			project: "alpha",
+			kind: "stream",
+			outcome: "opened",
+		});
+		await auth.recordTokenRefusal({
+			tokenId: info.id,
+			name: "ci",
+			path: "settings.get",
+		});
+		auth.close();
+		return { token, id: info.id };
+	}
+
+	test("shows actions, streams and refusals, never a secret", async () => {
+		const { token } = await activity();
+		expect(await run("token", "audit")).toBe(0);
+		const text = out.join("\n");
+		expect(text).toContain("tasks.create");
+		expect(text).toContain("live.events");
+		expect(text).toContain("refused 1 (last settings.get");
+		expect(text).not.toContain(token);
+	});
+
+	test("--id narrows it to one token", async () => {
+		const { id } = await activity();
+		expect(await run("token", "audit", "--id", id)).toBe(0);
+		const text = out.join("\n");
+		expect(text).toContain("tasks.create");
+		expect(text).not.toContain("live.events");
+	});
+
+	for (const args of [["--limit", "0"], ["--limit"], ["--what", "x"]])
+		test(`refuses ${args.join(" ")}`, async () => {
+			expect(await run("token", "audit", ...args)).toBe(2);
+		});
+
+	test("with nothing recorded it says so", async () => {
+		expect(await run("token", "audit")).toBe(0);
+		expect(out.join("\n")).toContain("no token activity");
+	});
+});
+
 describe("mfw auth token create --write-file records the issuing origin", () => {
 	const lines = () =>
 		readFileSync(join(home, MCP_TOKEN_FILE), "utf8").trim().split("\n");

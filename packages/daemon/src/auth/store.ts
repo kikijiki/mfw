@@ -87,6 +87,23 @@ const MIGRATIONS: readonly (readonly string[])[] = [
 		)`,
 		"CREATE INDEX ix_token_audit_token ON token_audit (token_id, id)",
 	],
+	[
+		// Refusals become a counter, so they can never push out a real action.
+		"ALTER TABLE token_audit ADD COLUMN kind TEXT NOT NULL DEFAULT 'mutation'",
+		"CREATE INDEX ix_token_audit_kind ON token_audit (token_id, kind, id)",
+		`CREATE TABLE token_audit_counters (
+			token_id TEXT PRIMARY KEY,
+			token_name TEXT NOT NULL,
+			refused INTEGER NOT NULL DEFAULT 0,
+			last_refused_at INTEGER,
+			last_refused_path TEXT,
+			dropped INTEGER NOT NULL DEFAULT 0
+		)`,
+		`INSERT INTO token_audit_counters (token_id, token_name, refused, last_refused_at)
+			SELECT token_id, MAX(token_name), COUNT(*), MAX(at)
+			FROM token_audit WHERE outcome = 'refused' GROUP BY token_id`,
+		"DELETE FROM token_audit WHERE outcome = 'refused'",
+	],
 ];
 
 export const AUTH_SCHEMA_VERSION = MIGRATIONS.length;

@@ -5,9 +5,11 @@ import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
 import {
 	type ApiToken,
+	type ApiTokenAudit,
 	AuthRequestError,
 	createApiToken,
 	listApiTokens,
+	readApiTokenAudit,
 	revokeApiToken,
 } from "../../lib/auth-client";
 import {
@@ -29,6 +31,7 @@ export function TokensPanel() {
 	const [created, setCreated] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
+	const [audit, setAudit] = useState<ApiTokenAudit | null>(null);
 
 	const refresh = useCallback(async () => {
 		try {
@@ -67,6 +70,19 @@ export function TokensPanel() {
 		try {
 			await revokeApiToken(id);
 			await refresh();
+		} catch (e) {
+			setError(errorText(e));
+		}
+	}
+
+	async function toggleAudit() {
+		if (audit) {
+			setAudit(null);
+			return;
+		}
+		setError(null);
+		try {
+			setAudit(await readApiTokenAudit());
 		} catch (e) {
 			setError(errorText(e));
 		}
@@ -193,6 +209,43 @@ export function TokensPanel() {
 						</li>
 					))}
 				</ul>
+			)}
+			<Button
+				type="button"
+				variant="outline"
+				size="sm"
+				className="self-start"
+				onClick={() => void toggleAudit()}
+			>
+				{audit ? "Hide token activity" : "Show token activity"}
+			</Button>
+			{audit && (
+				<div className="flex flex-col gap-2 text-sm">
+					{audit.counters.map((c) => (
+						<p key={c.tokenId} className="text-muted-foreground">
+							<span className="font-medium text-foreground">{c.name}</span>:{" "}
+							{c.refused} refused
+							{c.lastRefusedPath ? ` (last ${c.lastRefusedPath})` : ""}
+							{c.dropped > 0 ? `, ${c.dropped} older actions dropped` : ""}
+						</p>
+					))}
+					{audit.actions.length === 0 && audit.counters.length === 0 && (
+						<p className="text-muted-foreground">No token activity yet.</p>
+					)}
+					{audit.actions.length > 0 && (
+						<ul className="flex flex-col gap-1">
+							{audit.actions.map((a) => (
+								<li key={a.id} className="min-w-0 break-words">
+									<span className="font-medium">{a.name}</span>{" "}
+									<span className="text-muted-foreground">
+										{a.path} · {a.project ?? "no project"} · {a.outcome} ·{" "}
+										{new Date(a.at).toLocaleString()}
+									</span>
+								</li>
+							))}
+						</ul>
+					)}
+				</div>
 			)}
 		</div>
 	);

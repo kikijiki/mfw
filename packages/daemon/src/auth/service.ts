@@ -63,14 +63,27 @@ export interface TokenInfo {
 	status: "active" | "expired" | "revoked";
 }
 
+export type TokenAuditKind = "mutation" | "stream";
+
 export interface TokenAuditEntry {
 	id: number;
 	tokenId: string;
 	name: string;
 	path: string;
 	project: string | null;
+	kind: TokenAuditKind;
 	outcome: string;
 	at: number;
+}
+
+export interface TokenAuditCounter {
+	tokenId: string;
+	name: string;
+	refused: number;
+	lastRefusedAt: number | null;
+	lastRefusedPath: string | null;
+	/** Older rows of this token removed by retention. */
+	dropped: number;
 }
 
 export interface AuthenticatedSession {
@@ -150,7 +163,9 @@ const STREAM_RECHECK_MS = 15 * 1000;
 /** A token can be revoked from the CLI, another process: notice within a second. */
 const TOKEN_STREAM_RECHECK_MS = 1000;
 const TOKEN_TOUCH_EVERY_MS = 60 * 1000;
-const MAX_TOKEN_AUDIT_ROWS = 10_000;
+/** Rows kept per token, per kind. */
+const TOKEN_AUDIT_RETENTION = { mutations: 20_000, streams: 2_000 };
+const TOKEN_AUDIT_PRUNE_EVERY = 64;
 /** Dead tokens stay listed this long, then go. Their audit rows remain. */
 const TOKEN_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -176,6 +191,8 @@ export interface AuthServiceOptions {
 	tokenStreamRecheckMs?: number;
 	/** Per-token request limit (tests that make many calls raise it). */
 	tokenRate?: { perSecond: number; burst: number };
+	/** Audit rows kept per token and kind (tests lower it). */
+	tokenAuditRetention?: { mutations: number; streams: number };
 	/** Minimum spacing of password hash checks, across all sources. */
 	passwordCheckIntervalMs?: number;
 	/** Password checks allowed to wait at once; further ones are refused. */
@@ -310,6 +327,8 @@ export class AuthService {
 	private readonly streamRecheckMs: number;
 	private readonly tokenStreamRecheckMs: number;
 	private readonly tokenRate: TokenRateLimiter;
+	private readonly tokenAuditRetention: { mutations: number; streams: number };
+	private readonly tokenAuditInserts = new Map<string, number>();
 	private readonly listeners = new Map<string, Set<() => void>>();
 	/** The 0600 file holding a pending setup token, under the masked `$MFW_HOME`. */
 	readonly setupTokenFile: string | null;
@@ -326,6 +345,8 @@ export class AuthService {
 		this.streamRecheckMs = opts.streamRecheckMs ?? STREAM_RECHECK_MS;
 		this.tokenStreamRecheckMs =
 			opts.tokenStreamRecheckMs ?? TOKEN_STREAM_RECHECK_MS;
+		this.tokenAuditRetention =
+			opts.tokenAuditRetention ?? TOKEN_AUDIT_RETENTION;
 		this.tokenRate = new TokenRateLimiter(
 			opts.tokenRate?.perSecond,
 			opts.tokenRate?.burst,
@@ -840,27 +861,62 @@ export class AuthService {
 		name: string;
 		path: string;
 		project: string | null;
+		kind?: TokenAuditKind;
 		outcome?: string;
 	}): Promise<number> {
+		const kind = entry.kind ?? "mutation";
 		const r = await this.db.client.execute({
-			sql: `INSERT INTO token_audit (token_id, token_name, path, project, outcome, at)
-				VALUES (?, ?, ?, ?, ?, ?) RETURNING id`,
+			sql: `INSERT INTO token_audit (token_id, token_name, path, project, kind, outcome, at)
+				VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id`,
 			args: [
 				entry.tokenId,
 				entry.name,
 				entry.path,
 				entry.project,
+				kind,
 				entry.outcome ?? "started",
 				this.now(),
 			],
 		});
 		const id = Number(r.rows[0]?.id);
-		if (id % 256 === 0)
-			await this.db.client.execute({
-				sql: "DELETE FROM token_audit WHERE id <= ?",
-				args: [id - MAX_TOKEN_AUDIT_ROWS],
-			});
+		const keep =
+			kind === "stream"
+				? this.tokenAuditRetention.streams
+				: this.tokenAuditRetention.mutations;
+		// Counted per token and kind: the shared row id could skip one forever.
+		const key = `${entry.tokenId}:${kind}`;
+		const inserts = (this.tokenAuditInserts.get(key) ?? 0) + 1;
+		if (inserts >= Math.min(TOKEN_AUDIT_PRUNE_EVERY, keep)) {
+			this.tokenAuditInserts.delete(key);
+			await this.pruneTokenAudit(entry.tokenId, entry.name, kind, keep);
+		} else this.tokenAuditInserts.set(key, inserts);
 		return id;
+	}
+
+	/**
+	 * Retention is per token and per kind, so no token's volume can erase
+	 * another's record or its own mutations with cheap calls. What a token's
+	 * own mutations do push out is counted, so the loss is visible.
+	 */
+	private async pruneTokenAudit(
+		tokenId: string,
+		name: string,
+		kind: TokenAuditKind,
+		keep: number,
+	): Promise<void> {
+		const r = await this.db.client.execute({
+			sql: `DELETE FROM token_audit WHERE token_id = ? AND kind = ? AND id <= (
+					SELECT id FROM token_audit WHERE token_id = ? AND kind = ?
+					ORDER BY id DESC LIMIT 1 OFFSET ?
+				)`,
+			args: [tokenId, kind, tokenId, kind, keep],
+		});
+		if (r.rowsAffected === 0) return;
+		await this.db.client.execute({
+			sql: `INSERT INTO token_audit_counters (token_id, token_name, dropped) VALUES (?, ?, ?)
+				ON CONFLICT (token_id) DO UPDATE SET dropped = dropped + excluded.dropped`,
+			args: [tokenId, name, r.rowsAffected],
+		});
 	}
 
 	async finishTokenAction(id: number, outcome: string): Promise<void> {
@@ -870,12 +926,33 @@ export class AuthService {
 		});
 	}
 
-	/** The newest token actions first. */
-	async listTokenAudit(limit = 100): Promise<TokenAuditEntry[]> {
+	/** Count a refused call. One row per token, however many refusals. */
+	async recordTokenRefusal(entry: {
+		tokenId: string;
+		name: string;
+		path: string;
+	}): Promise<void> {
+		const now = this.now();
+		await this.db.client.execute({
+			sql: `INSERT INTO token_audit_counters (token_id, token_name, refused, last_refused_at, last_refused_path)
+				VALUES (?, ?, 1, ?, ?)
+				ON CONFLICT (token_id) DO UPDATE SET refused = refused + 1,
+					last_refused_at = excluded.last_refused_at,
+					last_refused_path = excluded.last_refused_path`,
+			args: [entry.tokenId, entry.name, now, entry.path],
+		});
+	}
+
+	/** Mutations and stream opens, newest first. */
+	async listTokenAudit(
+		opts: { limit?: number; tokenId?: string } = {},
+	): Promise<TokenAuditEntry[]> {
+		const limit = Math.min(Math.max(1, opts.limit ?? 100), 1000);
 		const r = await this.db.client.execute({
-			sql: `SELECT id, token_id, token_name, path, project, outcome, at
-				FROM token_audit ORDER BY id DESC LIMIT ?`,
-			args: [Math.min(Math.max(1, limit), 1000)],
+			sql: `SELECT id, token_id, token_name, path, project, kind, outcome, at
+				FROM token_audit ${opts.tokenId ? "WHERE token_id = ?" : ""}
+				ORDER BY id DESC LIMIT ?`,
+			args: opts.tokenId ? [opts.tokenId, limit] : [limit],
 		});
 		return r.rows.map((row) => ({
 			id: Number(row.id),
@@ -883,8 +960,27 @@ export class AuthService {
 			name: String(row.token_name),
 			path: String(row.path),
 			project: row.project === null ? null : String(row.project),
+			kind: row.kind === "stream" ? "stream" : "mutation",
 			outcome: String(row.outcome),
 			at: Number(row.at),
+		}));
+	}
+
+	/** Per-token refusal and retention counts. */
+	async tokenAuditCounters(): Promise<TokenAuditCounter[]> {
+		const r = await this.db.client.execute(
+			`SELECT token_id, token_name, refused, last_refused_at, last_refused_path, dropped
+				FROM token_audit_counters ORDER BY token_name, token_id`,
+		);
+		return r.rows.map((row) => ({
+			tokenId: String(row.token_id),
+			name: String(row.token_name),
+			refused: Number(row.refused),
+			lastRefusedAt:
+				row.last_refused_at === null ? null : Number(row.last_refused_at),
+			lastRefusedPath:
+				row.last_refused_path === null ? null : String(row.last_refused_path),
+			dropped: Number(row.dropped),
 		}));
 	}
 

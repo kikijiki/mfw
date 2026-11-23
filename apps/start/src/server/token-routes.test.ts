@@ -84,6 +84,31 @@ describe("the owner manages tokens", () => {
 		expect(await auth.authenticateToken(token)).toBeNull();
 	});
 
+	test("the audit view returns actions and refusal counts, no secret", async () => {
+		const { token, info } = await auth.createToken(create);
+		await auth.beginTokenAction({
+			tokenId: info.id,
+			name: info.name,
+			path: "tasks.create",
+			project: "alpha",
+		});
+		await auth.recordTokenRefusal({
+			tokenId: info.id,
+			name: info.name,
+			path: "settings.get",
+		});
+		const res = await route("token-audit", "GET", owner());
+		expect(res.status).toBe(200);
+		const text = await res.text();
+		expect(text).not.toContain(token);
+		const body = JSON.parse(text) as {
+			actions: { path: string }[];
+			counters: { refused: number }[];
+		};
+		expect(body.actions.map((a) => a.path)).toEqual(["tasks.create"]);
+		expect(body.counters[0]?.refused).toBe(1);
+	});
+
 	for (const [label, body] of [
 		["an admin scope", { name: "x", scopes: ["admin"] }],
 		["no expiry bound", { ...create, ttlMs: 10 ** 12 }],
@@ -145,6 +170,7 @@ describe("only an owner session can", () => {
 		const headers = { ...anon, authorization: `Bearer ${token}` };
 		expect((await route("tokens", "POST", headers, create)).status).toBe(403);
 		expect((await route("tokens", "GET", headers)).status).toBe(403);
+		expect((await route("token-audit", "GET", headers)).status).toBe(403);
 		expect(
 			(await route("token-revoke", "POST", headers, { id: info.id })).status,
 		).toBe(403);

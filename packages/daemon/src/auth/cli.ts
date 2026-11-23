@@ -41,6 +41,8 @@ export const AUTH_USAGE = [
 	`                bound to --origin (default ${DEFAULT_TOKEN_ORIGIN})`,
 	"  token list    show tokens (never their secrets)",
 	"  token revoke <id>   revoke a token at once",
+	"  token audit [--limit <n>] [--id <token id>]",
+	"                what tokens changed and streamed, and how often they were refused",
 ].join("\n");
 
 export interface AuthCliDeps {
@@ -328,6 +330,42 @@ async function runTokenCommand(
 					);
 				return 0;
 			});
+		case "audit": {
+			const rest = args.slice(1);
+			let limit = 50;
+			let tokenId: string | undefined;
+			for (let i = 0; i < rest.length; i += 2) {
+				const value = rest[i + 1];
+				if (rest[i] === "--limit" && /^[1-9][0-9]{0,3}$/.test(value ?? ""))
+					limit = Number(value);
+				else if (rest[i] === "--id" && value) tokenId = value;
+				else {
+					d.err("usage: mfw auth token audit [--limit <n>] [--id <token id>]");
+					return 2;
+				}
+			}
+			return withStore(d, async (auth) => {
+				const when = (ms: number) => new Date(ms).toISOString();
+				const counters = (await auth.tokenAuditCounters()).filter(
+					(c) => !tokenId || c.tokenId === tokenId,
+				);
+				for (const c of counters)
+					d.out(
+						`${c.tokenId}  '${c.name}'  refused ${c.refused}${c.lastRefusedPath ? ` (last ${c.lastRefusedPath}${c.lastRefusedAt ? ` at ${when(c.lastRefusedAt)}` : ""})` : ""}  older actions dropped ${c.dropped}`,
+					);
+				const rows = await auth.listTokenAudit({
+					limit,
+					...(tokenId ? { tokenId } : {}),
+				});
+				for (const r of rows)
+					d.out(
+						`${when(r.at)}  '${r.name}'  ${r.kind}  ${r.path}  ${r.project ?? "-"}  ${r.outcome}`,
+					);
+				if (counters.length === 0 && rows.length === 0)
+					d.out("mfw auth: no token activity recorded.");
+				return 0;
+			});
+		}
 		case "revoke": {
 			const id = args[1];
 			if (!id || args.length !== 2) {

@@ -28,7 +28,11 @@ afterEach(async () => {
 	for (const c of cleanups.splice(0)) await c();
 });
 
-const audit: TokenAuditSink = { begin: async () => 1, finish: async () => {} };
+const audit: TokenAuditSink = {
+	begin: async () => 1,
+	finish: async () => {},
+	refuse: async () => {},
+};
 const project = "demo";
 
 async function fixture() {

@@ -26,9 +26,12 @@ export interface TokenAuditSink {
 		name: string;
 		path: string;
 		project: string | null;
+		kind?: "mutation" | "stream";
 		outcome?: string;
 	}): Promise<number>;
 	finish(id: number, outcome: string): Promise<void>;
+	/** Counted, not logged: a flood of refusals must not displace real actions. */
+	refuse(entry: { tokenId: string; name: string; path: string }): Promise<void>;
 }
 
 function refusalFix(
@@ -211,7 +214,7 @@ const requirePrincipal = t.middleware(
 		};
 		const refusal = tokenRefusal(principal, path, input);
 		if (refusal) {
-			await audit.begin({ ...entry, outcome: "refused" }).catch(() => {});
+			await audit.refuse(entry).catch(() => {});
 			throw new TRPCError({ code: "FORBIDDEN", message: refusal });
 		}
 		const actor = {
@@ -220,6 +223,10 @@ const requirePrincipal = t.middleware(
 			name: principal.name,
 		};
 		const proceed = () => runAsTokenActor(actor, () => next({ ctx: authed }));
+		if (type === "subscription") {
+			await audit.begin({ ...entry, kind: "stream", outcome: "opened" });
+			return proceed();
+		}
 		if (type !== "mutation") return proceed();
 		// Written first: a mutation that cannot be attributed does not happen.
 		const auditId = await audit.begin(entry);

@@ -21,7 +21,11 @@ afterEach(async () => {
 	for (const c of cleanups.splice(0)) await c();
 });
 
-const audit: TokenAuditSink = { begin: async () => 1, finish: async () => {} };
+const audit: TokenAuditSink = {
+	begin: async () => 1,
+	finish: async () => {},
+	refuse: async () => {},
+};
 
 async function fixture() {
 	const dir = await mkdtemp(join(tmpdir(), "mfw-test-token-effects-"));

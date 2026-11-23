@@ -152,7 +152,11 @@ export async function handleAuthAction(
 
 	// Token management: a private path, so the guard has required the session
 	// and its request key. A bearer token never gets here (`guardBearer`).
-	if (action === "tokens" || action === "token-revoke") {
+	if (
+		action === "tokens" ||
+		action === "token-revoke" ||
+		action === "token-audit"
+	) {
 		const session = guarded.session;
 		if (!session)
 			return jsonResponse(401, {
@@ -161,6 +165,13 @@ export async function handleAuthAction(
 			});
 		if (action === "tokens" && method === "GET")
 			return jsonResponse(200, { tokens: await auth.listTokens() });
+		if (action === "token-audit")
+			return method === "GET"
+				? jsonResponse(200, {
+						actions: await auth.listTokenAudit({ limit: 200 }),
+						counters: await auth.tokenAuditCounters(),
+					})
+				: jsonResponse(404, { error: "not_found", message: "not found" });
 		if (method !== "POST")
 			return jsonResponse(404, { error: "not_found", message: "not found" });
 		if (!hasAuthIntent(req)) return badRequest();

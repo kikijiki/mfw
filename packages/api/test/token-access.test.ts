@@ -60,6 +60,9 @@ function sink(): TokenAuditSink & { rows: string[] } {
 		finish: async (id, outcome) => {
 			rows[id - 1] = `${rows[id - 1]?.split(":")[0]}:${outcome}`;
 		},
+		refuse: async (e) => {
+			rows.push(`${e.path}:refused`);
+		},
 	};
 }
 
@@ -430,6 +433,7 @@ describe("audit", () => {
 				throw new Error("disk full");
 			},
 			finish: async () => {},
+			refuse: async () => {},
 		};
 		expect(
 			await call(
@@ -437,6 +441,45 @@ describe("audit", () => {
 				"tasks.create",
 				"mutation",
 				{ project: "alpha", title: "x" },
+				audit,
+			),
+		).toBe("INTERNAL_SERVER_ERROR");
+	});
+
+	test("a stream open is recorded", async () => {
+		const seen: string[] = [];
+		const audit: TokenAuditSink = {
+			begin: async (e) => {
+				seen.push(`${e.path}:${e.kind}:${e.outcome}`);
+				return 1;
+			},
+			finish: async () => {},
+			refuse: async () => {},
+		};
+		await call(
+			token(["board:read"]),
+			"live.events",
+			"subscription",
+			{ project: "alpha" },
+			audit,
+		);
+		expect(seen).toEqual(["live.events:stream:opened"]);
+	});
+
+	test("a stream that cannot be audited does not open", async () => {
+		const audit: TokenAuditSink = {
+			begin: async () => {
+				throw new Error("disk full");
+			},
+			finish: async () => {},
+			refuse: async () => {},
+		};
+		expect(
+			await call(
+				token(["board:read"]),
+				"live.events",
+				"subscription",
+				{ project: "alpha" },
 				audit,
 			),
 		).toBe("INTERNAL_SERVER_ERROR");

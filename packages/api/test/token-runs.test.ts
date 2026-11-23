@@ -6,7 +6,11 @@ import { createCallerFactory, type TokenAuditSink } from "../src/trpc.ts";
 
 /** `runs:act` covers task runs. The brain's and other internal runs are not its. */
 
-const audit: TokenAuditSink = { begin: async () => 1, finish: async () => {} };
+const audit: TokenAuditSink = {
+	begin: async () => 1,
+	finish: async () => {},
+	refuse: async () => {},
+};
 const project = "demo";
 const OTHER_KINDS = ["brain", "plan", "action", "import", "repair"];
 
