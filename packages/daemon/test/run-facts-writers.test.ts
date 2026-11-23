@@ -86,6 +86,7 @@ const NOT_FACTS = [
 	"runDirLayout",
 	"workspaceKind",
 	"approvalMode",
+	"verifiedSha",
 ];
 
 const REPO = resolve(import.meta.dir, "../../..");

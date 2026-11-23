@@ -24,6 +24,7 @@ import {
 	AUTH_HOLD_REASON,
 	isAuthFailure,
 } from "../auth-failure.ts";
+import { readProtectedBoardPaths } from "../board-layout.ts";
 import { runDirLayout } from "../containment/run-dir.ts";
 import { readRegularFile } from "../containment/safe-file.ts";
 import { git } from "../git.ts";
@@ -234,6 +235,7 @@ export interface StepRunnerDeps {
 			taskId?: string | null;
 			branch: string;
 			targetBranch: string;
+			requireVerified?: boolean;
 		}): Promise<void>;
 	};
 	host: { readExit(runDir: string): Promise<RunExit> };
@@ -1432,6 +1434,11 @@ export class StepRunner {
 			}
 			candidate = imported.sha;
 		}
+		// An interactive run is checked in its worktree, so what passed is a
+		// commit only if HEAD held still and nothing was left uncommitted.
+		const headBefore = candidate
+			? null
+			: await git(["rev-parse", "HEAD"], run.worktreePath);
 		const runVerification = () =>
 			clones && candidate
 				? verifyInClone(
@@ -1447,9 +1454,35 @@ export class StepRunner {
 						...verifyOpts,
 						...hostExecution,
 					});
-		const result = this.deps.verification
+		const checked = this.deps.verification
 			? await this.deps.verification.foreground(runVerification)
 			: await runVerification();
+		let verifiedSha: string | null = null;
+		let result = checked;
+		if (checked.passed) {
+			verifiedSha =
+				candidate ??
+				(await this.committedWorktreeTip(
+					run,
+					headBefore?.exitCode === 0 ? headBefore.stdout.trim() : null,
+				));
+			if (!verifiedSha) {
+				result = {
+					...checked,
+					passed: false,
+					checks: [
+						...checked.checks,
+						{
+							check: "precondition",
+							ok: false,
+							detail:
+								"the checks passed on a worktree that differs from its commit: commit the changes and verify again",
+						},
+					],
+				};
+			}
+		}
+		await this.deps.registry.recordVerifiedSha(run.id, verifiedSha);
 		if (run.taskId) {
 			const taskId = run.taskId;
 			const stored = await this.deps.handle.withTx(async (tx) => {
@@ -1495,6 +1528,40 @@ export class StepRunner {
 			);
 		}
 		return result;
+	}
+
+	/**
+	 * The worktree's HEAD, when it is what the checks just saw. Ignored files
+	 * (dependencies, build output) are not part of any commit and do not count.
+	 * Neither do the agent's report, which finalize has already read, or stray
+	 * files under the board and `.mfw/`, which a merge discards.
+	 */
+	private async committedWorktreeTip(
+		run: RunRow,
+		before: string | null,
+	): Promise<string | null> {
+		const wt = run.worktreePath;
+		if (!wt || !before) return null;
+		const after = await git(["rev-parse", "HEAD"], wt);
+		if (after.exitCode !== 0 || after.stdout.trim() !== before) return null;
+		const status = await git(["status", "--porcelain", "-z"], wt);
+		if (status.exitCode !== 0) return null;
+		const owned = [
+			".mfw",
+			...(await readProtectedBoardPaths(this.deps.projectRoot)),
+		];
+		const differs = status.stdout
+			.split("\0")
+			.filter(Boolean)
+			.some((entry) => {
+				const path = /^.{1,2} (.*)$/s.exec(entry)?.[1]?.replace(/\/$/, "");
+				if (!path) return true;
+				return !(
+					path === "MFW_REPORT.json" ||
+					owned.some((p) => path === p || path.startsWith(`${p}/`))
+				);
+			});
+		return differs ? null : before;
 	}
 
 	/** Judge steps never throw; failure is a journaled `failed` status the machine turns into a settle (T14) or a human gate (I5). */
@@ -1960,6 +2027,8 @@ export class StepRunner {
 			taskId: run.taskId,
 			branch: run.branch,
 			targetBranch,
+			// A run that went through the verify step lands only what it verified.
+			requireVerified: built.results.has("verify"),
 		});
 		return { enqueued: true, targetBranch };
 	}

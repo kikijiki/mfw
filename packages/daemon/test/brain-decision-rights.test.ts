@@ -231,6 +231,31 @@ describe("host-executed paths", () => {
 		expect(u.effects.filter((e) => e.tool === "enqueue")).toEqual([]);
 	});
 
+	test("a person's own pick carries their decision to the merge queue", async () => {
+		await start({ changedFiles: () => [".envrc"] });
+		const runId = await verifiedAttempt(owner, "G1");
+		const out = await u.runtime.actions.selectWinnerAsHuman({
+			runId,
+			groupId: "G1",
+		});
+		expect(out.ok).toBe(true);
+		const [enqueued] = u.effects.filter((e) => e.tool === "enqueue");
+		expect(enqueued?.args[0]).toMatchObject({
+			runId,
+			ownerApproved: "select_winner",
+		});
+	});
+
+	test("the brain's pick never carries a person's decision", async () => {
+		await start({ changedFiles: () => ["src/a.ts"] });
+		const runId = await verifiedAttempt(owner, "G1");
+		expect((await act("select_winner", { ...why, runId })).status).toBe(
+			"applied",
+		);
+		const [enqueued] = u.effects.filter((e) => e.tool === "enqueue");
+		expect(enqueued?.args[0]).not.toHaveProperty("ownerApproved");
+	});
+
 	test("a winner whose changes cannot be listed becomes a card", async () => {
 		await start({ changedFiles: () => null });
 		const runId = await verifiedAttempt(owner, "G1");

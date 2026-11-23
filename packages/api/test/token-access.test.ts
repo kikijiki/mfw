@@ -116,6 +116,13 @@ describe("every procedure is declared", () => {
 		expect([...OWNER_ONLY_PROCEDURES].filter((p) => !real.has(p))).toEqual([]);
 	});
 
+	test("a decision that satisfies the host-executed merge gate is owner-only", () => {
+		for (const path of ["tasks.approve", "groups.selectWinner"]) {
+			expect(OWNER_ONLY_PROCEDURES.has(path)).toBe(true);
+			expect(tokenRefusal(token(TOKEN_SCOPES), path, {})).not.toBeNull();
+		}
+	});
+
 	test("an undeclared procedure is refused", () => {
 		expect(
 			tokenRefusal(token(TOKEN_SCOPES), "new.procedure", {}),

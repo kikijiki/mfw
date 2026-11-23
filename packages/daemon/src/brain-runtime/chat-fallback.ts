@@ -88,6 +88,8 @@ const WHY: Record<ChatFallbackReason, string> = {
 	off: "The brain is off, so this comes straight from the records.",
 	unavailable:
 		"The brain is unavailable, so this comes straight from the records.",
+	unsandboxed_transport:
+		"Chat does not use this brain's provider, because Codex and ACP agents would run outside the sandbox, so this comes straight from the records.",
 	breaker_open:
 		"The brain's act breaker is open, so this comes straight from the records.",
 	over_budget:

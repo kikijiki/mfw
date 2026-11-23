@@ -3,10 +3,14 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { engineKv } from "@mfw/db/schema";
 import { sql } from "drizzle-orm";
+import { PROVIDER_CATALOGUE } from "../src/agents/catalogue.ts";
 import type { InferenceClient, InferenceOpts } from "../src/brain.ts";
 import { ACT_TOOLS } from "../src/brain-runtime/actions.ts";
 import { BRAIN_PROCEDURES } from "../src/brain-runtime/brain-socket.ts";
-import { chatInferenceFor } from "../src/brain-runtime/chat.ts";
+import {
+	chatInferenceFor,
+	chatTransportRefused,
+} from "../src/brain-runtime/chat.ts";
 import { ChatBudget } from "../src/brain-runtime/chat-budget.ts";
 import {
 	fallbackTopic,
@@ -61,7 +65,11 @@ const say = (
 
 async function ready(
 	script: Reply[] = [],
-	o: { budget?: Partial<ChatBudget["config"]>; model?: boolean } = {},
+	o: {
+		budget?: Partial<ChatBudget["config"]>;
+		model?: boolean;
+		refused?: boolean;
+	} = {},
 ) {
 	const model = fakeModel(script);
 	let budget: ChatBudget | null = null;
@@ -73,6 +81,9 @@ async function ready(
 	u = await brainUnit({
 		chat: {
 			...(o.model === false ? {} : { inference: () => model.client }),
+			...(o.refused
+				? { inference: () => null, refusesTransport: () => true }
+				: {}),
 			budget: {
 				admit: (id: string, p: string) => budget?.admit(id, p),
 				charge: (id: string, t: number, d: number) => budget?.charge(id, t, d),
@@ -202,6 +213,36 @@ describe("read-only enforcement", () => {
 		expect(chatInferenceFor(route("codex-cli"))).toBeNull();
 		expect(chatInferenceFor(route("claude-cli", { id: "e" }))).toBeNull();
 		expect(chatInferenceFor(route("no-such-provider"))).toBeNull();
+	});
+});
+
+describe("chat over a transport that would run outside the sandbox", () => {
+	const route = (provider: string) => ({ provider, endpoint: null }) as never;
+	const acp = PROVIDER_CATALOGUE.filter((p) => p.configType === "acp");
+
+	test("every ACP provider and Codex are refused", () => {
+		expect(acp.length).toBeGreaterThan(0);
+		for (const provider of acp) {
+			expect(chatInferenceFor(route(provider.id))).toBeNull();
+			expect(chatTransportRefused(route(provider.id))).toBe(true);
+		}
+		expect(chatTransportRefused(route("codex-cli"))).toBe(true);
+	});
+
+	test("Claude and an unknown provider are not reported as this refusal", () => {
+		expect(chatTransportRefused(route("claude-cli"))).toBe(false);
+		expect(chatTransportRefused(route("no-such-provider"))).toBe(false);
+	});
+
+	test("the owner gets a records answer that says why, and the model is not called", async () => {
+		const { model } = await ready([], { refused: true });
+		await ask("what is running?");
+		const a = await lastAnswer();
+		expect(a.reason).toBe("unsandboxed_transport");
+		expect(a.text).toContain("outside the sandbox");
+		expect(a.text).toContain("from the records");
+		expect(a.text).not.toContain("unavailable");
+		expect(model.prompts).toHaveLength(0);
 	});
 });
 

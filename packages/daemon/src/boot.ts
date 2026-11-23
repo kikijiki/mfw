@@ -21,7 +21,10 @@ import {
 import { getBoardTemplate } from "./board-templates.ts";
 import { BrainService, type InferenceClient } from "./brain.ts";
 import { brainSocketFor } from "./brain-runtime/brain-socket.ts";
-import { chatInferenceFor } from "./brain-runtime/chat.ts";
+import {
+	chatInferenceFor,
+	chatTransportRefused,
+} from "./brain-runtime/chat.ts";
 import { ChatBudget, chatBudgetPath } from "./brain-runtime/chat-budget.ts";
 import { BrainRuntime, resolveBrainConfig } from "./brain-runtime/runtime.ts";
 import { BudgetService } from "./budgets.ts";
@@ -802,7 +805,7 @@ export async function attachProject(
 		bus,
 		projectRoot: root,
 		log: plog,
-		reverify: async (job, baseSha) => {
+		reverify: async (job, baseSha, tipSha) => {
 			const task = job.taskId ? await tasks.get(job.taskId) : null;
 			const dod = tasks.effectiveDod(task?.dod ?? null);
 			if (!dod) return { passed: true }; // nothing to re-check
@@ -816,20 +819,17 @@ export async function attachProject(
 				envPolicy: cfg.envPolicy,
 				gate: { primaryRoot: root, baseRev: baseSha },
 			};
-			// The merge queue never executes a check on the host: a worktree run is
-			// verified from its committed branch tip, in a disposable clone.
+			// The merge queue never executes a check on the host. It checks the
+			// exact rebased commit, by id, in a disposable clone: a ref could move.
 			const clones = createCheckClones(root);
-			const rev = createVerifierClones(root, run)
-				? quarantineRef(job.runId)
-				: run.branch;
-			if (!clones || !rev) {
+			if (!clones) {
 				return {
 					passed: false,
-					detail: "no verifier sandbox or commit to re-check this run in",
+					detail: "no verifier sandbox to re-check this run in",
 				};
 			}
 			const result = await verification.foreground(() =>
-				verifyInClone(clones, rev, job.runId, dod, run.baseSha as string, {
+				verifyInClone(clones, tipSha, job.runId, dod, run.baseSha as string, {
 					...opts,
 					role: "merge-verify",
 				}),
@@ -1335,6 +1335,7 @@ export async function attachProject(
 		config: () => resolveBrainConfig(liveBrainConfig),
 		chat: {
 			inference: chatInferenceFor,
+			refusesTransport: chatTransportRefused,
 			budget: new ChatBudget(chatBudgetPath(opts.mfwHome)),
 			inbox: () => inbox.list(),
 		},

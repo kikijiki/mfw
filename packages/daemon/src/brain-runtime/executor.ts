@@ -153,6 +153,8 @@ export interface BrainExecutorDeps {
 			taskId?: string | null;
 			branch: string;
 			targetBranch: string;
+			requireVerified?: boolean;
+			ownerApproved?: "review" | "select_winner";
 		}): Promise<void>;
 		settleDeclinedHostMerge?(actionId: string): Promise<void>;
 	};
@@ -1121,6 +1123,7 @@ export class BrainActionExecutor {
 			taskId: task.id,
 			branch: run.branch,
 			targetBranch,
+			requireVerified: this.hasChecks(task),
 		});
 		return { approved: true, enqueued: true, targetBranch };
 	}
@@ -1237,6 +1240,9 @@ export class BrainActionExecutor {
 			taskId,
 			branch: winner.branch,
 			targetBranch,
+			requireVerified: this.hasChecks(task),
+			// A person's pick is their decision on this content; the brain's is not.
+			...(actor === "human" ? { ownerApproved: "select_winner" as const } : {}),
 		});
 		return { enqueued: true, targetBranch };
 	}

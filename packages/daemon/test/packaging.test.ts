@@ -33,6 +33,17 @@ describe("the units' tool path", () => {
 		);
 		expect(nix).toContain("host-scripts/manifest.json");
 	});
+
+	test("the production build bundles the migrations and the unit rebuilds without them", async () => {
+		const [nix, pkg] = await Promise.all([
+			readFile(resolve(root, "packaging/mfw.home-manager.nix"), "utf8"),
+			readFile(resolve(root, "apps/start/package.json"), "utf8"),
+		]);
+		expect(nix).toContain("server/migrations/manifest.json");
+		expect(JSON.parse(pkg).scripts.build).toContain(
+			"tools/build-migrations.ts",
+		);
+	});
 });
 
 describe("packaged listener safety", () => {
