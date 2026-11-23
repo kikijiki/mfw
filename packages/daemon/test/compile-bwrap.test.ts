@@ -359,6 +359,17 @@ describe("argv snapshots", () => {
 		expect(argv).toContain("--ro-bind-fd");
 	});
 
+	test("a cast reviewer with a writable workspace does not compile", () => {
+		const forged = {
+			version: 1,
+			role: "reviewer",
+			filesystem: { workspace: { source: `${R}/work`, access: "rw" } },
+		} as unknown as SandboxProfile;
+		const r = compileBwrap(forged, ["agent"], host());
+		expect(r.ok).toBe(false);
+		if (!r.ok) expect(r.code).toBe("invalid_profile");
+	});
+
 	test("no profile source is bound by path", () => {
 		const { argv } = compiled(full());
 		for (const dir of ["work", "git", "cargo", "fleet", "egress"]) {

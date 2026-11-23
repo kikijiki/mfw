@@ -195,16 +195,46 @@ const LifecycleSection = z.strictObject({
 	newSession: z.literal(true).optional(),
 });
 
-export const SandboxProfileSchema = z.strictObject({
-	version: z.literal(SANDBOX_PROFILE_VERSION),
-	role: z.enum(PROFILE_ROLES),
-	filesystem: FilesystemSection.optional(),
-	home: z.literal("synthetic").optional(),
-	process: ProcessSection.optional(),
-	network: NetworkSection.optional(),
-	resources: ResourcesSection.optional(),
-	lifecycle: LifecycleSection.optional(),
-});
+/**
+ * Roles enforced read-only at the mount level (design "Role profiles"): no
+ * host path they can reach may be writable. Their tmpfs mounts stay writable
+ * and vanish with the sandbox. Harness read-only flags are only a second layer.
+ */
+export const READ_ONLY_ROLES: ReadonlySet<(typeof PROFILE_ROLES)[number]> =
+	new Set(["reviewer", "plan", "import", "brain", "trigger"]);
+
+export const SandboxProfileSchema = z
+	.strictObject({
+		version: z.literal(SANDBOX_PROFILE_VERSION),
+		role: z.enum(PROFILE_ROLES),
+		filesystem: FilesystemSection.optional(),
+		home: z.literal("synthetic").optional(),
+		process: ProcessSection.optional(),
+		network: NetworkSection.optional(),
+		resources: ResourcesSection.optional(),
+		lifecycle: LifecycleSection.optional(),
+	})
+	.superRefine((profile, ctx) => {
+		if (!READ_ONLY_ROLES.has(profile.role)) return;
+		const deny = (path: (string | number)[], what: string) =>
+			ctx.addIssue({
+				code: "custom",
+				path: ["filesystem", ...path],
+				message: `role ${profile.role} is read-only and cannot have ${what}`,
+			});
+		const fs = profile.filesystem;
+		if (fs?.workspace?.access === "rw") {
+			deny(["workspace", "access"], "a writable workspace");
+		}
+		fs?.caches?.forEach((cache, i) => {
+			if (cache.access === "rw") {
+				deny(["caches", i, "access"], "a writable cache");
+			}
+		});
+		if (fs?.fleetConfig?.writable.length) {
+			deny(["fleetConfig", "writable"], "writable fleet directories");
+		}
+	});
 
 export type SandboxProfile = z.infer<typeof SandboxProfileSchema>;
 
