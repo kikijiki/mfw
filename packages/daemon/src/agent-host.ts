@@ -66,6 +66,7 @@ import { git } from "./git.ts";
 import type { Logger } from "./log.ts";
 import { runProc } from "./proc.ts";
 import type { ExitEvidence, ExitSource } from "./run-exit-evidence.ts";
+import { removeTree } from "./run-workspace/remove-tree.ts";
 import { createRoleClone } from "./run-workspace/role-clone.ts";
 import { writeWipLaunchRequest } from "./run-workspace/wip-snapshot.ts";
 import {
@@ -390,6 +391,20 @@ export class AgentHost {
 
 	/** Launch the driver in a fresh detached tmux session. The run dir (and meta.json) must already exist (RunRegistry.create). */
 	async launch(spec: LaunchSpec): Promise<void> {
+		const made: { roleClone?: string } = {};
+		try {
+			await this.launchRun(spec, made);
+		} catch (err) {
+			// Nothing started, or its session was killed: no script will clean up.
+			if (made.roleClone) await removeTree(made.roleClone).catch(() => []);
+			throw err;
+		}
+	}
+
+	private async launchRun(
+		spec: LaunchSpec,
+		made: { roleClone?: string },
+	): Promise<void> {
 		// The single choke point (security review G5): every launch path, task or
 		// not, lands here, so autonomy without isolation is refused here.
 		if (
@@ -440,7 +455,7 @@ export class AgentHost {
 			throw new Error("launch environment uses a reserved internal name");
 		}
 		const bridge = spec.isolation
-			? await this.prepareHostBridge(spec, control, secretEnvironment)
+			? await this.prepareHostBridge(spec, control, secretEnvironment, made)
 			: null;
 
 		await writeFileAtomic(
@@ -736,6 +751,7 @@ export class AgentHost {
 		spec: LaunchSpec,
 		control: string,
 		secretEnvironment: SecretEnvironment,
+		made: { roleClone?: string },
 	): Promise<HostBridge> {
 		const mfwHome = spec.isolation?.mfwHome;
 		const cli = FLEET_CLI[spec.providerId ?? ""];
@@ -834,6 +850,7 @@ export class AgentHost {
 			const clone = await createRoleClone(spec.projectRoot, spec.runId, rev);
 			tree = clone.tree;
 			roleCloneRoot = clone.root;
+			made.roleClone = clone.root;
 		} else {
 			tree = await realpath(spec.cwd);
 		}

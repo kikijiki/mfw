@@ -136,6 +136,7 @@ import {
 	rebaseCloneOptions,
 } from "./run-workspace/factory.ts";
 import { rebaseQuarantineInScratch } from "./run-workspace/rebase-clone.ts";
+import { sweepRoleClones } from "./run-workspace/role-clone.ts";
 import { sandboxFinalSnapshot } from "./run-workspace/wip-snapshot.ts";
 import {
 	RunPodAccountService,
@@ -774,6 +775,11 @@ export async function attachProject(
 	await verifierClones?.sweep().catch((e) => {
 		plog.warn({ err: e }, "verifier clone sweep failed");
 	});
+	await sweepRoleClones(root, (runId) => host.sessionLiveness(runId)).catch(
+		(e) => {
+			plog.warn({ err: e }, "role clone sweep failed");
+		},
+	);
 	const rebaseOpts = rebaseCloneOptions(root);
 	type MergeVerdict = { passed: boolean; detail?: string; crashed?: boolean };
 	const verdictOf = (result: VerificationResult): MergeVerdict => ({
