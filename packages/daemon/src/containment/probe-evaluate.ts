@@ -176,6 +176,8 @@ export interface ProbeExpectation {
 	sweepTolerated: readonly string[];
 	/** Executables allowed in writable fleet directories, by sandbox path and hash. */
 	fleetExecBaseline: readonly { path: string; sha256: string }[];
+	/** The one further socket this role may hold: its brain socket. */
+	brainSocket?: string;
 	/** The child descriptors holding the probe's own sealed runtime. */
 	sealedFds?: readonly number[];
 }
@@ -256,7 +258,9 @@ function checkSockets(o: ProbeObservations, e: ProbeExpectation): Verdict {
 		e.egress === "proxy" && o.egress.entries[0]?.type === "socket"
 			? `${e.egressDir}/${o.egress.entries[0].name}`
 			: null;
-	const bad = o.sweep.sockets.filter((s) => s !== allowed);
+	const bad = o.sweep.sockets.filter(
+		(s) => s !== allowed && s !== e.brainSocket,
+	);
 	return bad.length ? `sockets in bound paths: ${list(bad)}` : null;
 }
 

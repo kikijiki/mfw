@@ -70,6 +70,9 @@ import {
 } from "./seccomp.ts";
 import type { ToolchainPlan } from "./toolchain.ts";
 
+/** The socket's name inside a turn's directory (brain-socket.ts). */
+export const BRAIN_SOCKET_NAME = "brain.sock";
+
 const CLONE_THREAD = 0x10000;
 const SWEEP_MAX_ENTRIES = 1_000_000;
 const SWEEP_DEADLINE_MS = 25_000;
@@ -429,6 +432,9 @@ export function buildProbePlan(
 			sweepTolerated: targets.toolchainBinds.map(escapedPath),
 			fleetExecBaseline: targets.fleetExecBaseline,
 			...(opts.sealedFds ? { sealedFds: opts.sealedFds } : {}),
+			...(profile.filesystem?.brainSocket
+				? { brainSocket: `${SANDBOX_PATHS.brain}/${BRAIN_SOCKET_NAME}` }
+				: {}),
 		},
 	};
 }
