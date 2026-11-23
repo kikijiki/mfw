@@ -13,3 +13,19 @@ CREATE TABLE `sandbox_attestations` (
 );
 --> statement-breakpoint
 CREATE INDEX `ix_sandbox_attestations_run` ON `sandbox_attestations` (`run_id`,`created_at`);
+--> statement-breakpoint
+CREATE TRIGGER `sandbox_attestations_no_update` BEFORE UPDATE ON `sandbox_attestations`
+BEGIN
+	SELECT RAISE(ABORT, 'sandbox_attestations is append-only');
+END;
+--> statement-breakpoint
+CREATE TRIGGER `sandbox_attestations_no_delete` BEFORE DELETE ON `sandbox_attestations`
+BEGIN
+	SELECT RAISE(ABORT, 'sandbox_attestations is append-only');
+END;
+--> statement-breakpoint
+CREATE TRIGGER `sandbox_attestations_no_replace` BEFORE INSERT ON `sandbox_attestations`
+WHEN EXISTS (SELECT 1 FROM `sandbox_attestations` WHERE `id` = NEW.`id`)
+BEGIN
+	SELECT RAISE(ABORT, 'sandbox_attestations is append-only');
+END;

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
 import { sandboxAttestations } from "@mfw/db/schema";
+import { eq, sql } from "drizzle-orm";
 import {
 	ATTESTATION_VERSION,
 	type AttestationInput,
@@ -25,6 +26,16 @@ afterAll(async () => {
 	handle.close();
 	await rm(dir, { recursive: true, force: true });
 });
+
+/** Whether the database refused the statement. Drizzle queries are only thenable. */
+async function refused(query: PromiseLike<unknown>): Promise<boolean> {
+	try {
+		await query;
+		return false;
+	} catch {
+		return true;
+	}
+}
 
 const input = (over: Partial<AttestationInput> = {}): AttestationInput => ({
 	runId: "run-1",
@@ -95,6 +106,66 @@ describe("attestation store", () => {
 
 	test("a run with no record has no attestation", async () => {
 		expect(await latestAttestation(handle.db, "missing")).toBeNull();
+	});
+
+	describe("append-only", () => {
+		test("an update is refused and changes nothing", async () => {
+			await recordAttestation(
+				handle.db,
+				input({ runId: "run-update", outcome: "fail" }),
+			);
+			expect(
+				await refused(
+					handle.db
+						.update(sandboxAttestations)
+						.set({ outcome: "pass" })
+						.where(eq(sandboxAttestations.runId, "run-update")),
+				),
+			).toBe(true);
+			expect((await latestAttestation(handle.db, "run-update"))?.outcome).toBe(
+				"fail",
+			);
+		});
+
+		test("a delete cannot restore an older pass", async () => {
+			await recordAttestation(handle.db, input({ runId: "run-delete" }));
+			const failed = await recordAttestation(
+				handle.db,
+				input({ runId: "run-delete", outcome: "fail" }),
+			);
+			expect(
+				await refused(
+					handle.db
+						.delete(sandboxAttestations)
+						.where(eq(sandboxAttestations.id, failed)),
+				),
+			).toBe(true);
+			expect((await latestAttestation(handle.db, "run-delete"))?.outcome).toBe(
+				"fail",
+			);
+		});
+
+		test("INSERT OR REPLACE cannot rewrite a row", async () => {
+			const id = await recordAttestation(
+				handle.db,
+				input({ runId: "run-replace", outcome: "fail" }),
+			);
+			expect(
+				await refused(
+					handle.db.run(
+						sql`INSERT OR REPLACE INTO sandbox_attestations
+						(id, run_id, version, profile_hash, options_hash, seccomp_hash,
+						 bwrap_version, scope, outcome, items, created_at)
+						SELECT id, run_id, version, profile_hash, options_hash, seccomp_hash,
+						 bwrap_version, scope, 'pass', items, created_at
+						FROM sandbox_attestations WHERE id = ${id}`,
+					),
+				),
+			).toBe(true);
+			expect((await latestAttestation(handle.db, "run-replace"))?.outcome).toBe(
+				"fail",
+			);
+		});
 	});
 
 	test("a malformed stored row reads as no attestation, never as a pass", async () => {

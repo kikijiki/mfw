@@ -523,8 +523,9 @@ export const runSubagents = sqliteTable(
 
 /**
  * Sandbox attestations (design "Probe barrier"): what the host observed when
- * it ran the in-child probe for a run. Append-only; the newest row for a run
- * is the one that counts. Written and read through
+ * it ran the in-child probe for a run. Append-only, enforced by triggers in
+ * migration 0020 that drizzle does not model; the newest row for a run is the
+ * one that counts. Written and read through
  * `containment/attestation-store.ts`, which validates each row on the way out.
  */
 export const sandboxAttestations = sqliteTable(
