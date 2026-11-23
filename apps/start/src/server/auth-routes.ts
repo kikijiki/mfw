@@ -1,6 +1,7 @@
 import {
 	type AuthRefused,
 	type AuthService,
+	type AuthSource,
 	isAuthRefused,
 } from "@mfw/daemon/auth/service";
 import {
@@ -12,6 +13,7 @@ import {
 	shadowCookieClears,
 	withCookies,
 } from "./auth-guard";
+import { requestContext } from "./request-guard";
 
 /**
  * `/api/auth/{state,setup,login,logout}`. The caller has already passed the
@@ -68,14 +70,21 @@ async function readJson(req: Request): Promise<Record<string, unknown> | null> {
 	}
 }
 
-/**
- * The socket peer, as the server adapter reports it. Forwarded headers are
- * deliberately ignored: any client can send them.
- * TODO(C4): honour the forwarded address only from the configured trusted proxy.
- */
+/** The socket peer, as the server adapter reports it. Never a forwarded header. */
 export function peerAddress(req: Request): string | undefined {
 	const ip = (req as Request & { ip?: unknown }).ip;
 	return typeof ip === "string" ? ip : undefined;
+}
+
+/**
+ * Who a failed attempt counts against: the socket peer, or the client a trusted
+ * proxy reported, marked so the service also charges the shared proxied budget.
+ */
+export function throttleIdentity(req: Request): AuthSource | undefined {
+	const context = requestContext(req);
+	if (context.proxied && context.client)
+		return { address: context.client, viaProxy: true };
+	return peerAddress(req);
 }
 
 /** A JSON body and a custom header: a cross-site form can send neither. */
@@ -95,8 +104,8 @@ export async function handleAuthAction(
 	guarded: Extract<GuardResult, { ok: true }>,
 	auth: AuthService,
 	base = appBase(),
-	/** The socket peer; injectable for tests. */
-	peer: string | undefined = peerAddress(req),
+	/** The throttle identity; injectable for tests. */
+	peer: AuthSource | undefined = throttleIdentity(req),
 ): Promise<Response> {
 	const method = req.method.toUpperCase();
 	if (action === "state" && (method === "GET" || method === "HEAD")) {

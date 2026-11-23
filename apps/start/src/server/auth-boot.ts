@@ -1,5 +1,6 @@
 import { definePlugin } from "nitro";
 import { serverAuth } from "./auth-guard";
+import { checkExposure } from "./exposure";
 
 /**
  * Open the auth store with the server and, on a first run, issue the one-time
@@ -28,7 +29,24 @@ export async function announceFirstRun(
 	);
 }
 
+/**
+ * Stop before the listener opens if this configuration would expose the server
+ * without TLS. Vite's dev server has its own bind, which `HOST` does not
+ * describe; there the per-request peer checks still apply.
+ */
+export function enforceExposure(
+	env: Record<string, string | undefined>,
+	exit: (code: number) => void = (code) => process.exit(code),
+	print: (line: string) => void = console.error,
+): void {
+	const refusal = checkExposure(env);
+	if (!refusal) return;
+	print(`[mfw] refusing to start: ${refusal}`);
+	exit(1);
+}
+
 export default definePlugin(() => {
+	if (!import.meta.env?.DEV) enforceExposure(process.env);
 	void serverAuth()
 		.then((auth) => announceFirstRun(auth))
 		.catch((error) => {

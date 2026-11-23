@@ -124,6 +124,8 @@ export async function dispatch(argv: string[], d: Deps): Promise<number> {
 				);
 				return 1;
 			}
+			// The server refuses an unset HOST (Bun would bind every interface).
+			if (!d.env.NITRO_HOST && !d.env.HOST) d.env.HOST = "127.0.0.1";
 			return d.run([d.bun, "run", d.serverEntry], d.repoRoot);
 		}
 		case "version": {
