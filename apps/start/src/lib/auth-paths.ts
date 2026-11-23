@@ -17,6 +17,8 @@ export function safeNext(next: string | null, base: string): string {
 		return base;
 	}
 	if (url.origin !== "http://mfw.invalid") return base;
+	// Dot segments can normalise into `//host`, which a browser reads as another site.
+	if (url.pathname.startsWith("//")) return base;
 	const rel = relativePath(url.pathname, base);
 	if (rel === null || rel === "login") return base;
 	return `${url.pathname}${url.search}`;

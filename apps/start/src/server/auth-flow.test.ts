@@ -248,9 +248,16 @@ describe("safeNext", () => {
 		"/other/app",
 		"/mfw/login",
 		"/mfw/\nx",
+		"/mfw/x/../..//evil.example",
 	])
 		test(`refuses ${JSON.stringify(bad)}`, () => {
 			expect(safeNext(bad, "/mfw/")).toBe("/mfw/");
+		});
+
+	// The reviewer's M3: dot segments normalise into a protocol-relative URL.
+	for (const bad of ["/x/..//evil.example", "/x/../..//evil.example/a?b=1"])
+		test(`at base / refuses ${bad}`, () => {
+			expect(safeNext(bad, "/")).toBe("/");
 		});
 
 	test("keeps a path inside the app", () => {
