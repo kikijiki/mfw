@@ -12,8 +12,8 @@ import {
 } from "@mfw/db/schema";
 import { and, desc, eq, gte, inArray, isNull, ne } from "drizzle-orm";
 import { readActBreaker } from "./brain-runtime/act-breaker.ts";
-import { decisionCardId } from "./brain-runtime/actions.ts";
 import { readAwaiting } from "./brain-runtime/awaiting.ts";
+import { decisionCardId } from "./brain-runtime/decision-rights.ts";
 import { TASK_QUESTION_KIND } from "./clarify.ts";
 import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
 import type { TaskRow, TaskService } from "./task-service.ts";
@@ -180,6 +180,12 @@ const SEVERITY: Record<InboxKind, InboxSeverity> = {
 	brain_breaker: "critical",
 };
 
+/** Only an answer clears these: a reserved decision is never hidden. */
+const UNDISMISSABLE: ReadonlySet<InboxKind> = new Set([
+	"brain_decision",
+	"brain_breaker",
+]);
+
 /** How long an un-dismissed `notify_human` stays in the queue. */
 const BRAIN_NOTICE_DAYS = 7;
 
@@ -254,7 +260,9 @@ export class InboxService {
 				(d) => d.itemId,
 			),
 		);
-		const items = (await this.collect()).filter((i) => !dismissed.has(i.id));
+		const items = (await this.collect()).filter(
+			(i) => !dismissed.has(i.id) || UNDISMISSABLE.has(i.kind),
+		);
 		items.sort((a, b) => RANK[a.severity] - RANK[b.severity] || b.ts - a.ts);
 		return items;
 	}

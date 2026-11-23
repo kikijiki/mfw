@@ -285,14 +285,17 @@ function NeedRow({
 				>
 					<RelativeTime value={item.ts} />
 				</span>
-				<Button
-					size="icon-sm"
-					variant="ghost"
-					aria-label={`Dismiss: ${item.title}`}
-					onClick={() => actions.dismiss(item)}
-				>
-					<X aria-hidden />
-				</Button>
+				{/* A held decision or an open breaker clears only by being answered. */}
+				{inline === "decision" || inline === "breaker" ? null : (
+					<Button
+						size="icon-sm"
+						variant="ghost"
+						aria-label={`Dismiss: ${item.title}`}
+						onClick={() => actions.dismiss(item)}
+					>
+						<X aria-hidden />
+					</Button>
+				)}
 			</div>
 
 			{item.detail ? (

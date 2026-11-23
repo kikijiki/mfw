@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { brainActions, brainTurns, decisions } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
 import { ActBreaker } from "../src/brain-runtime/act-breaker.ts";
-import { ACT_TOOLS, decisionCardId } from "../src/brain-runtime/actions.ts";
+import { ACT_TOOLS } from "../src/brain-runtime/actions.ts";
+import { decisionCardId } from "../src/brain-runtime/decision-rights.ts";
 import { InjectedExecutorCrash } from "../src/brain-runtime/executor.ts";
 import { recordProvenance } from "../src/brain-runtime/provenance.ts";
 import { InboxService } from "../src/inbox.ts";
@@ -350,6 +351,14 @@ describe("a decision card resolves the held action", () => {
 		expect(
 			(await inbox().list()).filter((i) => i.kind === "brain_decision"),
 		).toEqual([]);
+	});
+
+	test("dismissing a card cannot hide a held decision", async () => {
+		const id = await hold();
+		await inbox().dismiss(decisionCardId(id));
+		expect((await inbox().list()).map((i) => i.id)).toContain(
+			decisionCardId(id),
+		);
 	});
 
 	test("a second approval changes nothing", async () => {

@@ -225,6 +225,10 @@ export function classifyAction(
 	}
 }
 
+/** The inbox id of the card that holds an action. */
+export const decisionCardId = (actionId: string) =>
+	`brain_decision:${actionId}`;
+
 export interface RightsDecision {
 	version: number;
 	right: Right;

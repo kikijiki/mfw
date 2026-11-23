@@ -52,6 +52,7 @@ import {
 	classifyAction,
 	DEFAULT_RIGHTS,
 	decide,
+	decisionCardId,
 	type RightsDecision,
 	type RightsFacts,
 	type RightsTable,
@@ -186,10 +187,6 @@ export interface BrainActionDeps {
 	breaker?: Partial<ActBreakerConfig>;
 	now?: () => number;
 }
-
-/** The inbox id of the card that holds an action. */
-export const decisionCardId = (actionId: string) =>
-	`brain_decision:${actionId}`;
 
 export interface HeldResolution {
 	actionId: string;
