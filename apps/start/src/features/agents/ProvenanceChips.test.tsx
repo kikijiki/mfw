@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { RunProvenanceView } from "@mfw/daemon/run-provenance-view";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ClaimChips, ProvenanceChips } from "./ProvenanceChips";
+import { ClaimChips, egressTitle, ProvenanceChips } from "./ProvenanceChips";
 
 const view = (
 	exit: RunProvenanceView["exit"],
@@ -12,6 +12,40 @@ const render = (v: RunProvenanceView | null) =>
 	renderToStaticMarkup(<ProvenanceChips provenance={v} />);
 
 describe("ProvenanceChips", () => {
+	test("egress shows as host-observed traffic with its denials", () => {
+		const egress: NonNullable<RunProvenanceView["egress"]> = {
+			provenance: "host-observed",
+			bytesUp: 2048,
+			bytesDown: 3 * 1024 * 1024,
+			denied: 2,
+			destinations: [
+				{
+					destination: "evil.test:443",
+					bytesUp: 0,
+					bytesDown: 0,
+					connections: 0,
+					denied: 2,
+					lastDeniedReason: "not-allowlisted",
+				},
+			],
+		};
+		const html = render({
+			...view({ observed: null, agentSays: null, disagree: false }),
+			egress,
+		});
+		expect(html).toContain("host saw 2.0 KB up, 3.0 MB down, 2 denied");
+		expect(egressTitle(egress)).toContain(
+			"evil.test:443: 2 denied (not-allowlisted)",
+		);
+	});
+
+	test("no egress record, no egress chip", () => {
+		const html = render(
+			view({ observed: null, agentSays: null, disagree: false }),
+		);
+		expect(html).not.toContain(" up, ");
+	});
+
 	test("a forged success renders as the agent's claim beside the host's exit", () => {
 		const html = render(
 			view(

@@ -123,6 +123,8 @@ export interface EgressProxyOptions {
 	resolve?: Resolver;
 	clock?: EgressClock;
 	log?: (entry: EgressLogEntry) => void;
+	/** Called per chunk relayed, so counters stay current while a tunnel is open. */
+	onBytes?: (host: string, port: number, up: number, down: number) => void;
 	limits?: Partial<EgressLimits>;
 	/**
 	 * The global connection cap, shared by every run's proxy. Required: a proxy
@@ -360,13 +362,23 @@ export async function startEgressProxy(
 		client.once("close", teardown);
 		for (const s of [client, upstream]) s.setTimeout(limits.idleMs, teardown);
 
+		const count = (up: number, down: number): void => {
+			try {
+				opts.onBytes?.(target.host, target.port, up, down);
+			} catch {
+				// Like the log sink: a broken counter must not break the tunnel.
+			}
+		};
+
 		const startPiping = (first: Buffer): void => {
 			if (first.length > 0) {
 				bytesUp += first.length;
+				count(first.length, 0);
 				upstream.write(first);
 			}
 			client.on("data", (chunk: Buffer) => {
 				bytesUp += chunk.length;
+				count(chunk.length, 0);
 				if (!upstream.write(chunk)) {
 					client.pause();
 					upstream.once("drain", () => client.resume());
@@ -374,6 +386,7 @@ export async function startEgressProxy(
 			});
 			upstream.on("data", (chunk: Buffer) => {
 				bytesDown += chunk.length;
+				count(0, chunk.length);
 				if (!client.write(chunk)) {
 					upstream.pause();
 					client.once("drain", () => upstream.resume());

@@ -118,6 +118,25 @@ describe("per-run egress lifecycle", () => {
 		expect(answer).toContain("X-Mfw-Egress: denied");
 	});
 
+	test("a denied attempt reaches the run's counters, and a relaunch adds to them", async () => {
+		for (const expected of [1, 2]) {
+			const { paths, child } = startProxy();
+			await listening(paths);
+			await ask(
+				paths.socketPath,
+				"CONNECT denied.invalid:443 HTTP/1.1\r\nHost: x\r\n\r\n",
+			);
+			(child.stdin as import("bun").FileSink).end();
+			await child.exited;
+			const stats = JSON.parse(readFileSync(paths.statsPath, "utf8"));
+			expect(stats.denied["denied.invalid:443"]).toEqual({
+				count: expected,
+				lastReason: "not-allowlisted",
+			});
+			expect(statSync(paths.statsPath).mode & 0o077).toBe(0);
+		}
+	});
+
 	test("end of the lifeline stops the proxy and removes its endpoints", async () => {
 		const { paths, child } = startProxy();
 		await listening(paths);

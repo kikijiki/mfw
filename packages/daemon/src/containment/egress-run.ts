@@ -33,9 +33,6 @@ import { egressSocketPath } from "./egress-proxy.ts";
 
 export const EGRESS_SOCKET_NAME = "e.sock";
 
-/** Distinct denied hosts kept per run; the agent chooses these names. */
-export const MAX_DENIED_HOSTS = 64;
-
 const AllowEntrySchema = z.strictObject({
 	host: z.string().min(1).max(253),
 	port: z.number().int().min(1).max(65535),

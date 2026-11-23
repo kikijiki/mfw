@@ -15,6 +15,7 @@ import { isBrainTurnRun } from "./brain-runtime/turn-run.ts";
 import { PROJECT_DEFAULTS } from "./config.ts";
 import { sweepRunEgress } from "./containment/egress-run.ts";
 import { runEventsPath } from "./containment/run-dir.ts";
+import { ingestRunEgress } from "./egress-ledger.ts";
 import type { StepRunner } from "./finalize/step-runner.ts";
 import type { Logger } from "./log.ts";
 import type { NotificationType } from "./notify.ts";
@@ -185,6 +186,8 @@ const ACTIVITY_NOTIFICATION: Partial<Record<RunActivity, NotificationType>> = {
 };
 
 /** States the loop still has work to do for. */
+const EGRESS_INGEST_EVERY_MS = 10_000;
+
 const LIVE_STATES = ["starting", "running", "ended", "finalizing"] as const;
 
 /** A `starting` row younger than this may still be racing its own launch. */
@@ -239,6 +242,8 @@ export class Supervisor {
 		kills: {} as Record<string, number>,
 	};
 
+	private readonly egressIngestedAt = new Map<string, number>();
+
 	constructor(private readonly deps: SupervisorDeps) {
 		this.log = deps.log.child({ svc: "supervisor" });
 		this.now = deps.now ?? (() => Date.now());
@@ -248,6 +253,26 @@ export class Supervisor {
 			new RunEventTail((runId, offset) =>
 				deps.registry.readOutput(runId, "events.jsonl", offset),
 			);
+	}
+
+	/**
+	 * Copy the run's proxy counters into L1, at most every few seconds while it
+	 * runs and always at its end. A failure here never affects the run.
+	 */
+	private async recordEgress(runId: string, final = false): Promise<void> {
+		const now = this.now();
+		const last = this.egressIngestedAt.get(runId) ?? 0;
+		if (!final && now - last < EGRESS_INGEST_EVERY_MS) return;
+		if (final) this.egressIngestedAt.delete(runId);
+		else this.egressIngestedAt.set(runId, now);
+		await ingestRunEgress(
+			this.deps.handle.db,
+			runId,
+			this.deps.registry.runDir(runId),
+			new Date(now),
+		).catch((err) =>
+			this.log.warn({ err, runId }, "recording the run's egress failed"),
+		);
 	}
 
 	/** The watchdog limits in force; read every pass, so `setLimits` is live. */
@@ -361,6 +386,7 @@ export class Supervisor {
 							});
 						}
 						await this.observe(run, stats);
+						await this.recordEgress(run.id);
 						continue;
 					}
 					if (
@@ -383,6 +409,7 @@ export class Supervisor {
 				}
 				// ended | finalizing: drive the machine behind the DB claim
 				if (await this.deps.registry.claimFinalize(run.id, this.deps.bootId)) {
+					await this.recordEgress(run.id, true);
 					const targetResult =
 						await this.deps.execution?.finalizeExecutionTarget(run.id);
 					if (targetResult?.collectionError) {
