@@ -16,11 +16,11 @@ import {
 	assertRunId,
 	type FetchValidationContext,
 	fetchRunResult,
-	quarantineLivePrefix,
 	quarantineRef,
 	quarantineWipPrefix,
 } from "../host-git/fetch.ts";
 import { HostGit, HostGitError } from "../host-git/runner.ts";
+import { isBookkeeping, MAX_SCOPE_PATHS } from "../scope-watchdog.ts";
 import type { CacheDeclaration } from "./caches.ts";
 import { preRebasePrefix } from "./rebase-clone.ts";
 import type {
@@ -313,6 +313,15 @@ async function readAck(path: string, id: string): Promise<WipAck | null> {
 	} catch {
 		return null;
 	}
+}
+
+/** What a WIP request brought back. A `live` sample exists only as this listing. */
+export interface WipImport {
+	tip: string;
+	wip: string[];
+	live?: boolean;
+	files?: string[];
+	truncated?: boolean;
 }
 
 /** The outbox must be a real directory: the root above it is host-only. */
@@ -638,15 +647,15 @@ export class CloneRunWorkspace implements RunWorkspace {
 	 * is ready; every returned ref and sha comes from the verified import.
 	 *
 	 * A run proven quiescent imports into the quarantine refs. A running one
-	 * with a host-anchored outbox (`runDirOf`) imports into the live namespace,
-	 * which is never its result. Replaces `snapshotWorktree` for clones.
+	 * with a host-anchored outbox (`runDirOf`) is only read in a throwaway repo
+	 * and never enters the primary. Replaces `snapshotWorktree` for clones.
 	 */
 	async requestWip(
 		handle: Pick<RunWorkspaceHandle, "path">,
 		opts: { timeoutMs?: number; pollMs?: number } = {},
 	): Promise<{
 		ack: WipAck;
-		imported: { tip: string; wip: string[]; live?: boolean } | null;
+		imported: WipImport | null;
 	}> {
 		const runId = this.runIdOf(handle.path);
 		return serialized(this.dirOf(runId), () =>
@@ -660,7 +669,7 @@ export class CloneRunWorkspace implements RunWorkspace {
 		opts: { timeoutMs?: number; pollMs?: number },
 	): Promise<{
 		ack: WipAck;
-		imported: { tip: string; wip: string[]; live?: boolean } | null;
+		imported: WipImport | null;
 	}> {
 		const marker = await this.readMarker(runId);
 		if (!marker) throw new Error(`not an owned run workspace: ${handle.path}`);
@@ -679,8 +688,10 @@ export class CloneRunWorkspace implements RunWorkspace {
 		if (!ack) throw new Error(`the in-sandbox helper did not answer ${id}`);
 		if (!ack.ok) return { ack, imported: null };
 		const gate = this.opts.assertQuiescent;
-		const live = !gate && this.opts.runDirOf !== undefined;
-		if (!gate && !live) return { ack, imported: null };
+		if (!gate && this.opts.runDirOf === undefined) {
+			return { ack, imported: null };
+		}
+		if (!gate) return this.readLiveSample(runId, marker, root, ack);
 		const validate = this.opts.validate ?? validateRunResult;
 		const out = await fetchRunResult({
 			host: this.host,
@@ -689,26 +700,90 @@ export class CloneRunWorkspace implements RunWorkspace {
 			bundleRel: BUNDLE_REL,
 			runId,
 			scratchRoot: await this.ensureScratch(),
-			assertProcessesDead: gate
-				? () => gate(runId)
-				: () => assertRealDirectory(join(root, "outbox")),
+			assertProcessesDead: () => gate(runId),
 			validate: (ctx) => validate(ctx, marker.baseSha),
-			...(live
-				? {
-						destination: "live" as const,
-						maxBundleBytes: Math.min(
-							this.opts.maxBundleBytes ?? LIVE_MAX_BUNDLE_BYTES,
-							LIVE_MAX_BUNDLE_BYTES,
-						),
-						maxRefs: LIVE_MAX_REFS,
-					}
-				: this.opts.maxBundleBytes
-					? { maxBundleBytes: this.opts.maxBundleBytes }
-					: {}),
+			...(this.opts.maxBundleBytes
+				? { maxBundleBytes: this.opts.maxBundleBytes }
+				: {}),
 		});
 		return {
 			ack,
-			imported: { tip: out.tip, wip: out.wipRefs.map((w) => w.ref), live },
+			imported: { tip: out.tip, wip: out.wipRefs.map((w) => w.ref) },
+		};
+	}
+
+	/**
+	 * Verify a running run's bundle in a throwaway repo and list what it changed
+	 * there. Nothing enters the primary, so samples cost no primary disk. Every
+	 * ref counts: the helper shares the agent's uid, so a forged clean snapshot
+	 * must not hide a change another ref holds.
+	 */
+	private async readLiveSample(
+		runId: string,
+		marker: Marker,
+		root: string,
+		ack: WipAck,
+	): Promise<{ ack: WipAck; imported: WipImport }> {
+		const files = new Set<string>();
+		let truncated = false;
+		const out = await fetchRunResult({
+			host: this.host,
+			primaryRepo: this.primaryRoot,
+			outboxRoot: root,
+			bundleRel: BUNDLE_REL,
+			runId,
+			scratchRoot: await this.ensureScratch(),
+			assertProcessesDead: () => assertRealDirectory(join(root, "outbox")),
+			destination: "live",
+			maxBundleBytes: Math.min(
+				this.opts.maxBundleBytes ?? LIVE_MAX_BUNDLE_BYTES,
+				LIVE_MAX_BUNDLE_BYTES,
+			),
+			maxRefs: LIVE_MAX_REFS,
+			validate: async (ctx) => {
+				for (const ref of [ctx.headRef, ...ctx.wipRefs]) {
+					try {
+						await ctx.host.records(
+							[
+								"diff-tree",
+								"-r",
+								"-z",
+								"--name-only",
+								"--no-renames",
+								marker.baseSha,
+								ref,
+							],
+							{ cwd: ctx.bareRepo, repo: ctx.bareRepo },
+							{ maxRecords: MAX_SCOPE_PATHS },
+							(path) => {
+								if (!isBookkeeping(path)) files.add(path);
+								if (files.size > MAX_SCOPE_PATHS) {
+									throw new HostGitError(
+										"validation",
+										"too many changed paths",
+									);
+								}
+							},
+						);
+					} catch (e) {
+						if (!(e instanceof HostGitError) || e.code !== "validation") {
+							throw e;
+						}
+						truncated = true;
+						return;
+					}
+				}
+			},
+		});
+		return {
+			ack,
+			imported: {
+				tip: out.tip,
+				wip: out.wipRefs.map((w) => w.ref),
+				live: true,
+				files: [...files].sort(),
+				truncated,
+			},
 		};
 	}
 
@@ -762,7 +837,6 @@ export class CloneRunWorkspace implements RunWorkspace {
 				"--format=%(refname)",
 				quarantineRef(runId),
 				quarantineWipPrefix(runId),
-				quarantineLivePrefix(runId),
 				preRebasePrefix(runId),
 			],
 			this.primaryRoot,
@@ -785,15 +859,7 @@ export class CloneRunWorkspace implements RunWorkspace {
 
 	private async newestWork(runId: string): Promise<string | null> {
 		const tip = await this.quarantineTip(runId);
-		if (tip) return this.newestOn(tip, quarantineWipPrefix(runId));
-		// No result was imported: the last live sample is what is left to save.
-		const live = quarantineLivePrefix(runId);
-		const head = await git(
-			["rev-parse", "--verify", "-q", `${live}head^{commit}`],
-			this.primaryRoot,
-		);
-		if (head.exitCode !== 0) return null;
-		return this.newestOn(head.stdout.trim(), `${live}wip/`);
+		return tip ? this.newestOn(tip, quarantineWipPrefix(runId)) : null;
 	}
 
 	/** The highest-numbered snapshot under `prefix` that builds on `tip`, else `tip`. */

@@ -98,18 +98,21 @@ async function withHelper<T>(s: Setup, fn: () => Promise<T>): Promise<T> {
 }
 
 describe("a live snapshot", () => {
-	test("lands in the live namespace and is never the run's result", async () => {
+	test("is diffed in scratch and writes nothing to the primary (M3)", async () => {
 		const s = await setup();
 		s.state.alive = true;
-		await writeFile(join(s.env.workTree, "live.txt"), "x\n");
+		await writeFile(join(s.env.workTree, "live.txt"), "incompressible-ish\n");
+		const objectsBefore = (await git(["count-objects", "-v"], s.p)).stdout;
 		const out = await withHelper(s, () =>
 			s.ws.requestWip(s.handle, { pollMs: 10 }),
 		);
 		expect(out.imported?.live).toBe(true);
-		const refs = await s.refs();
-		expect(refs).toContain("refs/mfw/quarantine-live/r1/head");
-		expect(refs).toContain("refs/mfw/quarantine-live/r1/wip/1");
-		expect(refs).not.toContain(quarantineRef("r1"));
+		expect(out.imported?.files).toEqual(["live.txt"]);
+		expect(out.imported?.truncated).toBe(false);
+		expect(await s.refs()).toEqual([]);
+		expect((await git(["count-objects", "-v"], s.p)).stdout).toBe(
+			objectsBefore,
+		);
 	});
 
 	test("concurrent requests are served one at a time", async () => {
@@ -228,7 +231,7 @@ describe("the end-of-run import", () => {
 		expect(res.failure).toBeUndefined();
 	});
 
-	test("after a failed import the last live sample can still be archived", async () => {
+	test("after a failed import the clone is kept and nothing reached the primary", async () => {
 		const s = await setup();
 		s.state.alive = true;
 		await writeFile(join(s.env.workTree, "saved.txt"), "keep me\n");
@@ -236,10 +239,8 @@ describe("the end-of-run import", () => {
 		s.state.alive = false;
 		s.state.snapshot = "fail";
 		expect((await s.ws.fetchResult(s.handle)).sha).toBeNull();
-		const archive = await s.ws.archive(s.handle, { runId: "r1", taskId: "T" });
-		expect(archive?.ref).toBe("wip/T-r1");
-		expect((await git(["show", "wip/T-r1:saved.txt"], s.p)).stdout.trim()).toBe(
-			"keep me",
-		);
+		expect(await s.refs()).toEqual([]);
+		expect(await s.ws.hasLocalChanges(s.handle)).toBe(true);
+		expect(existsSync(join(s.env.workTree, "saved.txt"))).toBe(true);
 	});
 });

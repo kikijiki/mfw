@@ -105,7 +105,7 @@ export function foreignClaims(
 }
 
 /** Paths that are mfw's own bookkeeping inside a worktree, never agent scope. */
-function isBookkeeping(path: string): boolean {
+export function isBookkeeping(path: string): boolean {
 	return path === "MFW_REPORT.json" || path.startsWith(".mfw/");
 }
 
