@@ -26,6 +26,12 @@ export interface HarnessEgressEntry {
 	purpose: EgressPurpose;
 	/** Where the entry comes from, so the owner can check it. */
 	source: string;
+	/**
+	 * Only for a run authenticating with an API key. An API host accepts any
+	 * caller's key, so a subscription run reaching one has an upload channel to
+	 * an account of the agent's choosing.
+	 */
+	requiresApiKey?: boolean;
 }
 
 export interface HarnessEgress {
@@ -86,6 +92,7 @@ export const HARNESS_EGRESS = {
 				port: 443,
 				purpose: "inference",
 				source: "string in the 0.170.0 binary, for API-key mode; not observed",
+				requiresApiKey: true,
 			},
 			{
 				host: "auth.openai.com",
@@ -112,6 +119,28 @@ export type EgressHarness = keyof typeof HARNESS_EGRESS;
 export interface HarnessEgressOptions {
 	/** Owner opt-in. Off by default. */
 	telemetry?: boolean;
+	/** The run authenticates with an API key; see {@link usesApiKeyAuth}. */
+	apiKeyAuth?: boolean;
+}
+
+/** The variable that carries each harness's API key, when it uses one. */
+const API_KEY_ENV: Readonly<Record<EgressHarness, string | null>> = {
+	// Claude uses one host for both kinds of auth, so nothing depends on this.
+	claude: null,
+	codex: "OPENAI_API_KEY",
+};
+
+/**
+ * Whether this run was launched with its harness's API key. Decided from the
+ * names in the launch environment: mfw never reads the CLI's stored login, so
+ * a key saved with the CLI's own login command does not count.
+ */
+export function usesApiKeyAuth(
+	harness: EgressHarness,
+	envNames: readonly string[],
+): boolean {
+	const name = API_KEY_ENV[harness];
+	return name !== null && envNames.includes(name);
 }
 
 /** The exact `(host, port)` pairs a harness's run may reach. */
@@ -123,6 +152,7 @@ export function harnessAllowlist(
 		HARNESS_EGRESS[harness].entries;
 	return entries
 		.filter((e) => opts.telemetry === true || e.purpose !== "telemetry")
+		.filter((e) => opts.apiKeyAuth === true || e.requiresApiKey !== true)
 		.map((e) => ({ host: e.host, port: e.port }));
 }
 

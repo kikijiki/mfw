@@ -43,7 +43,9 @@ afterEach(() => {
 	rmSync(base, { recursive: true, force: true });
 });
 
-async function runScript(): Promise<string> {
+async function runScript(
+	over: { providerId?: string; env?: Record<string, string> } = {},
+): Promise<string> {
 	await new AgentHost(undefined, {
 		tmuxRunner: noTmux,
 		controlRoot: control,
@@ -62,7 +64,8 @@ async function runScript(): Promise<string> {
 			mfwHome: join(base, "mfw"),
 		},
 		runKind: "task",
-		providerId: "claude-cli",
+		providerId: over.providerId ?? "claude-cli",
+		...(over.env ? { env: over.env } : {}),
 	});
 	return readFileSync(join(control, `run-${runId}.sh`), "utf8");
 }
@@ -77,6 +80,32 @@ function stopBlock(script: string): string {
 
 const helper = (script: string) =>
 	/^mfw_proc_ticks\(\) \{[\s\S]*?^\}$/m.exec(script)?.[0] ?? "";
+
+describe("what a Codex run may reach", () => {
+	const allowed = () =>
+		(
+			JSON.parse(
+				readFileSync(
+					join(base, "project/.mfw/runs", runId, "egress/config.json"),
+					"utf8",
+				),
+			) as { allow: { host: string }[] }
+		).allow.map((a) => a.host);
+
+	test("a subscription run cannot reach the API host", async () => {
+		await runScript({ providerId: "codex-cli" });
+		expect(allowed()).toContain("chatgpt.com");
+		expect(allowed()).not.toContain("api.openai.com");
+	});
+
+	test("a run configured with an API key can", async () => {
+		await runScript({
+			providerId: "codex-cli",
+			env: { OPENAI_API_KEY: "test-value" },
+		});
+		expect(allowed()).toContain("api.openai.com");
+	});
+});
 
 describe("stopping the proxy at the end of a run", () => {
 	test("a pid reused by another process is never signalled", async () => {

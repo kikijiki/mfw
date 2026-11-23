@@ -8,6 +8,7 @@ import {
 	HARNESS_EGRESS,
 	harnessAllowlist,
 	harnessEgressEnv,
+	usesApiKeyAuth,
 } from "../src/containment/egress-allowlists.ts";
 import {
 	buildAllowlist,
@@ -32,9 +33,20 @@ describe("harness allowlists", () => {
 		]);
 		expect(harnessAllowlist("codex")).toEqual([
 			{ host: "chatgpt.com", port: 443 },
-			{ host: "api.openai.com", port: 443 },
 			{ host: "auth.openai.com", port: 443 },
 		]);
+	});
+
+	test("api.openai.com only for a run configured for API-key auth", () => {
+		const hosts = (apiKeyAuth: boolean) =>
+			harnessAllowlist("codex", { apiKeyAuth }).map((e) => e.host);
+		expect(hosts(false)).not.toContain("api.openai.com");
+		expect(hosts(true)).toContain("api.openai.com");
+		expect(usesApiKeyAuth("codex", ["OPENAI_API_KEY"])).toBe(true);
+		expect(usesApiKeyAuth("codex", ["MFW_RUN_ID"])).toBe(false);
+		// Another vendor's key says nothing about this harness.
+		expect(usesApiKeyAuth("codex", ["ANTHROPIC_API_KEY"])).toBe(false);
+		expect(usesApiKeyAuth("claude", ["OPENAI_API_KEY"])).toBe(false);
 	});
 
 	test.each(HARNESSES)("%s: telemetry hosts need the opt-in", (h) => {
@@ -59,7 +71,9 @@ describe("harness allowlists", () => {
 			expect(e.port).toBe(443);
 			expect(e.source.length).toBeGreaterThan(0);
 		}
-		const list = buildAllowlist(harnessAllowlist(h, { telemetry: true }));
+		const list = buildAllowlist(
+			harnessAllowlist(h, { telemetry: true, apiKeyAuth: true }),
+		);
 		expect(list.entries().length).toBe(HARNESS_EGRESS[h].entries.length);
 	});
 

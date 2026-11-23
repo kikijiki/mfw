@@ -29,6 +29,7 @@ import { SANDBOX_PATHS } from "./containment/compile-bwrap.ts";
 import {
 	harnessAllowlist,
 	harnessEgressEnv,
+	usesApiKeyAuth,
 } from "./containment/egress-allowlists.ts";
 import { prepareRunEgress } from "./containment/egress-run.ts";
 import {
@@ -731,7 +732,13 @@ export class AgentHost {
 			mfwHome: await realpath(mfwHome),
 			runDir,
 			runId: spec.runId,
-			allow: harnessAllowlist(cli, egressOptions),
+			allow: harnessAllowlist(cli, {
+				...egressOptions,
+				apiKeyAuth: usesApiKeyAuth(cli, [
+					...Object.keys(spec.env ?? {}),
+					...secretEnvironment.names(),
+				]),
+			}),
 			...(spec.isolation?.egressUploadBudget
 				? { uploadBudget: spec.isolation.egressUploadBudget }
 				: {}),
