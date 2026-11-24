@@ -8,7 +8,10 @@ import {
 	parseNixDevEnv,
 	watchedRepoPaths,
 } from "../src/containment/dev-env-capture.ts";
-import { envBuildAllowlist } from "../src/containment/dev-env-egress.ts";
+import {
+	ENV_BUILD_EGRESS,
+	envBuildAllowlist,
+} from "../src/containment/dev-env-egress.ts";
 import {
 	bwrapSkipReason,
 	createEnvLab,
@@ -179,12 +182,23 @@ describe.skipIf(skip !== null)("evaluating a dev environment", () => {
 				"/cache/env-data/mise/installs/jq/1.7.1",
 			);
 			expect(existsSync(join(dataDir, "mise/installs/jq/1.7.1/jq"))).toBe(true);
-			// Host-observed: only allowlisted hosts were reached, none refused.
-			expect(Object.keys(r.egress?.allowed ?? {}).sort()).toEqual([
-				"github.com:443",
-				"mise-versions.jdx.dev:443",
-				"release-assets.githubusercontent.com:443",
-			]);
+			// Host-observed: every host reached is a recorded mise entry, none was
+			// refused, and the index and the release download were reached. Not
+			// the exact set: which extra hosts mise asks changes between mise
+			// versions (2026.6.5 also asks api.github.com), and an unrecorded one
+			// fails the subset check, so dev-env-egress.ts stays the record.
+			const miseHosts = ENV_BUILD_EGRESS.filter((e) =>
+				e.purpose.startsWith("mise-"),
+			).map((e) => `${e.host}:${e.port}`);
+			const reached = Object.keys(r.egress?.allowed ?? {});
+			for (const host of reached) expect(miseHosts).toContain(host);
+			expect(reached).toEqual(
+				expect.arrayContaining([
+					"github.com:443",
+					"mise-versions.jdx.dev:443",
+					"release-assets.githubusercontent.com:443",
+				]),
+			);
 			expect(r.egress?.denied).toEqual({});
 			expect(existsSync(join(lab.home, ".config/mise"))).toBe(false);
 			expect(existsSync(join(lab.home, ".local/share/mise"))).toBe(false);
