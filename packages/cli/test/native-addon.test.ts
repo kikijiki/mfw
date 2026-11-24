@@ -73,6 +73,18 @@ describe("the embedded libsql addon", () => {
 		expect(t.loaded).toEqual([]);
 	});
 
+	test("a load that fails, such as from a noexec TMPDIR, names that cause and the fix", () => {
+		const t = io({
+			dlopen: () => {
+				throw new Error("failed to map segment from shared object");
+			},
+		});
+		expect(() => loadNativeAddon({ file: "x", sha256: SHA }, t.value)).toThrow(
+			/failed to map segment.*mounted noexec, point TMPDIR/,
+		);
+		expect(readdirSync(t.tmp)).toEqual([]);
+	});
+
 	test("a failing load still removes the copy", () => {
 		const t = io({
 			dlopen: () => {

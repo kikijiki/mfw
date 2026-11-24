@@ -9,7 +9,7 @@
  * the sha256 recorded at build, loaded, and removed again. That works from a
  * read-only install location: the only thing written is the private copy, which
  * is gone before any query runs. A `$TMPDIR` that cannot be written is a clear
- * error, never a fallback to another copy.
+ * error, and so is one mounted `noexec`: neither falls back to another copy.
  *
  * Bun's own handling of an embedded addon writes it to a fixed name in the
  * temp directory; this keeps the name unguessable and the bytes checked.
@@ -64,7 +64,14 @@ export function loadNativeAddon(
 		const path = join(dir, "libsql.node");
 		writeFileSync(path, bytes, { mode: 0o500, flag: "wx" });
 		const module = { exports: {} as unknown };
-		io.dlopen(module, path);
+		try {
+			io.dlopen(module, path);
+		} catch (e) {
+			// The usual cause on a hardened host is a temp directory mounted noexec.
+			throw new Error(
+				`cannot load the libsql addon from ${io.tmp()}: ${(e as Error).message}. If that directory is mounted noexec, point TMPDIR at a private directory that allows execution`,
+			);
+		}
 		return module.exports;
 	} finally {
 		rmSync(dir, { recursive: true, force: true });

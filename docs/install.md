@@ -33,7 +33,8 @@ runs the same bundle, but from the working tree.
   `MFW_MIGRATIONS_DIR` is refused.
 - The libsql addon is embedded in `mfw`. On first use it is written to a fresh
   private directory under `$TMPDIR`, checked against the hash recorded at build,
-  loaded and removed. `$TMPDIR` must be writable; the install itself never is.
+  loaded and removed. `$TMPDIR` must be writable and allow execution (not mounted `noexec`); the
+  install itself never needs to be writable.
 - `mfw board` runs the `mfw-board` next to `mfw` (checked against the manifest),
   or one on `PATH` only from a root-owned directory agents cannot write.
 - `mfw __host` is refused from a checkout, inside an mfw sandbox, and from
