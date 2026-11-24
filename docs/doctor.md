@@ -91,5 +91,5 @@ the server is running, when the name or resolved root is already configured, whe
 `config.json` is a symlink, and when a save would delete keys this version does
 not know. It writes the file with mode 0600, or keeps a stricter mode.
 
-The entry uses `runWorkspace: "clone"`, because sandboxed runs cannot start from
-a worktree. It never sets `pushUrl`: choosing where merges are pushed is yours.
+The entry keeps the defaults (a private clone per run, in the sandbox). It never
+sets `pushUrl`: choosing where merges are pushed is yours.

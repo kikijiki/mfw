@@ -146,8 +146,11 @@ describe("the public docs", () => {
 		expect(read("docs/experimental.md")).toContain(EXPERIMENTAL_REMOTE_ENV);
 	});
 
-	test("the quick start states the setting a sandboxed run needs", () => {
-		expect(read("README.md")).toContain('"runWorkspace": "clone"');
+	test("the quick start needs no workspace setting: every run is a clone", () => {
+		for (const doc of ["README.md", "SECURITY.md", "docs/experimental.md"]) {
+			expect(read(doc)).not.toContain("runWorkspace");
+		}
+		expect(read("README.md")).toContain("private clone");
 	});
 
 	test("the security policy keeps a placeholder until the owner sets a contact", () => {

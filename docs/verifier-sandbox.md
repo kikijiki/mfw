@@ -9,15 +9,13 @@ environment, and its clone holds that commit's files with no project history.
 
 | Check | Where it runs |
 | --- | --- |
-| A clone run's checks | Verifier sandbox |
-| An autonomous worktree run left from an older version | Verifier sandbox, run on the run's committed tip |
+| A run's checks, on its imported tip | Verifier sandbox |
 | The merge queue's re-check and merge-commit check | `merge-verify` sandbox |
 | The regression sweep and its corroboration rerun | `merge-verify` sandbox |
 | Armed reopen commands | `merge-verify` sandbox |
-| An interactive worktree run's checks | The host, because a person approved the run |
 
 A check that cannot run in the sandbox is reported as an infrastructure result.
-It is never retried on the host.
+Nothing runs a check on the host, whatever the approval mode.
 
 ## Limits on a check
 

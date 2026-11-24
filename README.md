@@ -72,12 +72,14 @@ The daemon is the engine that does the work. For each project you attach, it:
   ([experimental](docs/experimental.md#acp-agents)). Each agent runs in its own
   session that survives restarts of the daemon, and you can steer or stop it while
   it works.
+- **Works in a private clone per run** under `$MFW_HOME/workspaces`, never inside
+  your checkout. The host never runs git in it: the run's commits come back as a
+  verified bundle into a quarantine ref.
 - **Checks the result** against the task's goal, then runs the task's `run`
-  checks without trusting the agent's word. An autonomous run's checks run on its
+  checks without trusting the agent's word. Every run's checks run on its
   committed tip inside the no-network verifier sandbox. A check that cannot run
-  there is reported as an infrastructure result, never retried on the host. Only
-  an interactive worktree run's checks run on the host, because a person
-  approved the run (see [docs/verifier-sandbox.md](docs/verifier-sandbox.md)).
+  there is reported as an infrastructure result, never run on the host (see
+  [docs/verifier-sandbox.md](docs/verifier-sandbox.md)).
 - **Merges automatically** when everything passes, into a branch you choose, and
   pushes it unless you set `pushOnMerge: false`. A change to files the host later
   executes (agent config, CI, git behaviour, build entry points) waits for your
@@ -216,17 +218,10 @@ CLAUDE_CONFIG_DIR="$MFW_HOME/agents/claude" claude   # then sign in
 CODEX_HOME="$MFW_HOME/agents/codex" codex login
 ```
 
-**4. Add a project, then switch it to a private clone.** Add the project in the UI.
-Until the default changes, a sandboxed project **starts no runs** without this
-setting, and the inbox tells you so. Add it to the project's entry in
-`$MFW_HOME/config.json`, then restart the server:
-
-```json
-{ "projects": [{ "name": "my-project", "runWorkspace": "clone" }] }
-```
-
-Keep the entry's other fields. A project with an `.envrc` is refused for now,
-because dev shells do not run inside the sandbox yet.
+**4. Add a project.** Add it in the UI. The defaults run each task in a private
+clone inside the sandbox; there is nothing to switch on. A project with an
+`.envrc` is refused for now, because dev shells do not run inside the sandbox yet,
+and the inbox tells you so.
 
 **5. Direct the work.** The project opens on **Lead**. Give it a direction or create
 a few tasks on the board, then switch the scheduler on. Nothing runs until you do,
@@ -291,7 +286,6 @@ The main per-project keys in `$MFW_HOME/config.json`:
 | --- | --- | --- |
 | `agentIsolation` | `bwrap` | the sandbox. `none` needs `approvalMode: "interactive"` and runs agents as your user |
 | `approvalMode` | `autonomous` | `interactive` asks a person for agent actions |
-| `runWorkspace` | `worktree` | set it to `clone`: sandboxed runs refuse a worktree ([why](docs/experimental.md#clone-workspaces)) |
 | `pushOnMerge` | `true` | push the integration branch after each merge |
 
 Agent network access, its per-project settings and its limits are described

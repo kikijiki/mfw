@@ -6,7 +6,7 @@ and this page disagree, that is a bug: please report it through
 [SECURITY.md](../SECURITY.md).
 
 It describes the default local setup: one owner, one Linux x86_64 machine,
-`agentIsolation: "bwrap"` and `runWorkspace: "clone"`. For how the parts fit
+`agentIsolation: "bwrap"`, with every run in a private clone. For how the parts fit
 together, see the [architecture overview](architecture-overview.md).
 
 ## Assets
@@ -252,7 +252,7 @@ is acceptable for your setup.
 | R4 | **The TLS check stops at the hello.** A `Host` header inside TLS is invisible | A shared CDN might route a matching hello to another site | SNI must match, exact host list. Not tested against real CDNs |
 | R5 | **Codex's own sandbox is not a boundary here.** The bridge asks for `workspace-write`, and the outer sandbox disables nested user namespaces, which made Codex's shell calls fail in earlier experiments | Codex task runs may not work, and its inner sandbox adds no protection | `bwrap` is the boundary, and results are verified on the host. Not retested with a real CLI |
 | R6 | **Systemd limits are unproven in CI.** CI installs no `bwrap` and does not require the live suites, so they skip there | A regression in the scope chain would not fail CI | Autonomous launches refuse without a scope. The live gate exists for hosts that have one |
-| R7 | **Worktree mode is legacy.** It remains the configured default, and sandboxed runs refuse it. It works only unsandboxed and interactive, with checks on the host | A project left on the default starts no runs, and choosing `none` removes the sandbox | The inbox names the exact fix |
+| R7 | **Unsandboxed runs return nothing.** A run's work comes back only through the in-sandbox WIP helper, which `agentIsolation: "none"` (every ACP agent) and remote targets do not have yet | Such runs can work in their clone, but their result is never imported, verified or merged | Nothing to defend: the host never reads a clone with git, so no fallback exists to abuse |
 | R8 | **Merged code runs later.** Ordinary source and dependency changes that pass their checks merge and, with `pushOnMerge` on by default, push without a card | Hostile code that passes checks reaches the branch, the remote, and your machine when you run it | Ask-first paths, verification, review settings. Set `pushOnMerge: false` to keep merges local |
 | R9 | **Armed triggers are host commands.** A pinned script can do anything you can, and tools on `PATH` are checked for location only | Whatever the armed command does | Owner arming, whole-tree pin, sealed checkout |
 | R10 | **Same user, shared kernel.** The sandbox runs as your uid | A kernel or `bwrap` flaw is an escape. Any process already outside the sandbox can read `auth.db` and `mcp-token` | Namespaces, seccomp, no capabilities. There is no VM tier yet |

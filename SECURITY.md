@@ -12,7 +12,7 @@ Please report privately and do not open a public issue.
 **Contact:** `<security contact: the maintainer fills this in before release>`
 
 Include the mfw commit, your OS and kernel, your `bwrap` and git versions, the
-project settings involved (`agentIsolation`, `approvalMode`, `runWorkspace`), and
+project settings involved (`agentIsolation`, `approvalMode`), and
 the steps to reproduce. Leave out real tokens and private repository content.
 
 mfw is maintained on a best-effort basis, so no response time is promised. Please
@@ -60,8 +60,9 @@ probe:
   limit this and the proxy records it, but neither prevents it.
 - **Code you merge.** Ordinary source changes merge and push without a card when
   their checks pass. That code runs with your rights once you build or run it.
-- **Unsandboxed modes.** `agentIsolation: "none"`, ACP agents, interactive worktree
-  checks and armed host triggers run as your user.
+- **Unsandboxed modes.** `agentIsolation: "none"`, ACP agents and armed host
+  triggers run as your user. Checks never do: they run only in the verifier
+  sandbox.
 - **Remote targets.** SSH and RunPod are [experimental](docs/experimental.md), off
   by default, and do not have the local sandbox's protections.
 - **A stolen owner session.** The owner can configure commands the host runs, so

@@ -7,11 +7,11 @@ cannot afford to lose.
 
 | Feature | Status | How it is switched on | Main limit |
 | --- | --- | --- | --- |
-| [Remote targets (SSH)](#remote-targets-ssh-and-runpod) | off by default, never autonomous | `MFW_EXPERIMENTAL_REMOTE=1` | no sandbox-profile parity |
+| [Remote targets (SSH)](#remote-targets-ssh-and-runpod) | off by default, never autonomous | `MFW_EXPERIMENTAL_REMOTE=1` | no sandbox-profile parity; work does not come back yet |
 | [RunPod](#remote-targets-ssh-and-runpod) | off by default, never autonomous | `MFW_EXPERIMENTAL_REMOTE=1` plus account setup | same, and it spends money |
-| [ACP agents](#acp-agents) | unsandboxed only | `agentIsolation: "none"`, `approvalMode: "interactive"` | run as your user |
+| [ACP agents](#acp-agents) | unsandboxed only | `agentIsolation: "none"`, `approvalMode: "interactive"` | run as your user; work does not come back yet |
 | [Scoped API tokens](#scoped-api-tokens) | on, awaiting outside review | `mfw auth token create` | no second-party review yet |
-| [Clone workspaces](#clone-workspaces) | required for sandboxed runs, not yet the default | `"runWorkspace": "clone"` | default flip is pending |
+| [Checks without dependencies](#checks-without-dependencies) | always | none | a check that needs `node_modules` and the like cannot pass yet |
 | [Host-run triggers](#host-run-triggers) | inert until armed | arm in the Triggers view | run as your user |
 | [Tailscale and proxy exposure](#tailscale-and-proxy-exposure) | opt-in | `MFW_LISTEN_SOCKET`, `MFW_TRUSTED_PROXIES` | not run against a real `tailscale serve` |
 | [Codex under the sandbox](#codex-under-the-sandbox) | enabled, unproven | choose Codex as the provider | inner sandbox conflict, not retested |
@@ -28,6 +28,11 @@ runs in a same-uid `bwrap` with open network access, so none of the local egress
 protections apply to it. RunPod also rents paid machines, so check your account
 for leftovers after using it.
 
+A remote run is staged from the trusted primary (the base commit, or the work
+an earlier run handed back). What it collects is written into the run's local
+clone, but nothing turns that into an imported result yet, so a remote run's
+work is not verified or merged.
+
 ## ACP agents
 
 Cursor, Gemini CLI, opencode, pi and other Agent Client Protocol agents have no
@@ -36,26 +41,23 @@ sandbox profile. A sandboxed launch refuses them, so they need
 user's permissions. The brain's chat and the change-review critic refuse ACP
 transports, because they could read the machine while handling untrusted text.
 
+Every run works in a private clone, and a run's work comes back only as the
+bundle the in-sandbox WIP helper writes at the end of the run. An unsandboxed
+run (`agentIsolation: "none"`, so every ACP agent) has no such helper yet: it
+can work in its clone, but its result is not imported, verified or merged.
+
 ## Scoped API tokens
 
 Tokens for MCP clients and scripts have had an internal security review. They
 stay labelled experimental until a second party reviews them. Prefer short
 lifetimes and the narrowest scope.
 
-## Clone workspaces
+## Checks without dependencies
 
-Sandboxed runs need a private clone per run, but the configured default is still
-`worktree`. Until the default flips, **a new project starts no runs** until you add
-`"runWorkspace": "clone"` to its entry in `$MFW_HOME/config.json` and restart.
-The default stays put until these hold on real hosts: the resource limits, real
-agent CLIs through the whole path, and project dev shells in the sandbox.
-
-Two limits follow today:
-
-- A project with an `.envrc` is refused, because dev shells do not run inside the
-  sandbox yet.
-- A check only has the repository's tracked files. If it needs installed
-  dependencies, it is reported as an infrastructure result.
+A check runs in a disposable clone of the commit, which holds only the
+repository's tracked files. If it needs installed dependencies, it is reported as
+an infrastructure result rather than a failure. Project dev shells in the sandbox
+are not available yet, so a project with an `.envrc` is refused.
 
 ## Host-run triggers
 
