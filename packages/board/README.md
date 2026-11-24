@@ -255,7 +255,7 @@ with the file untouched. A parent cannot finish while a child is open.
 | `mfw board skill install [--global] [--here] [--target list] [--dry-run]` | Copy the mfw board skill into detected agent tools (claude, codex, opencode, pi), at the git root (`--here`: the current directory) or per user (`--global`). Skips a tool that already reads another install. |
 | `mfw board shim install [--dir dir] [--dry-run]` | Write an `mfw-board` launcher (a two-line `sh` script that runs this checkout's CLI under bun) into `dir`, default `~/.local/bin`, so `mfw-board` is on PATH for scripts. Run it once as `bun packages/board/src/cli.ts shim install`. Never overwrites a file it did not write; re-running is a no-op. |
 | `mfw board shim status [--dir dir]` | Whether the launcher is installed, outdated (the checkout moved) or missing. |
-| `mfw board skill status [--global] [--target list]` | Where it is installed and whether it is current. Also run by `skill install`: it lists a leftover skill copy under the pre-rename directory name as `legacy ...` and never deletes it; remove it yourself. |
+| `mfw board skill status [--global] [--target list]` | Where it is installed and whether it is current. |
 
 ## Typical flow
 

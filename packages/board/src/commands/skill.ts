@@ -8,7 +8,6 @@ import {
 	detect,
 	fileState,
 	findProjectRoot,
-	legacyPath,
 	parseTargets,
 	plan,
 	type Scope,
@@ -20,27 +19,6 @@ import {
 	type CommandContext,
 	UsageError,
 } from "./types.ts";
-
-/** Pre-rename skill copies next to the planned installs; report only. */
-function legacyCopies(
-	entries: { tool: ToolId; path: string }[],
-): { tool: ToolId; path: string }[] {
-	return entries
-		.map((e) => ({ tool: e.tool, path: legacyPath(e.path) }))
-		.filter((l) => existsSync(l.path));
-}
-
-function reportLegacy(
-	ctx: CommandContext,
-	entries: { tool: ToolId; path: string }[],
-	json: boolean,
-): void {
-	if (json) return;
-	for (const l of legacyCopies(entries))
-		ctx.out(
-			`legacy ${l.tool} ${l.path} (old skill name; mfw-board never deletes it, remove it yourself)`,
-		);
-}
 
 /**
  * Copies the packaged SKILL.md (Agent Skills format) into each selected agent
@@ -76,9 +54,6 @@ export const skill: Command = {
 
 		if (verb === "status") {
 			const entries = plan(selected, scope, cwd, env);
-			const legacy = new Map(
-				legacyCopies(entries).map((l) => [l.tool, l.path]),
-			);
 			const rows = entries.map((e) => {
 				const detected = detect(e.tool, env);
 				const state = fileState(e.coveredBy ?? e.path, packaged);
@@ -89,7 +64,6 @@ export const skill: Command = {
 					path: e.path,
 					state,
 					coveredBy: e.coveredBy ?? null,
-					...(legacy.has(e.tool) ? { legacy: legacy.get(e.tool) } : {}),
 				};
 			});
 			rows.sort(
@@ -103,7 +77,6 @@ export const skill: Command = {
 					ctx.out(
 						`${r.tool} ${r.detected ? "detected" : "not detected"} ${r.path} ${r.state}${r.coveredBy ? ` (covered by ${r.coveredBy})` : ""}`,
 					);
-				reportLegacy(ctx, entries, false);
 			}
 			return;
 		}
@@ -131,6 +104,5 @@ export const skill: Command = {
 				`${args.dryRun ? "would install" : "installed"} ${e.tool} -> ${e.path}`,
 			);
 		}
-		reportLegacy(ctx, entries, ctx.json);
 	},
 };

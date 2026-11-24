@@ -233,7 +233,7 @@ mfw board skill install --global --target all    # every tool, this machine
 mfw board skill install --here                   # use the cwd, not the git root
 mfw board skill install --dry-run
 mfw board skill status [--global] [--target <list>]   # <tool> <detected|not detected> <path> <installed|missing|stale>
-mfw board --json skill status                    # [{tool, detected, scope, path, state, coveredBy, legacy?}]
+mfw board --json skill status                    # [{tool, detected, scope, path, state, coveredBy}]
 ```
 
 ### Transition verbs - `mfw board <verb> <id> [<text>]`
