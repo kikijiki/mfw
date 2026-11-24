@@ -15,8 +15,8 @@ export const reparent: Command = {
 				id,
 				parentId === "-" ? null : parentId,
 			);
-			if (ctx.json) console.log(JSON.stringify(documentToJson(doc)));
-			else printDocument(doc);
+			if (ctx.json) ctx.out(JSON.stringify(documentToJson(doc)));
+			else printDocument(doc, ctx.out);
 		} catch (e) {
 			if (e instanceof HierarchyError) {
 				throw new CliError(`reparent failed (${e.code}): ${e.message}`, 1);

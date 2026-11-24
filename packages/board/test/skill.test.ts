@@ -12,9 +12,8 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { LEGACY_SKILL_DIR } from "../src/commands/skill-targets.ts";
-import { boardCliArgv } from "./support/cli-argv.ts";
+import { runBoard } from "./support/board-run.ts";
 
-const CLI = join(import.meta.dir, "../src/cli.ts");
 // Installed copies have the checkout placeholder filled in with the real path.
 const PACKAGED = readFileSync(
 	join(import.meta.dir, "../skill/SKILL.md"),
@@ -51,28 +50,13 @@ function fakeExe(s: Sandbox, name: string): void {
 	chmodSync(p, 0o755);
 }
 
-async function run(
-	s: Sandbox,
-	args: string[],
-	extra: Record<string, string> = {},
-) {
+function run(s: Sandbox, args: string[], extra: Record<string, string> = {}) {
 	const env: Record<string, string> = {
 		HOME: s.home,
 		PATH: s.bin,
 		...extra,
 	};
-	const p = Bun.spawn(boardCliArgv(CLI, args), {
-		cwd: s.cwd,
-		env,
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	const [stdout, stderr, code] = await Promise.all([
-		new Response(p.stdout).text(),
-		new Response(p.stderr).text(),
-		p.exited,
-	]);
-	return { stdout: stdout.trim(), stderr: stderr.trim(), code };
+	return runBoard(s.cwd, args, { env });
 }
 
 const skillPath = (base: string) => join(base, "mfw-board", "SKILL.md");

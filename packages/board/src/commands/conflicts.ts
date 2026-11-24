@@ -28,7 +28,7 @@ export const conflicts: Command = {
 		}
 		const { found, inert, liveCount } = report;
 		if (ctx.json) {
-			console.log(
+			ctx.out(
 				JSON.stringify({
 					ok: found.length === 0,
 					conflicts: found,
@@ -37,19 +37,17 @@ export const conflicts: Command = {
 			);
 		} else {
 			if (inert.length > 0) {
-				console.log(
+				ctx.out(
 					`${inert.length} exemption pair(s) protect nothing (a task has finished); delete:`,
 				);
-				for (const p of inert) console.log(`  ${p.cards[0]} <-> ${p.cards[1]}`);
+				for (const p of inert) ctx.out(`  ${p.cards[0]} <-> ${p.cards[1]}`);
 			}
 			for (const c of found) {
 				for (const [pa, pb] of c.patterns)
-					console.log(`${c.a} <-> ${c.b}: ${pa} ~ ${pb}`);
+					ctx.out(`${c.a} <-> ${c.b}: ${pa} ~ ${pb}`);
 			}
 			if (found.length === 0) {
-				console.log(
-					`ok: no unordered overlaps among ${liveCount} live documents`,
-				);
+				ctx.out(`ok: no unordered overlaps among ${liveCount} live documents`);
 			}
 		}
 	},

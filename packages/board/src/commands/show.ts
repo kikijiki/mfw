@@ -11,7 +11,7 @@ export const show: Command = {
 		const type = await resolveDocumentType(ctx, args, id);
 		const doc = await ctx.project.store.readDocument(type, id);
 		if (!doc) throw new CliError(`${type} '${id}' not found`);
-		if (ctx.json) console.log(JSON.stringify(documentToJson(doc)));
-		else printDocument(doc);
+		if (ctx.json) ctx.out(JSON.stringify(documentToJson(doc)));
+		else printDocument(doc, ctx.out);
 	},
 };

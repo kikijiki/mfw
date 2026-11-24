@@ -39,7 +39,7 @@ export const del: Command = {
 		} catch (e) {
 			throw new CliError(e instanceof Error ? e.message : String(e), 1);
 		}
-		if (ctx.json) console.log(JSON.stringify({ deleted: { type, id } }));
-		else console.log(`deleted ${type} ${id}`);
+		if (ctx.json) ctx.out(JSON.stringify({ deleted: { type, id } }));
+		else ctx.out(`deleted ${type} ${id}`);
 	},
 };

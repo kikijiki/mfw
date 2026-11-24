@@ -17,14 +17,14 @@ export const repair: Command = {
 		}
 		const changed = await ctx.project.store.repairHierarchy();
 		if (ctx.json) {
-			console.log(JSON.stringify({ repaired: changed }));
+			ctx.out(JSON.stringify({ repaired: changed }));
 			return;
 		}
 		for (const c of changed) {
-			console.log(
+			ctx.out(
 				`repaired ${c.type} ${c.id}: children [${c.before.join(", ")}] -> [${c.after.join(", ")}]`,
 			);
 		}
-		if (changed.length === 0) console.log("nothing to repair");
+		if (changed.length === 0) ctx.out("nothing to repair");
 	},
 };

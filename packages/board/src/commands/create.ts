@@ -13,8 +13,8 @@ export const create: Command = {
 		const doc = await ctx.project.store.createDocument(type, {
 			id: args.id,
 			fields,
-			body: await resolveBody(args),
+			body: await resolveBody(args, ctx),
 		});
-		printDocument(doc);
+		printDocument(doc, ctx.out);
 	},
 };

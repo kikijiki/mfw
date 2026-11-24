@@ -5,12 +5,13 @@ import { claimTask, releaseClaim, TaskOwnershipHeldError } from "../claim.ts";
 import { CliError, type Command, UsageError } from "./types.ts";
 
 /** The cwd's git toplevel if any, else the cwd. */
-function defaultWorktree(): string {
+function defaultWorktree(cwd: string): string {
 	const r = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+		cwd,
 		encoding: "utf8",
 	});
 	const top = r.status === 0 ? r.stdout.trim() : "";
-	return top || process.cwd();
+	return top || cwd;
 }
 
 export const claim: Command = {
@@ -30,15 +31,15 @@ export const claim: Command = {
 				args.leaseMs ?? 15 * 60_000,
 				args.from ?? "ready",
 				ctx.project.claim,
-				{ start: false, worktree: args.worktree ?? defaultWorktree() },
+				{ start: false, worktree: args.worktree ?? defaultWorktree(ctx.cwd) },
 			);
 			if (!doc) {
 				throw new CliError(
 					`${id} could not be claimed (not ready, already claimed, or a dependency is unfinished)`,
 				);
 			}
-			printDocument(doc);
-			console.log(`run: ${run}`);
+			printDocument(doc, ctx.out);
+			ctx.out(`run: ${run}`);
 		} catch (e) {
 			if (e instanceof TaskOwnershipHeldError) throw new CliError(e.message);
 			throw e;
@@ -60,6 +61,6 @@ export const release: Command = {
 			ctx.project.claim,
 		);
 		if (!doc) throw new CliError(`${id} is held by a different run`);
-		printDocument(doc);
+		printDocument(doc, ctx.out);
 	},
 };

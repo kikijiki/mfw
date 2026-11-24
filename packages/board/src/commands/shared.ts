@@ -1,5 +1,11 @@
+import { resolve } from "node:path";
 import { formatId } from "@mfw/board-core";
-import { CliError, type CommandContext, type ParsedArgs } from "./types.ts";
+import {
+	CliError,
+	type CliIo,
+	type CommandContext,
+	type ParsedArgs,
+} from "./types.ts";
 
 /**
  * `--type` if given; else `task` when the board has such a type, else the only
@@ -93,14 +99,15 @@ export async function didYouMean(
  */
 export async function resolveBody(
 	args: ParsedArgs,
+	io: Pick<CliIo, "cwd" | "stdin">,
 ): Promise<string | undefined> {
 	if (args.bodyFile === undefined) return args.body;
 	if (args.body !== undefined) {
 		throw new CliError("pass either --body or --body-file, not both", 2);
 	}
-	if (args.bodyFile === "-") return Bun.stdin.text();
+	if (args.bodyFile === "-") return io.stdin();
 	try {
-		return await Bun.file(args.bodyFile).text();
+		return await Bun.file(resolve(io.cwd, args.bodyFile)).text();
 	} catch {
 		throw new CliError(`cannot read --body-file '${args.bodyFile}'`, 2);
 	}

@@ -33,38 +33,38 @@ export const plan: Command = {
 			exemptions: (t) => exemptions.get(t),
 		});
 		if (ctx.json) {
-			console.log(JSON.stringify(result));
+			ctx.out(JSON.stringify(result));
 			return;
 		}
-		if (result.picked.length === 0) console.log("nothing to start");
+		if (result.picked.length === 0) ctx.out("nothing to start");
 		else {
-			console.log(`start together (${result.picked.length}):`);
+			ctx.out(`start together (${result.picked.length}):`);
 			for (const p of result.picked) {
 				const scope = p.scope.length > 0 ? ` scope: ${p.scope.join(", ")}` : "";
-				console.log(
+				ctx.out(
 					`  ${p.id}  unblocks ${p.unblocks}, chain ${p.height}${scope}${p.title ? `  ${p.title}` : ""}`,
 				);
 			}
 		}
 		if (result.skipped.length > 0) {
-			console.log("skipped:");
-			for (const s of result.skipped) console.log(`  ${s.id}: ${s.reason}`);
+			ctx.out("skipped:");
+			for (const s of result.skipped) ctx.out(`  ${s.id}: ${s.reason}`);
 		}
 		if (result.blockers.length > 0) {
-			console.log("blocking the most work:");
+			ctx.out("blocking the most work:");
 			for (const b of result.blockers) {
 				const next =
 					b.next.length > 0
 						? `; ready once it finishes: ${b.next.join(", ")}`
 						: "";
-				console.log(`  ${b.id}: ${b.unblocks} waiting${next}`);
+				ctx.out(`  ${b.id}: ${b.unblocks} waiting${next}`);
 			}
 		}
 		if (result.inProgress.length > 0) {
-			console.log(`in progress: ${result.inProgress.join(", ")}`);
+			ctx.out(`in progress: ${result.inProgress.join(", ")}`);
 		}
 		if (result.toClose.length > 0) {
-			console.log(
+			ctx.out(
 				`ready to close (all children finished): ${result.toClose.join(", ")}`,
 			);
 		}

@@ -15,7 +15,7 @@ export const list: Command = {
 		const docs = (await ctx.project.store.listDocuments(type)).filter((d) =>
 			matchesQueryFilters(d, filters),
 		);
-		if (ctx.json) console.log(JSON.stringify(docs.map(documentToJson)));
-		else for (const doc of docs) console.log(`${doc.id}\t${doc.type}`);
+		if (ctx.json) ctx.out(JSON.stringify(docs.map(documentToJson)));
+		else for (const doc of docs) ctx.out(`${doc.id}\t${doc.type}`);
 	},
 };

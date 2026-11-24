@@ -29,7 +29,7 @@ export const graph: Command = {
 			...(args.under !== undefined ? { under: args.under } : {}),
 			...(args.all ? { all: true } : {}),
 		});
-		if (format === "json") console.log(JSON.stringify(g));
-		else console.log(format === "dot" ? renderDot(g) : renderMermaid(g));
+		if (format === "json") ctx.out(JSON.stringify(g));
+		else ctx.out(format === "dot" ? renderDot(g) : renderMermaid(g));
 	},
 };

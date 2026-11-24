@@ -2,9 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { boardCliArgv } from "./support/cli-argv.ts";
-
-const CLI = join(import.meta.dir, "../src/cli.ts");
+import { ambientEnv, runBoard } from "./support/board-run.ts";
 
 const TASK_BOARD = [
 	"mfw: 1",
@@ -37,25 +35,14 @@ async function put(path: string, content: string): Promise<void> {
 	await writeFile(path, content);
 }
 
-async function mfwBoard(
+function mfwBoard(
 	cwd: string,
 	args: string[],
 	env: Record<string, string> = {},
 ) {
-	const e: Record<string, string | undefined> = { ...process.env, ...env };
-	if (!("MFW_BOARD" in env)) delete e.MFW_BOARD;
-	const p = Bun.spawn(boardCliArgv(CLI, args), {
-		cwd,
-		env: e,
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	const [stdout, stderr, code] = await Promise.all([
-		new Response(p.stdout).text(),
-		new Response(p.stderr).text(),
-		p.exited,
-	]);
-	return { stdout: stdout.trim(), stderr: stderr.trim(), code };
+	const e = ambientEnv();
+	Object.assign(e, env);
+	return runBoard(cwd, args, { env: e });
 }
 
 describe("board discovery", () => {

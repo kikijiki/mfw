@@ -11,7 +11,12 @@ import {
 	type Scope,
 	type ToolId,
 } from "./skill-targets.ts";
-import { CliError, type Command, UsageError } from "./types.ts";
+import {
+	CliError,
+	type Command,
+	type CommandContext,
+	UsageError,
+} from "./types.ts";
 
 /** Pre-rename skill copies next to the planned installs; report only. */
 function legacyCopies(
@@ -23,12 +28,13 @@ function legacyCopies(
 }
 
 function reportLegacy(
+	ctx: CommandContext,
 	entries: { tool: ToolId; path: string }[],
 	json: boolean,
 ): void {
 	if (json) return;
 	for (const l of legacyCopies(entries))
-		console.log(
+		ctx.out(
 			`legacy ${l.tool} ${l.path} (old skill name; mfw-board never deletes it, remove it yourself)`,
 		);
 }
@@ -48,10 +54,10 @@ export const skill: Command = {
 	async run(ctx, args) {
 		const verb = args.positional[0];
 		if (verb !== "install" && verb !== "status") throw new UsageError();
-		const env = process.env;
+		const env = ctx.env;
 		const scope: Scope = args.global ? "global" : "project";
 		// Project scope installs at the repo root (nearest .git), not a subdirectory.
-		const cwd = args.here ? process.cwd() : findProjectRoot(process.cwd());
+		const cwd = args.here ? ctx.cwd : findProjectRoot(ctx.cwd);
 		// The packaged text says `<mfw-checkout>`; installed copies name the real one.
 		const packaged = readFileSync(
 			join(import.meta.dir, "../../skill/SKILL.md"),
@@ -82,15 +88,15 @@ export const skill: Command = {
 			rows.sort(
 				(a, b) => ALL_TOOLS.indexOf(a.tool) - ALL_TOOLS.indexOf(b.tool),
 			);
-			if (ctx.json) console.log(JSON.stringify(rows, null, 2));
+			if (ctx.json) ctx.out(JSON.stringify(rows, null, 2));
 			else {
 				// stderr: keeps stdout one parseable row per tool.
-				if (scope === "project") console.error(`project root: ${cwd}`);
+				if (scope === "project") ctx.err(`project root: ${cwd}`);
 				for (const r of rows)
-					console.log(
+					ctx.out(
 						`${r.tool} ${r.detected ? "detected" : "not detected"} ${r.path} ${r.state}${r.coveredBy ? ` (covered by ${r.coveredBy})` : ""}`,
 					);
-				reportLegacy(entries, false);
+				reportLegacy(ctx, entries, false);
 			}
 			return;
 		}
@@ -99,25 +105,25 @@ export const skill: Command = {
 			throw new CliError(
 				"no supported agent tool detected (supported: claude, codex, opencode, pi); pass --target <claude,codex,opencode,pi|all>",
 			);
-		if (scope === "project") console.error(`project root: ${cwd}`);
+		if (scope === "project") ctx.err(`project root: ${cwd}`);
 		const entries = plan(selected, scope, cwd, env);
 		for (const e of entries) {
 			if (e.coveredBy) {
-				console.log(`covered ${e.tool} by ${e.coveredBy}`);
+				ctx.out(`covered ${e.tool} by ${e.coveredBy}`);
 				continue;
 			}
 			if (fileState(e.path, packaged) === "installed") {
-				console.log(`up-to-date ${e.tool} -> ${e.path}`);
+				ctx.out(`up-to-date ${e.tool} -> ${e.path}`);
 				continue;
 			}
 			if (!args.dryRun) {
 				mkdirSync(dirname(e.path), { recursive: true });
 				writeFileSync(e.path, packaged);
 			}
-			console.log(
+			ctx.out(
 				`${args.dryRun ? "would install" : "installed"} ${e.tool} -> ${e.path}`,
 			);
 		}
-		reportLegacy(entries, ctx.json);
+		reportLegacy(ctx, entries, ctx.json);
 	},
 };

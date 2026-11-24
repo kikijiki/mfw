@@ -46,7 +46,7 @@ export const levels: Command = {
 				};
 			})
 			.sort((a, b) => a.level - b.level || a.id.localeCompare(b.id));
-		console.log(
+		ctx.out(
 			renderTable(
 				{
 					columns: ["id", "level", "status", "title"],

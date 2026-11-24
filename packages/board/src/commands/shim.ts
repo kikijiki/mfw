@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import { CliError, type Command, UsageError } from "./types.ts";
+import { CliError, type CliIo, type Command, UsageError } from "./types.ts";
 
 /** First line after the shebang; `install` only ever overwrites a file that has it. */
 const MARKER = "# mfw-board-shim (written by `mfw-board shim install`)";
@@ -53,8 +53,8 @@ const real = (p: string): string => {
 	}
 };
 
-const dirOnPath = (dir: string): boolean =>
-	(process.env.PATH ?? "")
+const dirOnPath = (dir: string, env: CliIo["env"]): boolean =>
+	(env.PATH ?? "")
 		.split(delimiter)
 		.filter((e) => e !== "")
 		.some((e) => real(e) === real(dir));
@@ -86,16 +86,17 @@ export const shim: Command = {
 			);
 		}
 		const dir = resolve(
-			args.dir ?? join(process.env.HOME || homedir(), ".local/bin"),
+			ctx.cwd,
+			args.dir ?? join(ctx.env.HOME || homedir(), ".local/bin"),
 		);
 		const path = join(dir, "mfw-board");
 		const state = stateOf(path);
-		const onPath = dirOnPath(dir);
+		const onPath = dirOnPath(dir, ctx.env);
 		if (verb === "status") {
 			if (ctx.json) {
-				console.log(JSON.stringify({ path, state, onPath, target: cliPath() }));
+				ctx.out(JSON.stringify({ path, state, onPath, target: cliPath() }));
 			} else {
-				console.log(`${path} ${state}${onPath ? "" : " (dir not on PATH)"}`);
+				ctx.out(`${path} ${state}${onPath ? "" : " (dir not on PATH)"}`);
 			}
 			return;
 		}
@@ -108,7 +109,7 @@ export const shim: Command = {
 			);
 		}
 		if (state === "installed") {
-			console.log(`up-to-date ${path}`);
+			ctx.out(`up-to-date ${path}`);
 		} else {
 			if (!args.dryRun) {
 				// Temp file + rename: a concurrent `mfw-board` never sees a partial or
@@ -125,8 +126,8 @@ export const shim: Command = {
 					);
 				}
 			}
-			console.log(`${args.dryRun ? "would install" : "installed"} ${path}`);
+			ctx.out(`${args.dryRun ? "would install" : "installed"} ${path}`);
 		}
-		if (!onPath) console.error(`note: ${dir} is not on PATH`);
+		if (!onPath) ctx.err(`note: ${dir} is not on PATH`);
 	},
 };
