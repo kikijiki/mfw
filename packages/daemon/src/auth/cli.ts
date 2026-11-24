@@ -46,6 +46,8 @@ export const AUTH_USAGE = [
 	"  token revoke <id>   revoke a token at once",
 	"  token audit [--limit <n>] [--id <token id>]",
 	"                what tokens changed and streamed, and how often they were refused",
+	"  passkey list  show registered passkeys (add them in Settings > Passkeys)",
+	"  passkey revoke <id>   remove a passkey and end the sessions it signed in",
 ].join("\n");
 
 export interface AuthCliDeps {
@@ -418,6 +420,43 @@ async function runTokenCommand(
 	}
 }
 
+async function runPasskeyCommand(
+	args: readonly string[],
+	d: AuthCliDeps,
+): Promise<number> {
+	const when = (ms: number | null) =>
+		ms ? new Date(ms).toISOString() : "never";
+	switch (args[0]) {
+		case "list":
+			if (args.length !== 1) break;
+			return withStore(d, async (auth) => {
+				const passkeys = await auth.listPasskeys();
+				if (passkeys.length === 0) d.out("mfw auth: no passkeys.");
+				for (const p of passkeys)
+					d.out(
+						`${p.id}  '${p.name}'  ${p.rpId}  created ${when(p.createdAt)}  last used ${when(p.lastUsedAt)}${p.backedUp ? "  synced" : ""}`,
+					);
+				return 0;
+			});
+		case "revoke": {
+			const id = args[1];
+			if (!id || args.length !== 2) break;
+			return withStore(d, async (auth) => {
+				if (await auth.revokePasskey(id)) {
+					d.out(
+						`mfw auth: revoked ${id}. The sessions it signed in are signed out.`,
+					);
+					return 0;
+				}
+				d.err(`mfw auth: no passkey '${id}'. See: mfw auth passkey list`);
+				return 1;
+			});
+		}
+	}
+	d.err("usage: mfw auth passkey list | mfw auth passkey revoke <id>");
+	return 2;
+}
+
 export async function runAuthCommand(
 	args: readonly string[],
 	d: AuthCliDeps,
@@ -425,6 +464,8 @@ export async function runAuthCommand(
 	switch (args[0]) {
 		case "token":
 			return runTokenCommand(args.slice(1), d);
+		case "passkey":
+			return runPasskeyCommand(args.slice(1), d);
 		case "--help":
 		case "-h":
 			d.out(AUTH_USAGE);

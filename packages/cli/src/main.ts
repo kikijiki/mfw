@@ -48,7 +48,7 @@ export interface Deps {
 export const USAGE = [
 	"usage: mfw <command> [args]",
 	"",
-	"  auth ...      owner tools: token, unlock, setup-token, sign-out-everywhere, reset",
+	"  auth ...      owner tools: token, passkey, unlock, setup-token, sign-out-everywhere, reset",
 	"  board ...     the markdown board (runs mfw-board; no server needed)",
 	"  doctor        read-only host and install check; prints fixes, applies none",
 	"  host ...      owner tools for host state: acknowledge-legacy",
