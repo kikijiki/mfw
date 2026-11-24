@@ -45,10 +45,12 @@ lifetimes and the narrowest scope.
 
 ## Passkeys
 
-Passkey sign-in is verified by `@simplewebauthn/server` (ES256 and EdDSA), with
-mfw's policy around it, and tested with a software authenticator and Chrome's
-virtual authenticator. The integration has not been reviewed or tried on real
-devices. CI must run `bun run smoke:auth` with Chrome
+Passkey signatures are verified by `@simplewebauthn/server`. mfw's own checks
+around it, including the limit to ES256 and EdDSA keys (the library checks only
+the algorithm label), are listed in the
+[threat model](threat-model.md#9-network-clients-to-the-control-plane). It is
+tested with a software authenticator and Chrome's virtual authenticator, and
+has had internal security reviews, but has not been tried on real devices. CI must run `bun run smoke:auth` with Chrome
 installed and `MFW_SMOKE_CHROME=1`: that is the only run against a signer other
 than mfw's own test authenticator, and without the variable a missing Chrome only
 skips it. RSA keys (RS256), which some older Windows

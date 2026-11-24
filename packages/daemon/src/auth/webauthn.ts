@@ -13,26 +13,34 @@ import {
 } from "@simplewebauthn/server/helpers";
 
 /**
- * WebAuthn for passkey sign-in. Every parse and signature check is done by
- * `@simplewebauthn/server`; this module is the policy mfw puts around it:
+ * WebAuthn for passkey sign-in, around `@simplewebauthn/server`.
  *
+ * The library does all parsing (CBOR, COSE, authenticator data, client data,
+ * attestation) and all signature verification. Given mfw's options, it
+ * enforces: the ceremony type, the exact challenge, the exact origin and RP ID
+ * hash, user presence and user verification, the COSE `alg` label being ES256
+ * or EdDSA (the label only), a consistent backup state, no trailing bytes, and
+ * a valid statement for the attestation format it is sent.
+ *
+ * mfw enforces the rest, here unless noted:
  * - The RP ID and origin come from the server's own external origin, never
- *   from the client, and must be a DNS name over HTTPS (or `localhost`).
- * - User verification is required on every ceremony.
- * - Only ES256 and EdDSA keys. The library checks only the COSE `alg` label;
- *   `checkCredentialKey` (here) checks the whole key: ES256 is EC2 on P-256
- *   with 32-byte coordinates, EdDSA is OKP on Ed25519 with a safe 32-byte key,
- *   at registration and again at every sign-in.
- * - Attestation is requested as "none" and not trusted. Only `none` or `packed`
- *   without `x5c` reaches the library (`assertAttestationFormat`, here).
- * - Discoverable credentials only (enforced by the caller from `credProps`).
- * - No cross-origin frames, on either ceremony.
+ *   from the client, and must be a DNS name over HTTPS or `localhost`
+ *   (`relyingPartyError`).
+ * - The whole key shape (`checkCredentialKey`, at registration and at every
+ *   sign-in): ES256 is EC2 on P-256 with 32-byte x and y; EdDSA is OKP on
+ *   Ed25519 with a 32-byte x that is canonical and not of small order (the
+ *   library verifies signatures anyone can forge for those). No private part.
+ *   The library picks its verifier by key type, not by the label, so this is
+ *   what limits sign-in to ES256 and EdDSA.
+ * - Only attestation `none`, or `packed` without `x5c`, reaches the library
+ *   (`assertAttestationFormat`); none is trusted.
+ * - No cross-origin frames on either ceremony (`assertTopLevel`).
  * - The id the client reports must be the one in the authenticator data.
- * - Small-order and non-canonical Ed25519 keys are refused (in
- *   `checkCredentialKey`): anyone can sign for those, and the library verifies
- *   such signatures.
- * - The signature counter is checked here, AFTER the signature verifies, so a
- *   counter refusal always means the key holder sent it (see `verifyAssertion`).
+ * - The signature counter, checked AFTER the signature verifies, so a counter
+ *   refusal always means the key holder sent it (`verifyAssertion`).
+ * - Discoverable credentials only: `credProps.rk` must be reported and true
+ *   (the caller, `AuthService.finishPasskeyRegistration`; unsigned, so it is
+ *   the browser's word), and sign-in options never list credentials.
  */
 
 export const COSE_ES256 = -7;
