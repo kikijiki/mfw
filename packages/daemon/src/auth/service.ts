@@ -11,6 +11,7 @@ import {
 	type CeremonyKind,
 	CeremonyStore,
 	type CredentialDescriptor,
+	ceremonyFits,
 	creationOptions,
 	isCeremonyFull,
 	MAX_PASSKEYS,
@@ -812,14 +813,7 @@ export class AuthService {
 		ownerId: string,
 		sessionId: string | null,
 	): Promise<{ passkeyId: string } | null> {
-		if (
-			!ceremony ||
-			ceremony.kind !== kind ||
-			ceremony.sessionId !== sessionId ||
-			ceremony.rp.rpId !== rp.rpId ||
-			ceremony.rp.origin !== rp.origin
-		)
-			return null;
+		if (!ceremonyFits(ceremony, kind, sessionId, rp)) return null;
 		const parsed = parseAssertionJSON(credential);
 		if (!parsed) return null;
 		const r = await this.db.client.execute({
@@ -1046,13 +1040,7 @@ export class AuthService {
 		rawName: unknown,
 	): Promise<PasskeyInfo> {
 		const ceremony = this.ceremonies.take(ceremonyId);
-		if (
-			!ceremony ||
-			ceremony.kind !== "register" ||
-			ceremony.sessionId !== sessionId ||
-			ceremony.rp.rpId !== rp.rpId ||
-			ceremony.rp.origin !== rp.origin
-		)
+		if (!ceremonyFits(ceremony, "register", sessionId, rp))
 			throw new AuthRefused(
 				"passkey_refused",
 				"that registration expired or belongs to another session; start again",

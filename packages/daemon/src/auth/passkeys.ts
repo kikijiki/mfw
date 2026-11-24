@@ -52,6 +52,24 @@ export class CeremonyFull extends Error {
 	}
 }
 
+/**
+ * The ceremony is of this kind, belongs to this session (null for a sign-in)
+ * and was started on the same RP ID and origin it is being finished on.
+ */
+export function ceremonyFits(
+	c: Ceremony | null,
+	kind: CeremonyKind,
+	sessionId: string | null,
+	rp: RelyingParty,
+): c is Ceremony {
+	return (
+		c?.kind === kind &&
+		c.sessionId === sessionId &&
+		c.rp.rpId === rp.rpId &&
+		c.rp.origin === rp.origin
+	);
+}
+
 /** Not `instanceof`: the bundle can emit this module more than once. */
 export const isCeremonyFull = (e: unknown): e is CeremonyFull =>
 	e instanceof Error && e.name === "CeremonyFull";
