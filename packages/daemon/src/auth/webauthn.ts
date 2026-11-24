@@ -7,6 +7,7 @@ import {
 	verifyRegistrationResponse,
 } from "@simplewebauthn/server";
 import {
+	decodeAttestationObject,
 	decodeClientDataJSON,
 	decodeCredentialPublicKey,
 } from "@simplewebauthn/server/helpers";
@@ -22,7 +23,8 @@ import {
  *   `checkCredentialKey` (here) checks the whole key: ES256 is EC2 on P-256
  *   with 32-byte coordinates, EdDSA is OKP on Ed25519 with a safe 32-byte key,
  *   at registration and again at every sign-in.
- * - Attestation is requested as "none" and not trusted.
+ * - Attestation is requested as "none" and not trusted. Only `none` or `packed`
+ *   without `x5c` reaches the library (`assertAttestationFormat`, here).
  * - Discoverable credentials only (enforced by the caller from `credProps`).
  * - No cross-origin frames, on either ceremony.
  * - The id the client reports must be the one in the authenticator data.
@@ -44,6 +46,7 @@ export type WebAuthnFailure =
 	/** The library refused it; `message` says why. */
 	| "refused"
 	| "malformed"
+	| "attestation"
 	| "cross_origin"
 	| "credential"
 	| "key"
@@ -149,6 +152,34 @@ function assertTopLevel(clientDataJSON: string): void {
 		fail("cross_origin", "the ceremony ran in a cross-origin frame");
 	if (c.topOrigin !== undefined)
 		fail("cross_origin", "the ceremony ran in a frame");
+}
+
+/**
+ * Only `none`, or `packed` without a certificate chain (self-attestation,
+ * which some browsers keep even when "none" is requested). mfw trusts no
+ * attestation, and the library cannot be told to restrict formats, so the
+ * others would only feed attacker-shaped bytes to its X.509 and ASN.1
+ * parsers. Decoded with the library's own helper, before it verifies.
+ */
+function assertAttestationFormat(attestationObject: string): void {
+	const raw = fromBase64url(attestationObject);
+	let decoded: { fmt: unknown; x5c: unknown } | null = null;
+	try {
+		if (raw) {
+			const att = decodeAttestationObject(new Uint8Array(raw));
+			const stmt: unknown = att.get("attStmt");
+			decoded = {
+				fmt: att.get("fmt"),
+				x5c: stmt instanceof Map ? stmt.get("x5c") : undefined,
+			};
+		}
+	} catch {
+		// Refused just below.
+	}
+	if (!decoded) fail("malformed", "the attestation is not valid CBOR");
+	const { fmt, x5c } = decoded as { fmt: unknown; x5c: unknown };
+	if (fmt !== "none" && !(fmt === "packed" && x5c === undefined))
+		fail("attestation", "unsupported attestation format");
 }
 
 /** Run a library call, turning its refusals into ours. */
@@ -324,6 +355,7 @@ export async function verifyRegistration(
 ): Promise<VerifiedRegistration> {
 	assertRelyingParty(expected.rp);
 	assertTopLevel(response.response.clientDataJSON);
+	assertAttestationFormat(response.response.attestationObject);
 	const out = await library(() =>
 		verifyRegistrationResponse({
 			response,

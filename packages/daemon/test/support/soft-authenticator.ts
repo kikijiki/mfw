@@ -102,6 +102,8 @@ export interface CeremonyKnobs {
 	cose?: Map<number | string, CborIn>;
 	/** Attestation format and statement. */
 	fmt?: string;
+	/** A valid `packed` self-attestation, signed by the new credential. */
+	selfAttest?: boolean;
 	attStmt?: Map<number | string, CborIn>;
 	/** Report a different raw id than the one in the authenticator data. */
 	rawId?: Uint8Array;
@@ -232,17 +234,31 @@ export class SoftAuthenticator {
 			...cose,
 			...(knobs.trailing ?? []),
 		]);
-		const attestationObject = encodeCbor(
-			new Map<string, CborIn>([
-				["fmt", knobs.fmt ?? "none"],
-				["attStmt", knobs.attStmt ?? new Map()],
-				["authData", authData],
-			]),
-		);
 		const clientDataJSON = this.clientData(
 			"webauthn.create",
 			options.challenge,
 			knobs,
+		);
+		const selfSigned = () => {
+			const signed = new Uint8Array([...authData, ...sha(clientDataJSON)]);
+			const sig =
+				alg === "ES256"
+					? sign("sha256", signed, { key: pair.privateKey, dsaEncoding: "der" })
+					: sign(null, signed, pair.privateKey);
+			return new Map<string, CborIn>([
+				["alg", alg === "ES256" ? -7 : -8],
+				["sig", new Uint8Array(sig)],
+			]);
+		};
+		const attestationObject = encodeCbor(
+			new Map<string, CborIn>([
+				["fmt", knobs.selfAttest ? "packed" : (knobs.fmt ?? "none")],
+				[
+					"attStmt",
+					knobs.selfAttest ? selfSigned() : (knobs.attStmt ?? new Map()),
+				],
+				["authData", authData],
+			]),
 		);
 		this.credentials.push(credential);
 		return {

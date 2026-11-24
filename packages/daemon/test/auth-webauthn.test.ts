@@ -409,6 +409,88 @@ describe("M1: the key's whole shape, not its alg label", () => {
 	});
 });
 
+describe("L1: attestation formats other than none and packed self-attestation", () => {
+	const stmt = (entries: [string, CborIn][]) =>
+		new Map<string, CborIn>(entries);
+	const cert = new Uint8Array(64).fill(0x30);
+	const cases: [string, string, Map<string, CborIn>][] = [
+		[
+			"tpm",
+			"tpm",
+			stmt([
+				["ver", "2.0"],
+				["alg", -7],
+				["sig", new Uint8Array(70)],
+				["x5c", [cert]],
+				["certInfo", new Uint8Array(10)],
+				["pubArea", new Uint8Array(10)],
+			]),
+		],
+		[
+			"android-key",
+			"android-key",
+			stmt([
+				["alg", -7],
+				["sig", new Uint8Array(70)],
+				["x5c", [cert]],
+			]),
+		],
+		["apple", "apple", stmt([["x5c", [cert]]])],
+		[
+			"fido-u2f",
+			"fido-u2f",
+			stmt([
+				["sig", new Uint8Array(70)],
+				["x5c", [cert]],
+			]),
+		],
+		[
+			"android-safetynet",
+			"android-safetynet",
+			stmt([
+				["ver", "1"],
+				["response", new Uint8Array(10)],
+			]),
+		],
+		[
+			"packed with an x5c chain",
+			"packed",
+			stmt([
+				["alg", -7],
+				["sig", new Uint8Array(70)],
+				["x5c", [cert]],
+			]),
+		],
+		["an unknown format", "made-up", stmt([])],
+	];
+	for (const [name, fmt, attStmt] of cases)
+		test(`refused before the library: ${name}`, async () => {
+			const r = register({ fmt, attStmt });
+			try {
+				await r.run();
+				throw new Error("accepted");
+			} catch (e) {
+				expect(isWebAuthnError(e) && e.reason).toBe("attestation");
+				expect((e as Error).message).toBe("unsupported attestation format");
+			}
+		});
+
+	for (const alg of ["ES256", "EdDSA"] as const)
+		test(`${alg}: a packed self-attestation (no x5c) is still accepted`, async () => {
+			const r = register({ alg, selfAttest: true });
+			expect(await libraryVerdict(r.libraryAlone)).toBe("accepted");
+			expect(await refusedWith(r.run)).toBe("accepted");
+		});
+
+	test("none with a statement is refused by the library", async () => {
+		expect(
+			await refusedWith(
+				register({ attStmt: stmt([["sig", new Uint8Array(4)]]) }).run,
+			),
+		).toBe("refused");
+	});
+});
+
 describe("policy beyond the library", () => {
 	test("a cross-origin registration: the library accepts it, mfw refuses", async () => {
 		for (const clientData of [
