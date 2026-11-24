@@ -49,8 +49,8 @@
 
   # bun is required; tmux hosts agent runs; git/bash/coreutils/direnv are used by
   # the per-run scripts. `claude` is found via the profile bin below. bubblewrap
-  # sandboxes agent runs (`agentIsolation: "bwrap"`, the default); without it
-  # autonomous runs are refused with a fix, never run unsandboxed.
+  # sandboxes every agent run; without it runs are refused with a fix, never run
+  # unsandboxed.
   # Compiled, `mfw` and `mfw-board` come first, so `mfw board` inside the
   # service resolves to the same install.
   binPath = lib.makeBinPath (

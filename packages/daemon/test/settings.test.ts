@@ -120,15 +120,15 @@ afterEach(async () => {
 	else process.env.MFW_HOME = savedHome;
 });
 
-describe("a config that still names agentIsolation", () => {
-	test("settings refuse to load it, naming the change, and nothing is written", async () => {
+describe("a config with an unknown key", () => {
+	test("settings refuse to load it, naming the key, and nothing is written", async () => {
 		const env = await freshEnv();
 		const before = JSON.stringify({
 			projects: [{ name: "demo", root: "/tmp/demo", agentIsolation: "none" }],
 		});
 		await writeFile(configPath(), before);
 		await expect(env.settings.update({ leaseMs: 70_000 })).rejects.toThrow(
-			"agentIsolation was removed: runs are always sandboxed",
+			"unknown config key projects[0].agentIsolation",
 		);
 		expect(await Bun.file(configPath()).text()).toBe(before);
 	});

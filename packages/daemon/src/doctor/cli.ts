@@ -2,9 +2,9 @@ import { existsSync, realpathSync } from "node:fs";
 import { lstat, mkdir, readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import {
-	configKeysLostOnSave,
 	configPath,
 	mutateConfig,
+	parseConfigText,
 	type StoredProjectConfig,
 } from "../config.ts";
 import { gitRaw } from "../git.ts";
@@ -269,15 +269,12 @@ async function configSaveProblem(home: string): Promise<string | null> {
 		return "config.json is a symbolic link, and a save would replace the link. Add the entry to the file it points to yourself";
 	}
 	if (!st.isFile()) return "config.json is not a regular file";
-	let lost: string[];
 	try {
-		lost = configKeysLostOnSave(await readFile(path, "utf8"));
-	} catch {
-		return "config.json is not valid. Run mfw doctor, and correct it first";
+		parseConfigText(await readFile(path, "utf8"));
+	} catch (e) {
+		return `config.json is not valid (${(e as Error).message}). Correct it first`;
 	}
-	return lost.length > 0
-		? `config.json has keys this version does not know, and a save would delete them: ${lost.join(", ")}. Add the entry by hand`
-		: null;
+	return null;
 }
 
 async function writeEntry(

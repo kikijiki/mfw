@@ -280,7 +280,7 @@ describe("the merge queue lands only the verified commit", () => {
 		expect(landed).not.toContain("b.txt");
 	});
 
-	test("a job with no pin, from before the upgrade, is refused", async () => {
+	test("a job with no pin is refused", async () => {
 		const p = await pin();
 		const before = await p.main();
 		const runId = await p.run("mfw/a", "a.txt", "a\n");
