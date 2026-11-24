@@ -1,10 +1,13 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { Button } from "../../components/ui/button";
+import { Checkbox } from "../../components/ui/checkbox";
 import { Input } from "../../components/ui/input";
 import { Label } from "../../components/ui/label";
 import {
 	AuthRequestError,
 	changePassword,
+	listPasskeys,
+	type Passkey,
 	signOut,
 	signOutEverywhere,
 } from "../../lib/auth-client";
@@ -17,6 +20,19 @@ export function SessionPanel() {
 	const [next, setNext] = useState("");
 	const [confirm, setConfirm] = useState("");
 	const [busy, setBusy] = useState(false);
+	const [passkeys, setPasskeys] = useState<Passkey[]>([]);
+	// A password change is an eviction: revoking every passkey is the default.
+	const [revokeAll, setRevokeAll] = useState(true);
+	const [keep, setKeep] = useState<string[]>([]);
+
+	useEffect(() => {
+		listPasskeys()
+			.then((list) => {
+				setPasskeys(list);
+				setKeep(list.map((p) => p.id));
+			})
+			.catch(() => setPasskeys([]));
+	}, []);
 	const [message, setMessage] = useState<{
 		tone: "error" | "ok";
 		text: string;
@@ -31,13 +47,20 @@ export function SessionPanel() {
 		setBusy(true);
 		setMessage(null);
 		try {
-			await changePassword(current, next);
+			await changePassword(current, next, revokeAll ? "revoke-all" : keep);
 			setCurrent("");
 			setNext("");
 			setConfirm("");
+			const remaining = await listPasskeys().catch(() => []);
+			setPasskeys(remaining);
+			setKeep(remaining.map((p) => p.id));
+			setRevokeAll(true);
 			setMessage({
 				tone: "ok",
-				text: "Password changed. Every other session is signed out.",
+				text:
+					remaining.length === 0
+						? "Password changed. Every other session is signed out and no passkeys remain."
+						: `Password changed. Every other session is signed out; ${remaining.length} passkey(s) kept.`,
 			});
 		} catch (e) {
 			setMessage({
@@ -101,6 +124,51 @@ export function SessionPanel() {
 						required
 					/>
 				</div>
+				{passkeys.length > 0 && (
+					<fieldset className="flex flex-col gap-2">
+						<div className="flex items-start gap-2">
+							<Checkbox
+								id="revoke-all-passkeys"
+								checked={revokeAll}
+								onCheckedChange={(on) => setRevokeAll(on === true)}
+							/>
+							<Label htmlFor="revoke-all-passkeys">Revoke all passkeys</Label>
+						</div>
+						<ul className="flex flex-col gap-1.5 text-sm">
+							{passkeys.map((p) => (
+								<li key={p.id} className="flex items-start gap-2">
+									{!revokeAll && (
+										<Checkbox
+											id={`keep-passkey-${p.id}`}
+											aria-label={`Keep ${p.name}`}
+											checked={keep.includes(p.id)}
+											onCheckedChange={(on) =>
+												setKeep((ids) =>
+													on === true
+														? [...ids, p.id]
+														: ids.filter((id) => id !== p.id),
+												)
+											}
+										/>
+									)}
+									<span className="min-w-0">
+										<span className="font-medium">{p.name}</span>{" "}
+										<span className="text-muted-foreground">
+											{p.rpId} · added {new Date(p.createdAt).toLocaleString()}{" "}
+											from {p.createdFrom ?? "unknown"} · last used{" "}
+											{p.lastUsedAt
+												? new Date(p.lastUsedAt).toLocaleString()
+												: "never"}
+											{!revokeAll && !keep.includes(p.id)
+												? " · will be revoked"
+												: ""}
+										</span>
+									</span>
+								</li>
+							))}
+						</ul>
+					</fieldset>
+				)}
 				{message && (
 					<p
 						role={message.tone === "error" ? "alert" : "status"}

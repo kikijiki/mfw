@@ -18,6 +18,7 @@ import { useState } from "react";
 
 import { AppShell } from "~/components/AppShell";
 import { KeyboardHelp } from "~/components/KeyboardHelp";
+import { PasskeyNotices } from "~/components/PasskeyNotices";
 import { CommandPalette } from "~/features/palette/CommandPalette";
 import { useGo } from "~/lib/nav";
 import { useDarkClassSync } from "~/lib/theme";
@@ -87,6 +88,7 @@ function Shell() {
 			<Outlet />
 			<KeyboardHelp />
 			<CommandPalette project={params.project} />
+			<PasskeyNotices />
 		</AppShell>
 	);
 }

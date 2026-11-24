@@ -42,6 +42,8 @@ const PUBLIC_PATHS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
 	["api/auth/state", SAFE_METHODS],
 	["api/auth/setup", new Set(["POST"])],
 	["api/auth/login", new Set(["POST"])],
+	["api/auth/passkey-login-options", new Set(["POST"])],
+	["api/auth/passkey-login", new Set(["POST"])],
 ]);
 
 export function isPublicPath(rel: string | null, method: string): boolean {

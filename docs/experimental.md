@@ -11,6 +11,7 @@ cannot afford to lose.
 | [RunPod](#remote-targets-ssh-and-runpod) | off by default, never autonomous | `MFW_EXPERIMENTAL_REMOTE=1` plus account setup | same, and it spends money |
 | [ACP agents](#acp-agents) | unsandboxed only | `agentIsolation: "none"`, `approvalMode: "interactive"` | run as your user |
 | [Scoped API tokens](#scoped-api-tokens) | on, awaiting outside review | `mfw auth token create` | no second-party review yet |
+| [Passkeys](#passkeys) | on, awaiting review | Settings > Passkeys | Chrome's virtual authenticator only |
 | [Clone workspaces](#clone-workspaces) | required for sandboxed runs, not yet the default | `"runWorkspace": "clone"` | default flip is pending |
 | [Host-run triggers](#host-run-triggers) | inert until armed | arm in the Triggers view | run as your user |
 | [Tailscale and proxy exposure](#tailscale-and-proxy-exposure) | opt-in | `MFW_LISTEN_SOCKET`, `MFW_TRUSTED_PROXIES` | not run against a real `tailscale serve` |
@@ -41,6 +42,28 @@ transports, because they could read the machine while handling untrusted text.
 Tokens for MCP clients and scripts have had an internal security review. They
 stay labelled experimental until a second party reviews them. Prefer short
 lifetimes and the narrowest scope.
+
+## Passkeys
+
+Passkey signatures are verified by `@simplewebauthn/server`. mfw's own checks
+around it, including the limit to ES256 and EdDSA keys (the library checks only
+the algorithm label), are listed in the
+[threat model](threat-model.md#9-network-clients-to-the-control-plane). It is
+tested with a software authenticator and Chrome's virtual authenticator, and
+has had internal security reviews, but has not been tried on real devices. CI must run `bun run smoke:auth` with Chrome
+installed and `MFW_SMOKE_CHROME=1`: that is the only run against a signer other
+than mfw's own test authenticator, and without the variable a missing Chrome only
+skips it. RSA keys (RS256), which some older Windows
+Hello setups create, are not accepted.
+
+Adding a passkey needs the browser to report the `credProps` extension, which
+says whether the passkey was stored on the device. mfw refuses the passkey
+when the browser leaves it out, because one that is not stored there could
+never sign in. Chrome reports it (tested with its virtual authenticator).
+Recent Firefox and Safari releases are expected to, but that has not been
+checked here. Older releases, and password-manager extensions that take over
+WebAuthn without passing it through, cannot add a passkey; use the password
+or another browser. The password always keeps working.
 
 ## Clone workspaces
 

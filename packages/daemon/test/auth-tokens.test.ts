@@ -424,6 +424,16 @@ describe("the token audit log", () => {
 		const raw = createClient({ url: `file:${path}` });
 		await raw.batch(
 			[
+				// Schema 7 (provenance), 6 (passkeys), then 5.
+				"DROP TABLE passkey_notice_acks",
+				"DROP TABLE passkey_notices",
+				"DROP INDEX ix_api_tokens_session",
+				"ALTER TABLE api_tokens DROP COLUMN created_by_session",
+				"ALTER TABLE passkeys DROP COLUMN created_by_session",
+				"ALTER TABLE passkeys DROP COLUMN created_from",
+				"DROP INDEX ix_auth_sessions_passkey",
+				"ALTER TABLE auth_sessions DROP COLUMN passkey_id",
+				"DROP TABLE passkeys",
 				"DROP TABLE token_audit_counters",
 				"DROP INDEX ix_token_audit_kind",
 				"ALTER TABLE token_audit DROP COLUMN kind",

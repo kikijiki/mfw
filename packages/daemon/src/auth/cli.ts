@@ -32,7 +32,9 @@ export const AUTH_USAGE = [
 	"usage: mfw auth <command>",
 	"",
 	"  unlock        clear failed sign-in attempts for every address",
-	"  sign-out-everywhere   revoke every session, including stolen ones",
+	"  sign-out-everywhere [--keep-passkeys]",
+	"                revoke every session and API token, including stolen ones, and",
+	"                delete every passkey (--keep-passkeys keeps them)",
 	"  setup-token   print a new first-run setup token (before an owner exists)",
 	"  reset --yes   remove the owner and all sessions, then repeat first-run setup;",
 	"                refused while the server or any agent session is alive",
@@ -46,6 +48,9 @@ export const AUTH_USAGE = [
 	"  token revoke <id>   revoke a token at once",
 	"  token audit [--limit <n>] [--id <token id>]",
 	"                what tokens changed and streamed, and how often they were refused",
+	"  passkey list  show registered passkeys (add them in Settings > Passkeys)",
+	"  passkey revoke <id>   remove a passkey, end the sessions it signed in and",
+	"                revoke the API tokens those sessions created",
 ].join("\n");
 
 export interface AuthCliDeps {
@@ -418,6 +423,43 @@ async function runTokenCommand(
 	}
 }
 
+async function runPasskeyCommand(
+	args: readonly string[],
+	d: AuthCliDeps,
+): Promise<number> {
+	const when = (ms: number | null) =>
+		ms ? new Date(ms).toISOString() : "never";
+	switch (args[0]) {
+		case "list":
+			if (args.length !== 1) break;
+			return withStore(d, async (auth) => {
+				const passkeys = await auth.listPasskeys();
+				if (passkeys.length === 0) d.out("mfw auth: no passkeys.");
+				for (const p of passkeys)
+					d.out(
+						`${p.id}  '${p.name}'  ${p.rpId}  created ${when(p.createdAt)} from ${p.createdFrom ?? "unknown"}  last used ${when(p.lastUsedAt)}${p.backedUp ? "  synced" : ""}`,
+					);
+				return 0;
+			});
+		case "revoke": {
+			const id = args[1];
+			if (!id || args.length !== 2) break;
+			return withStore(d, async (auth) => {
+				if (await auth.revokePasskey(id, { cli: true })) {
+					d.out(
+						`mfw auth: revoked ${id}. The sessions it signed in are signed out, and the API tokens they created are revoked.`,
+					);
+					return 0;
+				}
+				d.err(`mfw auth: no passkey '${id}'. See: mfw auth passkey list`);
+				return 1;
+			});
+		}
+	}
+	d.err("usage: mfw auth passkey list | mfw auth passkey revoke <id>");
+	return 2;
+}
+
 export async function runAuthCommand(
 	args: readonly string[],
 	d: AuthCliDeps,
@@ -425,6 +467,8 @@ export async function runAuthCommand(
 	switch (args[0]) {
 		case "token":
 			return runTokenCommand(args.slice(1), d);
+		case "passkey":
+			return runPasskeyCommand(args.slice(1), d);
 		case "--help":
 		case "-h":
 			d.out(AUTH_USAGE);
@@ -435,12 +479,23 @@ export async function runAuthCommand(
 				d.out("mfw auth: cleared all failed sign-in attempts.");
 				return 0;
 			});
-		case "sign-out-everywhere":
+		case "sign-out-everywhere": {
+			const rest = args.slice(1);
+			const keepPasskeys = rest[0] === "--keep-passkeys";
+			if (rest.length > (keepPasskeys ? 1 : 0)) {
+				d.err("usage: mfw auth sign-out-everywhere [--keep-passkeys]");
+				return 2;
+			}
 			return withStore(d, async (auth) => {
-				await auth.revokeAll();
-				d.out("mfw auth: every session is signed out.");
+				await auth.revokeAll({ keepPasskeys });
+				d.out(
+					keepPasskeys
+						? "mfw auth: every session and API token is revoked. Passkeys were kept."
+						: "mfw auth: every session and API token is revoked, and every passkey was deleted.",
+				);
 				return 0;
 			});
+		}
 		case "setup-token":
 			return withStore(d, async (auth) => {
 				try {
