@@ -723,6 +723,339 @@ async function plantedCookieInChrome(
 	}
 }
 
+/**
+ * C2: passkeys in a real browser. Chrome's virtual authenticator (DevTools
+ * `WebAuthn` domain) stands in for the device, and the app's own UI is driven:
+ * add a passkey in Settings, sign out, sign in with it, then present a cloned
+ * credential (counter regression) and an unverified user, both refused.
+ */
+async function passkeysInChrome(
+	port: number,
+	scratch: string,
+	logFile: string,
+): Promise<void> {
+	const chromeBin =
+		Bun.which("google-chrome") ??
+		Bun.which("google-chrome-stable") ??
+		Bun.which("chromium");
+	if (!chromeBin) {
+		if (process.env.MFW_SMOKE_CHROME === "1")
+			check("passkeys: Chrome is available", false);
+		else console.log("auth-smoke: no Chrome on PATH, passkey case not run");
+		return;
+	}
+	const cdpPort = await freePort();
+	const chrome = Bun.spawn(
+		[
+			chromeBin,
+			"--headless=new",
+			"--no-sandbox",
+			"--disable-gpu",
+			"--disable-dev-shm-usage",
+			"--no-first-run",
+			"--disable-background-networking",
+			"--disable-component-update",
+			"--no-proxy-server",
+			`--user-data-dir=${join(scratch, "chrome-passkeys")}`,
+			`--remote-debugging-port=${cdpPort}`,
+			"--remote-debugging-address=127.0.0.1",
+			"about:blank",
+		],
+		{
+			env: { PATH: process.env.PATH ?? "", HOME: join(scratch, "home") },
+			stdout: "ignore",
+			stderr: "ignore",
+		},
+	);
+	let ws: WebSocket | null = null;
+	try {
+		let target: { type: string; webSocketDebuggerUrl: string } | undefined;
+		for (let i = 0; i < 150 && !target; i++) {
+			try {
+				const list = (await (
+					await fetch(`http://127.0.0.1:${cdpPort}/json`)
+				).json()) as { type: string; webSocketDebuggerUrl: string }[];
+				target = list.find((t) => t.type === "page");
+			} catch {
+				// not up yet
+			}
+			if (!target) await Bun.sleep(100);
+		}
+		if (!target) throw new Error("Chrome did not start");
+		const socket = new WebSocket(target.webSocketDebuggerUrl);
+		ws = socket;
+		await new Promise((r) =>
+			socket.addEventListener("open", r, { once: true }),
+		);
+		let id = 0;
+		type Reply = {
+			result?: Record<string, unknown> & { result?: { value?: unknown } };
+			error?: { message: string };
+		};
+		const pending = new Map<number, (v: Reply) => void>();
+		socket.addEventListener("message", (m) => {
+			const d = JSON.parse(String(m.data));
+			if (d.id) pending.get(d.id)?.(d);
+		});
+		const send = (method: string, params: unknown = {}) =>
+			new Promise<Reply>((done) => {
+				const i = ++id;
+				pending.set(i, done);
+				socket.send(JSON.stringify({ id: i, method, params }));
+			});
+		const ev = async (expression: string) =>
+			(
+				await send("Runtime.evaluate", {
+					expression,
+					awaitPromise: true,
+					returnByValue: true,
+				})
+			).result?.result?.value;
+		const until = async (expression: string, ms = 30_000) => {
+			const end = Date.now() + ms;
+			while (Date.now() < end) {
+				try {
+					if (await ev(expression)) return true;
+				} catch {
+					// navigating
+				}
+				await Bun.sleep(150);
+			}
+			return false;
+		};
+		const KEY = "mfw:auth:request-key";
+		const app = `http://localhost:${port}/mfw`;
+		const clickButton = (text: string) =>
+			ev(
+				`(() => { const b = [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === ${JSON.stringify(text)} && !x.disabled); if (b) b.click(); return !!b; })()`,
+			);
+		const type = (selector: string, value: string) =>
+			ev(
+				`(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return false; Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(value)}); el.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`,
+			);
+		const apiStatus = () =>
+			ev(
+				`fetch('/mfw/api/trpc/${Q}', { headers: { 'x-mfw-key': localStorage.getItem(${JSON.stringify(KEY)}) ?? '' } }).then((r) => r.status)`,
+			);
+		const signOut = () =>
+			ev(
+				`fetch('/mfw/api/auth/logout', { method: 'POST', headers: { 'x-mfw-key': localStorage.getItem(${JSON.stringify(KEY)}) ?? '' } }).then((r) => { localStorage.removeItem(${JSON.stringify(KEY)}); return r.status; })`,
+			);
+		const addAuthenticator = async (verified = true) => {
+			const r = await send("WebAuthn.addVirtualAuthenticator", {
+				options: {
+					protocol: "ctap2",
+					transport: "internal",
+					hasResidentKey: true,
+					hasUserVerification: true,
+					isUserVerified: verified,
+					automaticPresenceSimulation: true,
+				},
+			});
+			return r.result?.authenticatorId as string;
+		};
+		/** Click the login page's passkey button; the page it lands on after. */
+		const passkeySignIn = async (origin = app) => {
+			await send("Page.navigate", { url: `${origin}/login` });
+			await until(
+				`document.readyState === 'complete' && [...document.querySelectorAll('button')].some((b) => b.textContent.trim() === 'Sign in with a passkey')`,
+			);
+			await clickButton("Sign in with a passkey");
+			await until(
+				`location.pathname !== '/mfw/login' || !!document.querySelector('[role=alert]')`,
+			);
+			await Bun.sleep(300);
+			return {
+				path: (await ev("location.pathname")) as string,
+				alert: (await ev(
+					`document.querySelector('[role=alert]')?.textContent ?? ''`,
+				)) as string,
+			};
+		};
+
+		await send("Page.enable");
+		await send("Runtime.enable");
+		await send("Network.enable");
+		const enabled = await send("WebAuthn.enable", {
+			enableUI: false,
+		});
+		check(
+			"passkeys: the virtual authenticator is available",
+			!enabled.error,
+			enabled.error?.message,
+		);
+		if (enabled.error) return;
+		const first = await addAuthenticator();
+
+		await send("Page.navigate", { url: `${app}/login` });
+		await until(
+			`location.pathname === '/mfw/login' && document.readyState === 'complete'`,
+		);
+		const signedIn = await ev(
+			`fetch('/mfw/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json', 'x-mfw-auth': '1' }, body: ${JSON.stringify(JSON.stringify({ password: PASSWORD }))} }).then(async (r) => { if (r.ok) localStorage.setItem(${JSON.stringify(KEY)}, (await r.json()).requestKey); return r.status; })`,
+		);
+		check("passkeys: password sign-in first", signedIn === 200, signedIn);
+
+		// Add one through Settings > Passkeys.
+		await send("Page.navigate", { url: `${app}/settings` });
+		await until(
+			`document.readyState === 'complete' && !!document.querySelector('#passkey-password')`,
+		);
+		await type("#passkey-name", "virtual");
+		await type("#passkey-password", PASSWORD);
+		await clickButton("Add passkey");
+		const added = await until(
+			`[...document.querySelectorAll('[role=status]')].some((e) => e.textContent.includes('Passkey added'))`,
+		);
+		check(
+			"passkeys: Settings adds a passkey",
+			added,
+			await ev(`document.querySelector('[role=alert]')?.textContent ?? ''`),
+		);
+		const listed = (await send("WebAuthn.getCredentials", {
+			authenticatorId: first,
+		})) as {
+			result?: {
+				credentials?: {
+					credentialId: string;
+					isResidentCredential: boolean;
+					rpId: string;
+					privateKey: string;
+					userHandle: string;
+					signCount: number;
+				}[];
+			};
+		};
+		const credential = listed.result?.credentials?.[0];
+		check(
+			"passkeys: a discoverable credential for localhost",
+			credential?.isResidentCredential === true &&
+				credential.rpId === "localhost",
+			JSON.stringify({ ...credential, privateKey: undefined }),
+		);
+		check(
+			"passkeys: Settings lists it",
+			(await until(
+				`document.body.textContent.includes('virtual') && document.body.textContent.includes('last used never')`,
+			)) === true,
+		);
+
+		// Sign out, then sign in with it: the same session shape.
+		check("passkeys: sign out", (await signOut()) === 200);
+		const viaPasskey = await passkeySignIn();
+		check(
+			"passkeys: the login page signs in with a passkey",
+			viaPasskey.path !== "/mfw/login",
+			JSON.stringify(viaPasskey),
+		);
+		check(
+			"passkeys: the passkey session reads the API",
+			(await apiStatus()) === 200,
+		);
+		const cookies = (await send("Network.getCookies", {
+			urls: [`${app}/`],
+		})) as { result?: { cookies?: { name: string; httpOnly: boolean }[] } };
+		check(
+			"passkeys: the session cookie is HttpOnly",
+			(cookies.result?.cookies ?? []).some(
+				(c) => c.name === "mfw_session" && c.httpOnly,
+			),
+		);
+
+		// A clone: the same key on a second authenticator, its counter behind.
+		const after = (await send("WebAuthn.getCredentials", {
+			authenticatorId: first,
+		})) as typeof listed;
+		const used = after.result?.credentials?.[0];
+		check(
+			"passkeys: the authenticator counts signatures",
+			(used?.signCount ?? 0) > 0,
+			used?.signCount,
+		);
+		await send("WebAuthn.removeVirtualAuthenticator", {
+			authenticatorId: first,
+		});
+		const clone = await addAuthenticator();
+		if (credential)
+			await send("WebAuthn.addCredential", {
+				authenticatorId: clone,
+				credential: {
+					credentialId: credential.credentialId,
+					isResidentCredential: true,
+					rpId: credential.rpId,
+					privateKey: credential.privateKey,
+					userHandle: credential.userHandle,
+					signCount: 0,
+				},
+			});
+		await signOut();
+		const cloned = await passkeySignIn();
+		check(
+			"passkeys: a cloned credential (counter regression) is refused",
+			cloned.path === "/mfw/login" && cloned.alert.length > 0,
+			JSON.stringify(cloned),
+		);
+		check(
+			"passkeys: the server warns about the clone, naming no secret",
+			/counter went backwards/.test(readFileSync(logFile, "utf8")) &&
+				!!credential &&
+				!readFileSync(logFile, "utf8").includes(credential.privateKey),
+		);
+		await send("WebAuthn.removeVirtualAuthenticator", {
+			authenticatorId: clone,
+		});
+
+		// Unverified user: refused; once verified, the real device works again.
+		const device = await addAuthenticator(false);
+		if (credential)
+			await send("WebAuthn.addCredential", {
+				authenticatorId: device,
+				credential: {
+					credentialId: credential.credentialId,
+					isResidentCredential: true,
+					rpId: credential.rpId,
+					privateKey: credential.privateKey,
+					userHandle: credential.userHandle,
+					signCount: 1000,
+				},
+			});
+		const unverified = await passkeySignIn();
+		check(
+			"passkeys: user verification is required",
+			unverified.path === "/mfw/login",
+			JSON.stringify(unverified),
+		);
+		await send("WebAuthn.setUserVerified", {
+			authenticatorId: device,
+			isUserVerified: true,
+		});
+		const verified = await passkeySignIn();
+		check(
+			"passkeys: a verified, advancing authenticator signs in",
+			verified.path !== "/mfw/login",
+			JSON.stringify(verified),
+		);
+
+		// A bare IP origin cannot use passkeys at all.
+		await signOut();
+		const byIp = await passkeySignIn(`http://127.0.0.1:${port}/mfw`);
+		check(
+			"passkeys: refused on a bare IP origin",
+			byIp.path === "/mfw/login" &&
+				/IP address|not available/i.test(byIp.alert),
+			JSON.stringify(byIp),
+		);
+	} finally {
+		try {
+			ws?.close();
+		} catch {
+			// already closed
+		}
+		chrome.kill("SIGKILL");
+		await chrome.exited;
+	}
+}
+
 /** N3: a login racing a password change must not outlive it. */
 async function loginRacingPasswordChange(
 	port: number,
@@ -2209,6 +2542,8 @@ async function main(): Promise<number> {
 		await loopbackIsOneSource(port, mfwHome, env);
 		await plantedCookie(port);
 		await plantedCookieInChrome(port, scratch);
+		unlock(mfwHome, env);
+		await passkeysInChrome(port, scratch, logFile);
 		unlock(mfwHome, env);
 		await loginRacingPasswordChange(port, mfwHome, env);
 		check(
