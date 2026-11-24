@@ -31,9 +31,10 @@ environment unapproved, or changed since you approved it. The card shows the
 commit, each file's hash and the same plan; approving it is the same as
 `mfw env allow --rev`.
 
-Besides the environment's own files, an approval of a nix source protects every
-`*.nix` file at any depth, and one of a mise (or direnv) source protects
-`.config/mise/`: a merge changing them is an ask-first card.
+Besides the environment's own files, an approval protects every tracked file
+its root files name (a script an `.envrc` sources), every `*.nix` file at any
+depth for a nix or direnv source, and `.config/mise/` (its `conf.d` included)
+for a mise or direnv source: a merge changing them is an ask-first card.
 
 ## What is supported
 
