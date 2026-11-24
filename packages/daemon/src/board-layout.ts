@@ -138,26 +138,14 @@ export async function readBoardLayout(
 	return null;
 }
 
-/**
- * The recorded board paths, or the defaults when none were recorded (fail
- * closed). A file from before the record existed (`{ paths }` only) still
- * protects the board.
- */
+/** The recorded board paths, or the defaults when none were recorded (fail closed). */
 export async function readProtectedBoardPaths(
 	repoRoot: string,
 ): Promise<string[]> {
 	const record = await readBoardLayout(repoRoot);
-	if (record) return [...record.protectedPaths];
-	try {
-		const text = await readProjectFile(locationFile(repoRoot));
-		if (text !== null) {
-			const raw = JSON.parse(text) as { paths?: unknown };
-			if (isStringArray(raw.paths)) return raw.paths;
-		}
-	} catch {
-		// not recorded yet
-	}
-	return [...DEFAULT_PROTECTED_BOARD_PATHS];
+	return record
+		? [...record.protectedPaths]
+		: [...DEFAULT_PROTECTED_BOARD_PATHS];
 }
 
 /**

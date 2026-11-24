@@ -56,14 +56,12 @@ describe("board discovery", () => {
 		expect(r.stdout).toBe("TK-1\ttask");
 	});
 
-	test("a board left in .mfw/ is not found, and the error names it", async () => {
+	test("a board.yaml under .mfw/ is not found, but can be named with --config", async () => {
 		const d = await tmp();
 		await put(join(d, ".mfw", "board.yaml"), TASK_BOARD);
 		const r = await mfwBoard(d, ["list"]);
 		expect(r.code).toBe(3);
 		expect(r.stderr).toContain("no board found");
-		expect(r.stderr).toContain(join(d, ".mfw", "board.yaml"));
-		// ...but it can still be pointed at explicitly.
 		const c = await mfwBoard(d, [
 			"--config",
 			join(d, ".mfw", "board.yaml"),

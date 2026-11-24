@@ -117,32 +117,6 @@ describe("describeInspection", () => {
 		]);
 	});
 
-	test("a board in .mfw/ says it will be moved", () => {
-		const view = describeInspection(found({ location: "legacy-mfw" }));
-		expect(view).toMatchObject({
-			kind: "legacy",
-			tone: "warning",
-			canAdd: true,
-			needsTemplate: false,
-		});
-		expect(view.title).toContain(".mfw/");
-		expect(view.detail).toContain("moved to the folder root");
-	});
-
-	test("both locations is an error naming both files, and blocks Add", () => {
-		const view = describeInspection(
-			found({ location: "ambiguous", path: "/x/board" }),
-		);
-		expect(view).toMatchObject({
-			kind: "ambiguous",
-			tone: "error",
-			canAdd: false,
-			needsTemplate: false,
-		});
-		expect(view.detail).toContain("/x/board/board.yaml");
-		expect(view.detail).toContain("/x/board/.mfw/board.yaml");
-	});
-
 	test("an invalid board.yaml shows its error and blocks Add", () => {
 		const view = describeInspection(
 			inspection({
@@ -213,7 +187,11 @@ describe("buildAddInput", () => {
 	test("nothing is submitted while loading, on errors, or without a repository", () => {
 		expect(buildAddInput(inRepo, null, templates)).toBeNull();
 		expect(
-			buildAddInput(inRepo, found({ location: "ambiguous" }), templates),
+			buildAddInput(
+				inRepo,
+				found({ valid: false, error: "bad yaml" }),
+				templates,
+			),
 		).toBeNull();
 		expect(
 			buildAddInput({ ...inRepo, repo: null }, found(), templates),
@@ -252,9 +230,6 @@ describe("summarize", () => {
 		expect(text(summarize(inRepo, found(), templates))).toContain(
 			"existing board adopted as it is (3 tasks)",
 		);
-		expect(
-			text(summarize(inRepo, found({ location: "legacy-mfw" }), templates)),
-		).toContain("moves to the folder root");
 		const away = text(
 			summarize(
 				elsewhere(true),

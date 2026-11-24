@@ -14,16 +14,13 @@ import { AgentReviewInference } from "./agent-review.ts";
 import { AdapterRegistry } from "./agents/adapter.ts";
 import { DEFAULT_PROVIDER_ID, providerConfigFor } from "./agents/catalogue.ts";
 import { AUTH_HOLD_REASON } from "./auth-failure.ts";
+import { assertNoForeignTasksDir } from "./board-guard.ts";
 import {
 	buildBoardLayoutRecord,
 	firewalledPath,
 	readProtectedBoardPaths,
 	recordBoardLocation,
 } from "./board-layout.ts";
-import {
-	assertNoForeignTasksDir,
-	relocateLegacyBoard,
-} from "./board-relocate.ts";
 import { getBoardTemplate } from "./board-templates.ts";
 import { BrainService, type InferenceClient } from "./brain.ts";
 import { brainSocketFor } from "./brain-runtime/brain-socket.ts";
@@ -506,16 +503,7 @@ export async function attachProject(
 	try {
 		projectIdentity = await stableProjectIdentity(mfwDir);
 		opts.onProjectIdentity?.(projectIdentity);
-		// Before the board loads: a board from the `.mfw/` era is moved to the
-		// folder root (refusing, with nothing changed, on a collision).
-		const relocated = await relocateLegacyBoard({
-			boardFolder: boardDir,
-			daemonDir: mfwDir,
-			log,
-		});
-		if (relocated.moved.length === 0) {
-			await assertNoForeignTasksDir(boardDir);
-		}
+		await assertNoForeignTasksDir(boardDir);
 		// Resolved before board.yaml is written so a brand-new project's board
 		// agrees with the ids it will really mint (resolveTaskKey reads
 		// board.json/config.yaml/the raw files, never board.yaml itself) —
@@ -1766,36 +1754,8 @@ export async function attachProject(
 		"board loaded from disk",
 	);
 
-	// Once per board: old body `## Acceptance Criteria` lists move into the
-	// `acceptance` field, committed together with the board.yaml upgrade as
-	// one commit. Deferred (retried next attach) while the board is suspended.
-	const acceptance = await tasks.migrateAcceptance();
-	if (acceptance) {
-		plog.info(
-			{
-				migrated: acceptance.migrated.length,
-				skipped: acceptance.skipped.length,
-				boardYamlUpgraded,
-			},
-			"acceptance criteria moved into the acceptance field",
-		);
-	}
-	if (acceptance?.migrated.length || boardYamlUpgraded) {
-		await board.commit(
-			acceptance?.migrated.length
-				? "mfw: move acceptance criteria into the acceptance field"
-				: "mfw: upgrade board.yaml task fields",
-		);
-	}
-
-	// Once per board: claim sidecars name an attempt group, not a run. A group
-	// of one is named after its run, so only the key moves.
-	const claimGroups = await tasks.migrateClaimGroups();
-	if (claimGroups?.rewritten.length) {
-		plog.info(
-			{ rewritten: claimGroups.rewritten.length },
-			"task claims moved to attempt groups",
-		);
+	if (boardYamlUpgraded) {
+		await board.commit("mfw: add mfw's task fields to board.yaml");
 	}
 
 	// Commit the freshly loaded board now instead of waiting for a transition.

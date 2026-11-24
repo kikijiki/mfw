@@ -14,7 +14,7 @@ import { addFieldText } from "./routing-fields.ts";
  * is marked applied is repaired by looking the key up, never by writing a
  * second task.
  *
- * Boards created before these fields existed are upgraded in place on attach,
+ * A board.yaml whose task type lacks these fields gets them in place at attach,
  * the same way as the routing pins: a text insertion at the end of the task
  * type's `fields:` map. A board that already declares a field of that name
  * keeps its own declaration.

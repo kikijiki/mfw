@@ -7,7 +7,7 @@ import { isMap, isScalar, parseDocument } from "yaml";
  * harness (`claude-cli`, `codex-cli`) or a project endpoint id, `model` the
  * exact model id. Both optional; unset means "the project decides".
  *
- * Boards created before these fields existed are upgraded in place on attach,
+ * A board.yaml whose task type lacks these fields gets them in place at attach,
  * the same way and in the same commit as the acceptance field: a text
  * insertion at the end of the task type's `fields:` map, so the rest of the
  * file is kept byte for byte. A board that already declares a field of that

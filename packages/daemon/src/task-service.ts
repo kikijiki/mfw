@@ -36,9 +36,7 @@ import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import { type LifecycleService, TaskUnmergedError } from "./lifecycle.ts";
 import type { Logger } from "./log.ts";
 import { refusalFix } from "./refusal-fix.ts";
-import type { MigrationReport } from "./tasks/acceptance.ts";
 import { orderBatch } from "./tasks/batch.ts";
-import { CLAIM_GROUPS_MIGRATION_KEY } from "./tasks/claim-groups.ts";
 import {
 	type AttachmentInfo,
 	deleteAttachment,
@@ -681,9 +679,6 @@ export function toRow(
 		criteria: rec.file.criteria,
 	};
 }
-
-/** `engine_kv` marker: this board's tasks had their body criteria moved into the field. */
-export const ACCEPTANCE_MIGRATION_KEY = "board_acceptance_migration";
 
 /** Reason prefix (and review cause) for a merged task a board rule kept from `done`. */
 export const RULE_VIOLATION_CAUSE = "rule_violation";
@@ -1880,105 +1875,6 @@ export class TaskService {
 			task: toRow(this.store.get(id) ?? result.record),
 			itemId,
 		};
-	}
-
-	/**
-	 * Once per board: the claim sidecars name an attempt group, not a run. A
-	 * group of one is named after its run, so the value is unchanged and only
-	 * the key moves. Runs the rewrite under the claim lock, records the marker,
-	 * and makes sure each claimed run has its `run_groups` row.
-	 */
-	async migrateClaimGroups(): Promise<{ rewritten: string[] } | null> {
-		const [row] = await this.handle.db
-			.select()
-			.from(engineKv)
-			.where(eq(engineKv.key, CLAIM_GROUPS_MIGRATION_KEY));
-		if (row) return null;
-		const report = await this.store.migrateClaimSidecars();
-		for (const id of report.rewritten) {
-			const holder = this.store.get(id)?.state.claimedByGroupId;
-			if (!holder) continue;
-			const [run] = await this.handle.db
-				.select({ id: runs.id, taskId: runs.taskId })
-				.from(runs)
-				.where(eq(runs.id, holder));
-			if (!run) continue;
-			await this.handle.db
-				.insert(runGroups)
-				.values({
-					id: holder,
-					taskId: id,
-					kind: "single",
-					selection: "brain",
-					status: "open",
-					createdAt: new Date(),
-				})
-				.onConflictDoNothing();
-		}
-		const value = { version: 1, rewritten: report.rewritten.length };
-		await this.handle.db
-			.insert(engineKv)
-			.values({
-				key: CLAIM_GROUPS_MIGRATION_KEY,
-				value,
-				updatedAt: new Date(),
-			})
-			.onConflictDoUpdate({
-				target: engineKv.key,
-				set: { value, updatedAt: new Date() },
-			});
-		return report;
-	}
-
-	/**
-	 * Once per board (an `engine_kv` marker): move every task's old
-	 * `## Acceptance Criteria` body list into its `acceptance` field. Deferred
-	 * (null, no marker) while the circuit breaker distrusts the board. The
-	 * caller commits the result as one board commit.
-	 */
-	async migrateAcceptance(): Promise<MigrationReport | null> {
-		const [row] = await this.handle.db
-			.select()
-			.from(engineKv)
-			.where(eq(engineKv.key, ACCEPTANCE_MIGRATION_KEY));
-		if (row) return null;
-		const report = await this.store.migrateBodyCriteria();
-		if (!report) {
-			this.log.warn(
-				"board is suspended; moving acceptance criteria into the field is deferred",
-			);
-			return null;
-		}
-		for (const s of report.skipped) {
-			this.log.warn(
-				{ task: s.id, reason: s.reason },
-				"acceptance criteria left in the task body",
-			);
-		}
-		const value = {
-			version: 1,
-			migrated: report.migrated.length,
-			skipped: report.skipped,
-		};
-		await this.handle.db
-			.insert(engineKv)
-			.values({ key: ACCEPTANCE_MIGRATION_KEY, value, updatedAt: new Date() })
-			.onConflictDoUpdate({
-				target: engineKv.key,
-				set: { value, updatedAt: new Date() },
-			});
-		for (const id of report.migrated) {
-			await this.emit({
-				type: "task.edited",
-				taskId: id,
-				payload: {
-					source: "file",
-					fields: ["acceptance", "body"],
-					rev: this.store.get(id)?.file.frontmatter.rev ?? 1,
-				},
-			});
-		}
-		return report;
 	}
 
 	/** Translate the store's conflict into the one the API maps to CONFLICT. */

@@ -105,11 +105,4 @@ describe("BoardStep", () => {
 		expect(html).toContain("todo");
 		expect(html).not.toContain("Kanban");
 	});
-
-	test("an ambiguous folder is an alert and offers no template", () => {
-		const html = render(inspection({ location: "ambiguous" }));
-		expect(html).toContain('role="alert"');
-		expect(html).toContain("Remove one and try again.");
-		expect(html).not.toContain("Kanban");
-	});
 });
