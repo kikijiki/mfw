@@ -436,7 +436,7 @@ async function runPasskeyCommand(
 				if (passkeys.length === 0) d.out("mfw auth: no passkeys.");
 				for (const p of passkeys)
 					d.out(
-						`${p.id}  '${p.name}'  ${p.rpId}  created ${when(p.createdAt)}  last used ${when(p.lastUsedAt)}${p.backedUp ? "  synced" : ""}`,
+						`${p.id}  '${p.name}'  ${p.rpId}  created ${when(p.createdAt)} from ${p.createdFrom ?? "unknown"}  last used ${when(p.lastUsedAt)}${p.backedUp ? "  synced" : ""}`,
 					);
 				return 0;
 			});
@@ -444,7 +444,7 @@ async function runPasskeyCommand(
 			const id = args[1];
 			if (!id || args.length !== 2) break;
 			return withStore(d, async (auth) => {
-				if (await auth.revokePasskey(id)) {
+				if (await auth.revokePasskey(id, { cli: true })) {
 					d.out(
 						`mfw auth: revoked ${id}. The sessions it signed in are signed out.`,
 					);

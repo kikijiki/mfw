@@ -66,6 +66,7 @@ describe("mfw auth passkey", () => {
 		expect(out).toHaveLength(1);
 		expect(out[0]).toContain(info.id);
 		expect(out[0]).toContain("'yubi'");
+		expect(out[0]).toContain("from unknown");
 		expect(out[0]).toContain("last used 20");
 		expect(out[0]).not.toMatch(/never/);
 	});
@@ -73,6 +74,17 @@ describe("mfw auth passkey", () => {
 	test("revoke removes it and ends its sessions only", async () => {
 		const { info, owner, viaPasskey } = await seed();
 		expect(await run("passkey", "revoke", info.id)).toBe(0);
+		const notices = await (async () => {
+			const a = await AuthService.open(authDbPath(home));
+			try {
+				return await a.passkeyNotices(owner.sessionId);
+			} finally {
+				a.close();
+			}
+		})();
+		expect(notices.map((n) => [n.kind, n.source])).toEqual([
+			["revoked", "the host CLI"],
+		]);
 		expect(await run("passkey", "revoke", info.id)).toBe(1);
 		const auth = await AuthService.open(authDbPath(home));
 		expect(await auth.listPasskeys()).toEqual([]);

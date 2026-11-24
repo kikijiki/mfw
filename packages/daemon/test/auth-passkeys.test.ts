@@ -776,3 +776,98 @@ describe("schema 7", () => {
 		);
 	});
 });
+
+describe("provenance and notices", () => {
+	async function addFrom(
+		source: Parameters<AuthServiceT["finishPasskeyRegistration"]>[5],
+		name = "attacker",
+		session = owner,
+	) {
+		const begun = await auth.beginPasskeyRegistration(
+			session.sessionId,
+			RP,
+			{ password: PASSWORD },
+			source,
+		);
+		const { json } = soft.create(begun.publicKey);
+		return auth.finishPasskeyRegistration(
+			session.sessionId,
+			RP,
+			begun.ceremonyId,
+			json,
+			name,
+			source,
+		);
+	}
+
+	test("a passkey records the session and address that added it", async () => {
+		const info = await addFrom({ address: "100.64.0.9", viaProxy: true });
+		const [listed] = await auth.listPasskeys();
+		expect(listed?.createdBySession).toBe(owner.sessionId);
+		expect(listed?.createdFrom).toBe("100.64.0.9 via proxy");
+		expect(info.createdFrom).toBe("100.64.0.9 via proxy");
+		await addFrom("127.0.0.1", "local");
+		expect((await auth.listPasskeys())[1]?.createdFrom).toBe("127.0.0.1");
+	});
+
+	test("an address that is not an address is not stored as text", async () => {
+		await addFrom("<script>‮" as string);
+		expect((await auth.listPasskeys())[0]?.createdFrom).toBe("unknown");
+	});
+
+	test("adding one is logged with its name and source", async () => {
+		const lines: string[] = [];
+		const log = console.log;
+		console.log = (...a: unknown[]) => lines.push(a.join(" "));
+		try {
+			await addFrom("10.0.0.7", "phone");
+		} finally {
+			console.log = log;
+		}
+		expect(lines).toContain("[mfw] passkey 'phone' added from 10.0.0.7");
+	});
+
+	test("every OTHER session sees an addition until it acknowledges it", async () => {
+		const other = await auth.login(PASSWORD);
+		const third = await auth.login(PASSWORD);
+		await addFrom("10.0.0.7", "phone");
+		expect(await auth.passkeyNotices(owner.sessionId)).toEqual([]);
+		const [notice] = await auth.passkeyNotices(other.sessionId);
+		expect(notice).toMatchObject({
+			kind: "added",
+			name: "phone",
+			rpId: "localhost",
+			source: "10.0.0.7",
+		});
+		// Acknowledging is per session: no session dismisses it for another.
+		expect(
+			await auth.acknowledgePasskeyNotice(
+				other.sessionId,
+				notice?.id as number,
+			),
+		).toBe(true);
+		expect(await auth.passkeyNotices(other.sessionId)).toEqual([]);
+		expect(await auth.passkeyNotices(third.sessionId)).toHaveLength(1);
+		// A session signed in later sees it too.
+		const later = await auth.login(PASSWORD);
+		expect(await auth.passkeyNotices(later.sessionId)).toHaveLength(1);
+	});
+
+	test("a revocation is announced, and the addition notice goes with the passkey", async () => {
+		const other = await auth.login(PASSWORD);
+		const info = await addFrom("10.0.0.7", "phone");
+		await auth.revokePasskey(info.id, { sessionId: owner.sessionId });
+		const notices = await auth.passkeyNotices(other.sessionId);
+		expect(notices.map((n) => [n.kind, n.name])).toEqual([
+			["revoked", "phone"],
+		]);
+		expect(await auth.passkeyNotices(owner.sessionId)).toEqual([]);
+	});
+
+	test("notices expire after 30 days", async () => {
+		const other = await auth.login(PASSWORD);
+		await addFrom("10.0.0.7");
+		clock += 31 * 24 * 60 * 60 * 1000;
+		expect(await auth.passkeyNotices(other.sessionId)).toEqual([]);
+	});
+});

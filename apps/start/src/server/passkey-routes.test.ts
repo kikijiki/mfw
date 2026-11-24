@@ -292,6 +292,38 @@ describe("passkey sign-in over HTTP", () => {
 		expect(await auth.listPasskeys()).toEqual([]);
 	});
 
+	test("an addition records its source and is announced to the other sessions", async () => {
+		const other = await auth.login(PASSWORD);
+		const soft = new SoftAuthenticator(ORIGIN);
+		expect((await register(soft, { peer: "127.0.0.1" })).status).toBe(200);
+		const [pk] = (
+			(await (await call("passkeys")).json()) as {
+				passkeys: { createdFrom: string }[];
+			}
+		).passkeys;
+		expect(pk?.createdFrom).toBe("127.0.0.1");
+		// Not shown to the session that added it.
+		const mine = (await (await call("passkey-notices")).json()) as {
+			notices: unknown[];
+		};
+		expect(mine.notices).toEqual([]);
+		const theirs = (await (
+			await call("passkey-notices", { session: other })
+		).json()) as { notices: { id: number; kind: string; source: string }[] };
+		expect(theirs.notices.map((n) => [n.kind, n.source])).toEqual([
+			["added", "127.0.0.1"],
+		]);
+		const ack = await call("passkey-notice-ack", {
+			session: other,
+			body: { id: theirs.notices[0]?.id },
+		});
+		expect(await ack.json()).toEqual({ acknowledged: true });
+		const after = (await (
+			await call("passkey-notices", { session: other })
+		).json()) as { notices: unknown[] };
+		expect(after.notices).toEqual([]);
+	});
+
 	test("revoke over HTTP ends that passkey's sessions", async () => {
 		const soft = new SoftAuthenticator(ORIGIN);
 		await register(soft);

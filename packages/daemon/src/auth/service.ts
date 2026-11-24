@@ -125,6 +125,33 @@ export interface PasskeyInfo {
 	createdBySession: string | null;
 }
 
+/** A passkey addition or revocation, shown to the owner's other sessions. */
+export interface PasskeyNotice {
+	id: number;
+	kind: "added" | "revoked";
+	name: string;
+	rpId: string;
+	/** Where it happened: an address, "the host CLI", or null if unknown. */
+	source: string | null;
+	at: number;
+}
+
+const NOTICE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * A source as stored text: an IP literal only (it is shown in the UI and the
+ * log), marked when a proxy reported it. Anything else is "unknown".
+ */
+function describeSource(source: AuthSource | undefined): string {
+	const address = typeof source === "object" ? source.address : source;
+	const ok =
+		typeof address === "string" &&
+		address.length <= 64 &&
+		/^[0-9A-Fa-f:.]+$/.test(address);
+	const text = ok ? address : "unknown";
+	return typeof source === "object" ? `${text} via proxy` : text;
+}
+
 /** What a password change does to passkeys; see `changePassword`. */
 export type PasskeyChoice = "revoke-all" | "keep" | readonly string[];
 
@@ -1045,6 +1072,8 @@ export class AuthService {
 		ceremonyId: unknown,
 		credential: unknown,
 		rawName: unknown,
+		/** Who is adding it, recorded and announced to the other sessions. */
+		source?: AuthSource,
 	): Promise<PasskeyInfo> {
 		const ceremony = this.ceremonies.take(ceremonyId);
 		if (!ceremonyFits(ceremony, "register", sessionId, rp))
@@ -1083,36 +1112,51 @@ export class AuthService {
 		const now = this.now();
 		const id = `pk_${randomUUID()}`;
 		const credentialId = toBase64url(verified.credentialId);
+		const from = describeSource(source);
 		// One statement: only while this session is live, under the cap, and
-		// never a second row for one credential.
-		const inserted = await this.db.client.execute({
-			sql: `INSERT INTO passkeys (id, principal_id, credential_id, public_key, alg, rp_id, name,
-					sign_count, discoverable, backup_eligible, backed_up, transports, created_at)
-				SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		// never a second row for one credential. The notice exists only if it did.
+		const [inserted] = await this.db.client.batch(
+			[
+				{
+					sql: `INSERT INTO passkeys (id, principal_id, credential_id, public_key, alg, rp_id, name,
+					sign_count, discoverable, backup_eligible, backed_up, transports, created_at,
+					created_by_session, created_from)
+				SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 				WHERE EXISTS (SELECT 1 FROM auth_sessions WHERE id = ? AND revoked_at IS NULL AND expires_at > ?)
 				AND (SELECT COUNT(*) FROM passkeys) < ?
 				AND NOT EXISTS (SELECT 1 FROM passkeys WHERE credential_id = ?)`,
-			args: [
-				id,
-				owner.id,
-				credentialId,
-				toBase64url(verified.publicKeySpki),
-				verified.alg,
-				ceremony.rp.rpId,
-				name,
-				verified.signCount,
-				parsed.discoverable === null ? null : parsed.discoverable ? 1 : 0,
-				verified.backupEligible ? 1 : 0,
-				verified.backedUp ? 1 : 0,
-				JSON.stringify(parsed.transports),
-				now,
-				sessionId,
-				now,
-				MAX_PASSKEYS,
-				credentialId,
+					args: [
+						id,
+						owner.id,
+						credentialId,
+						toBase64url(verified.publicKeySpki),
+						verified.alg,
+						ceremony.rp.rpId,
+						name,
+						verified.signCount,
+						parsed.discoverable === null ? null : parsed.discoverable ? 1 : 0,
+						verified.backupEligible ? 1 : 0,
+						verified.backedUp ? 1 : 0,
+						JSON.stringify(parsed.transports),
+						now,
+						sessionId,
+						from,
+						sessionId,
+						now,
+						MAX_PASSKEYS,
+						credentialId,
+					],
+				},
+				{
+					sql: `INSERT INTO passkey_notices (kind, passkey_id, name, rp_id, source, session_id, at)
+						SELECT 'added', id, name, rp_id, created_from, created_by_session, created_at
+						FROM passkeys WHERE id = ?`,
+					args: [id],
+				},
 			],
-		});
-		if (inserted.rowsAffected !== 1) {
+			"write",
+		);
+		if (inserted?.rowsAffected !== 1) {
 			if (!(await this.isSessionLive(sessionId)))
 				throw new AuthRefused(
 					"session_ended",
@@ -1132,6 +1176,7 @@ export class AuthService {
 						`at most ${MAX_PASSKEYS} passkeys; revoke one first`,
 					);
 		}
+		console.log(`[mfw] passkey '${name}' added from ${from}`);
 		return {
 			id,
 			name,
@@ -1140,8 +1185,8 @@ export class AuthService {
 			lastUsedAt: null,
 			backedUp: verified.backedUp,
 			discoverable: parsed.discoverable,
-			createdFrom: null,
-			createdBySession: null,
+			createdFrom: from,
+			createdBySession: sessionId,
 		};
 	}
 
@@ -1171,19 +1216,84 @@ export class AuthService {
 	 * Remove a passkey and end every session it signed in. Other sessions and
 	 * API tokens stay; sign out everywhere for those. False if it did not exist.
 	 */
-	async revokePasskey(id: string): Promise<boolean> {
-		const [deleted, revoked] = await this.db.client.batch(
+	async revokePasskey(
+		id: string,
+		/** Who revoked it: their session does not see the notice. */
+		by: { sessionId?: string; source?: AuthSource; cli?: boolean } = {},
+	): Promise<boolean> {
+		const now = this.now();
+		const [, deleted, revoked] = await this.db.client.batch(
 			[
+				// Announced to every other session, like an addition.
+				{
+					sql: `INSERT INTO passkey_notices (kind, passkey_id, name, rp_id, source, session_id, at)
+						SELECT 'revoked', id, name, rp_id, ?, ?, ? FROM passkeys WHERE id = ?`,
+					args: [
+						by.cli
+							? "the host CLI"
+							: by.source === undefined
+								? null
+								: describeSource(by.source),
+						by.sessionId ?? null,
+						now,
+						id,
+					],
+				},
 				{ sql: "DELETE FROM passkeys WHERE id = ? RETURNING id", args: [id] },
 				{
 					sql: "UPDATE auth_sessions SET revoked_at = ? WHERE passkey_id = ? AND revoked_at IS NULL RETURNING id",
-					args: [this.now(), id],
+					args: [now, id],
+				},
+				{
+					sql: "DELETE FROM passkey_notices WHERE passkey_id = ? AND kind = 'added'",
+					args: [id],
 				},
 			],
 			"write",
 		);
 		for (const row of revoked?.rows ?? []) this.notifyEnded(String(row.id));
 		return (deleted?.rows.length ?? 0) > 0;
+	}
+
+	/**
+	 * Passkey additions and revocations this session has not acknowledged,
+	 * newest first, except its own. Kept for `NOTICE_RETENTION_MS`.
+	 */
+	async passkeyNotices(sessionId: string): Promise<PasskeyNotice[]> {
+		const now = this.now();
+		await this.db.client.execute({
+			sql: "DELETE FROM passkey_notices WHERE at < ?",
+			args: [now - NOTICE_RETENTION_MS],
+		});
+		const r = await this.db.client.execute({
+			sql: `SELECT id, kind, name, rp_id, source, at FROM passkey_notices n
+				WHERE (session_id IS NULL OR session_id != ?)
+				AND NOT EXISTS (SELECT 1 FROM passkey_notice_acks a WHERE a.notice_id = n.id AND a.session_id = ?)
+				ORDER BY id DESC LIMIT 20`,
+			args: [sessionId, sessionId],
+		});
+		return r.rows.map((row) => ({
+			id: Number(row.id),
+			kind: row.kind === "revoked" ? "revoked" : "added",
+			name: String(row.name),
+			rpId: String(row.rp_id),
+			source: row.source === null ? null : String(row.source),
+			at: Number(row.at),
+		}));
+	}
+
+	/** Dismiss a notice for this session only. False if there was none. */
+	async acknowledgePasskeyNotice(
+		sessionId: string,
+		noticeId: number,
+	): Promise<boolean> {
+		if (!Number.isSafeInteger(noticeId)) return false;
+		const r = await this.db.client.execute({
+			sql: `INSERT OR IGNORE INTO passkey_notice_acks (notice_id, session_id)
+				SELECT id, ? FROM passkey_notices WHERE id = ?`,
+			args: [sessionId, noticeId],
+		});
+		return r.rowsAffected === 1;
 	}
 
 	/** Pending passkey ceremonies (tests). */

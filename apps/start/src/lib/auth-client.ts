@@ -521,3 +521,21 @@ export async function addPasskey(
 		name,
 	});
 }
+
+/** A passkey added or revoked by another session (or the host CLI). */
+export interface PasskeyNotice {
+	id: number;
+	kind: "added" | "revoked";
+	name: string;
+	rpId: string;
+	source: string | null;
+	at: number;
+}
+
+export const listPasskeyNotices = async (): Promise<PasskeyNotice[]> =>
+	(await passkeyCall<{ notices: PasskeyNotice[] }>("passkey-notices")).notices;
+
+/** Dismiss a notice for this session only. */
+export const acknowledgePasskeyNotice = async (id: number): Promise<void> => {
+	await passkeyCall("passkey-notice-ack", { id });
+};

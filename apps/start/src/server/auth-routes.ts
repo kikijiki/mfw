@@ -47,6 +47,8 @@ export const AUTH_ACTIONS: Readonly<
 	"passkey-register-options": { access: "session", methods: ["POST"] },
 	"passkey-register": { access: "session", methods: ["POST"] },
 	"passkey-revoke": { access: "session", methods: ["POST"] },
+	"passkey-notices": { access: "session", methods: ["GET"] },
+	"passkey-notice-ack": { access: "session", methods: ["POST"] },
 };
 
 export const AUTH_INTENT_HEADER = "x-mfw-auth";
@@ -186,12 +188,32 @@ async function handlePasskeyAction(
 		});
 	if (action === "passkeys")
 		return jsonResponse(200, { passkeys: await auth.listPasskeys() });
+	if (action === "passkey-notices")
+		return jsonResponse(200, {
+			notices: await auth.passkeyNotices(
+				(session as NonNullable<typeof session>).sessionId,
+			),
+		});
 	if (!hasAuthIntent(req)) return badRequest();
 	const body = await readJson(req);
 	if (!body) return badRequest();
 	if (action === "passkey-revoke") {
 		if (typeof body.id !== "string") return badRequest();
-		return jsonResponse(200, { revoked: await auth.revokePasskey(body.id) });
+		return jsonResponse(200, {
+			revoked: await auth.revokePasskey(body.id, {
+				sessionId: (session as NonNullable<typeof session>).sessionId,
+				source: peer,
+			}),
+		});
+	}
+	if (action === "passkey-notice-ack") {
+		if (typeof body.id !== "number") return badRequest();
+		return jsonResponse(200, {
+			acknowledged: await auth.acknowledgePasskeyNotice(
+				(session as NonNullable<typeof session>).sessionId,
+				body.id,
+			),
+		});
 	}
 	const rp = relyingPartyFor(req, env);
 	if ("error" in rp) return passkeyUnavailable(rp.error);
@@ -233,6 +255,7 @@ async function handlePasskeyAction(
 						body.ceremonyId,
 						body.credential,
 						body.name,
+						peer,
 					),
 				});
 		}

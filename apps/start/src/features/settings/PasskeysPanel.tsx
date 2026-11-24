@@ -88,8 +88,8 @@ export function PasskeysPanel() {
 							<span className="min-w-0">
 								<span className="font-medium">{p.name}</span>{" "}
 								<span className="text-muted-foreground">
-									{p.rpId} · added {when(p.createdAt)} · last used{" "}
-									{when(p.lastUsedAt)}
+									{p.rpId} · added {when(p.createdAt)} from{" "}
+									{p.createdFrom ?? "unknown"} · last used {when(p.lastUsedAt)}
 									{p.backedUp ? " · synced" : ""}
 								</span>
 							</span>
