@@ -19,8 +19,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, renameSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { KeyedLock } from "@mfw/board-core";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
 import {
@@ -365,5 +365,49 @@ async function evaluate(
 		},
 	);
 	await writeFileAtomic(join(dir, "log.txt"), result.log, { mode: 0o600 });
+	pruneCaptures(dirname(dir), fingerprint);
 	return capture;
+}
+
+/** How many evaluated environments a project keeps. */
+export const KEEP_CAPTURES = 3;
+
+/**
+ * Keep the project's newest captures and delete the rest, each with its
+ * `gcroots/` (which releases the store paths it pinned), its data and its
+ * installed dependencies. An entry with no `capture.json` may be mid-build in
+ * another process and is left alone.
+ */
+export function pruneCaptures(
+	projectDir: string,
+	keep: string,
+	max = KEEP_CAPTURES,
+): void {
+	let names: string[];
+	try {
+		names = readdirSync(projectDir);
+	} catch {
+		return;
+	}
+	const built: { name: string; at: number }[] = [];
+	for (const name of names) {
+		try {
+			const st = lstatSync(join(projectDir, name, "capture.json"));
+			if (st.isFile()) built.push({ name, at: st.mtimeMs });
+		} catch {}
+	}
+	built.sort((a, b) => b.at - a.at);
+	// The current one always stays, with the newest others up to `max`.
+	const kept = new Set([
+		keep,
+		...built
+			.filter((b) => b.name !== keep)
+			.slice(0, max - 1)
+			.map((b) => b.name),
+	]);
+	for (const b of built) {
+		if (!kept.has(b.name)) {
+			rmSync(join(projectDir, b.name), { recursive: true, force: true });
+		}
+	}
 }

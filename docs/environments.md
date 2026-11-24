@@ -126,7 +126,9 @@ touches both classes asks again.
 The evaluated environment is cached under `$MFW_HOME/env/cache`, keyed by the
 approval's definition: the filtered variables, the `PATH` entries, the Nix
 store paths they need, and the environment's data. The installed dependencies
-are cached beside it, keyed also by the package lockfiles they came from. A run binds those
+are cached beside it, keyed also by the package lockfiles they came from. A project keeps its
+3 newest evaluated environments; older ones are deleted with their data,
+dependencies and GC roots, which releases the store paths they pinned. A run binds those
 store paths and the data read-only, one by one; the rest of the store stays
 hidden. Dependencies are copied into each fresh clone, with a reflink where the
 filesystem has one.
