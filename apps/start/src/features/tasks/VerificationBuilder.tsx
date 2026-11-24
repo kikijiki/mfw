@@ -13,35 +13,38 @@ import type { RouterOutputs } from "../../lib/trpc";
  * time.
  */
 
-type TaskDod = NonNullable<
+type TaskVerification = NonNullable<
 	NonNullable<RouterOutputs["tasks"]["get"]>["verification"]
 >;
-export type DodCheck = TaskDod["checks"][number];
-export type Dod = { verifier: TaskDod["verifier"]; checks: DodCheck[] };
-export type VerificationCheck = DodCheck;
-export type VerificationPlan = Dod;
+export type VerificationCheck = TaskVerification["checks"][number];
+export type VerificationPlan = {
+	verifier: TaskVerification["verifier"];
+	checks: VerificationCheck[];
+};
 
 type CheckKind = "run" | "files_exist" | "diff_against_base";
 
-export function checkKind(check: DodCheck): CheckKind {
+export function checkKind(check: VerificationCheck): CheckKind {
 	if ("run" in check) return "run";
 	if ("files_exist" in check) return "files_exist";
 	return "diff_against_base";
 }
 
-function emptyCheck(kind: CheckKind): DodCheck {
+function emptyCheck(kind: CheckKind): VerificationCheck {
 	if (kind === "run") return { run: "", expect_exit: 0 };
 	if (kind === "files_exist") return { files_exist: [""] };
 	return { diff_against_base: true };
 }
 
 /** The shared schema refuses an empty deterministic plan. */
-export function dodError(dod: Dod | null): string | null {
-	if (!dod) return null;
-	if (dod.verifier === "deterministic" && dod.checks.length === 0) {
+export function verificationError(
+	plan: VerificationPlan | null,
+): string | null {
+	if (!plan) return null;
+	if (plan.verifier === "deterministic" && plan.checks.length === 0) {
 		return "A verification plan needs at least one check.";
 	}
-	for (const check of dod.checks) {
+	for (const check of plan.checks) {
 		if ("run" in check && !check.run.trim())
 			return "A run check needs a command.";
 		if (
@@ -54,21 +57,19 @@ export function dodError(dod: Dod | null): string | null {
 	return null;
 }
 
-export const verificationError = dodError;
-
 export function VerificationBuilder({
 	value,
 	taskType,
 	onChange,
 }: {
-	value: Dod | null;
+	value: VerificationPlan | null;
 	/** Legacy llm-judge plans remain readable for spikes. */
 	taskType: string;
-	onChange: (next: Dod | null) => void;
+	onChange: (next: VerificationPlan | null) => void;
 }) {
-	const dod = value;
+	const plan = value;
 
-	if (!dod) {
+	if (!plan) {
 		return (
 			<div className="flex flex-wrap items-center gap-2">
 				<span
@@ -90,14 +91,14 @@ export function VerificationBuilder({
 		);
 	}
 
-	const setCheck = (index: number, next: DodCheck) => {
+	const setCheck = (index: number, next: VerificationCheck) => {
 		onChange({
-			...dod,
-			checks: dod.checks.map((c, i) => (i === index ? next : c)),
+			...plan,
+			checks: plan.checks.map((c, i) => (i === index ? next : c)),
 		});
 	};
 
-	const error = dodError(dod);
+	const error = verificationError(plan);
 
 	return (
 		<div className="flex flex-col gap-2">
@@ -112,11 +113,11 @@ export function VerificationBuilder({
 							borderRadius: "var(--mfw-radius-sm)",
 							color: "var(--mfw-fg)",
 						}}
-						value={dod.verifier}
+						value={plan.verifier}
 						onChange={(e) =>
 							onChange({
-								...dod,
-								verifier: e.target.value as Dod["verifier"],
+								...plan,
+								verifier: e.target.value as VerificationPlan["verifier"],
 							})
 						}
 					>
@@ -133,7 +134,7 @@ export function VerificationBuilder({
 			</div>
 
 			<ul className="flex flex-col gap-1.5">
-				{dod.checks.map((check, index) => (
+				{plan.checks.map((check, index) => (
 					<li
 						// biome-ignore lint/suspicious/noArrayIndexKey: checks are an ordered list the operator reorders by editing, not by identity
 						key={index}
@@ -236,8 +237,8 @@ export function VerificationBuilder({
 							aria-label={`Remove check ${index + 1}`}
 							onClick={() =>
 								onChange({
-									...dod,
-									checks: dod.checks.filter((_, i) => i !== index),
+									...plan,
+									checks: plan.checks.filter((_, i) => i !== index),
 								})
 							}
 						>
@@ -254,7 +255,7 @@ export function VerificationBuilder({
 						size="xs"
 						variant="outline"
 						onClick={() =>
-							onChange({ ...dod, checks: [...dod.checks, emptyCheck(kind)] })
+							onChange({ ...plan, checks: [...plan.checks, emptyCheck(kind)] })
 						}
 					>
 						<Plus aria-hidden /> {kind.replace(/_/g, " ")}
@@ -270,6 +271,3 @@ export function VerificationBuilder({
 		</div>
 	);
 }
-
-/** @deprecated Compatibility export for older call sites. */
-export const DodBuilder = VerificationBuilder;

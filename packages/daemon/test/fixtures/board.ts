@@ -4,7 +4,7 @@ import type { EventBus } from "@mfw/db/eventlog";
 import { ensureBoardConfig } from "../../src/default-board-config.ts";
 import { silentLogger } from "../../src/log.ts";
 import { TaskService } from "../../src/task-service.ts";
-import type { DefinitionOfDone } from "../../src/tasks/types.ts";
+import type { VerificationPlan } from "../../src/tasks/types.ts";
 
 /**
  * What `ensureGitExclude` writes, for fixtures that never call it.
@@ -39,7 +39,7 @@ export async function makeTasks(
 	bus: EventBus,
 	mfwDir: string,
 	taskKey = "MFW",
-	mergeChecks?: DefinitionOfDone | null,
+	mergeChecks?: VerificationPlan | null,
 ): Promise<TaskService> {
 	await ensureBoardConfig(mfwDir, taskKey);
 	const config = await loadBoardConfig(`${mfwDir}/board.yaml`);

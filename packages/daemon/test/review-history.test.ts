@@ -194,7 +194,7 @@ describe("ReviewService bundle", () => {
 			{ name: "bun test", ok: false, detail: "1 failing" },
 			{ name: "files_exist", ok: true, detail: undefined },
 		]);
-		expect(b.critic).toEqual({
+		expect(b.acceptance).toMatchObject({
 			outcome: "flagged",
 			detail: "the diff touches unrelated files",
 		});

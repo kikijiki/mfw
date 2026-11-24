@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { parseTaskFile } from "@mfw/core/taskfile";
 import { renderHarnessArgv } from "@mfw/plugin-api/harness";
 import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 import { AdapterRegistry, claudeBrainArgv } from "../src/agents/adapter.ts";
@@ -26,9 +25,6 @@ const brain = {
 const claude = { id: "claude-cli", type: "claude-cli" } as const;
 const codex = { id: "codex-cli", type: "codex-cli" } as const;
 const gemini = { id: "gemini-cli", type: "acp" } as const;
-
-const task = (model: string) =>
-	`---\nid: MFW-1\nrev: 1\ntitle: a task\ntype: implementation\npriority: medium\nmodel: ${JSON.stringify(model)}\n---\n\nBody\n`;
 
 describe("a flag-like model is refused", () => {
 	for (const model of FLAG_MODELS) {
@@ -62,11 +58,6 @@ describe("a flag-like model is refused", () => {
 			);
 		});
 
-		test(`${shown}: task frontmatter`, () => {
-			const parsed = parseTaskFile(task(model));
-			expect(parsed.ok).toBe(false);
-		});
-
 		test(`${shown}: routing and brain config`, () => {
 			expect(
 				routingSchema.safeParse({
@@ -78,7 +69,6 @@ describe("a flag-like model is refused", () => {
 	}
 
 	test("an ordinary model still works everywhere", () => {
-		expect(parseTaskFile(task("claude-opus-5")).ok).toBe(true);
 		const argv = new AdapterRegistry().invocation(claude, "opus", "p", {
 			steer: true,
 		}).providerArgv;

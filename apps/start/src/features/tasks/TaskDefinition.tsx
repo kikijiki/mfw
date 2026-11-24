@@ -25,13 +25,13 @@ import { useTRPC } from "../../lib/trpc";
 import { ClarifyDialog } from "../clarify/ClarifyDialog";
 import { VerdictHistory } from "../review/VerdictHistory";
 import { DepsPicker } from "./DepsPicker";
+import { completeReopenConditions, ReopenWhenEditor } from "./ReopenWhenEditor";
+import { AttachmentsPanel, SpecPanel } from "./TaskExtras";
 import {
 	VerificationBuilder,
 	type VerificationPlan,
 	verificationError,
-} from "./DodBuilder";
-import { completeReopenConditions, ReopenWhenEditor } from "./ReopenWhenEditor";
-import { AttachmentsPanel, SpecPanel } from "./TaskExtras";
+} from "./VerificationBuilder";
 
 export type Task = NonNullable<RouterOutputs["tasks"]["get"]>;
 

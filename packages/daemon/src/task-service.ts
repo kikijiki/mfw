@@ -62,7 +62,6 @@ import {
 	TaskIndex as TaskStore,
 } from "./tasks/index.ts";
 import {
-	type DefinitionOfDone,
 	type LocalStagingResourceRequirement,
 	type ModelTier,
 	OwnsSchema,
@@ -130,8 +129,6 @@ export interface TaskRow {
 	body: string;
 	/** Task-specific checks. Project merge checks are added at verification. */
 	verification: VerificationPlan | null;
-	/** @deprecated Compatibility response for older clients. */
-	dod: DefinitionOfDone | null;
 	contentRev: number;
 	status: TaskStatus;
 	statusChangedAt: Date;
@@ -311,8 +308,6 @@ export interface CreateTaskInput {
 	dependsOn?: string[];
 	criteria?: CriterionInput[];
 	verification?: VerificationPlan | null;
-	/** @deprecated Use verification. */
-	dod?: DefinitionOfDone | null;
 	spikeTimebox?: string | null;
 	requiresResources?: TaskResourceRequirement[];
 	executionTarget?: string;
@@ -352,8 +347,6 @@ export interface EditTaskPatch {
 	dependsOn?: string[];
 	criteria?: CriterionInput[];
 	verification?: VerificationPlan | null;
-	/** @deprecated Use verification. */
-	dod?: DefinitionOfDone | null;
 	spikeTimebox?: string | null;
 	requiresResources?: TaskResourceRequirement[];
 	executionTarget?: string;
@@ -635,8 +628,7 @@ export function toRow(
 		supersededBy: fm.superseded_by ?? null,
 		reopenWhen: fm.reopen_when,
 		body: rec.file.body,
-		verification: rec.file.dod,
-		dod: rec.file.dod,
+		verification: rec.file.frontmatter.verification,
 		contentRev: fm.rev ?? 1,
 		status: rec.status,
 		statusChangedAt: new Date(rec.state.statusChangedAt ?? created.getTime()),
@@ -803,11 +795,6 @@ export class TaskService {
 		);
 	}
 
-	/** @deprecated Compatibility alias. */
-	effectiveDod(dod: DefinitionOfDone | null): DefinitionOfDone | null {
-		return this.effectiveVerification(dod);
-	}
-
 	// ---------------------------------------------------------------------
 	// audit
 	// ---------------------------------------------------------------------
@@ -965,10 +952,7 @@ export class TaskService {
 			labels: input.labels,
 			dependsOn: input.dependsOn,
 			criteria: criteriaFrom(input.criteria ?? []),
-			dod:
-				input.verification !== undefined
-					? input.verification
-					: (input.dod ?? null),
+			verification: input.verification ?? null,
 			spikeTimebox: input.spikeTimebox,
 			requiresResources: input.requiresResources,
 			executionTarget: input.executionTarget,
@@ -1122,7 +1106,8 @@ export class TaskService {
 		return missingTemplateSections(template, {
 			body: rec.file.body,
 			criteriaCount: rec.file.criteria.length,
-			hasVerification: (rec.file.dod?.checks.length ?? 0) > 0,
+			hasVerification:
+				(rec.file.frontmatter.verification?.checks.length ?? 0) > 0,
 		});
 	}
 
@@ -1555,7 +1540,7 @@ export class TaskService {
 					verification:
 						into.verification !== undefined
 							? into.verification
-							: first.file.dod,
+							: first.file.frontmatter.verification,
 					...(into.criteria ? { criteria: into.criteria } : {}),
 					parentId: first.file.frontmatter.parent,
 					requireReview: recs.some((r) => r.file.frontmatter.require_review),
@@ -2450,8 +2435,6 @@ export class TaskService {
 			title: string;
 			body?: string | null;
 			verification?: VerificationPlan | null;
-			/** @deprecated Use verification. */
-			dod?: DefinitionOfDone | null;
 			criteria?: CriterionInput[];
 			owns?: string[];
 			modelTier?: ModelTier | null;
@@ -2486,13 +2469,12 @@ export class TaskService {
 				draft.body = body;
 				fields.push("body");
 			}
-			const verification =
-				entry.verification !== undefined ? entry.verification : entry.dod;
+			const verification = entry.verification;
 			if (
 				verification !== undefined &&
-				!eqJson(verification ?? null, draft.dod)
+				!eqJson(verification ?? null, draft.frontmatter.verification)
 			) {
-				draft.dod = verification ?? null;
+				draft.frontmatter.verification = verification ?? null;
 				fields.push("verification");
 			}
 			if (entry.criteria !== undefined) {
@@ -2887,13 +2869,12 @@ function applyPatch(draft: TaskFile, patch: EditTaskPatch): string[] {
 		draft.body = patch.body;
 		fields.push("body");
 	}
-	const verification =
-		patch.verification !== undefined ? patch.verification : patch.dod;
+	const verification = patch.verification;
 	if (
-		(patch.verification !== undefined || patch.dod !== undefined) &&
-		!eqJson(verification ?? null, draft.dod)
+		verification !== undefined &&
+		!eqJson(verification ?? null, draft.frontmatter.verification)
 	) {
-		draft.dod = verification ?? null;
+		draft.frontmatter.verification = verification ?? null;
 		fields.push("verification");
 	}
 	if (patch.criteria !== undefined) {

@@ -53,7 +53,7 @@ export type TriggerAction =
 			type: TriggerTaskType;
 			/** Skip firing while a task from this definition is open; same meaning as `LifetimeDef.dedupe`. */
 			dedupe: "skip_if_active" | "always";
-			dod: unknown;
+			verification: unknown;
 	  };
 
 /** What a trigger fires FROM: an event, or a 5-field cron schedule (same grammar as `.mfw/lifetime/`). Exactly one of `on:` / `cron:` is allowed; `parseSource` enforces it. */
@@ -265,7 +265,7 @@ function parseAction(fm: Record<string, unknown>): TriggerAction {
 		return model ? { kind, prompt, model } : { kind, prompt };
 	}
 	if (kind === "create_task") {
-		// Same fields as `.mfw/lifetime/<def>.md` (`type`, `dedupe`, `dod`). The
+		// Same fields as `.mfw/lifetime/<def>.md` (`type`, `dedupe`, `verification`). The
 		// task's title and body come from the definition's `title` and body.
 		const type = oneOf(
 			str(fm, "type"),
@@ -279,7 +279,7 @@ function parseAction(fm: Record<string, unknown>): TriggerAction {
 			"dedupe",
 			"skip_if_active",
 		);
-		return { kind, type, dedupe, dod: fm.dod ?? null };
+		return { kind, type, dedupe, verification: fm.verification ?? null };
 	}
 	const run = str(fm, "run");
 	if (!run) fail("`action: script` needs a `run` command");

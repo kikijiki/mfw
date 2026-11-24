@@ -133,7 +133,6 @@ export interface TaskFile {
 	frontmatter: TaskFrontmatter;
 	body: string;
 	criteria: TaskCriterion[];
-	dod: TaskFrontmatter["verification"];
 }
 
 /** Merge of `@mfw/board`'s lease (cross-process-meaningful) and the daemon's
@@ -160,7 +159,7 @@ export interface CreateInput {
 	labels?: string[];
 	dependsOn?: string[];
 	criteria?: TaskCriterion[];
-	dod?: TaskFrontmatter["verification"];
+	verification?: TaskFrontmatter["verification"];
 	spikeTimebox?: string | null;
 	requiresResources?: TaskFrontmatter["requires_resources"];
 	executionTarget?: string;
@@ -390,7 +389,6 @@ export class TaskIndex {
 				frontmatter: fm,
 				body: doc.body,
 				criteria: criteriaOf(doc.fields),
-				dod: fm.verification,
 			},
 			state: { ...runState, ...lease },
 		};
@@ -676,7 +674,7 @@ export class TaskIndex {
 			// every task written without it.
 			...(input.createdBy ? { created_by: input.createdBy } : {}),
 			reopen_when: input.reopenWhen ?? [],
-			verification: input.dod ?? null,
+			verification: input.verification ?? null,
 		};
 		const doc = await this.board.createDocument("task", {
 			id: input.id,
@@ -734,11 +732,6 @@ export class TaskIndex {
 				}
 				const draft: TaskFile = structuredClone(rec.file);
 				fields = await mutate(draft, rec);
-				// `draft.dod` is a compatibility alias of `draft.frontmatter.verification`
-				// for callers still written against the old TaskFile shape (where `dod`
-				// was the only slot, since frontmatter had nowhere to put it) - keep
-				// them in sync so a mutate callback that only touches one still persists.
-				draft.frontmatter.verification = draft.dod;
 				const statusChanged =
 					opts.status !== undefined && opts.status !== rec.status;
 				if (fields.length === 0 && !statusChanged) return null;

@@ -17,7 +17,7 @@ import {
 import type { VerifierClones } from "./run-workspace/verifier-clone.ts";
 import type { RaiseInput } from "./session.ts";
 import type { TaskService } from "./task-service.ts";
-import type { DefinitionOfDone, DoDCheck } from "./tasks/types.ts";
+import type { VerificationCheck, VerificationPlan } from "./tasks/types.ts";
 import { summarizeTranscript } from "./transcript-summary.ts";
 import {
 	describeVerificationEnvironment,
@@ -173,7 +173,7 @@ export async function updateInfraState(
 /** The slice of a task the sweep actually needs to re-verify it. */
 interface TaskWithDodRow {
 	id: string;
-	dod: DefinitionOfDone;
+	dod: VerificationPlan;
 }
 
 export interface GroomResult {
@@ -228,11 +228,11 @@ export class Maintenance {
 	 * - `diff_against_base` is stripped from re-run checks: on the shared tip
 	 *   it is structurally false.
 	 */
-	private regressionCheckableDod(dod: DefinitionOfDone): DefinitionOfDone {
+	private regressionCheckableDod(dod: VerificationPlan): VerificationPlan {
 		return {
 			verifier: dod.verifier,
 			checks: dod.checks.filter(
-				(c): c is Exclude<DoDCheck, { diff_against_base: boolean }> =>
+				(c): c is Exclude<VerificationCheck, { diff_against_base: boolean }> =>
 					!("diff_against_base" in c),
 			),
 		};
@@ -252,7 +252,9 @@ export class Maintenance {
 		// Gate on the effective dod (task's own or project default), not the raw file field.
 		const withDod = done
 			.filter(
-				(t) => this.deps.tasks.effectiveDod(t.dod) && verifiedHere.has(t.id),
+				(t) =>
+					this.deps.tasks.effectiveVerification(t.verification) &&
+					verifiedHere.has(t.id),
 			)
 			.slice(-limit); // cap work
 
@@ -263,7 +265,9 @@ export class Maintenance {
 		for (const id of Object.keys(regressions)) {
 			if (sampled.has(id)) continue;
 			const t = await this.deps.tasks.get(id);
-			const dod = t ? this.deps.tasks.effectiveDod(t.dod) : null;
+			const dod = t
+				? this.deps.tasks.effectiveVerification(t.verification)
+				: null;
 			if (!t || !dod) {
 				delete regressions[id];
 				continue;
@@ -274,7 +278,9 @@ export class Maintenance {
 			...withDod.map((t) => ({
 				id: t.id,
 				dod: this.regressionCheckableDod(
-					this.deps.tasks.effectiveDod(t.dod) as DefinitionOfDone,
+					this.deps.tasks.effectiveVerification(
+						t.verification,
+					) as VerificationPlan,
 				),
 			})),
 			...tracked,
@@ -535,7 +541,7 @@ export class Maintenance {
 	 */
 	private async isInfrastructural(
 		clones: VerifierClones,
-		dod: DefinitionOfDone,
+		dod: VerificationPlan,
 		tipSha: string,
 		opts: VerifyOptions,
 	): Promise<boolean> {
@@ -564,7 +570,7 @@ export class Maintenance {
 	private async checkInClone(
 		clones: VerifierClones,
 		rev: string,
-		dod: DefinitionOfDone,
+		dod: VerificationPlan,
 		baseSha: string,
 		opts: VerifyOptions,
 	): Promise<VerificationResult> {

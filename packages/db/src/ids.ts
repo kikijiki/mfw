@@ -10,8 +10,6 @@
 export const KEY_RE = /^[A-Z][A-Z0-9]{1,9}$/;
 /** The id grammar for every human-authored definition file under `.mfw/`. */
 export const DEF_ID_RE = /^[a-z][a-z0-9-]{1,40}$/;
-/** @deprecated the same grammar, named before triggers also used it. */
-export const LIFETIME_ID_RE = DEF_ID_RE;
 
 export function taskIdRe(key: string): RegExp {
 	return new RegExp(`^${key}-[1-9][0-9]*$`);

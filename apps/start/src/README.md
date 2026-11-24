@@ -116,11 +116,11 @@ nothing.
 | `/p/$project/board` | `board/BoardPage`; `?node=` docks `inspector/Inspector` beside it |
 | `/p/$project/n/$ref` | `inspector/Inspector` as a page (any node ref) |
 | `/p/$project/inbox` | `inbox/InboxPage`, narrowed to one project |
-| `/p/$project/tasks/$taskId` | `tasks/TaskPage` (tabs: Story, Definition, Changes) + `TaskDefinition` + `DodBuilder` + `DepsPicker` |
+| `/p/$project/tasks/$taskId` | `tasks/TaskPage` (tabs: Story, Definition, Changes) + `TaskDefinition` + `VerificationBuilder` + `DepsPicker` |
 | `/p/$project/review` | `review/ReviewQueueList` |
 | `/p/$project/review/$taskId` | `review/ReviewPage` + `DiffView` + `diff.ts` |
 | `/p/$project/runs` | `agents/AgentsPage` (the **Agents** tab; the path predates the rename and is kept for links) |
-| `/p/$project/tasks/$taskId` | `tasks/TaskPage` + `TaskRunPanel` + `DodBuilder` + `DepsPicker` |
+| `/p/$project/tasks/$taskId` | `tasks/TaskPage` + `TaskRunPanel` + `VerificationBuilder` + `DepsPicker` |
 | `/p/$project/review/$taskId` | redirects to `/p/$project/board?node=task:<id>&tab=changes`; the screen is `review/ReviewPage` + `DiffView` + `diff.ts`, mounted as the task inspector's **Changes** tab |
 | `/p/$project/runs/$runId` | `transcript/RunPage` + `entries.tsx` + `useRunStream` + `agents/useNodeActions` (`useRunControls`) |
 | `/p/$project/repo/*` | `repo/RepoPage` (sections Files, Branches, Workspaces, Commits, Compare; the splat is parsed by `repo/repoModel.parseRepoPath`). Files is `files/FilesPage` + `CodeView` + `changes.ts`, now with `?ref=` to browse any branch, tag or commit tree. `repo/branches`, `workspaces`, `commits` (graph lanes from `repoModel.assignLanes`), `compare`, and shared `parts` (`ChangedFiles` with lazy `review/DiffView`) |

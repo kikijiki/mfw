@@ -83,8 +83,6 @@ export interface ReviewBundle {
 	/** Why this candidate stopped for a human. This is distinct from the task's
 	 * `require_review` preference: a critic can independently flag concerns. */
 	reviewCause: ReviewCause | null;
-	/** @deprecated Compatibility alias for acceptance. */
-	critic: { outcome: string; detail: string } | null;
 	run: {
 		runId: string;
 		attempt: number;
@@ -186,7 +184,6 @@ export class ReviewService {
 			scope: null,
 			review: null,
 			reviewCause: null,
-			critic: null,
 			run: null,
 			truncated: false,
 			mergeJob: null,
@@ -218,9 +215,6 @@ export class ReviewService {
 			scope,
 			review,
 			reviewCause,
-			critic: acceptance
-				? { outcome: acceptance.outcome, detail: acceptance.detail }
-				: null,
 			run: {
 				runId: run.id,
 				attempt: run.attempt,

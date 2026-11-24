@@ -7,7 +7,6 @@ import {
 	patternsOverlap,
 	validateOwnsPattern,
 } from "../src/ownership.ts";
-import { OwnsSchema } from "../src/taskfile.ts";
 
 describe("ownsPath", () => {
 	test("a literal owns itself and everything below it", () => {
@@ -117,7 +116,7 @@ describe("validateOwnsPattern", () => {
 		expect(validateOwnsPattern("src/{a,b}/[xy].ts")).toBeNull();
 	});
 
-	test("rejects invalid and unsupported classes at the canonical schema boundary", () => {
+	test("rejects invalid and unsupported classes", () => {
 		for (const pattern of [
 			"src/[z-a].ts",
 			"src/[].ts",
@@ -125,9 +124,8 @@ describe("validateOwnsPattern", () => {
 			"src/[[:alpha:]].ts",
 		]) {
 			expect(validateOwnsPattern(pattern)).not.toBeNull();
-			expect(OwnsSchema.safeParse([pattern]).success).toBe(false);
 		}
-		expect(OwnsSchema.safeParse(["src/[!a-c].ts"]).success).toBe(true);
+		expect(validateOwnsPattern("src/[!a-c].ts")).toBeNull();
 	});
 });
 

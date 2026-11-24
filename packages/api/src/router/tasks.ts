@@ -182,8 +182,6 @@ export const tasksRouter = createTRPCRouter({
 				dependsOn: z.array(z.string()).default([]),
 				criteria: z.array(criterionInput).default([]),
 				verification: verificationInput.optional(),
-				/** @deprecated Legacy request field. */
-				dod: verificationInput.optional(),
 				requiresResources: z.array(TaskResourceRequirementSchema).default([]),
 				executionTarget: z.string().min(1).default("local"),
 				localStagingResources: z
@@ -270,8 +268,6 @@ export const tasksRouter = createTRPCRouter({
 					dependsOn: z.array(z.string()).optional(),
 					criteria: z.array(criterionInput).optional(),
 					verification: verificationInput.optional(),
-					/** @deprecated Legacy request field. */
-					dod: verificationInput.optional(),
 					requiresResources: z.array(TaskResourceRequirementSchema).optional(),
 					executionTarget: z.string().min(1).optional(),
 					localStagingResources: z

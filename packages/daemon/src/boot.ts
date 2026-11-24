@@ -839,11 +839,11 @@ export async function attachProject(
 		// The same lookup `reverify` makes, so "has checks" means it runs them.
 		hasChecks: async (job) => {
 			const task = job.taskId ? await tasks.get(job.taskId) : null;
-			return tasks.effectiveDod(task?.dod ?? null) !== null;
+			return tasks.effectiveVerification(task?.verification ?? null) !== null;
 		},
 		reverify: async (job, baseSha, tipSha) => {
 			const task = job.taskId ? await tasks.get(job.taskId) : null;
-			const dod = tasks.effectiveDod(task?.dod ?? null);
+			const dod = tasks.effectiveVerification(task?.verification ?? null);
 			if (!dod) return { passed: true }; // nothing to re-check
 			const run = await registry.get(job.runId);
 			if (!run?.workspacePath || !run.baseSha)
@@ -890,7 +890,7 @@ export async function attachProject(
 			mergeSha: string,
 		): Promise<MergeVerdict> => {
 			const task = job.taskId ? await tasks.get(job.taskId) : null;
-			const dod = tasks.effectiveDod(task?.dod ?? null);
+			const dod = tasks.effectiveVerification(task?.verification ?? null);
 			if (!dod) return { passed: true };
 			const run = await registry.get(job.runId);
 			// As re-verify: no base commit means the checks cannot be run.

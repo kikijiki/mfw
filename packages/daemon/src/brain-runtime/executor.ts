@@ -1132,10 +1132,10 @@ export class BrainActionExecutor {
 	// select_winner and attempt-group settlement
 	// -----------------------------------------------------------------------
 
-	private hasChecks(task: { verification: unknown; dod: unknown } | null) {
+	private hasChecks(task: { verification: unknown } | null) {
 		return (
 			this.deps.tasks.effectiveVerification(
-				(task?.verification ?? task?.dod ?? null) as never,
+				(task?.verification ?? null) as never,
 			) != null
 		);
 	}

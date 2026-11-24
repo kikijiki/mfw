@@ -222,7 +222,7 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 
 		const task = await svc.tasks.create({
 			title: "add the feature",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["feature.txt"] }],
 			},
@@ -297,7 +297,7 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 		const victim = await svc.tasks.create({ title: "not yours to edit" });
 		const task = await svc.tasks.create({
 			title: "add the feature",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["feature.txt"] }],
 			},
@@ -391,7 +391,7 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 
 		const task = await svc.tasks.create({
 			title: "will not be done",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["never-created.txt"] }],
 			},
@@ -554,7 +554,7 @@ const IMPORT_PROPOSAL = {
 			title: "the auth module",
 			body: "already shipped",
 			status: "done",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["src/auth.ts"] }],
 			},
@@ -717,7 +717,10 @@ describe("v2 safety defaults", () => {
 
 		const t = await svc.tasks.create({
 			title: "must not run by itself",
-			dod: { verifier: "deterministic", checks: [{ files_exist: ["x"] }] },
+			verification: {
+				verifier: "deterministic",
+				checks: [{ files_exist: ["x"] }],
+			},
 		});
 		await svc.tasks.move(t.id, "ready", "human");
 		await Bun.sleep(400); // several would-be scheduler periods

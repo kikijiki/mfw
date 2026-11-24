@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { splitFrontmatter } from "@mfw/core";
+import { splitFrontmatter } from "@mfw/core/frontmatter";
 import {
 	MAX_PROJECT_FILE_BYTES,
 	readProjectFile,

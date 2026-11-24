@@ -1,5 +1,9 @@
-import type { VerificationPlan } from "@mfw/core/taskfile";
 import type { MfwClient } from "./client.ts";
+
+/** The task verification plan as the API takes it (the daemon's schema decides). */
+type VerificationPlan = NonNullable<
+	Parameters<MfwClient["tasks"]["create"]["mutate"]>[0]["verification"]
+>;
 
 type Status =
 	| "backlog"

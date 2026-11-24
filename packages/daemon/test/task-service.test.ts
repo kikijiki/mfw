@@ -17,7 +17,7 @@ import {
 	TaskClaimedError,
 	TaskService,
 } from "../src/task-service.ts";
-import type { DefinitionOfDone } from "../src/tasks/types.ts";
+import type { VerificationPlan } from "../src/tasks/types.ts";
 import { makeTasks } from "./fixtures/board.ts";
 
 interface Env {
@@ -30,7 +30,7 @@ interface Env {
 
 const envs: Env[] = [];
 
-async function freshEnv(mergeChecks?: DefinitionOfDone | null): Promise<Env> {
+async function freshEnv(mergeChecks?: VerificationPlan | null): Promise<Env> {
 	const dir = await mkdtemp(join(tmpdir(), "mfw-v2-svc-"));
 	const handle = await openProjectDb(dir);
 	const bus = new EventBus();
@@ -164,7 +164,7 @@ describe("edit", () => {
 			title: "t2",
 			dependsOn: [a.id],
 			criteria: [{ text: "new", checked: true }],
-			dod: DOD,
+			verification: DOD,
 		});
 		expect(out.contentRev).toBe(2);
 		expect(out.dependsOn).toEqual([a.id]);
@@ -635,13 +635,13 @@ describe("DoR promotion + ready set", () => {
 		const withDod = await svc.create({
 			title: "has dod",
 			body: "goal",
-			dod: DOD,
+			verification: DOD,
 		});
 		const noDod = await svc.create({ title: "no dod", body: "goal" });
 		const gated = await svc.create({
 			title: "gated",
 			body: "goal",
-			dod: DOD,
+			verification: DOD,
 			dependsOn: [withDod.id],
 		});
 
@@ -681,7 +681,7 @@ describe("DoR promotion + ready set", () => {
 		const own = await svc.create({
 			title: "carries its own",
 			body: "goal",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ run: "lint", expect_exit: 0 }],
 			},
@@ -691,9 +691,9 @@ describe("DoR promotion + ready set", () => {
 			new Set([noDod.id, own.id]),
 		);
 		// The file itself is untouched: the default is resolved, never written.
-		expect((await svc.get(noDod.id))?.dod).toBeNull();
+		expect((await svc.get(noDod.id))?.verification).toBeNull();
 		expect(svc.effectiveVerification(null)).toEqual(DOD);
-		const ownDod = (await svc.get(own.id))?.dod ?? null;
+		const ownDod = (await svc.get(own.id))?.verification ?? null;
 		expect(ownDod).not.toBeNull();
 		expect(svc.effectiveVerification(ownDod)).toEqual({
 			verifier: "deterministic",
@@ -762,7 +762,7 @@ describe("MFW-49: draft capture + expansion", () => {
 		expect(t.title.endsWith("…")).toBe(true);
 		expect(t.afterExpansion).toBe("ready");
 		expect(t.requireReview).toBe(false);
-		expect(t.dod).toBeNull();
+		expect(t.verification).toBeNull();
 	});
 
 	test("captureQuick persists its post-expansion status and review choices", async () => {
@@ -864,7 +864,7 @@ describe("MFW-49: draft capture + expansion", () => {
 	test("promoteReady never promotes a draft, DoD or not", async () => {
 		const { svc } = await freshEnv();
 		const draft = await svc.captureQuick("do the thing");
-		await svc.edit(draft.id, { dod: DOD });
+		await svc.edit(draft.id, { verification: DOD });
 		expect(await svc.promoteReady()).toEqual([]);
 		expect((await svc.get(draft.id))?.status).toBe("draft");
 	});
@@ -910,13 +910,13 @@ describe("MFW-49: draft capture + expansion", () => {
 	test("recordDraftExpandFailure never overwrites a DoD the task already has", async () => {
 		const { svc } = await freshEnv();
 		const draft = await svc.captureQuick("do the thing");
-		await svc.edit(draft.id, { dod: DOD });
+		await svc.edit(draft.id, { verification: DOD });
 		const fallback = {
 			verifier: "deterministic" as const,
 			checks: [{ diff_against_base: true }],
 		};
 		await svc.recordDraftExpandFailure(draft.id, 1, fallback);
-		expect((await svc.get(draft.id))?.dod).toEqual(DOD);
+		expect((await svc.get(draft.id))?.verification).toEqual(DOD);
 	});
 
 	test("recordDraftExpandFailure is a no-op for a task that is not a draft", async () => {
@@ -939,7 +939,7 @@ describe("MFW-49: draft capture + expansion", () => {
 			{
 				title: "Build the thing properly",
 				body: "A fleshed-out description.",
-				dod: DOD,
+				verification: DOD,
 				criteria: [{ text: "it works" }],
 				owns: ["src/only/**"],
 				modelTier: "strong",
@@ -953,7 +953,7 @@ describe("MFW-49: draft capture + expansion", () => {
 		expect(got.owns).toEqual(["src/only/**"]);
 		expect(got.modelTier).toBe("strong");
 		expect(got.body).toBe("A fleshed-out description.");
-		expect(got.dod).toEqual(DOD);
+		expect(got.verification).toEqual(DOD);
 		expect(got.criteria).toEqual([
 			{ id: "c1", text: "it works", checked: false },
 		]);
@@ -985,7 +985,7 @@ describe("MFW-49: draft capture + expansion", () => {
 		};
 		const got = await svc.applyDraftExpansion(
 			draft.id,
-			{ title: "Build the thing", dod: null },
+			{ title: "Build the thing", verification: null },
 			fallback,
 		);
 		expect(got.verification).toBeNull();
