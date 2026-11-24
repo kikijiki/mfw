@@ -159,3 +159,16 @@ export async function readProtectedBoardPaths(
 	}
 	return [...DEFAULT_PROTECTED_BOARD_PATHS];
 }
+
+/**
+ * The paths the merge firewall (`merge-queue.ts` `restoreBoard`) takes from
+ * the target whatever a run did: the board's own files and everything under
+ * `.mfw/` except `.mfw/triggers/`, which a run may change.
+ */
+export function firewalledPath(
+	boardPaths: readonly string[],
+): (path: string) => boolean {
+	return (path) =>
+		(path.startsWith(".mfw/") && !path.startsWith(".mfw/triggers/")) ||
+		boardPaths.some((p) => path === p || path.startsWith(`${p}/`));
+}

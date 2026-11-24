@@ -48,6 +48,9 @@ export type RebaseCloneResult =
 	| { ok: false; kind: "conflict"; paths: string[]; detail: string }
 	| { ok: false; kind: "error"; detail: string };
 
+/** A run with more conflicting commits than this goes to the conflict path. */
+const MAX_FIREWALLED_ROUNDS = 50;
+
 const tail = (s: string): string => s.trim().split("\n").slice(-3).join(" ");
 
 /**
@@ -56,7 +59,17 @@ const tail = (s: string): string => s.trim().split("\n").slice(-3).join(" ");
  */
 export async function rebaseQuarantineInScratch(
 	opts: RebaseCloneOptions,
-	args: { runId: string; targetBranch: string; onto: string },
+	args: {
+		runId: string;
+		targetBranch: string;
+		onto: string;
+		/**
+		 * Paths the merge firewall restores from the target whatever the run did
+		 * (the board, mfw's own state). A conflict only there takes the target's
+		 * side, which is what the firewall would land; any other conflict stops.
+		 */
+		isFirewalled?: (path: string) => boolean;
+	},
 ): Promise<RebaseCloneResult> {
 	assertRunId(args.runId);
 	const workspaceRoot = resolve(opts.workspaceRoot);
@@ -142,8 +155,8 @@ export async function rebaseQuarantineInScratch(
 				detail: `checkout failed: ${tail(co.stderr)}`,
 			};
 		}
-		const rebase = await run(["rebase", args.onto], work);
-		if (rebase.exitCode !== 0) {
+		let rebase = await run(["rebase", args.onto], work);
+		for (let round = 0; rebase.exitCode !== 0; round++) {
 			const unmerged = await run(
 				["diff", "--name-only", "--diff-filter=U"],
 				work,
@@ -152,12 +165,36 @@ export async function rebaseQuarantineInScratch(
 				unmerged.exitCode === 0
 					? unmerged.stdout.split("\n").filter(Boolean)
 					: [];
-			return {
-				ok: false,
-				kind: "conflict",
-				paths,
-				detail: tail(rebase.stderr || rebase.stdout),
-			};
+			const firewalled = args.isFirewalled;
+			if (
+				!firewalled ||
+				paths.length === 0 ||
+				round >= MAX_FIREWALLED_ROUNDS ||
+				!paths.every(firewalled)
+			) {
+				return {
+					ok: false,
+					kind: "conflict",
+					paths,
+					detail: tail(rebase.stderr || rebase.stdout),
+				};
+			}
+			// "ours" is the target during a rebase: keep it, or its deletion.
+			for (const path of paths) {
+				const kept = await run(["cat-file", "-e", `:2:${path}`], work);
+				const step =
+					kept.exitCode === 0
+						? ["checkout", "--ours", "--", path]
+						: ["rm", "-q", "--cached", "--", path];
+				const r = await run(step, work);
+				if (r.exitCode === 0 && kept.exitCode === 0) {
+					await run(["add", "--", path], work);
+				}
+			}
+			rebase = await run(
+				["-c", "core.editor=true", "rebase", "--continue"],
+				work,
+			);
 		}
 		const head = await run(["rev-parse", "HEAD"], work);
 		const tip = head.stdout.trim();
