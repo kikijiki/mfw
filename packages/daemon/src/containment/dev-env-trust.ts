@@ -133,8 +133,8 @@ export class EnvTrustStore {
 	private readonly lock: KeyedLock;
 
 	constructor(mfwHome: string) {
+		// Nothing is created until something is written: the doctor reads this.
 		this.dir = join(envHome(mfwHome), "approvals");
-		mkdirSync(this.dir, { recursive: true, mode: 0o700 });
 		this.lock = new KeyedLock(join(envHome(mfwHome), "locks"));
 	}
 
@@ -160,6 +160,7 @@ export class EnvTrustStore {
 
 	private async write(record: EnvTrustRecord): Promise<void> {
 		const valid = EnvTrustRecordSchema.parse(record);
+		mkdirSync(this.dir, { recursive: true, mode: 0o700 });
 		await writeFileAtomic(
 			this.path(valid.root),
 			`${JSON.stringify(valid, null, 2)}\n`,

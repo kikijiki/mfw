@@ -157,6 +157,11 @@ export async function hostExecutedChange(
 	root: string,
 	from: string,
 	to: string,
+	/**
+	 * This project's own protected paths: what its approved dev environment
+	 * covers (`protectedEnvPaths`), such as a file the `.envrc` sources.
+	 */
+	extraProtected: readonly string[] = [],
 ): Promise<HostExecutedChange | null> {
 	let entries: RawEntry[];
 	let targets: string[];
@@ -189,6 +194,7 @@ export async function hostExecutedChange(
 	for (const e of entries) {
 		if (
 			isHostExecutedPath(e.path) ||
+			extraProtected.includes(e.path) ||
 			e.oldMode === SYMLINK_MODE ||
 			e.newMode === SYMLINK_MODE ||
 			targets.some((t) => e.path === t || e.path.startsWith(`${t}/`)) ||

@@ -418,7 +418,6 @@ export function isolationDispatchProblem(p: {
 	agentIsolation?: "none" | "bwrap";
 	approvalMode?: "autonomous" | "interactive";
 	runWorkspace?: "worktree" | "clone";
-	hasDevShell?: boolean;
 }): { detail: string; fix: string } | null {
 	// `none` is the other rule's case: refused if autonomous, allowed if not.
 	if (p.agentIsolation === "none") return null;
@@ -426,20 +425,11 @@ export function isolationDispatchProblem(p: {
 		return {
 			detail:
 				'agentIsolation "bwrap" with runWorkspace "worktree": sandboxed runs need a private clone, so no run of this project can start.',
-			fix: `Add "runWorkspace": "clone" to this project's entry in $MFW_HOME/config.json and restart the daemon.${
-				p.hasDevShell
-					? " This project also has an .envrc, which is refused until dev shells work in the sandbox or the file is removed."
-					: ""
-			}`,
+			fix: 'Add "runWorkspace": "clone" to this project\'s entry in $MFW_HOME/config.json and restart the daemon.',
 		};
 	}
-	if (p.hasDevShell) {
-		return {
-			detail:
-				"this project has an .envrc, and dev shells inside the sandbox are not available yet, so no run of this project can start.",
-			fix: "Wait for dev shell support in the sandbox, or remove the .envrc if the project works with its plain toolchain.",
-		};
-	}
+	// A dev environment is not a problem of the config: the dispatch preflight
+	// refuses only an unapproved or failed one (containment/dev-env-resolve.ts).
 	return null;
 }
 

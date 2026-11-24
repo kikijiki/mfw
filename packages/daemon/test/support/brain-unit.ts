@@ -53,6 +53,8 @@ export async function brainUnit(
 		changedFiles?: (runId: string) => string[] | null;
 		/** The fingerprint of what `select_winner` would land; none by default. */
 		hostFingerprint?: string;
+		/** The answer to a dev environment card; absent means the world has none. */
+		envDecision?: NonNullable<BrainRuntimeDeps["world"]["envDecision"]>;
 		/** Chat's fake model, budget and inbox. */
 		chat?: BrainRuntimeDeps["chat"];
 	} = {},
@@ -274,6 +276,7 @@ export async function brainUnit(
 				opts.hostFingerprint
 					? { paths: [".envrc"], fingerprint: opts.hostFingerprint }
 					: null,
+			...(opts.envDecision ? { envDecision: opts.envDecision } : {}),
 			...(opts.dispatchBlock
 				? {
 						dispatchPaused: async () =>

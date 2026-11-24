@@ -73,7 +73,6 @@ describe("isolationDispatchProblem agrees with the preflight", () => {
 		[{ approvalMode: "interactive" }, /runWorkspace/],
 		[{ runWorkspace: "clone" }, null],
 		[{ agentIsolation: "none", approvalMode: "interactive" }, null],
-		[{ runWorkspace: "clone", hasDevShell: true }, /\.envrc/],
 	] as const)("%j", (input, want) => {
 		const problem = isolationDispatchProblem(input);
 		if (want) expect(problem?.detail).toMatch(want);
@@ -137,16 +136,18 @@ describe("a project that cannot dispatch says so", () => {
 		}
 	}, 30_000);
 
-	test("a clone project with an .envrc reports that instead", async () => {
+	test("an .envrc is not a config problem: the dispatch preflight decides on its approval", async () => {
 		const { orch, svc } = await booted({
 			root: await repo({ ".envrc": "use flake\n" }),
 			runWorkspace: "clone",
 		});
 		try {
-			const item = (await svc.inbox.list()).find(
-				(i) => i.id === "admission:sandbox-workspace",
-			);
-			expect(item?.detail).toContain(".envrc");
+			expect(
+				(await svc.inbox.list()).some(
+					(i) => i.id === "admission:sandbox-workspace",
+				),
+			).toBe(false);
+			expect((await svc.settings.get()).dispatchProblem).toBeNull();
 		} finally {
 			await orch.shutdown();
 		}

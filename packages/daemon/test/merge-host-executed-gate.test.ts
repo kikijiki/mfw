@@ -44,7 +44,7 @@ interface Gate {
 
 const open: Gate[] = [];
 
-async function gate(): Promise<Gate> {
+async function gate(opts: { envProtected?: string[] } = {}): Promise<Gate> {
 	const root = await mkdtemp(join(tmpdir(), "mfw-host-gate-"));
 	const bare = `${root}-remote.git`;
 	await git(["init", "-q", "--bare", "-b", "main", bare], tmpdir());
@@ -65,6 +65,9 @@ async function gate(): Promise<Gate> {
 		bus: new EventBus(),
 		projectRoot: root,
 		log: silentLogger(),
+		...(opts.envProtected
+			? { envProtectedPaths: () => opts.envProtected ?? [] }
+			: {}),
 		reverify: async () => ({ passed: true }),
 		hasChecks: async () => true,
 		onMerged: async (_job, sha) => {
@@ -602,5 +605,26 @@ describe("the dev environment files", () => {
 		for (const path of EVALUATED_ENV_PATHS) {
 			expect([path, isHostExecutedPath(path)]).toEqual([path, true]);
 		}
+	});
+});
+
+describe("a project's approved environment protects its own files", () => {
+	test("a file the .envrc sources is held when the approval covers it, and lands when not", async () => {
+		const protectedGate = await gate({ envProtected: ["scripts/env.sh"] });
+		const held = await protectedGate.branchRun("mfw/sourced", {
+			"scripts/env.sh": "export LD_PRELOAD=/x\n",
+		});
+		await protectedGate.enqueue(held, "mfw/sourced");
+		expect(await protectedGate.queue.tick()).not.toBe("merged");
+		expect((await protectedGate.card())?.args).toMatchObject({
+			paths: ["scripts/env.sh"],
+		});
+
+		const plain = await gate();
+		const lands = await plain.branchRun("mfw/sourced", {
+			"scripts/env.sh": "export A=1\n",
+		});
+		await plain.enqueue(lands, "mfw/sourced");
+		expect(await plain.queue.tick()).toBe("merged");
 	});
 });

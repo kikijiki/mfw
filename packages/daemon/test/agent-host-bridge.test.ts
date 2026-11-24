@@ -100,7 +100,7 @@ describe("a host-bridged launch", () => {
 		await new AgentHost(undefined, { tmuxRunner: runner }).launch(s);
 		const text = script();
 		expect(text).not.toContain("bwrap");
-		expect(text).not.toContain("direnv");
+		expect(text).not.toMatch(/\bdirenv (?:exec|export|allow)\b|\buse flake\b/);
 		expect(text).not.toContain(".envrc");
 		expect(text).toContain("--config=/dev/null");
 		expect(text).toContain("--no-env-file");
@@ -319,6 +319,64 @@ describe("a host-bridged launch", () => {
 		expect(existsSync(join(base, "evaluated"))).toBe(false);
 	});
 
+	test("with the approved environment, the request names it and nothing is evaluated", async () => {
+		const s = spec();
+		writeFileSync(join(s.cwd, ".envrc"), `touch ${join(base, "evaluated")}\n`);
+		const fingerprint = "a".repeat(64);
+		await new AgentHost(undefined, { tmuxRunner: runner }).launch({
+			...s,
+			isolation: {
+				...(s.isolation as NonNullable<LaunchSpec["isolation"]>),
+				devEnv: async () => ({
+					kind: "ready",
+					fingerprint,
+					capture: {} as never,
+					deps: null,
+				}),
+			},
+		});
+		expect(request().devEnv).toEqual({ fingerprint });
+		expect(existsSync(join(base, "evaluated"))).toBe(false);
+	});
+
+	test("an environment that is not approved refuses the launch with its fix", async () => {
+		const s = spec();
+		await expect(
+			new AgentHost(undefined, { tmuxRunner: runner }).launch({
+				...s,
+				isolation: {
+					...(s.isolation as NonNullable<LaunchSpec["isolation"]>),
+					devEnv: async () => ({
+						kind: "refused",
+						code: "env_not_approved",
+						reason: "not approved",
+						fix: "mfw env allow p",
+						commit: null,
+					}),
+				},
+			}),
+		).rejects.toThrow("mfw env allow p");
+		expect(calls).toEqual([]);
+	});
+
+	test("a read-only role never asks for the environment", async () => {
+		let asked = 0;
+		const s = spec({ runKind: "plan" });
+		await new AgentHost(undefined, { tmuxRunner: runner })
+			.launch({
+				...s,
+				isolation: {
+					...(s.isolation as NonNullable<LaunchSpec["isolation"]>),
+					devEnv: async () => {
+						asked++;
+						return { kind: "none" };
+					},
+				},
+			})
+			.catch(() => {});
+		expect(asked).toBe(0);
+	});
+
 	test("an unsandboxed interactive run no longer evaluates .envrc on the host", async () => {
 		const s = spec({
 			approvalMode: "interactive",
@@ -326,6 +384,8 @@ describe("a host-bridged launch", () => {
 			runKind: "task",
 		});
 		await new AgentHost(undefined, { tmuxRunner: runner }).launch(s);
-		expect(script()).not.toContain("direnv");
+		expect(script()).not.toMatch(
+			/\bdirenv (?:exec|export|allow)\b|\buse flake\b/,
+		);
 	});
 });

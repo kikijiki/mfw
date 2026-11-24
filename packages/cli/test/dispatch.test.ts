@@ -40,6 +40,7 @@ function deps(over: Partial<Deps> = {}) {
 	const ran: { argv: string[]; cwd?: string }[] = [];
 	const mcp: string[][] = [];
 	const auth: string[][] = [];
+	const envs: string[][] = [];
 	const doctor: string[][] = [];
 	const d: Deps = {
 		env: { PATH: "" },
@@ -66,10 +67,22 @@ function deps(over: Partial<Deps> = {}) {
 			auth.push(args);
 			return 0;
 		},
+		runEnv: async (args) => {
+			envs.push(args);
+			return 5;
+		},
 		...over,
 	};
-	return { d, out, err, ran, mcp, auth, doctor };
+	return { d, out, err, ran, mcp, auth, envs, doctor };
 }
+
+describe("mfw env", () => {
+	test("hands its arguments over and returns the exit code", async () => {
+		const h = deps();
+		expect(await dispatch(["env", "allow", "p", "--rev", "abc"], h.d)).toBe(5);
+		expect(h.envs).toEqual([["allow", "p", "--rev", "abc"]]);
+	});
+});
 
 describe("mfw doctor and init", () => {
 	test("hand their arguments over and return the exit code", async () => {

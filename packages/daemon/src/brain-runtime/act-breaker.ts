@@ -1,6 +1,7 @@
 import type { ProjectDbHandle } from "@mfw/db/client";
 import { brainActions, engineKv } from "@mfw/db/schema";
 import { eq, gte } from "drizzle-orm";
+import { ENV_ALLOW_TOOL } from "../containment/dev-env-card.ts";
 import { HOST_MERGE_TOOL } from "../merge-gate.ts";
 
 /**
@@ -135,8 +136,9 @@ export class ActBreaker {
 		).filter(
 			(r) =>
 				r.rejection?.code !== "breaker_open" &&
-				// Raised by the merge queue: not something the brain did.
+				// Raised by the merge queue or a dispatch: not something the brain did.
 				r.tool !== HOST_MERGE_TOOL &&
+				r.tool !== ENV_ALLOW_TOOL &&
 				// Strictly after: what happened in the reset's own millisecond is before it.
 				r.createdAt.getTime() > state.countFrom,
 		);

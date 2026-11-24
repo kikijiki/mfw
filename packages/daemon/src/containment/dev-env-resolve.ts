@@ -10,6 +10,7 @@
  * evaluated only once the owner allows the commit it lands in.
  */
 
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import {
 	type BuildDevEnvInput,
@@ -78,6 +79,18 @@ const shortSha = (s: string) => s.slice(0, 12);
 export async function resolveDevEnv(
 	input: ResolveDevEnvInput,
 ): Promise<DevEnvResolution> {
+	// The trust store and the cache are keyed by the real path, as the CLI writes them.
+	try {
+		input = { ...input, root: realpathSync(input.root) };
+	} catch {
+		return {
+			kind: "refused",
+			code: "env_unsupported",
+			reason: `the project root ${input.root} does not exist`,
+			fix: "restore it, or fix the project's root in $MFW_HOME/config.json",
+			commit: null,
+		};
+	}
 	let commit: string;
 	try {
 		commit = await resolveCommit(input.root, input.rev);
