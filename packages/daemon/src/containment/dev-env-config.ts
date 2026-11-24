@@ -57,6 +57,18 @@ export const EnvConfigSchema = z.strictObject({
 	registries: z.array(HostPort).max(32).optional(),
 	/** Further hosts the evaluation may reach (a flake input on another forge). */
 	extraHosts: z.array(HostPort).max(32).optional(),
+	/**
+	 * Let the evaluation use the host's nix daemon. Required for flake and
+	 * devenv sources, and for an `.envrc` that uses nix. The daemon fetches and
+	 * builds with the host's network, outside the run's proxy, can reach this
+	 * machine's loopback services, can read the whole store and can collect
+	 * unrooted store paths: set it only for a project you trust that far.
+	 */
+	nixDaemon: z.boolean().optional(),
+	/** Refuse an evaluation when /nix/store has less free space than this, in MiB. Default 4096. */
+	minStoreFreeMb: z.number().int().min(0).max(10_000_000).optional(),
+	/** Fail an evaluation that grows /nix/store by more than this, in MiB. Default 16384. */
+	maxStoreGrowthMb: z.number().int().min(1).max(10_000_000).optional(),
 	/** Wall-clock limit of one evaluation or setup, in seconds. Default 900. */
 	timeoutSeconds: z.number().int().min(10).max(7200).optional(),
 });
@@ -64,3 +76,8 @@ export const EnvConfigSchema = z.strictObject({
 export type EnvConfig = z.infer<typeof EnvConfigSchema>;
 
 export const DEFAULT_ENV_TIMEOUT_SECONDS = 900;
+export const DEFAULT_MIN_STORE_FREE_MB = 4096;
+export const DEFAULT_MAX_STORE_GROWTH_MB = 16384;
+
+/** Sources that need the nix daemon: always for these two, for direnv when the `.envrc` uses nix. */
+export const NIX_SOURCES = ["flake", "devenv"] as const;

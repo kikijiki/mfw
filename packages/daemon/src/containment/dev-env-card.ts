@@ -26,6 +26,19 @@ import {
 	proposeApproval,
 } from "./dev-env-trust.ts";
 
+/**
+ * What an approved evaluation can reach, said plainly. With the nix daemon
+ * it is not contained by the proxy: the card and `mfw env allow` say so.
+ */
+export function envReachStatement(source: string, nixDaemon: boolean): string {
+	const proxied =
+		"Inside the env-build sandbox its own commands reach the network only through the run's proxy, which allows the listed hosts.";
+	if (!nixDaemon) {
+		return `${proxied} It gets no nix daemon (env.nixDaemon is off).`;
+	}
+	return `${proxied} It ALSO gets the host's nix daemon (env.nixDaemon is on)${source === "mise" ? "" : ", which this source uses"}: the daemon fetches and builds with this host's network, OUTSIDE the proxy, can reach this machine's loopback services, can read the whole Nix store (other projects' sources included), and can collect store paths that no root holds. Approve only a project you trust that far.`;
+}
+
 /** `brain_actions.tool` of the card. Not an act tool: the brain cannot call it. */
 export const ENV_ALLOW_TOOL = "env_allow";
 
@@ -39,6 +52,8 @@ export interface EnvCardArgs {
 	previousCommit?: string;
 	setup?: string[];
 	configHash: string;
+	/** The project's `env.nixDaemon` opt-in, shown prominently. */
+	nixDaemon: boolean;
 }
 
 const digest = (args: Pick<EnvCardArgs, "commit" | "files" | "configHash">) =>
@@ -74,6 +89,7 @@ export function envCardArgs(
 			: {}),
 		...(config?.setup?.length ? { setup: [...config.setup] } : {}),
 		configHash: envConfigHash(config),
+		nixDaemon: config?.nixDaemon === true,
 	};
 }
 
@@ -146,7 +162,7 @@ export function describeEnvCard(raw: Record<string, unknown>): {
 			: "";
 	return {
 		title: `decide: dev environment of ${a.project} at ${String(a.commit).slice(0, 12)}`,
-		detail: `Approving lets mfw evaluate this ${a.source} environment, once, at commit ${a.commit}, inside the env-build sandbox (network only through its proxy), and give the result to every run. It records these files: ${files}.${changed}${setup} Declining refuses the project's runs until \`mfw env allow\`.`,
+		detail: `${a.nixDaemon === true ? "NIX DAEMON: ON. " : ""}Approving lets mfw evaluate this ${a.source} environment, once, at commit ${a.commit}, and give the result to every run. ${envReachStatement(String(a.source), a.nixDaemon === true)} It records these files: ${files}.${changed}${setup} Declining refuses the project's runs until \`mfw env allow\`.`,
 	};
 }
 

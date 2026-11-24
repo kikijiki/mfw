@@ -229,6 +229,8 @@ describe("a trusted nix client", () => {
 				dataDir: join(mfwHome, "env/data/x"),
 				timeoutMs: 1000,
 				nixTrust: async () => "trusted",
+				nixSandbox: async () => "true",
+				nixDaemon: true,
 				steps: {
 					compileHost: async () => {
 						compiled = true;
@@ -252,6 +254,8 @@ describe("a trusted nix client", () => {
 				dataDir: join(mfwHome, "env/data/x"),
 				timeoutMs: 1000,
 				nixTrust: async () => "unknown",
+				nixSandbox: async () => "true",
+				nixDaemon: true,
 			});
 			expect(!unknown.ok && unknown.code).toBe("nix_trusted");
 		} finally {

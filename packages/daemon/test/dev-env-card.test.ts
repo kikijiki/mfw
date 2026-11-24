@@ -29,7 +29,7 @@ let base: string;
 let root: string;
 let mfwHome: string;
 let handle: ProjectDbHandle;
-const config = { setup: ["bun install"] };
+const config = { setup: ["bun install"], nixDaemon: true };
 
 const resolve = () =>
 	resolveDevEnv({

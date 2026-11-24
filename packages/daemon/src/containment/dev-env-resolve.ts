@@ -12,6 +12,7 @@
 
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
+import { NIX_DAEMON_FIX } from "./dev-env-build.ts";
 import {
 	type BuildDevEnvInput,
 	buildDevEnv,
@@ -21,9 +22,16 @@ import {
 } from "./dev-env-cache.ts";
 import type { EnvConfig } from "./dev-env-config.ts";
 import { type DepsEntry, installDeps, loadDeps } from "./dev-env-deps.ts";
-import { EnvSourceError, resolveCommit } from "./dev-env-sources.ts";
+import {
+	EnvSourceError,
+	type EnvSourceKind,
+	envrcUsesNix,
+	readCommitBlob,
+	resolveCommit,
+} from "./dev-env-sources.ts";
 import {
 	type EnvStatus,
+	type EnvTrustRecord,
 	EnvTrustStore,
 	envStatusAt,
 	hasSetup,
@@ -71,11 +79,53 @@ export interface ResolveDevEnvInput {
 	/** Evaluate when the approval has no cached result yet. */
 	build: boolean;
 	seams?: Partial<
-		Pick<BuildDevEnvInput, "run" | "steps" | "nixTrust" | "closure" | "gcRoots">
+		Pick<
+			BuildDevEnvInput,
+			| "run"
+			| "steps"
+			| "nixTrust"
+			| "nixSandbox"
+			| "storeFree"
+			| "closure"
+			| "gcRoots"
+		>
 	>;
 }
 
 const shortSha = (s: string) => s.slice(0, 12);
+
+/**
+ * The nix daemon is an explicit per-project opt-in (`env.nixDaemon`), because
+ * it acts outside the proxy (design "Dev environment runs inside the sandbox").
+ * A source that needs it is refused without it, with the honest reason.
+ */
+async function nixDaemonRefusal(
+	input: ResolveDevEnvInput,
+	record: EnvTrustRecord,
+	source: EnvSourceKind | null,
+): Promise<{ reason: string; fix: string } | null> {
+	if (
+		input.config?.nixDaemon === true ||
+		source === null ||
+		source === "mise"
+	) {
+		return null;
+	}
+	let needs = source === "flake" || source === "devenv";
+	if (source === "direnv") {
+		const envrc = record.files.find((f) => f.path === ".envrc");
+		needs =
+			!!envrc &&
+			envrcUsesNix(
+				(await readCommitBlob(input.root, envrc.oid)).toString("utf8"),
+			);
+	}
+	if (!needs) return null;
+	return {
+		reason: `the ${source} environment of ${input.project} uses nix, which needs the host's nix daemon, and this project does not allow it`,
+		fix: NIX_DAEMON_FIX,
+	};
+}
 
 export async function resolveDevEnv(
 	input: ResolveDevEnvInput,
@@ -189,6 +239,20 @@ export async function resolveDevEnv(
 		status,
 	});
 	const stateDir = input.stateDir ?? join(input.root, ".mfw");
+	const nixRefusal = await nixDaemonRefusal(
+		input,
+		status.record,
+		status.source,
+	);
+	if (nixRefusal) {
+		return {
+			kind: "refused",
+			code: "env_unsupported",
+			...nixRefusal,
+			commit,
+			status,
+		};
+	}
 	let capture = await loadDevEnv(input.mfwHome, input.root, status.fingerprint);
 	if (!capture) {
 		if (!input.build) return notBuilt("environment");

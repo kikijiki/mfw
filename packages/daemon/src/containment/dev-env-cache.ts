@@ -160,6 +160,8 @@ export interface BuildDevEnvInput {
 	run?: (req: EnvRunRequest) => Promise<EnvRunResult>;
 	steps?: EnvRunRequest["steps"];
 	nixTrust?: EnvRunRequest["nixTrust"];
+	nixSandbox?: EnvRunRequest["nixSandbox"];
+	storeFree?: EnvRunRequest["storeFree"];
 	closure?: (roots: readonly string[]) => StoreClosure;
 	gcRoots?: (dir: string, paths: readonly string[]) => Promise<boolean>;
 	now?: () => Date;
@@ -252,6 +254,15 @@ async function evaluate(
 			(input.config?.timeoutSeconds ?? DEFAULT_ENV_TIMEOUT_SECONDS) * 1000,
 		...(input.steps ? { steps: input.steps } : {}),
 		...(input.nixTrust ? { nixTrust: input.nixTrust } : {}),
+		...(input.nixSandbox ? { nixSandbox: input.nixSandbox } : {}),
+		...(input.storeFree ? { storeFree: input.storeFree } : {}),
+		nixDaemon: input.config?.nixDaemon === true,
+		...(input.config?.minStoreFreeMb !== undefined
+			? { minStoreFreeMb: input.config.minStoreFreeMb }
+			: {}),
+		...(input.config?.maxStoreGrowthMb !== undefined
+			? { maxStoreGrowthMb: input.config.maxStoreGrowthMb }
+			: {}),
 	});
 	const egress = {
 		allowed: Object.keys(result.egress?.allowed ?? {}).sort(),

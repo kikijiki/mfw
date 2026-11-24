@@ -19,6 +19,7 @@ import { ZodError } from "zod";
 import { authDbPath } from "../auth/service.ts";
 import { readBoardLayout } from "../board-layout.ts";
 import { loadConfig, type StoredProjectConfig } from "../config.ts";
+import { hostNixSandbox } from "../containment/dev-env-build.ts";
 import { resolveDevEnv } from "../containment/dev-env-resolve.ts";
 import { verifyExecPin } from "../containment/exec-pin.ts";
 import {
@@ -510,6 +511,13 @@ export function liveDoctorProbes(o: LiveProbeOptions): DoctorProbes {
 		mfwHome: string,
 		entry: StoredProjectConfig,
 	): Promise<ProjectFacts["devEnv"]> => {
+		const nixSandbox =
+			entry.env?.nixDaemon === true
+				? { nixSandbox: await hostNixSandbox() }
+				: {};
+		const withSandbox = (
+			f: NonNullable<ProjectFacts["devEnv"]>,
+		): NonNullable<ProjectFacts["devEnv"]> => ({ ...f, ...nixSandbox });
 		try {
 			const r = await resolveDevEnv({
 				mfwHome,
@@ -519,14 +527,20 @@ export function liveDoctorProbes(o: LiveProbeOptions): DoctorProbes {
 				rev: entry.integrationBranch ?? "HEAD",
 				build: false,
 			});
-			if (r.kind === "none") return { state: "none", detail: "none declared" };
+			if (r.kind === "none")
+				return withSandbox({ state: "none", detail: "none declared" });
 			if (r.kind === "ready") {
-				return {
+				return withSandbox({
 					state: "ready",
 					detail: `${r.capture.source ?? "setup"} approved at ${r.capture.commit.slice(0, 12)}, evaluated${r.deps ? ", dependencies installed" : ""}`,
-				};
+				});
 			}
-			return { state: "refused", code: r.code, detail: r.reason, fix: r.fix };
+			return withSandbox({
+				state: "refused",
+				code: r.code,
+				detail: r.reason,
+				fix: r.fix,
+			});
 		} catch (e) {
 			return {
 				state: "refused",

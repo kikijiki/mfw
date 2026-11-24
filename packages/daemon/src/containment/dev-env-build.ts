@@ -31,6 +31,7 @@ import {
 	readFileSync,
 	realpathSync,
 	rmSync,
+	statfsSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -52,6 +53,10 @@ import {
 import { drainTail } from "./check-runner.ts";
 import { watchTreeSize } from "./check-tree-cap.ts";
 import { type CompileHost, compileBwrap } from "./compile-bwrap.ts";
+import {
+	DEFAULT_MAX_STORE_GROWTH_MB,
+	DEFAULT_MIN_STORE_FREE_MB,
+} from "./dev-env-config.ts";
 import type { EnvSourceKind } from "./dev-env-sources.ts";
 import type { AllowEntry } from "./egress-policy.ts";
 import { prepareRunEgress } from "./egress-run.ts";
@@ -160,6 +165,10 @@ const ENV_HELPERS = [
 
 export type EnvRunFailure =
 	| "nix_trusted"
+	| "nix_not_allowed"
+	| "nix_sandbox_off"
+	| "store_full"
+	| "store_growth"
 	| "sandbox_refused"
 	| "probe_failed"
 	| "timed_out"
@@ -219,6 +228,17 @@ export interface EnvRunRequest {
 	) => Promise<() => Promise<void>>;
 	/** Whether the nix daemon trusts this user; asked on the host, before anything runs. */
 	nixTrust?: () => Promise<"untrusted" | "trusted" | "unknown">;
+	/**
+	 * The project's explicit opt-in (`env.nixDaemon`). Without it no step gets
+	 * the daemon's socket, and flake and devenv steps are refused.
+	 */
+	nixDaemon?: boolean;
+	/** The daemon's `sandbox` setting, read on the host; must be "true". */
+	nixSandbox?: () => Promise<string>;
+	/** Free bytes on /nix/store's filesystem, or null when unknown. */
+	storeFree?: () => number | null;
+	minStoreFreeMb?: number;
+	maxStoreGrowthMb?: number;
 	signal?: AbortSignal;
 }
 
@@ -232,6 +252,53 @@ const NIX_TOOLS = [
 	"/run/current-system/sw/bin/nix",
 	"/nix/var/nix/profiles/default/bin/nix",
 ] as const;
+
+export const NIX_DAEMON_FIX =
+	'set "nixDaemon": true in this project\'s "env" entry in $MFW_HOME/config.json, then approve again. Only do so for a project you trust: the nix daemon fetches and builds with this host\'s network outside the proxy, can reach this machine\'s loopback services, can read the whole store and can collect unrooted store paths. Or set env.source to mise or none';
+
+/** Free bytes for an unprivileged writer on /nix/store's filesystem, or null. */
+export function storeFreeBytes(): number | null {
+	try {
+		const st = statfsSync("/nix/store");
+		return Number(st.bavail) * Number(st.bsize);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * The daemon's `sandbox` setting, as the host's nix reads it from the same
+ * nix.conf: fixed binary, empty environment, no project file near it.
+ */
+export async function hostNixSandbox(): Promise<string> {
+	for (const tool of NIX_TOOLS) {
+		try {
+			const child = Bun.spawn(
+				[
+					tool,
+					"--extra-experimental-features",
+					"nix-command",
+					"config",
+					"show",
+					"sandbox",
+				],
+				{
+					env: {},
+					cwd: "/",
+					stdin: "ignore",
+					stdout: "pipe",
+					stderr: "ignore",
+				},
+			);
+			const timer = setTimeout(() => child.kill("SIGKILL"), 15_000);
+			const text = await new Response(child.stdout).text();
+			const code = await child.exited;
+			clearTimeout(timer);
+			if (code === 0) return text.trim();
+		} catch {}
+	}
+	return "unknown";
+}
 
 /**
  * Ask the daemon whether it trusts this user. Runs the host's own nix with an
@@ -303,8 +370,38 @@ async function readLog(outbox: string): Promise<string> {
 /** Run one env step in its sandbox. Never falls back to running anything on the host. */
 export async function runEnvStep(req: EnvRunRequest): Promise<EnvRunResult> {
 	const evaluate = req.step !== "setup";
-	const nix = evaluate && req.step !== "mise";
+	if (
+		(req.step === "flake" || req.step === "devenv") &&
+		req.nixDaemon !== true
+	) {
+		return fail(
+			"nix_not_allowed",
+			`a ${req.step} environment needs the host's nix daemon, which this project does not allow`,
+			NIX_DAEMON_FIX,
+		);
+	}
+	const nix = evaluate && req.step !== "mise" && req.nixDaemon === true;
+	let storeFreeBefore: number | null = null;
 	if (nix) {
+		const sandbox = await (req.nixSandbox ?? hostNixSandbox)();
+		if (sandbox !== "true") {
+			return fail(
+				"nix_sandbox_off",
+				`the nix daemon's build sandbox is ${JSON.stringify(sandbox)}, not true, so a build the evaluation asks for could read this host's files`,
+				"set `sandbox = true` in /etc/nix/nix.conf (on NixOS: nix.settings.sandbox = true) and restart the nix daemon",
+			);
+		}
+		const free = (req.storeFree ?? storeFreeBytes)();
+		const minFree =
+			(req.minStoreFreeMb ?? DEFAULT_MIN_STORE_FREE_MB) * 1024 * 1024;
+		if (free !== null && free < minFree) {
+			return fail(
+				"store_full",
+				`/nix/store has ${Math.round(free / 1024 / 1024)} MiB free, less than the ${Math.round(minFree / 1024 / 1024)} MiB an evaluation needs`,
+				"free space on the store's filesystem (nix-collect-garbage), or lower env.minStoreFreeMb",
+			);
+		}
+		storeFreeBefore = free;
 		const trust = await (req.nixTrust ?? hostNixTrust)();
 		if (trust !== "untrusted") {
 			return fail(
@@ -551,6 +648,19 @@ export async function runEnvStep(req: EnvRunRequest): Promise<EnvRunResult> {
 			for (const stop of watchers) stop();
 		}
 		const log = await readLog(layout.outbox);
+		if (storeFreeBefore !== null) {
+			const after = (req.storeFree ?? storeFreeBytes)();
+			const limit =
+				(req.maxStoreGrowthMb ?? DEFAULT_MAX_STORE_GROWTH_MB) * 1024 * 1024;
+			if (after !== null && storeFreeBefore - after > limit) {
+				return fail(
+					"store_growth",
+					`the evaluation grew /nix/store by ${Math.round((storeFreeBefore - after) / 1024 / 1024)} MiB, more than the ${Math.round(limit / 1024 / 1024)} MiB allowed`,
+					"make the dev shell smaller, or raise env.maxStoreGrowthMb; the paths stay until a garbage collection",
+					log,
+				);
+			}
+		}
 		if (stopped === "timed_out") {
 			return fail(
 				"timed_out",

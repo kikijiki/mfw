@@ -109,8 +109,10 @@ spending. With the default `agentIsolation: "bwrap"`:
   files it later executes.
 - **A project's dev environment runs only where you allowed it.** `.envrc`,
   mise, flake and devenv setups are evaluated in their own sandbox, only at a
-  commit you approved with `mfw env allow`, with network only to the hosts they
-  need ([docs/environments.md](docs/environments.md)).
+  commit you approved with `mfw env allow`. Their own commands reach only the
+  hosts they need; nix-based sources also need the per-project
+  `env.nixDaemon` opt-in, and the nix daemon acts outside the proxy
+  ([docs/environments.md](docs/environments.md)).
 
 What this does **not** stop:
 

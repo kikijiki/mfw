@@ -61,7 +61,7 @@ describe.skipIf(skip !== null)("a check with the approved environment", () => {
 			mfwHome: lab.mfwHome,
 			project: "fixture",
 			root: r,
-			config: undefined,
+			config: { nixDaemon: true },
 			rev: "main",
 			build,
 			seams: {
@@ -103,7 +103,7 @@ describe.skipIf(skip !== null)("a check with the approved environment", () => {
 			root,
 			commit,
 			setting: "auto",
-			config: undefined,
+			config: { nixDaemon: true },
 			via: "cli",
 		});
 		const built = await resolveFor(root, true);
@@ -195,7 +195,7 @@ describe.skipIf(skip !== null)("a check with the approved environment", () => {
 			root: m.root,
 			commit: m.commit,
 			setting: "auto",
-			config: undefined,
+			config: { nixDaemon: true },
 			via: "cli",
 		});
 		expect((await resolveFor(m.root, true)).kind).toBe("ready");

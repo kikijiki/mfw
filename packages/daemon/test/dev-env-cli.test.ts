@@ -50,7 +50,7 @@ beforeAll(async () => {
 					name: "proj",
 					root,
 					integrationBranch: "main",
-					env: { setup: ["bun install"] },
+					env: { setup: ["bun install"], nixDaemon: true },
 				},
 				{ name: "plain", root: join(base, "nope") },
 			],

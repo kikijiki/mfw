@@ -13,6 +13,7 @@
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, type StoredProjectConfig } from "../config.ts";
+import { envReachStatement } from "./dev-env-card.ts";
 import type { EnvConfig } from "./dev-env-config.ts";
 import {
 	type DevEnvResolution,
@@ -182,6 +183,10 @@ export async function runEnvCommand(
 				);
 			}
 			d.out(`  config: sha256:${envConfigHash(p.env)}`);
+			d.out(`  nix daemon: ${p.env?.nixDaemon === true ? "ON" : "off"}`);
+			d.out(
+				`  ${envReachStatement(detection.kind, p.env?.nixDaemon === true)}`,
+			);
 			await allowEnv(new EnvTrustStore(d.home), {
 				project: p.name,
 				root,
