@@ -858,23 +858,20 @@ export class AuthService {
 		}
 	}
 
-	/** Descriptors of the owner's credentials for this RP ID. */
-	private async descriptors(rpId: string): Promise<{
-		all: CredentialDescriptor[];
-		allDiscoverable: boolean;
-	}> {
+	/**
+	 * The owner's credentials for this RP ID, for a registration's exclude
+	 * list only (an authenticated session); never sent by a public call.
+	 */
+	private async descriptors(rpId: string): Promise<CredentialDescriptor[]> {
 		const r = await this.db.client.execute({
-			sql: "SELECT credential_id, transports, discoverable FROM passkeys WHERE rp_id = ? ORDER BY created_at, rowid",
+			sql: "SELECT credential_id, transports FROM passkeys WHERE rp_id = ? ORDER BY created_at, rowid",
 			args: [rpId],
 		});
-		return {
-			all: r.rows.map((row) => ({
-				type: "public-key",
-				id: String(row.credential_id),
-				transports: parseTransports(row.transports),
-			})),
-			allDiscoverable: r.rows.every((row) => Number(row.discoverable) === 1),
-		};
+		return r.rows.map((row) => ({
+			type: "public-key",
+			id: String(row.credential_id),
+			transports: parseTransports(row.transports),
+		}));
 	}
 
 	/**
@@ -957,11 +954,11 @@ export class AuthService {
 			scope,
 			proxied: isProxied(source),
 		});
-		// Discoverable credentials need no list, and an empty one reveals nothing.
-		const { all, allDiscoverable } = await this.descriptors(rp.rpId);
+		// Always empty: credentials are discoverable (required at registration),
+		// and a list would tell anyone who asks whether passkeys exist.
 		return {
 			ceremonyId: ceremony.id,
-			publicKey: requestOptions(ceremony, allDiscoverable ? [] : all),
+			publicKey: requestOptions(ceremony, []),
 		};
 	}
 
@@ -1052,7 +1049,7 @@ export class AuthService {
 					`at most ${MAX_PASSKEYS} passkeys; revoke one first`,
 				);
 			const ceremony = this.beginCeremony("register", rp, { sessionId });
-			const { all } = await this.descriptors(rp.rpId);
+			const all = await this.descriptors(rp.rpId);
 			return {
 				ceremonyId: ceremony.id,
 				publicKey: creationOptions(
@@ -1091,6 +1088,11 @@ export class AuthService {
 			throw new AuthRefused(
 				"invalid_request",
 				"malformed passkey registration",
+			);
+		if (parsed.discoverable === false)
+			throw new AuthRefused(
+				"passkey_refused",
+				"this authenticator did not store a discoverable passkey on the device; mfw needs one (security keys without passkey storage are not supported)",
 			);
 		let verified: ReturnType<typeof verifyRegistration>;
 		try {

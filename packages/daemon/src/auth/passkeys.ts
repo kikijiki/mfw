@@ -272,9 +272,11 @@ export function creationOptions(
 		})),
 		timeout: CEREMONY_TIMEOUT_MS,
 		attestation: "none" as const,
+		// Discoverable only: sign-in then needs no credential list, so the public
+		// options call reveals nothing about the owner's passkeys.
 		authenticatorSelection: {
-			residentKey: "preferred" as const,
-			requireResidentKey: false,
+			residentKey: "required" as const,
+			requireResidentKey: true,
 			userVerification: "required" as const,
 		},
 		excludeCredentials: exclude,

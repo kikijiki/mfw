@@ -141,8 +141,9 @@ describe("registration", () => {
 			"required",
 		);
 		expect(begun.publicKey.attestation).toBe("none");
-		expect(begun.publicKey.authenticatorSelection.residentKey).toBe(
-			"preferred",
+		expect(begun.publicKey.authenticatorSelection.residentKey).toBe("required");
+		expect(begun.publicKey.authenticatorSelection.requireResidentKey).toBe(
+			true,
 		);
 		const { json } = soft.create(begun.publicKey, { flags: UP | 0x40 });
 		expect(
@@ -364,18 +365,45 @@ describe("sign-in", () => {
 		);
 	});
 
-	test("discoverable credentials get an empty allow list; others are listed", async () => {
+	test("the public options never list credentials", async () => {
 		await addPasskey();
-		expect(
-			(await auth.beginPasskeyLogin(RP)).publicKey.allowCredentials,
-		).toEqual([]);
-		await addPasskey({ rk: false }, "key");
-		const listed = (await auth.beginPasskeyLogin(RP)).publicKey
-			.allowCredentials;
-		expect(listed).toHaveLength(2);
-		expect((await auth.beginPasskeyLogin(RP)).publicKey.userVerification).toBe(
-			"required",
+		// A credential whose browser did not report credProps is still discoverable
+		// as far as we know, and must not cause a list either.
+		const begun = await auth.beginPasskeyRegistration(owner.sessionId, RP, {
+			password: PASSWORD,
+		});
+		const { json } = soft.create(begun.publicKey);
+		delete (json as { clientExtensionResults?: unknown })
+			.clientExtensionResults;
+		await auth.finishPasskeyRegistration(
+			owner.sessionId,
+			RP,
+			begun.ceremonyId,
+			json,
+			"no props",
 		);
+		const options = (await auth.beginPasskeyLogin(RP)).publicKey;
+		expect(options.allowCredentials).toEqual([]);
+		expect(options.userVerification).toBe("required");
+	});
+
+	test("a credential that reports it is not discoverable is refused", async () => {
+		const begun = await auth.beginPasskeyRegistration(owner.sessionId, RP, {
+			password: PASSWORD,
+		});
+		const { json } = soft.create(begun.publicKey, { rk: false });
+		const refused = await auth
+			.finishPasskeyRegistration(
+				owner.sessionId,
+				RP,
+				begun.ceremonyId,
+				json,
+				"k",
+			)
+			.catch((e) => e);
+		expect(refused.code).toBe("passkey_refused");
+		expect(refused.message).toMatch(/discoverable|stored on the device/);
+		expect(await auth.listPasskeys()).toEqual([]);
 	});
 
 	test("a ceremony is single use, even after success", async () => {
