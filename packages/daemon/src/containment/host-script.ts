@@ -230,7 +230,12 @@ export function compiledInstallOf(
 	moduleUrl: string,
 ): { libDir: string; manifest: InstallManifest } | null {
 	if (selfReExecs()) return null;
-	const output = bundleOutputOf(fileURLToPath(moduleUrl));
+	const moduleFile = fileURLToPath(moduleUrl);
+	// A checkout's build is never a compiled install, whatever is planted in its
+	// output (security review REL-1 L6): only a stamped bundle in an install's
+	// layout reads `install.json`.
+	if (moduleFile.includes(BUNDLE_DIR)) return null;
+	const output = bundleOutputOf(moduleFile);
 	if (output === null) return null;
 	const manifest = readInstallManifest(output);
 	return manifest ? { libDir: output, manifest } : null;

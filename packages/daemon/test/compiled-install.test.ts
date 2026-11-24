@@ -1,32 +1,30 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+	afterAll,
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	test,
+} from "bun:test";
 import {
 	chmodSync,
+	copyFileSync,
 	mkdirSync,
 	mkdtempSync,
+	realpathSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { buildKind, isCompiledModuleUrl } from "@mfw/core/build-info";
-import { resolveScript } from "../src/agents/adapter.ts";
 import {
-	AGENT_LAUNCHER,
-	APP_SERVER_DRIVER,
 	BUILT_HOST_SCRIPTS,
-	CLAUDE_BRIDGE,
-	EGRESS_RELAY,
 	HOST_CONTENT_IDS,
 	HOST_ENTRY_IDS,
 	HOST_SUBCOMMAND,
-	hostArgv,
-	hostCommand,
-	hostEntry,
-	hostScript,
-	isHostEntryRef,
-	runsHostEntries,
 	sha256Hex,
 } from "../src/containment/host-script.ts";
 import {
@@ -39,48 +37,95 @@ import {
 	treeDigest,
 } from "../src/containment/install-manifest.ts";
 
+const PROBE = join(import.meta.dir, "support/compiled-install-probe.ts");
+const FAKE_MFW = "#!/bin/sh\nexit 0\n";
+
+/** The probe, bundled once with the stamp a production bundle carries. */
+let probeBundle: string;
+let probeCache: string;
+beforeAll(() => {
+	probeCache = mkdtempSync(join(tmpdir(), "mfw-compiled-probe-"));
+	probeBundle = join(probeCache, "probe.mjs");
+	const stamp = JSON.stringify({
+		kind: "bundle",
+		version: "0.0.0",
+		gitSha: "unknown",
+		buildTime: "1970-01-01T00:00:00.000Z",
+		bunVersion: Bun.version,
+	});
+	// In its own process: Bun.build is unreliable inside the test runner.
+	const built = Bun.spawnSync(
+		[
+			process.execPath,
+			"build",
+			PROBE,
+			"--target",
+			"bun",
+			"--outfile",
+			probeBundle,
+			"--define",
+			`__MFW_BUILD__=${stamp}`,
+		],
+		{ stdout: "pipe", stderr: "pipe" },
+	);
+	if (built.exitCode !== 0) throw new Error(built.stderr.toString());
+}, 60_000);
+afterAll(() => rmSync(probeCache, { recursive: true, force: true }));
+
 /**
- * A compiled install's server bundle, laid out as a checkout build so the
- * bundle is recognised from source: `<root>/repo/apps/start/.output` holds the
- * server and its `install.json`, and `../../bin/mfw` (inside the prefix, the
- * manifest directory's grandparent) is the executable.
+ * A compiled install as `tools/install-build.ts` lays it out, whose server
+ * bundle is the stamped probe: `<prefix>/bin/mfw` and
+ * `<prefix>/lib/mfw/{install.json,server,public}`.
  */
 describe("a compiled install's server runs host code only through mfw __host", () => {
 	let root: string;
-	let output: string;
-	let chunk: string;
+	let prefix: string;
+	let libDir: string;
 	let mfw: string;
+	let chunk: string;
 	let manifest: InstallManifest;
 
 	const writeManifest = (m: InstallManifest) =>
-		writeFileSync(join(output, INSTALL_MANIFEST), JSON.stringify(m));
+		writeFileSync(join(libDir, INSTALL_MANIFEST), JSON.stringify(m));
+	const probe = (
+		op: string,
+		name = "AGENT_LAUNCHER",
+		env: Record<string, string> = {},
+		at = chunk,
+	): { ok: boolean; value?: unknown; error?: string } => {
+		const r = Bun.spawnSync([process.execPath, at, op, name], {
+			env: { PATH: process.env.PATH ?? "", ...env },
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		return JSON.parse(
+			r.stdout.toString() ||
+				`{"ok":false,"error":${JSON.stringify(r.stderr.toString())}}`,
+		);
+	};
 
 	beforeEach(() => {
-		root = mkdtempSync(join(tmpdir(), "mfw-compiled-install-"));
-		output = join(root, "repo/apps/start/.output");
-		mkdirSync(join(output, "server/chunks/_"), { recursive: true });
-		mkdirSync(join(output, "public"));
-		writeFileSync(join(output, "THIRD_PARTY_NOTICES.txt"), "notices\n");
-		writeFileSync(join(output, "server/index.mjs"), "// server\n");
-		chunk = pathToFileURL(join(output, "server/chunks/_/router.mjs")).href;
-		mkdirSync(join(root, "repo/apps/bin"));
-		mfw = join(root, "repo/apps/bin/mfw");
-		writeFileSync(mfw, "#!/bin/sh\nexit 0\n");
+		root = realpathSync(mkdtempSync(join(tmpdir(), "mfw-compiled-install-")));
+		prefix = join(root, "opt/mfw");
+		libDir = join(prefix, "lib/mfw");
+		mkdirSync(join(libDir, "server/chunks/_"), { recursive: true });
+		mkdirSync(join(libDir, "public"));
+		mkdirSync(join(prefix, "bin"));
+		writeFileSync(join(libDir, "THIRD_PARTY_NOTICES.txt"), "notices\n");
+		writeFileSync(join(libDir, "server/index.mjs"), "// server\n");
+		chunk = join(libDir, "server/chunks/_/probe.mjs");
+		copyFileSync(probeBundle, chunk);
+		mfw = join(prefix, "bin/mfw");
+		writeFileSync(mfw, FAKE_MFW);
 		chmodSync(mfw, 0o755);
+		const fake = { path: "../../bin/mfw", sha256: sha256Hex(FAKE_MFW) };
 		manifest = {
 			version: INSTALL_MANIFEST_VERSION,
 			kind: "compiled",
-			mfw: { path: "../../bin/mfw", sha256: sha256Hex("#!/bin/sh\nexit 0\n") },
-			mfwBoard: {
-				path: "../../bin/mfw",
-				sha256: sha256Hex("#!/bin/sh\nexit 0\n"),
-			},
-			runtime: {
-				path: "../../bin/mfw",
-				sha256: sha256Hex("#!/bin/sh\nexit 0\n"),
-				bunVersion: "1.3.13",
-			},
-			server: { digest: treeDigest(output) },
+			mfw: fake,
+			mfwBoard: fake,
+			runtime: { ...fake, bunVersion: "1.3.13" },
+			server: { digest: treeDigest(libDir) },
 		};
 		writeManifest(manifest);
 	});
@@ -103,95 +148,85 @@ describe("a compiled install's server runs host code only through mfw __host", (
 	});
 
 	test("an entry becomes `mfw __host <id>` with the install's verified mfw", () => {
-		expect(runsHostEntries(chunk)).toBe(true);
-		const ref = hostEntry(chunk, APP_SERVER_DRIVER);
-		expect(isHostEntryRef(ref)).toBe(true);
-		expect(hostCommand(ref, "/bin/bun", chunk)).toEqual([
+		expect(probe("runs")).toEqual({ ok: true, value: true });
+		expect(probe("command", "APP_SERVER_DRIVER").value).toEqual([
 			mfw,
 			HOST_SUBCOMMAND,
 			"app-server-driver",
 		]);
-		expect(
-			hostArgv(
-				["bun", "run", hostEntry(chunk, CLAUDE_BRIDGE)],
-				"/bin/bun",
-				chunk,
-			),
-		).toEqual([mfw, HOST_SUBCOMMAND, "claude-bridge"]);
+		expect(probe("argv", "CLAUDE_BRIDGE").value).toEqual([
+			mfw,
+			HOST_SUBCOMMAND,
+			"claude-bridge",
+		]);
 	});
 
 	test("a script path is refused: the install has no script files to load", () => {
-		mkdirSync(join(output, "server/host-scripts"));
-		writeFileSync(join(output, "server/host-scripts/manifest.json"), "{}");
-		expect(() => hostScript(chunk, AGENT_LAUNCHER)).toThrow(
-			/compiled install has no script files/,
-		);
-		expect(() => hostScript(chunk, EGRESS_RELAY)).toThrow(
-			/compiled install has no script files/,
-		);
+		mkdirSync(join(libDir, "server/host-scripts"));
+		writeFileSync(join(libDir, "server/host-scripts/manifest.json"), "{}");
+		for (const name of ["AGENT_LAUNCHER", "EGRESS_RELAY"]) {
+			expect(probe("script", name).error).toMatch(
+				/compiled install has no script files/,
+			);
+		}
 	});
 
-	test("an mfw that no longer matches the manifest is refused", () => {
+	test("an mfw that no longer matches the manifest is refused, at every use", () => {
+		expect(probe("command").ok).toBe(true);
 		writeFileSync(mfw, "#!/bin/sh\necho changed\n");
-		expect(() =>
-			hostCommand(hostEntry(chunk, AGENT_LAUNCHER), "/bin/bun", chunk),
-		).toThrow(/does not match the hash in the install manifest/);
-	});
-
-	test("an mfw replaced after it was verified is hashed again", () => {
-		const ref = hostEntry(chunk, AGENT_LAUNCHER);
-		expect(hostCommand(ref, "/bin/bun", chunk)[0]).toBe(mfw);
-		rmSync(mfw);
-		writeFileSync(mfw, "#!/bin/sh\nexit 1\n");
-		expect(() => hostCommand(ref, "/bin/bun", chunk)).toThrow(
-			/does not match the hash/,
+		expect(probe("command").error).toMatch(
+			/does not match the hash in the install manifest/,
 		);
 	});
 
 	test("an mfw that is a symlink is refused", () => {
 		const real = join(root, "real-mfw");
-		writeFileSync(real, "#!/bin/sh\nexit 0\n");
+		writeFileSync(real, FAKE_MFW);
 		rmSync(mfw);
 		symlinkSync(real, mfw);
-		expect(() =>
-			hostCommand(hostEntry(chunk, AGENT_LAUNCHER), "/bin/bun", chunk),
-		).toThrow(/not a regular file/);
+		expect(probe("command").error).toMatch(/not a regular file/);
 	});
 
 	test("an env override is refused, as from a plain bundle", () => {
-		process.env.MFW_TEST_OVERRIDE_SCRIPT = mfw;
-		try {
-			expect(() =>
-				resolveScript(chunk, CLAUDE_BRIDGE, "MFW_TEST_OVERRIDE_SCRIPT"),
-			).toThrow(/refusing MFW_TEST_OVERRIDE_SCRIPT/);
-		} finally {
-			delete process.env.MFW_TEST_OVERRIDE_SCRIPT;
-		}
 		expect(
-			isHostEntryRef(resolveScript(chunk, CLAUDE_BRIDGE, "MFW_UNSET_X")),
-		).toBe(true);
+			probe("resolve", "CLAUDE_BRIDGE", { MFW_TEST_OVERRIDE_SCRIPT: mfw })
+				.error,
+		).toMatch(/refusing MFW_TEST_OVERRIDE_SCRIPT/);
+		expect(String(probe("resolve", "CLAUDE_BRIDGE").value)).toStartWith(
+			"mfw-host:",
+		);
 	});
 
 	test("removing the manifest does not bring script files back: the plain bundle has none", () => {
-		rmSync(join(output, INSTALL_MANIFEST));
-		expect(runsHostEntries(chunk)).toBe(false);
-		expect(() => hostEntry(chunk, AGENT_LAUNCHER)).toThrow(
+		rmSync(join(libDir, INSTALL_MANIFEST));
+		expect(probe("runs").value).toBe(false);
+		expect(probe("command").error).toMatch(/no host script manifest/);
+	});
+
+	test("a malformed manifest is an error, never a plain bundle", () => {
+		writeFileSync(join(libDir, INSTALL_MANIFEST), "{");
+		expect(probe("runs").error).toMatch(/unreadable/);
+		writeManifest({ ...manifest, kind: "bundle" as never });
+		expect(probe("runs").error).toMatch(/wrong format/);
+	});
+
+	// Security review REL-1 L6.
+	test("a checkout's build ignores an install.json planted in its output", () => {
+		const output = join(root, "repo/apps/start/.output");
+		mkdirSync(join(output, "server/chunks/_"), { recursive: true });
+		const legacy = join(output, "server/chunks/_/probe.mjs");
+		copyFileSync(probeBundle, legacy);
+		writeFileSync(join(output, INSTALL_MANIFEST), JSON.stringify(manifest));
+		expect(probe("runs", "AGENT_LAUNCHER", {}, legacy).value).toBe(false);
+		expect(probe("command", "AGENT_LAUNCHER", {}, legacy).error).toMatch(
 			/no host script manifest/,
 		);
 	});
 
-	test("a malformed manifest is an error, never a plain bundle", () => {
-		writeFileSync(join(output, INSTALL_MANIFEST), "{");
-		expect(() => runsHostEntries(chunk)).toThrow(/unreadable/);
-		writeManifest({ ...manifest, kind: "bundle" as never });
-		expect(() => runsHostEntries(chunk)).toThrow(/wrong format/);
-	});
-
 	test("a manifest cannot point outside the install", () => {
-		const libDir = output;
 		expect(() =>
 			installPath(libDir, {
-				path: "../../../../outside/mfw",
+				path: "../../../outside/mfw",
 				sha256: "0".repeat(64),
 			}),
 		).toThrow(/outside the install/);
@@ -203,20 +238,20 @@ describe("a compiled install's server runs host code only through mfw __host", (
 	});
 
 	test("checkInstall reports each part that does not verify", () => {
-		expect(checkInstall(output).problems).toEqual([]);
-		writeFileSync(join(output, "server/index.mjs"), "// changed\n");
-		expect(checkInstall(output).problems).toEqual([
+		expect(checkInstall(libDir).problems).toEqual([]);
+		writeFileSync(join(libDir, "server/index.mjs"), "// changed\n");
+		expect(checkInstall(libDir).problems).toEqual([
 			"server: the bundle does not match the install manifest",
 		]);
-		writeManifest({ ...manifest, server: { digest: treeDigest(output) } });
-		expect(checkInstall(output, { server: "f".repeat(64) }).problems).toEqual([
+		writeManifest({ ...manifest, server: { digest: treeDigest(libDir) } });
+		expect(checkInstall(libDir, { server: "f".repeat(64) }).problems).toEqual([
 			"server: the bundle is not the one this mfw was built with",
 		]);
-		expect(checkInstall(output, { runtime: "e".repeat(64) }).problems).toEqual([
+		expect(checkInstall(libDir, { runtime: "e".repeat(64) }).problems).toEqual([
 			"runtime: the manifest names another bun than this mfw was built with",
 		]);
 		expect(
-			checkInstall(output, { self: join(root, "elsewhere/mfw") }).problems[0],
+			checkInstall(libDir, { self: join(root, "elsewhere/mfw") }).problems[0],
 		).toContain("is not the install's mfw");
 	});
 });
