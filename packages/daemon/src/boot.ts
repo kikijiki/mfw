@@ -14,16 +14,13 @@ import { AgentReviewInference } from "./agent-review.ts";
 import { AdapterRegistry } from "./agents/adapter.ts";
 import { DEFAULT_PROVIDER_ID, providerConfigFor } from "./agents/catalogue.ts";
 import { AUTH_HOLD_REASON } from "./auth-failure.ts";
+import { assertNoForeignTasksDir } from "./board-guard.ts";
 import {
 	buildBoardLayoutRecord,
 	firewalledPath,
 	readProtectedBoardPaths,
 	recordBoardLocation,
 } from "./board-layout.ts";
-import {
-	assertNoForeignTasksDir,
-	relocateLegacyBoard,
-} from "./board-relocate.ts";
 import { getBoardTemplate } from "./board-templates.ts";
 import { BrainService, type InferenceClient } from "./brain.ts";
 import { brainSocketFor } from "./brain-runtime/brain-socket.ts";
@@ -138,7 +135,6 @@ import {
 	readKernelBootId,
 	stableProjectIdentity,
 } from "./resources/identity.ts";
-import { checkLegacyHostState } from "./resources/legacy-host-state.ts";
 import {
 	type SessionLiveness,
 	SystemLeaseLiveness,
@@ -507,16 +503,7 @@ export async function attachProject(
 	try {
 		projectIdentity = await stableProjectIdentity(mfwDir);
 		opts.onProjectIdentity?.(projectIdentity);
-		// Before the board loads: a board from the `.mfw/` era is moved to the
-		// folder root (refusing, with nothing changed, on a collision).
-		const relocated = await relocateLegacyBoard({
-			boardFolder: boardDir,
-			daemonDir: mfwDir,
-			log,
-		});
-		if (relocated.moved.length === 0) {
-			await assertNoForeignTasksDir(boardDir);
-		}
+		await assertNoForeignTasksDir(boardDir);
 		// Resolved before board.yaml is written so a brand-new project's board
 		// agrees with the ids it will really mint (resolveTaskKey reads
 		// board.json/config.yaml/the raw files, never board.yaml itself) —
@@ -852,11 +839,11 @@ export async function attachProject(
 		// The same lookup `reverify` makes, so "has checks" means it runs them.
 		hasChecks: async (job) => {
 			const task = job.taskId ? await tasks.get(job.taskId) : null;
-			return tasks.effectiveDod(task?.dod ?? null) !== null;
+			return tasks.effectiveVerification(task?.verification ?? null) !== null;
 		},
 		reverify: async (job, baseSha, tipSha) => {
 			const task = job.taskId ? await tasks.get(job.taskId) : null;
-			const dod = tasks.effectiveDod(task?.dod ?? null);
+			const dod = tasks.effectiveVerification(task?.verification ?? null);
 			if (!dod) return { passed: true }; // nothing to re-check
 			const run = await registry.get(job.runId);
 			if (!run?.workspacePath || !run.baseSha)
@@ -903,7 +890,7 @@ export async function attachProject(
 			mergeSha: string,
 		): Promise<MergeVerdict> => {
 			const task = job.taskId ? await tasks.get(job.taskId) : null;
-			const dod = tasks.effectiveDod(task?.dod ?? null);
+			const dod = tasks.effectiveVerification(task?.verification ?? null);
 			if (!dod) return { passed: true };
 			const run = await registry.get(job.runId);
 			// As re-verify: no base commit means the checks cannot be run.
@@ -1767,36 +1754,8 @@ export async function attachProject(
 		"board loaded from disk",
 	);
 
-	// Once per board: old body `## Acceptance Criteria` lists move into the
-	// `acceptance` field, committed together with the board.yaml upgrade as
-	// one commit. Deferred (retried next attach) while the board is suspended.
-	const acceptance = await tasks.migrateAcceptance();
-	if (acceptance) {
-		plog.info(
-			{
-				migrated: acceptance.migrated.length,
-				skipped: acceptance.skipped.length,
-				boardYamlUpgraded,
-			},
-			"acceptance criteria moved into the acceptance field",
-		);
-	}
-	if (acceptance?.migrated.length || boardYamlUpgraded) {
-		await board.commit(
-			acceptance?.migrated.length
-				? "mfw: move acceptance criteria into the acceptance field"
-				: "mfw: upgrade board.yaml task fields",
-		);
-	}
-
-	// Once per board: claim sidecars name an attempt group, not a run. A group
-	// of one is named after its run, so only the key moves.
-	const claimGroups = await tasks.migrateClaimGroups();
-	if (claimGroups?.rewritten.length) {
-		plog.info(
-			{ rewritten: claimGroups.rewritten.length },
-			"task claims moved to attempt groups",
-		);
+	if (boardYamlUpgraded) {
+		await board.commit("mfw: add mfw's task fields to board.yaml");
 	}
 
 	// Commit the freshly loaded board now instead of waiting for a transition.
@@ -2316,7 +2275,7 @@ async function acquireProjectLock(
 	mfwDir: string,
 	bootId: string,
 ): Promise<() => Promise<void>> {
-	const lockPath = join(mfwDir, "daemon.lock");
+	const lockPath = join(mfwDir, "server.lock");
 	// In-process conflict (two orchestrators in one server, or a test booting
 	// twice): the pid file cannot see this, since the pid is our own.
 	if (heldLocks.has(mfwDir)) {
@@ -2372,15 +2331,6 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 	let hostResources!: HostLedger;
 	let resourceStore: ResourceStore | undefined;
 	try {
-		// Before anything opens the store: what this version will not read must
-		// be drained and acknowledged, never silently abandoned.
-		const legacyHost = await checkLegacyHostState(home);
-		if (legacyHost.status === "acknowledged") {
-			log.warn(
-				{ ignoredTables: legacyHost.ignoredTables },
-				"ignoring acknowledged legacy host state from before the resource-core upgrade",
-			);
-		}
 		resourceStore = await openResourceStore(home, {
 			processBootId: bootId,
 			kernelBootId,
@@ -2762,7 +2712,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 		await daemonLock
 			.release()
 			.catch((cleanupError) => failures.push(cleanupError));
-		throw new AggregateError(failures, "orchestrator boot failed");
+		throw new AggregateError(failures, "server boot failed");
 	}
 
 	log.info({ projects: [...projects.keys()] }, "orchestrator ready");

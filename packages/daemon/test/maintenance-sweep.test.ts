@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DefinitionOfDone } from "@mfw/core/taskfile";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
 import { EventBus } from "@mfw/db/eventlog";
 import { engineKv, events as eventsTable } from "@mfw/db/schema";
@@ -14,6 +13,7 @@ import { RunRegistry } from "../src/run-registry.ts";
 import { createRunWorkspace } from "../src/run-workspace/factory.ts";
 import { SessionService } from "../src/session.ts";
 import type { TaskService } from "../src/task-service.ts";
+import type { VerificationPlan } from "../src/tasks/types.ts";
 import { MFW_EXCLUDE, makeTasks } from "./fixtures/board.ts";
 import { agentWork, useCheckClones } from "./support/check-clones.ts";
 
@@ -28,7 +28,7 @@ interface F {
 	cleanup: () => Promise<void>;
 }
 
-async function fixture(mergeChecks?: DefinitionOfDone | null): Promise<F> {
+async function fixture(mergeChecks?: VerificationPlan | null): Promise<F> {
 	const root = await mkdtemp(join(tmpdir(), "mfw-maint-"));
 	await git(["init", "-q", "-b", "main"], root);
 	await git(["config", "user.email", "t@t"], root);
@@ -97,7 +97,7 @@ describe("regression sweep: the red-main safety net", () => {
 		const f = await fixture();
 		const t = await f.tasks.create({
 			title: "still good",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["feature.txt"] }],
 			},
@@ -116,7 +116,7 @@ describe("regression sweep: the red-main safety net", () => {
 		const f = await fixture();
 		const t = await f.tasks.create({
 			title: "will regress",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["feature.txt"] }],
 			},
@@ -153,7 +153,7 @@ describe("regression sweep: the red-main safety net", () => {
 		const f = await fixture();
 		const task = await f.tasks.create({
 			title: "introducing change",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["feature.txt"] }],
 			},
@@ -256,7 +256,7 @@ describe("regression sweep: the red-main safety net", () => {
 		});
 		const t = await f.tasks.create({
 			title: "has a real check too",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["feature.txt"] }],
 			},
@@ -281,7 +281,7 @@ describe("regression sweep: the red-main safety net", () => {
 		const f = await fixture();
 		const t = await f.tasks.create({
 			title: "looks broken, isn't",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["feature.txt"] }],
 			},
@@ -340,14 +340,14 @@ describe("regression sweep: the red-main safety net", () => {
 		});
 		const first = await f.tasks.create({
 			title: "first focused task",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["feature.txt"] }],
 			},
 		});
 		const second = await f.tasks.create({
 			title: "second focused task",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["README.md"] }],
 			},
@@ -371,7 +371,7 @@ describe("regression sweep: the red-main safety net", () => {
 		const f = await fixture();
 		const t = await f.tasks.create({
 			title: "recovers",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["feature.txt"] }],
 			},
@@ -408,7 +408,7 @@ describe("regression sweep: the red-main safety net", () => {
 		// Establishes a known-green baseline.
 		const baseline = await f.tasks.create({
 			title: "baseline",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["feature.txt"] }],
 			},
@@ -425,7 +425,7 @@ describe("regression sweep: the red-main safety net", () => {
 		// like a formatter would, inside the corroboration run.
 		const a = await f.tasks.create({
 			title: "structurally broken check that dirties a tracked file",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [
 					{
@@ -440,7 +440,7 @@ describe("regression sweep: the red-main safety net", () => {
 		// Task B is fine at tip: its check reads the same file's tip content.
 		const b = await f.tasks.create({
 			title: "reads the real tip content",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ run: "grep -q tip shared.txt", expect_exit: 0 }],
 			},
@@ -462,7 +462,7 @@ describe("regression sweep: the red-main safety net", () => {
 		const marker = join(f.root, "sweep-ran-here.txt");
 		const t = await f.tasks.create({
 			title: "writes a marker",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ run: "touch sweep-ran-here.txt", expect_exit: 0 }],
 			},
@@ -490,7 +490,7 @@ describe("regression sweep: the red-main safety net", () => {
 			source: "importer",
 			status: "done",
 			// A guess about a file the repo does not contain.
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["src/auth.ts"] }],
 			},
@@ -512,7 +512,7 @@ describe("regression sweep: the red-main safety net", () => {
 			title: "session store",
 			source: "importer",
 			status: "done",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["feature.txt"] }],
 			},
@@ -540,7 +540,7 @@ describe("regression sweep: the red-main safety net", () => {
 		await git(["commit", "-q", "-m", "manifest"], f.root);
 		const t = await f.tasks.create({
 			title: "needs its dependencies",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ run: "test -d node_modules/left-pad", expect_exit: 0 }],
 			},
@@ -557,7 +557,7 @@ describe("regression sweep: the red-main safety net", () => {
 		const f = await fixture();
 		const t = await f.tasks.create({
 			title: "needs a tool",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ run: "exit 127", expect_exit: 0 }],
 			},
@@ -573,7 +573,7 @@ describe("regression sweep: the red-main safety net", () => {
 		const f = await fixture();
 		const t = await f.tasks.create({
 			title: "innocent when the sweep cannot start",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["feature.txt"] }],
 			},
@@ -610,7 +610,7 @@ describe("regression sweep: the red-main safety net", () => {
 		const f = await fixture();
 		const t = await f.tasks.create({
 			title: "its check crashes the verifier, not the code",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				// Crashes on the verifier's one retry too: the persistent case must reach `infra`.
 				checks: [{ run: "kill -11 $$", expect_exit: 0 }],
@@ -638,7 +638,7 @@ describe("regression sweep: the red-main safety net", () => {
 		const f = await fixture();
 		const t1 = await f.tasks.create({
 			title: "will regress",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["feature.txt"] }],
 			},
@@ -667,7 +667,7 @@ describe("regression sweep: the red-main safety net", () => {
 		const f = await fixture();
 		const t = await f.tasks.create({
 			title: "never gets fixed",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["feature.txt"] }],
 			},
@@ -689,7 +689,7 @@ describe("regression sweep: the red-main safety net", () => {
 		const f = await fixture();
 		const t = await f.tasks.create({
 			title: "never gets fixed",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["feature.txt"] }],
 			},
@@ -749,7 +749,7 @@ describe("regression sweep: the red-main safety net", () => {
 		const f = await fixture();
 		const t = await f.tasks.create({
 			title: "flaky under the sweep",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["feature.txt"] }],
 			},
@@ -807,7 +807,7 @@ describe("regression sweep: the red-main safety net", () => {
 		const f = await fixture();
 		const t = await f.tasks.create({
 			title: "genuinely regressed",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["feature.txt"] }],
 			},
@@ -844,7 +844,7 @@ describe("regression sweep: the red-main safety net", () => {
 		const f = await fixture();
 		const t = await f.tasks.create({
 			title: "fails with useful process facts",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [
 					{
@@ -898,7 +898,7 @@ describe("regression sweep: the red-main safety net", () => {
 		const f = await fixture();
 		const t = await f.tasks.create({
 			title: "times out under sweep",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ run: "sleep 5", expect_exit: 0, timeout: 1 }],
 			},
@@ -934,7 +934,7 @@ describe("regression sweep: the red-main safety net", () => {
 		const f = await fixture();
 		const t = await f.tasks.create({
 			title: "x",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["feature.txt"] }],
 			},

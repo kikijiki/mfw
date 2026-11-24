@@ -29,8 +29,6 @@ export type InspectionKind =
 	| "new-folder"
 	| "none"
 	| "existing"
-	| "legacy"
-	| "ambiguous"
 	| "invalid";
 
 export interface InspectionView {
@@ -89,17 +87,6 @@ export function describeInspection(
 			...NO_BOARD,
 		};
 	}
-	if (inspection.location === "ambiguous") {
-		return {
-			kind: "ambiguous",
-			tone: "error",
-			title: "Two boards in this folder",
-			detail: `Both ${inspection.path}/board.yaml and ${inspection.path}/.mfw/board.yaml exist. Remove one and try again.`,
-			canAdd: false,
-			needsTemplate: false,
-			...NO_BOARD,
-		};
-	}
 	if (inspection.location === "none") {
 		return {
 			kind: "none",
@@ -142,19 +129,6 @@ export function describeInspection(
 	}));
 	const tasks = type?.documents ?? 0;
 	const layout = type?.layout ?? null;
-	if (inspection.location === "legacy-mfw") {
-		return {
-			kind: "legacy",
-			tone: "warning",
-			title: "Board found in .mfw/",
-			detail: `It holds ${plural(tasks, "task")} and will be moved to the folder root.`,
-			canAdd: true,
-			needsTemplate: false,
-			statuses,
-			tasks,
-			layout,
-		};
-	}
 	return {
 		kind: "existing",
 		tone: "success",
@@ -278,12 +252,6 @@ export function summarize(
 			lines.push({
 				label: "Board",
 				value: `existing board adopted as it is (${plural(view.tasks ?? 0, "task")})`,
-			});
-			break;
-		case "legacy":
-			lines.push({
-				label: "Board",
-				value: "the board in .mfw/ moves to the folder root",
 			});
 			break;
 		default:

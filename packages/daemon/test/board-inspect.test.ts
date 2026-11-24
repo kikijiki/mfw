@@ -43,22 +43,6 @@ types:
       title: {}
 `;
 
-const LEGACY_BOARD_YAML = `mfw: 1
-
-types:
-  task:
-    layout: directory
-    dir: tasks
-    primary: task.md
-    id: { strategy: own-sequence, key: TSK }
-    slugFrom: title
-    fields:
-      title: {}
-      status:
-        values: [open, closed]
-        default: open
-`;
-
 async function writeDoc(
 	path: string,
 	id: string,
@@ -204,7 +188,7 @@ describe("inspectBoardFolder: status map", () => {
 
 		expect(result.valid).toBe(true);
 		expect(result.statusRoles).toBeNull();
-		expect(result.statusMapError).toContain("x-mfw-daemon");
+		expect(result.statusMapError).toContain("x-mfw");
 	});
 
 	test("a template board reports each status's daemon role", async () => {
@@ -226,58 +210,7 @@ describe("inspectBoardFolder: status map", () => {
 	});
 });
 
-describe("inspectBoardFolder: the legacy .mfw board", () => {
-	test("finds .mfw/board.yaml and counts a directory layout", async () => {
-		const dir = await freshDir();
-		await mkdir(join(dir, ".mfw"), { recursive: true });
-		await writeFile(join(dir, ".mfw", "board.yaml"), LEGACY_BOARD_YAML);
-		await writeDoc(join(dir, ".mfw", "tasks", "TSK-1", "task.md"), "TSK-1", {
-			title: "first",
-			status: "open",
-		});
-		await writeDoc(join(dir, ".mfw", "tasks", "TSK-2", "task.md"), "TSK-2", {
-			title: "second",
-			status: "closed",
-		});
-
-		const result = await inspectBoardFolder(dir);
-
-		expect(result.location).toBe("legacy-mfw");
-		expect(result.boardYaml).toBe(join(dir, ".mfw", "board.yaml"));
-		expect(result.valid).toBe(true);
-		expect(result.key).toBe("TSK");
-		expect(result.types).toEqual([
-			{
-				name: "task",
-				dir: "tasks",
-				layout: "directory",
-				documents: 2,
-				statusField: "status",
-				statuses: ["open", "closed"],
-				statusCounts: { open: 1, closed: 1 },
-			},
-		]);
-	});
-});
-
-describe("inspectBoardFolder: an ambiguous folder", () => {
-	test("a board.yaml in both places reports ambiguous and reads the root one", async () => {
-		const dir = await freshDir();
-		await writeRootBoard(dir);
-		await mkdir(join(dir, ".mfw"), { recursive: true });
-		await writeFile(
-			join(dir, ".mfw", "board.yaml"),
-			LEGACY_BOARD_YAML, // key TSK: the root one (key POOT) must win
-		);
-
-		const result = await inspectBoardFolder(dir);
-
-		expect(result.location).toBe("ambiguous");
-		expect(result.boardYaml).toBe(join(dir, "board.yaml"));
-		expect(result.valid).toBe(true);
-		expect(result.key).toBe("POOT");
-	});
-});
+describe("inspectBoardFolder: the legacy .mfw board", () => {});
 
 describe("inspectBoardFolder: a broken board.yaml", () => {
 	test("reports the config error with no types instead of throwing", async () => {

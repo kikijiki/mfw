@@ -1,4 +1,4 @@
-import type { DefinitionOfDone } from "../tasks/types.ts";
+import type { VerificationPlan } from "../tasks/types.ts";
 import type { TriggerActionHandler } from "./actions.ts";
 
 /**
@@ -23,7 +23,7 @@ export interface CreateTaskActionDeps {
 			type: "implementation" | "spike" | "epic" | "maintenance";
 			source: "lifetime";
 			lifetimeDefId: string;
-			dod?: DefinitionOfDone | null;
+			verification?: VerificationPlan | null;
 		}): Promise<{ id: string }>;
 	};
 }
@@ -61,7 +61,7 @@ export function createCreateTaskAction(
 			lifetimeDefId: dispatch.def.id,
 			// Frontmatter is untyped YAML by construction, `lifetime.ts` casts the
 			// same way for the same reason.
-			dod: action.dod as DefinitionOfDone | null,
+			verification: action.verification as VerificationPlan | null,
 		});
 		return { ok: true, detail: `created task ${task.id}` };
 	};

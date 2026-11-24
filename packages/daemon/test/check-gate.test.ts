@@ -15,7 +15,7 @@ import {
 	checkGateRefusal,
 } from "../src/containment/check-gate.ts";
 import { gitOk } from "../src/git.ts";
-import type { DefinitionOfDone } from "../src/tasks/types.ts";
+import type { VerificationPlan } from "../src/tasks/types.ts";
 import { verify } from "../src/verifier.ts";
 
 let base: string;
@@ -29,7 +29,7 @@ const dod = (run: string) =>
 	({
 		verifier: "deterministic",
 		checks: [{ run }],
-	}) as unknown as DefinitionOfDone;
+	}) as unknown as VerificationPlan;
 
 beforeEach(async () => {
 	base = await realpath(await mkdtemp(join(tmpdir(), "mfw-gate-")));

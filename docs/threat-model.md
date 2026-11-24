@@ -114,7 +114,7 @@ See [verifier-sandbox.md](verifier-sandbox.md).
 | Merge pinned to the verified commit | the queue lands the commit that passed, and a moved tip is refused | `packages/daemon/src/merge-queue.ts` |
 | Ask-first gate | a change to a host-executed path, or to an executing `package.json` field, waits on an owner card. The approval is bound to that content and used once | `packages/daemon/src/merge-gate.ts`, `packages/daemon/src/brain-runtime/decision-rights.ts` |
 | Host-owned landing repository | merges and pushes run from a repository with an empty config, so the primary's hooks and filters are not read | `packages/daemon/src/host-git/landing.ts` |
-| Approved push URL | the destination comes from the daemon home, never from `remote.<name>.url` | `packages/daemon/src/host-git/push.ts` |
+| Approved push URL | the destination comes from `$MFW_HOME`, never from `remote.<name>.url` | `packages/daemon/src/host-git/push.ts` |
 
 ### 7. What the host executes
 

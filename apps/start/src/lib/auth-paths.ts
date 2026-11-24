@@ -8,7 +8,7 @@ export function relativePath(pathname: string, base: string): string | null {
 
 /** Where to go after login: a path inside the app, or the app's root. */
 export function safeNext(next: string | null, base: string): string {
-	if (!next || !next.startsWith("/") || /[\\\p{Cc}]/u.test(next)) return base;
+	if (!next?.startsWith("/") || /[\\\p{Cc}]/u.test(next)) return base;
 	if (next.startsWith("//")) return base;
 	let url: URL;
 	try {

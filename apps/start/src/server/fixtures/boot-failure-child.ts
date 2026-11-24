@@ -1,6 +1,6 @@
 import { installOrchestrator } from "../boot.ts";
 
-delete process.env.MFW_DISABLE_ORCHESTRATOR;
+delete process.env.MFW_SERVE_UI_ONLY;
 installOrchestrator(
 	{
 		hooks: {

@@ -222,7 +222,7 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 
 		const task = await svc.tasks.create({
 			title: "add the feature",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["feature.txt"] }],
 			},
@@ -297,7 +297,7 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 		const victim = await svc.tasks.create({ title: "not yours to edit" });
 		const task = await svc.tasks.create({
 			title: "add the feature",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["feature.txt"] }],
 			},
@@ -391,7 +391,7 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 
 		const task = await svc.tasks.create({
 			title: "will not be done",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["never-created.txt"] }],
 			},
@@ -554,7 +554,7 @@ const IMPORT_PROPOSAL = {
 			title: "the auth module",
 			body: "already shipped",
 			status: "done",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ files_exist: ["src/auth.ts"] }],
 			},
@@ -717,7 +717,10 @@ describe("v2 safety defaults", () => {
 
 		const t = await svc.tasks.create({
 			title: "must not run by itself",
-			dod: { verifier: "deterministic", checks: [{ files_exist: ["x"] }] },
+			verification: {
+				verifier: "deterministic",
+				checks: [{ files_exist: ["x"] }],
+			},
 		});
 		await svc.tasks.move(t.id, "ready", "human");
 		await Bun.sleep(400); // several would-be scheduler periods
@@ -777,10 +780,10 @@ describe("single-daemon safety", () => {
 
 	test("a LIVE lock from another daemon blocks the attach", async () => {
 		// Stops a second orchestrator (dev server, stray `bun start`) from putting
-		// two supervisors on one board. `MFW_DISABLE_ORCHESTRATOR` is not a substitute.
+		// two supervisors on one board. `MFW_SERVE_UI_ONLY` is not a substitute.
 		const root = await makeRepo();
 		await mkdir(join(root, ".mfw"), { recursive: true });
-		const liveLock = await acquireKernelLock(join(root, ".mfw/daemon.lock"));
+		const liveLock = await acquireKernelLock(join(root, ".mfw/server.lock"));
 		const orch = await boot({
 			projects: [cfg(root)],
 			log: silentLogger(),
@@ -796,7 +799,7 @@ describe("single-daemon safety", () => {
 		const root = await makeRepo();
 		await mkdir(join(root, ".mfw"), { recursive: true });
 		await writeFile(
-			join(root, ".mfw/daemon.lock"),
+			join(root, ".mfw/server.lock"),
 			`${JSON.stringify({ pid: 1, acquiredAt: 0 })}\n`,
 		);
 		const orch = await boot({

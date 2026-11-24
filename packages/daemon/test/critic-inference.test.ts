@@ -1,14 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import {
-	chmod,
-	mkdir,
-	mkdtemp,
-	readdir,
-	readFile,
-	rm,
-	writeFile,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -21,8 +13,6 @@ import {
 } from "../src/run-workspace/factory.ts";
 import { SandboxUnavailableError } from "../src/sandbox.ts";
 
-const CANARY = "MFW_TEST_DAEMON_SECRET";
-
 let dir: string;
 beforeEach(async () => {
 	dir = await mkdtemp(join(tmpdir(), "mfw-critic-"));
@@ -30,45 +20,6 @@ beforeEach(async () => {
 afterEach(async () => {
 	await rm(dir, { recursive: true, force: true });
 });
-
-async function stub(name: string, reply: string): Promise<string> {
-	const bin = join(dir, name);
-	await writeFile(
-		bin,
-		`#!/bin/sh\nenv > "${bin}.env"\npwd > "${bin}.cwd"\nprintf '%s' '${reply}'\n`,
-	);
-	await chmod(bin, 0o755);
-	return bin;
-}
-
-/**
- * In a fresh process that starts with the canary in its environment: Bun hands
- * a child the environment it started with, so a variable set from inside this
- * test would not reach the child on the old code either, and prove nothing.
- */
-async function inDaemonEnv(body: string): Promise<void> {
-	const brain = join(import.meta.dir, "../src/brain.ts");
-	const proc = Bun.spawn(
-		[
-			process.execPath,
-			"-e",
-			`const b = await import(${JSON.stringify(brain)});
-const opts = { model: "m", timeoutMs: 20000 };
-${body}`,
-		],
-		{
-			env: { ...process.env, [CANARY]: "leaked" },
-			stdout: "pipe",
-			stderr: "pipe",
-		},
-	);
-	const [code, err] = await Promise.all([
-		proc.exited,
-		new Response(proc.stderr).text(),
-	]);
-	expect(err.slice(-400)).toBe("");
-	expect(code).toBe(0);
-}
 
 describe("the critic runs through the sandboxed reviewer launch", () => {
 	const claude = { id: "claude-cli", type: "claude-cli" } as const;

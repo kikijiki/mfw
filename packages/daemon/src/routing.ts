@@ -673,7 +673,7 @@ export function placeRun(input: {
 			hostId: null,
 			harnesses: null,
 			rule: "default",
-			detail: "runs on the daemon machine",
+			detail: "runs on the server's machine",
 		};
 	}
 	const who = rule === "task" ? "the task" : "the project";

@@ -94,7 +94,7 @@ describe("only a real conflict is reported as busy", () => {
 
 	test("the daemon lock keeps the distinction", async () => {
 		const d = tmp();
-		const held = await acquireKernelLock(join(d, "daemon.lock"));
+		const held = await acquireKernelLock(join(d, "server.lock"));
 		const failure = await acquireDaemonLock(d, {
 			processBootId: "t",
 			timeoutMs: 500,
@@ -126,7 +126,7 @@ describe("init --write words a lock failure truthfully", () => {
 		const home = join(d, "home");
 		mkdirSync(home, { mode: 0o700 });
 		const r = repo(d);
-		const held = await acquireKernelLock(join(home, "daemon.lock"));
+		const held = await acquireKernelLock(join(home, "server.lock"));
 		const err: string[] = [];
 		await runInitCommand(["--project", r, "--write"], deps(home, err));
 		await held.release();
@@ -138,7 +138,7 @@ describe("init --write words a lock failure truthfully", () => {
 			new DaemonLockError("/x", "flock is missing", false),
 		);
 		expect(text).not.toContain("the server is running");
-		expect(text).toContain("could not take the daemon lock");
+		expect(text).toContain("could not take the server lock");
 		expect(lockRefusal(new DaemonLockError("/x", "held", true))).toContain(
 			"the server is running",
 		);

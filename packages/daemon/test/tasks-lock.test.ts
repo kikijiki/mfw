@@ -95,11 +95,11 @@ describe("KeyedLock", () => {
 		expect(entered).toBe(true);
 	});
 
-	test("times out without displacing a proven-live owner solely by age", async () => {
+	test("times out without displacing a proven-live owner", async () => {
 		const dir = await lockDir();
 		const release = deferred();
 		const entered = deferred();
-		const owner = new KeyedLock(dir, { staleMs: 1, timeoutMs: 500 });
+		const owner = new KeyedLock(dir, { timeoutMs: 500 });
 		const holding = owner.with("MFW-1", async () => {
 			entered.resolve();
 			await release.promise;
@@ -110,12 +110,9 @@ describe("KeyedLock", () => {
 		let contenderEntered = false;
 		const started = performance.now();
 		await expect(
-			new KeyedLock(dir, { staleMs: 1, timeoutMs: 50 }).with(
-				"MFW-1",
-				async () => {
-					contenderEntered = true;
-				},
-			),
+			new KeyedLock(dir, { timeoutMs: 50 }).with("MFW-1", async () => {
+				contenderEntered = true;
+			}),
 		).rejects.toThrow("lock acquisition timed out");
 		expect(performance.now() - started).toBeLessThan(500);
 		expect(contenderEntered).toBe(false);
@@ -128,7 +125,7 @@ describe("KeyedLock", () => {
 		const dir = await lockDir();
 		const releaseFirst = deferred();
 		const firstEntered = deferred();
-		const first = new KeyedLock(dir, { staleMs: 1, timeoutMs: 1_000 });
+		const first = new KeyedLock(dir, { timeoutMs: 1_000 });
 		const firstRun = first.with("MFW-1", async () => {
 			firstEntered.resolve();
 			await releaseFirst.promise;
@@ -138,7 +135,7 @@ describe("KeyedLock", () => {
 
 		const releaseSecond = deferred();
 		const secondEntered = deferred();
-		const second = new KeyedLock(dir, { staleMs: 1, timeoutMs: 1_000 });
+		const second = new KeyedLock(dir, { timeoutMs: 1_000 });
 		const secondRun = second.with("MFW-1", async () => {
 			secondEntered.resolve();
 			await releaseSecond.promise;
@@ -153,12 +150,9 @@ describe("KeyedLock", () => {
 		await expect(stat(join(dir, "MFW-1.lock"))).resolves.toBeDefined();
 		let thirdEntered = false;
 		await expect(
-			new KeyedLock(dir, { staleMs: 60_000, timeoutMs: 50 }).with(
-				"MFW-1",
-				async () => {
-					thirdEntered = true;
-				},
-			),
+			new KeyedLock(dir, { timeoutMs: 50 }).with("MFW-1", async () => {
+				thirdEntered = true;
+			}),
 		).rejects.toThrow("lock acquisition timed out");
 		expect(thirdEntered).toBe(false);
 

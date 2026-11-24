@@ -13,7 +13,7 @@ import {
 import { git } from "./git.ts";
 import type { ProcResult } from "./proc.ts";
 import type { VerifierClones } from "./run-workspace/verifier-clone.ts";
-import type { DefinitionOfDone, DoDCheck } from "./tasks/types.ts";
+import type { VerificationCheck, VerificationPlan } from "./tasks/types.ts";
 
 /**
  * Runs a task's DoD checks and never trusts the agent's transcript.
@@ -129,7 +129,7 @@ export function describeVerificationEnvironment(opts: VerifyOptions): string {
 	].join("; ");
 }
 
-function describe(check: DoDCheck): string {
+function describe(check: VerificationCheck): string {
 	if ("run" in check) return `run: ${check.run}`;
 	if ("files_exist" in check)
 		return `files_exist: ${check.files_exist.join(", ")}`;
@@ -217,7 +217,7 @@ function runSandboxed(
 
 export async function verify(
 	cwd: string,
-	dod: DefinitionOfDone,
+	dod: VerificationPlan,
 	baseSha: string,
 	opts: VerifyOptions = {},
 ): Promise<VerificationResult> {
@@ -433,7 +433,7 @@ export async function verifyInClone(
 	clones: Pick<VerifierClones, "with" | "checkRunner" | "fileInCommit">,
 	rev: string,
 	label: string,
-	dod: DefinitionOfDone,
+	dod: VerificationPlan,
 	baseSha: string,
 	opts: VerifyOptions & { role?: VerifyRole } = {},
 ): Promise<VerificationResult> {

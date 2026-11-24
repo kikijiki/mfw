@@ -1,7 +1,6 @@
 import { lstat, open, readdir, realpath, stat } from "node:fs/promises";
 import { extname, join, relative, resolve, sep } from "node:path";
 import { git, gitRaw } from "./git.ts";
-import { runProc } from "./proc.ts";
 import type { RunRegistry } from "./run-registry.ts";
 
 /**

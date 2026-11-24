@@ -3,8 +3,8 @@
 `mfw-board` (also run as `mfw board`) operates a **board**: markdown documents (tasks, specs, ADRs, anything the
 board defines) with YAML frontmatter, kept as plain files on disk. It is the only
 board CLI; `@mfw/board-core` is the library behind it (locks, atomic writes,
-validation) and has no binary. No daemon is needed, and it is safe to run while the
-mfw daemon works on the same board: both go through the same per-document locks.
+validation) and has no binary. No server is needed, and it is safe to run while
+mfw-server works on the same board: both go through the same per-document locks.
 
 ```sh
 bun /path/to/mfw/packages/board/src/cli.ts <command> ...   # or `mfw-board` / `mfw board` where it is on PATH
@@ -118,7 +118,7 @@ a `refs` rule scans files in one for a pattern that must name a board document:
 
 ```yaml
 roots:
-  code: ../../app                 # also: --root code=<path>, or MFWB_ROOT_CODE
+  code: ../../app                 # also: --root code=<path>, or MFW_BOARD_ROOT_CODE
 refs:
   - id: held-markers
     root: code
@@ -255,7 +255,7 @@ with the file untouched. A parent cannot finish while a child is open.
 | `mfw board skill install [--global] [--here] [--target list] [--dry-run]` | Copy the mfw board skill into detected agent tools (claude, codex, opencode, pi), at the git root (`--here`: the current directory) or per user (`--global`). Skips a tool that already reads another install. |
 | `mfw board shim install [--dir dir] [--dry-run]` | Write an `mfw-board` launcher (a two-line `sh` script that runs this checkout's CLI under bun) into `dir`, default `~/.local/bin`, so `mfw-board` is on PATH for scripts. Run it once as `bun packages/board/src/cli.ts shim install`. Never overwrites a file it did not write; re-running is a no-op. |
 | `mfw board shim status [--dir dir]` | Whether the launcher is installed, outdated (the checkout moved) or missing. |
-| `mfw board skill status [--global] [--target list]` | Where it is installed and whether it is current. Also run by `skill install`: it lists a leftover skill copy under the pre-rename directory name as `legacy ...` and never deletes it; remove it yourself. |
+| `mfw board skill status [--global] [--target list]` | Where it is installed and whether it is current. |
 
 ## Typical flow
 

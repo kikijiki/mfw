@@ -29,12 +29,12 @@ describe("findMfwRoot", () => {
 		expect(findMfwRoot(repo)).toBeNull();
 	});
 
-	test("a board left in .mfw/ is not discovered, and the error says why", async () => {
+	test("a board.yaml under .mfw/ is not discovered", async () => {
 		const repo = await freshRepo();
 		await mkdir(join(repo, ".mfw"), { recursive: true });
 		await writeFile(join(repo, ".mfw", "board.yaml"), "mfw: 1\ntypes: {}\n");
 		expect(findMfwRoot(repo)).toBeNull();
-		expect(openMfwProject(repo)).rejects.toThrow(/\.mfw\/ layout/);
+		expect(openMfwProject(repo)).rejects.toThrow(/no board found/);
 	});
 });
 

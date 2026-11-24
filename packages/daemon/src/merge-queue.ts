@@ -685,7 +685,7 @@ export class MergeQueue {
 		this.deps.log.warn(
 			{ job: job.id, runId: job.runId, paths: reverted },
 			"the merging branch changed the board; those changes were discarded; " +
-				"the board belongs to the daemon, not to a run",
+				"the board belongs to the server, not to a run",
 		);
 		const stored = await this.deps.handle.withTx(async (tx) =>
 			appendEvent(tx, {

@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { ProjectDbHandle } from "@mfw/db/client";
 import { appendEvent, type EventBus } from "@mfw/db/eventlog";
-import { LIFETIME_ID_RE } from "@mfw/db/ids";
+import { DEF_ID_RE } from "@mfw/db/ids";
 import { lifetimeState } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
 import { DefinitionLoader, type DefinitionSource } from "./definitions.ts";
@@ -29,7 +29,7 @@ export interface LifetimeDef {
 	/** Skip firing while a task from this definition is still open. */
 	dedupe: "skip_if_active" | "always";
 	body: string;
-	dod: unknown;
+	verification: unknown;
 }
 
 export interface FireResult {
@@ -63,7 +63,7 @@ export class LifetimeManager {
 	async load(): Promise<LifetimeDef[]> {
 		const loader = new DefinitionLoader<LifetimeDef>({
 			dir: this.dir(),
-			idRe: LIFETIME_ID_RE,
+			idRe: DEF_ID_RE,
 			kind: "lifetime",
 			log: this.deps.log,
 			parse: (src) => this.parse(src),
@@ -94,7 +94,7 @@ export class LifetimeManager {
 			},
 			dedupe: fm.dedupe === "always" ? "always" : "skip_if_active",
 			body,
-			dod: fm.dod ?? null,
+			verification: fm.verification ?? null,
 		};
 	}
 
@@ -133,7 +133,7 @@ export class LifetimeManager {
 			type: def.type,
 			source: "lifetime",
 			lifetimeDefId: def.id,
-			dod: (def.dod ?? null) as never,
+			verification: (def.verification ?? null) as never,
 		});
 
 		const stored = await this.deps.handle.withTx(async (tx) => {

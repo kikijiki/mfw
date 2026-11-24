@@ -142,21 +142,6 @@ describe("every printed command is safe to paste", () => {
 			);
 			expect(r.run(fix)).toEqual(["chmod", "600", "--", file]);
 		});
-
-		test(`rm of an old skill: ${home}`, async () => {
-			const r = recorder();
-			const skill = `${home}/mfwb/SKILL.md`;
-			const report = await runDoctor(
-				fixture({
-					legacySkills: async () => ({ available: true, paths: [skill] }),
-				}),
-			);
-			const fix =
-				report.checks.find((c) => c.id === "install.skills")?.fix ?? "";
-			const command = fix.slice(fix.indexOf("rm "));
-			expect(r.run(command)).toEqual(["rm", "--", skill]);
-			expect(existsSync(join(r.base, "pwned"))).toBe(false);
-		});
 	}
 
 	for (const home of UNPRINTABLE) {

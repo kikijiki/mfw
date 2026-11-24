@@ -171,7 +171,7 @@ async function reset(auth: AuthService, d: AuthCliDeps): Promise<number> {
 		d.err(
 			e instanceof DaemonLockError && e.busy
 				? "mfw auth: the server is running. Fix: stop the server, then retry."
-				: `mfw auth: could not take the daemon lock, so nothing was changed: ${(e as Error).message}`,
+				: `mfw auth: could not take the server lock, so nothing was changed: ${(e as Error).message}`,
 		);
 		return 1;
 	}

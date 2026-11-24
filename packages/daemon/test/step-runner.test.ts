@@ -12,7 +12,6 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DefinitionOfDone } from "@mfw/core/taskfile";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
 import { EventBus, eventsSince } from "@mfw/db/eventlog";
 import { ulid } from "@mfw/db/ids";
@@ -40,6 +39,7 @@ import {
 	createRunWorkspace,
 } from "../src/run-workspace/factory.ts";
 import { TaskService } from "../src/task-service.ts";
+import type { VerificationPlan } from "../src/tasks/types.ts";
 import { makeTasks } from "./fixtures/board.ts";
 import { agentGit, useCheckClones } from "./support/check-clones.ts";
 
@@ -82,7 +82,7 @@ interface Env {
 
 async function makeEnv(
 	configOverrides: {
-		mergeChecks?: DefinitionOfDone | null;
+		mergeChecks?: VerificationPlan | null;
 		draftExpandMaxAttempts?: number;
 	} = {},
 ): Promise<Env> {
@@ -339,14 +339,14 @@ async function claimedTask(
 	runIdPlaceholder: string,
 	opts: {
 		title: string;
-		dod?: typeof PASSING_DOD | null;
+		verification?: typeof PASSING_DOD | null;
 		labels?: string[];
 	},
 ): Promise<string> {
 	const t = await env.tasks.create({
 		title: opts.title,
 		status: "ready",
-		dod: opts.dod ?? null,
+		verification: opts.verification ?? null,
 		labels: opts.labels ?? [],
 	});
 	expect(await env.tasks.tryClaim(t.id, runIdPlaceholder, 60_000)).toBe(true);
@@ -362,7 +362,7 @@ describe("StepRunner v2: finalization end to end", () => {
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "verified work",
-			dod: PASSING_DOD,
+			verification: PASSING_DOD,
 		});
 		const run = await seedRun(env, {
 			kind: "task",
@@ -410,7 +410,7 @@ describe("StepRunner v2: finalization end to end", () => {
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "pinned work",
-			dod: PASSING_DOD,
+			verification: PASSING_DOD,
 		});
 		const run = await seedRun(env, {
 			kind: "task",
@@ -437,7 +437,7 @@ describe("StepRunner v2: finalization end to end", () => {
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "uncommitted work",
-			dod: PASSING_DOD,
+			verification: PASSING_DOD,
 		});
 		const run = await seedRun(env, {
 			kind: "task",
@@ -471,7 +471,7 @@ describe("StepRunner v2: finalization end to end", () => {
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "remote output was not collected",
-			dod: PASSING_DOD,
+			verification: PASSING_DOD,
 		});
 		const run = await seedRun(env, {
 			kind: "task",
@@ -564,7 +564,7 @@ describe("StepRunner v2: finalization end to end", () => {
 			title: "counted verify",
 			status: "ready",
 			requireReview: true, // T15 review gate → release_task(review)
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ run: `printf x >> ${counter}`, expect_exit: 0 }],
 			},
@@ -844,7 +844,7 @@ describe("StepRunner v2: finalization end to end", () => {
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "broken work",
-			dod: FAILING_DOD,
+			verification: FAILING_DOD,
 		});
 		const run = await seedRun(env, {
 			kind: "task",
@@ -889,7 +889,7 @@ describe("StepRunner v2: finalization end to end", () => {
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "broken work",
-			dod: FAILING_DOD,
+			verification: FAILING_DOD,
 		});
 		const run = await seedRun(env, {
 			kind: "task",
@@ -927,7 +927,7 @@ describe("StepRunner v2: finalization end to end", () => {
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "unlucky work",
-			dod: CRASHING_DOD,
+			verification: CRASHING_DOD,
 		});
 		const run = await seedRun(env, {
 			kind: "task",
@@ -1119,7 +1119,7 @@ describe("StepRunner v2: finalization end to end", () => {
 				{
 					title: "Alpha",
 					body: "first",
-					dod: {
+					verification: {
 						verifier: "deterministic",
 						checks: [{ run: "true", expect_exit: 0 }],
 					},
@@ -1275,7 +1275,7 @@ describe("StepRunner v2: finalization end to end", () => {
 			expect(after?.status).toBe("draft");
 			expect(after?.draftPhase).toBe("retrying");
 			expect(after?.draftAttempts).toBe(1);
-			expect(after?.dod).toBeNull();
+			expect(after?.verification).toBeNull();
 			expect(env.notifications).toEqual([]);
 			await env.cleanup();
 		});
@@ -1428,7 +1428,7 @@ describe("scope watchdog: T4s kill and the finish-time scope gate", () => {
 		const t = await env.tasks.create({
 			title: "scoped work",
 			status: "ready",
-			dod: PASSING_DOD,
+			verification: PASSING_DOD,
 			owns: ["src/**"],
 		});
 		expect(await env.tasks.tryClaim(t.id, runId, 60_000)).toBe(true);
@@ -1474,7 +1474,7 @@ describe("scope watchdog: T4s kill and the finish-time scope gate", () => {
 		const t = await env.tasks.create({
 			title: "scoped work",
 			status: "ready",
-			dod: PASSING_DOD,
+			verification: PASSING_DOD,
 			owns: ["src/**"],
 		});
 		expect(await env.tasks.tryClaim(t.id, runId, 60_000)).toBe(true);
@@ -1775,7 +1775,7 @@ describe("MFW-48: a project default DoD stands in for a task with none", () => {
 			},
 		]);
 		// The default is resolved at verification time, never written to the file.
-		expect((await env.tasks.get(taskId))?.dod).toBeNull();
+		expect((await env.tasks.get(taskId))?.verification).toBeNull();
 		await env.cleanup();
 	});
 
@@ -1842,7 +1842,7 @@ describe("follow-ups reported by a task run", () => {
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "parser work",
-			dod: PASSING_DOD,
+			verification: PASSING_DOD,
 		});
 		const run = await seedRun(env, {
 			kind: "task",
@@ -1926,7 +1926,7 @@ describe("processes a task run left running", () => {
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "left a watcher running",
-			dod: PASSING_DOD,
+			verification: PASSING_DOD,
 		});
 		const leftover = {
 			pid: 4242,
@@ -1989,7 +1989,7 @@ describe("processes a task run left running", () => {
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "clean exit",
-			dod: PASSING_DOD,
+			verification: PASSING_DOD,
 		});
 		const run = await seedRun(env, {
 			kind: "task",
@@ -2056,7 +2056,7 @@ describe("durable cleanup", () => {
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "background work",
-			dod: PASSING_DOD,
+			verification: PASSING_DOD,
 		});
 		const process: LeftoverProcess = {
 			pid: 4242,
@@ -2190,7 +2190,7 @@ describe("durable cleanup", () => {
 		const task = await env.tasks.create({
 			title: "historical done task",
 			status: "done",
-			dod: PASSING_DOD,
+			verification: PASSING_DOD,
 		});
 		const wt = await addWorkspace(env.root, "repair-cleanup");
 		const run = await seedRun(env, {
@@ -2305,7 +2305,7 @@ describe("activity at finalize: questions and background work", () => {
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "needs a decision",
-			dod: PASSING_DOD,
+			verification: PASSING_DOD,
 		});
 		await writeFile(
 			join(wt.path, "MFW_REPORT.json"),
@@ -2365,7 +2365,7 @@ describe("activity at finalize: questions and background work", () => {
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "empty question",
-			dod: PASSING_DOD,
+			verification: PASSING_DOD,
 		});
 		await writeFile(
 			join(wt.path, "MFW_REPORT.json"),
@@ -2391,7 +2391,7 @@ describe("activity at finalize: questions and background work", () => {
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "out of scope",
-			dod: PASSING_DOD,
+			verification: PASSING_DOD,
 		});
 		await writeFile(
 			join(wt.path, "MFW_REPORT.json"),
@@ -2421,7 +2421,7 @@ describe("activity at finalize: questions and background work", () => {
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "runs tests in the background",
-			dod: FAILING_DOD,
+			verification: FAILING_DOD,
 		});
 		const events =
 			ev({
@@ -2493,7 +2493,7 @@ describe("StepRunner: review verdicts", () => {
 		const t = await env.tasks.create({
 			title: "reviewed work",
 			status: "ready",
-			dod: PASSING_DOD,
+			verification: PASSING_DOD,
 			criteria: [{ text: "parses the input" }, { text: "handles errors" }],
 		});
 		expect(await env.tasks.tryClaim(t.id, runId, 60_000)).toBe(true);
@@ -2775,13 +2775,13 @@ describe("a run on the default config", () => {
 	async function endedRun(
 		env: Env,
 		name: string,
-		dod: ReturnType<typeof dodOn>,
+		verification: ReturnType<typeof dodOn>,
 		content: string,
 	) {
 		const wt = await addWorkspace(env.root, name);
 		await commitIn(wt.path, "state.txt", content);
 		const runId = ulid();
-		const taskId = await claimedTask(env, runId, { title: name, dod });
+		const taskId = await claimedTask(env, runId, { title: name, verification });
 		const run = await seedRun(env, {
 			kind: "task",
 			runId,

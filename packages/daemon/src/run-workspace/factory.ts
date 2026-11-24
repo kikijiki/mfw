@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { registerRunWorkspaceRoot } from "../host-git/legacy-guard.ts";
 import { CloneRunWorkspace, type CloneWorkspaceOptions } from "./clone-impl.ts";
 import type { RebaseCloneOptions } from "./rebase-clone.ts";
-import type { RunWorkspace, RunWorkspaceHandle } from "./run-workspace.ts";
+import type { RunWorkspaceHandle } from "./run-workspace.ts";
 import { VerifierClones } from "./verifier-clone.ts";
 
 /**

@@ -8,13 +8,14 @@ interface NitroLifecycle {
 }
 
 /**
- * Boot the orchestrator with the server process (not on first request) so
+ * Boot the engine with the server process (not on first request) so
  * supervisor passes and run reconciliation resume after a reboot. Shutdown
  * detaches from tmux runs rather than killing them; the next boot adopts them.
  *
- * `MFW_DISABLE_ORCHESTRATOR=1` serves the UI without attaching anything. It is
- * not a safety mechanism (the per-project `daemon.lock` prevents two
- * orchestrators); it just gives a quiet dev server where the daemon already runs.
+ * `MFW_SERVE_UI_ONLY=1` serves the UI without attaching anything. It is
+ * not a safety mechanism (the per-project `server.lock` prevents two servers
+ * attaching one project); it just gives a quiet dev server where mfw-server
+ * already runs.
  *
  * `vite dev` needs two things production does not:
  *   1. `bun --bun x vite dev`, not `bunx vite dev`: the latter runs SSR under
@@ -26,7 +27,7 @@ interface NitroLifecycle {
  *      query loops. Upstream, dev-only.
  */
 function failServerStartup(error: unknown): never {
-	console.error("[mfw] orchestrator boot failed:", error);
+	console.error("[mfw] server boot failed:", error);
 	process.exit(1);
 }
 
@@ -35,9 +36,9 @@ export function installOrchestrator(
 	get = getOrchestrator,
 	fail = failServerStartup,
 ): void {
-	if (process.env.MFW_DISABLE_ORCHESTRATOR === "1") {
+	if (process.env.MFW_SERVE_UI_ONLY === "1") {
 		console.warn(
-			"[mfw] MFW_DISABLE_ORCHESTRATOR=1: serving the UI with no projects attached",
+			"[mfw] MFW_SERVE_UI_ONLY=1: serving the UI with no projects attached",
 		);
 		return;
 	}

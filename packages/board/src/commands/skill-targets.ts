@@ -94,18 +94,6 @@ export function findProjectRoot(cwd: string): string {
 	}
 }
 
-/**
- * The skill directory this tool used before the rename to `mfw-board`. It is
- * only ever detected and reported, never written or deleted; this constant is
- * the one place the old name may still appear.
- */
-export const LEGACY_SKILL_DIR = "mfwb";
-
-/** Where an old-name skill copy would sit: a sibling of the current install. */
-export function legacyPath(installed: string): string {
-	return join(dirname(dirname(installed)), LEGACY_SKILL_DIR, "SKILL.md");
-}
-
 export function installPath(
 	tool: ToolId,
 	scope: Scope,

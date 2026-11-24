@@ -34,7 +34,7 @@ trap cleanup EXIT
 
 mkdir -p "$scratch/home"
 HOME="$scratch/home" MFW_HOME="$scratch/mfw" HOST=127.0.0.1 PORT="$port" \
-	MFW_DISABLE_ORCHESTRATOR=1 MFW_USAGE_MONITOR=0 \
+	MFW_SERVE_UI_ONLY=1 MFW_USAGE_MONITOR=0 \
 	TMUX_TMPDIR="$scratch" MFW_TMUX_SOCKET="mfw-serve-check-$$" \
 	MFW_LISTEN_SOCKET="$socket" MFW_ALLOWED_HOSTS="$external" \
 	bun run "$entry" >"$scratch/server.log" 2>&1 &

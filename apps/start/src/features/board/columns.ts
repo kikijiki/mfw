@@ -116,7 +116,7 @@ export function dropVerdict(
 	if (column.role === null) {
 		return {
 			ok: false,
-			reason: `mfw cannot place "${column.label}" on a stage of work, so nothing can be moved there. Map it in board.yaml (x-mfw-daemon.statusMap).`,
+			reason: `mfw cannot place "${column.label}" on a stage of work, so nothing can be moved there. Map it in board.yaml (x-mfw.statusMap).`,
 		};
 	}
 	if (!column.writable) {

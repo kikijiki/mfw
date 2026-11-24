@@ -8,11 +8,11 @@ import type { AdmissionTransition } from "../src/project-dispatch-admission.ts";
 import { acquireDaemonLock } from "../src/resources/daemon-lock.ts";
 import type { HostResourceDefinition } from "../src/resources/host-types.ts";
 import { ResourceError } from "../src/resources/types.ts";
-import { HostProcessHarness } from "./support/host-resource-process-harness.ts";
 import {
 	HostResourceCoordinator,
 	openHostResourceStore,
-} from "./support/legacy-host.ts";
+} from "./support/host-contract.ts";
+import { HostProcessHarness } from "./support/host-resource-process-harness.ts";
 import { onRunTree } from "./support/scripted-driver.ts";
 
 const FORWARD_TRANSITIONS = [

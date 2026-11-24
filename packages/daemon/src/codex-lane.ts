@@ -141,12 +141,7 @@ export class CodexLane {
 		const current = this.deps.ledger
 			.readModel()
 			.definitions.find((d) => d.id === id);
-		if (
-			!current ||
-			current.capacity !== 1n ||
-			!current.enabled ||
-			current.draining
-		) {
+		if (current?.capacity !== 1n || !current.enabled || current.draining) {
 			await this.deps.ledger.putDefinition(
 				{
 					id,

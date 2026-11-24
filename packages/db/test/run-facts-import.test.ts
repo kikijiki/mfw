@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sql } from "drizzle-orm";
@@ -58,19 +58,5 @@ describe("the result import facts", () => {
 		};
 		await expect(insert("wip_claim", "host-observed")).rejects.toThrow();
 		await expect(insert("result_import", "sandbox-reported")).rejects.toThrow();
-	});
-
-	test("the migration keeps existing rows", async () => {
-		await open();
-		await handle.db.run(row("report", "sandbox-reported"));
-		const text = readFileSync(
-			join(import.meta.dir, "../migrations/0024_run_result_import.sql"),
-			"utf8",
-		);
-		for (const statement of text.split("--> statement-breakpoint")) {
-			await handle.db.run(sql.raw(statement));
-		}
-		const rows = await handle.db.all(sql`SELECT fact FROM run_facts`);
-		expect(rows).toEqual([{ fact: "report" }]);
 	});
 });

@@ -88,7 +88,7 @@ export function BoardSettings({ project }: { project: string }) {
 						tone: "success",
 						title: "Board saved",
 						description: result.needsRestart
-							? "The daemon reads board.yaml at attach: restart for it to take effect."
+							? "The server reads board.yaml at attach: restart it for this to take effect."
 							: undefined,
 					});
 					void queryClient.invalidateQueries(
@@ -179,7 +179,7 @@ export function BoardSettings({ project }: { project: string }) {
 					}}
 				>
 					The statuses of this project's tasks, in column order, and the role
-					each plays for mfw. The daemon reads <code>board.yaml</code> when the
+					each plays for mfw. The server reads <code>board.yaml</code> when the
 					project attaches, so a saved change takes effect after a restart.
 				</p>
 

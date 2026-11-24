@@ -51,7 +51,7 @@ test("a merge whose run has no base commit is not verified, so it does not land"
 		const task = await svc.tasks.create({
 			title: "t",
 			status: "ready",
-			dod: {
+			verification: {
 				verifier: "deterministic",
 				checks: [{ run: "true", expect_exit: 0 }],
 			},

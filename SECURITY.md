@@ -28,8 +28,9 @@ Especially useful reports:
 ## Supported versions
 
 mfw is pre-release (`0.x`). Only the latest commit of the default branch gets
-security fixes, and there are no backports. Upgrades can change the database
-and the configuration, so back up `$MFW_HOME` and each project's `.mfw/` first.
+security fixes, and there are no backports. There is no migration path between
+development versions: a new version starts from an empty `$MFW_HOME` and empty
+project `.mfw/` directories (see [docs/install.md](docs/install.md)).
 
 ## What mfw protects against
 

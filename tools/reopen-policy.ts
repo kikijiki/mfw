@@ -9,16 +9,16 @@ import {
 } from "../packages/daemon/src/reopen-policy.ts";
 import type { ReopenCondition } from "../packages/daemon/src/tasks/types.ts";
 
-const [action, rootArg, taskId, checkout = "integration-worktree"] =
+const [action, rootArg, taskId, checkout = "integration-workspace"] =
 	process.argv.slice(2);
 if (
 	!["arm", "disarm"].includes(action ?? "") ||
 	!rootArg ||
 	!taskId ||
-	!["integration-worktree", "primary"].includes(checkout)
+	!["integration-workspace", "primary"].includes(checkout)
 ) {
 	throw new Error(
-		"Usage: bun run tools/reopen-policy.ts arm|disarm <project-root> <task-id> [integration-worktree|primary]",
+		"Usage: bun run tools/reopen-policy.ts arm|disarm <project-root> <task-id> [integration-workspace|primary]",
 	);
 }
 const root = resolve(rootArg);
@@ -56,7 +56,7 @@ if (action === "disarm") {
 	const hash = reopenDefinitionHash(reopenWhen, config.checkPrefix, branch);
 	await setReopenPolicy(root, taskId, {
 		hash,
-		checkout: checkout as "integration-worktree" | "primary",
+		checkout: checkout as "integration-workspace" | "primary",
 		armedAt: Date.now(),
 	});
 	console.log(

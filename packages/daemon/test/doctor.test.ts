@@ -86,8 +86,6 @@ describe("a healthy host", () => {
 			"auth.files",
 			"install.config",
 			"install.build",
-			"install.legacy-host",
-			"install.skills",
 			"exposure.bind",
 			"harness.claude",
 			"harness.codex",
@@ -521,41 +519,6 @@ describe("installation", () => {
 		expect(c.status).toBe("ok");
 		expect(c.detail).toContain("source");
 	});
-
-	test("unacknowledged legacy host rows are a blocker", async () => {
-		const c = await check(
-			{
-				legacyHost: async () => ({
-					state: "unacknowledged",
-					rows: { leases: 3 },
-				}),
-			},
-			"install.legacy-host",
-		);
-		expect(c.severity).toBe("blocker");
-		expect(c.fix).toContain("mfw host acknowledge-legacy --yes");
-	});
-
-	test("an old skill copy is a warning", async () => {
-		const c = await check(
-			{
-				legacySkills: async () => ({
-					available: true,
-					paths: ["/srv/x/.claude/skills/mfwb/SKILL.md"],
-				}),
-			},
-			"install.skills",
-		);
-		expect([c.status, c.severity]).toEqual(["problem", "warn"]);
-	});
-
-	test("no detector is reported as skipped", async () => {
-		const c = await check(
-			{ legacySkills: async () => ({ available: false, paths: [] }) },
-			"install.skills",
-		);
-		expect(c.status).toBe("skipped");
-	});
 });
 
 describe("exposure", () => {
@@ -704,12 +667,12 @@ describe("fail closed", () => {
 	test("a probe that throws is a blocker, never a pass", async () => {
 		const report = await runDoctor(
 			fixture({
-				legacyHost: async () => {
+				auth: async () => {
 					throw new Error("disk error");
 				},
 			}),
 		);
-		const c = report.checks.find((x) => x.id === "install.legacy-host");
+		const c = report.checks.find((x) => x.id === "auth.state");
 		expect([c?.status, c?.severity]).toEqual(["problem", "blocker"]);
 		expect(doctorExitCode(report)).toBe(1);
 	});

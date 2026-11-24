@@ -155,7 +155,7 @@ describe.skipIf(skip !== null)("the compiled executables", () => {
 		expect(r.out).toMatch(/\ngit [0-9a-f]{40}\n/);
 		expect(r.out).toMatch(/\nbuilt \d{4}-\d\d-\d\dT/);
 		expect(r.out).toMatch(
-			/migrations manifest [0-9a-f]{64} \(\d+ migrations, verified\)/,
+			/migrations manifest [0-9a-f]{64} \(\d+ migrations?, verified\)/,
 		);
 		expect(r.out).toMatch(/libsql addon [0-9a-f]{64}/);
 		expect(r.out).toContain("install: none");

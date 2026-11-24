@@ -311,7 +311,7 @@ export interface CollectOptions {
 	stats?: CheckStat[];
 	/** Where relative overrides resolve (default: the process cwd). */
 	cwd?: string;
-	/** Environment for `MFWB_ROOT_<NAME>` overrides (default: `process.env`). */
+	/** Environment for `MFW_BOARD_ROOT_<NAME>` overrides (default: `process.env`). */
 	env?: Readonly<Record<string, string | undefined>>;
 }
 
@@ -340,7 +340,7 @@ export class CheckEnvironmentError extends Error {
 	}
 }
 
-/** Where root `name` is on this machine: `--root`, then `MFWB_ROOT_<NAME>`, then board.yaml. */
+/** Where root `name` is on this machine: `--root`, then `MFW_BOARD_ROOT_<NAME>`, then board.yaml. */
 export function resolveRoot(
 	config: BoardConfig,
 	boardRoot: string,
@@ -351,7 +351,8 @@ export function resolveRoot(
 	const env = opts.env ?? process.env;
 	const flag = opts.rootOverrides?.[name];
 	if (flag !== undefined) return resolve(cwd, flag);
-	const fromEnv = env[`MFWB_ROOT_${name.toUpperCase().replaceAll("-", "_")}`];
+	const fromEnv =
+		env[`MFW_BOARD_ROOT_${name.toUpperCase().replaceAll("-", "_")}`];
 	if (fromEnv) return resolve(cwd, fromEnv);
 	const configured = config.roots?.[name];
 	if (configured === undefined) {
@@ -390,7 +391,7 @@ export async function refsIssues(
 		const st = await stat(dir).catch(() => null);
 		if (!st?.isDirectory()) {
 			throw new CheckEnvironmentError(
-				`refs root '${name}' (${dir}) is not a directory; set it under 'roots' in board.yaml, or with --root ${name}=<path> or MFWB_ROOT_${name.toUpperCase().replaceAll("-", "_")}`,
+				`refs root '${name}' (${dir}) is not a directory; set it under 'roots' in board.yaml, or with --root ${name}=<path> or MFW_BOARD_ROOT_${name.toUpperCase().replaceAll("-", "_")}`,
 			);
 		}
 		scans.set(

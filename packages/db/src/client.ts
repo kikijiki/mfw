@@ -1,15 +1,13 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type Client, createClient, type Transaction } from "@libsql/client";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
-import { backfillLineage } from "./lineage-backfill.ts";
 import {
 	sourceMigrationsDir,
 	withVerifiedMigrations,
 } from "./migration-source.ts";
 import * as schema from "./schema.ts";
-import { backfillSpansFromEvents } from "./spans-backfill.ts";
 
 export type ProjectDb = LibSQLDatabase<typeof schema>;
 /** The transaction type accepted by every v2 mutation helper. */
@@ -246,6 +244,33 @@ export function pooledTransactions(
 	});
 }
 
+/**
+ * There is no migration path between development versions: a database whose
+ * recorded migrations are not all in this build's journal was written by
+ * another version, and is refused before anything touches it.
+ */
+async function refuseOtherVersion(
+	client: Client,
+	migrationsFolder: string,
+	dbPath: string,
+): Promise<void> {
+	const table = await client.execute(
+		"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '__drizzle_migrations'",
+	);
+	if (table.rows.length === 0) return;
+	const journal = JSON.parse(
+		await readFile(join(migrationsFolder, "meta", "_journal.json"), "utf8"),
+	) as { entries: { when: number }[] };
+	const known = new Set(journal.entries.map((e) => e.when));
+	const applied = await client.execute(
+		"SELECT created_at FROM __drizzle_migrations",
+	);
+	if (applied.rows.every((r) => known.has(Number(r.created_at)))) return;
+	throw new Error(
+		`${dbPath} was written by another development version of mfw, and there is no migration path between them. Fix: stop the server and delete ${dbPath} (and its -wal and -shm files)`,
+	);
+}
+
 /** Test/backup entry: open a specific db file with the same setup. */
 export async function openDbAt(dbPath: string): Promise<ProjectDbHandle> {
 	await mkdir(dirname(dbPath), { recursive: true });
@@ -255,13 +280,15 @@ export async function openDbAt(dbPath: string): Promise<ProjectDbHandle> {
 		`PRAGMA journal_mode=WAL;\n${CONNECTION_PRAGMAS}`,
 	);
 	const db = drizzle(client, { schema });
-	await withVerifiedMigrations(import.meta.url, (migrationsFolder) =>
-		migrate(db, { migrationsFolder }),
-	);
-	// Rows from before typed lineage get `relation`/`chain_root_id`; a no-op once filled.
-	await backfillLineage(db);
-	// Old events become spans once; afterwards `appendEvent` writes them live.
-	await backfillSpansFromEvents(db);
+	try {
+		await withVerifiedMigrations(import.meta.url, async (migrationsFolder) => {
+			await refuseOtherVersion(client, migrationsFolder, dbPath);
+			await migrate(db, { migrationsFolder });
+		});
+	} catch (error) {
+		client.close();
+		throw error;
+	}
 
 	let queue: Promise<unknown> = Promise.resolve();
 	const withTx = <T>(fn: (tx: ProjectDbTx) => Promise<T>): Promise<T> => {

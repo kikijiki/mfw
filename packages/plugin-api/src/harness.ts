@@ -395,7 +395,7 @@ export const HarnessManifestSchema = z
 			projectConfig: z.array(ProjectPath).max(16),
 			/** Directories it loads from, all host-executed. */
 			projectDirs: z.array(ProjectPath).max(8),
-			/** Project-scope skill directory, as `mfwb skill install` writes it. */
+			/** Project-scope skill directory, as `mfw board skill install` writes it. */
 			skills: ProjectPath.optional(),
 		}),
 	})

@@ -88,8 +88,8 @@ mfw init --project ~/src/app --write   # add it to $MFW_HOME/config.json
 `mfw doctor --first-run` is the same flow. It prints the path of the setup token,
 never the token. Without `--write` it changes nothing. `--write` is refused while
 the server is running, when the name or resolved root is already configured, when
-`config.json` is a symlink, and when a save would delete keys this version does
-not know. It writes the file with mode 0600, or keeps a stricter mode.
+`config.json` is a symlink, and when `config.json` is not valid (an unknown key
+included). It writes the file with mode 0600, or keeps a stricter mode.
 
 The entry keeps the defaults (a private clone per run, in the sandbox). It never
 sets `pushUrl`: choosing where merges are pushed is yours.

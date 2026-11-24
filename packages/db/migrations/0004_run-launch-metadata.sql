@@ -1,1 +1,0 @@
-ALTER TABLE `runs` ADD `reasoning_effort` text;

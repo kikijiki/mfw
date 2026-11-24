@@ -18,7 +18,7 @@ import { TaskIndex } from "../src/tasks/index.ts";
 /**
  * A board that is not the daemon's own: `layout: flat` tasks (one file each,
  * `tasks/POOT-1.md`, no directory) and its own status vocabulary, translated
- * through the `x-mfw-daemon.statusMap` in its own board.yaml. Everything the
+ * through the `x-mfw.statusMap` in its own board.yaml. Everything the
  * index hands the rest of the daemon is canonical; everything it writes back
  * is this board's wording.
  */
@@ -31,7 +31,7 @@ afterEach(async () => {
 	}
 });
 
-const STATUS_MAP = `x-mfw-daemon:
+const STATUS_MAP = `x-mfw:
   statusMap:
     ready: [planned]
     in_progress: [doing]
@@ -224,7 +224,7 @@ describe("a flat board with its own statuses", () => {
 		await expect(attach(board)).rejects.toThrow(/'planned'/);
 		await expect(attach(board)).rejects.toThrow(/'doing'/);
 		await expect(attach(board)).rejects.toThrow(/'deferred'/);
-		await expect(attach(board)).rejects.toThrow(/x-mfw-daemon/);
+		await expect(attach(board)).rejects.toThrow(/x-mfw/);
 		await expect(attach(board)).rejects.toThrow(/statusMap:/);
 	});
 });

@@ -102,10 +102,10 @@ types:
 }
 
 /**
- * Write the default board.yaml when there is none; otherwise upgrade the
- * existing one in place (today: add the task type's `acceptance` checklist,
- * see `tasks/acceptance.ts`). Throws `BoardUpgradeError`, writing nothing,
- * when the existing file conflicts. Returns whether it upgraded a file.
+ * Write the default board.yaml when there is none; otherwise add the task
+ * fields mfw needs (acceptance, routing, provenance) to an existing one that
+ * lacks them, in place. Throws `BoardUpgradeError`, writing nothing, when the
+ * existing file conflicts. Returns whether it changed a file.
  */
 export async function ensureBoardConfig(
 	boardFolder: string,

@@ -25,21 +25,11 @@ import {
 	overlappingPatterns,
 	parentRuleProblem,
 	parseIdNum,
-	RuleViolationError,
 } from "@mfw/board-core";
 import type { TaskStatus } from "@mfw/core/types";
 import { parseStatusMap, type StatusMap } from "../board-status-map.ts";
 import type { Logger } from "../log.ts";
-import {
-	ACCEPTANCE_FIELD,
-	type MigrationReport,
-	planBodyMigration,
-	toChecklist,
-} from "./acceptance.ts";
-import {
-	type ClaimGroupsReport,
-	rewriteClaimSidecars,
-} from "./claim-groups.ts";
+import { ACCEPTANCE_FIELD, toChecklist } from "./acceptance.ts";
 import { flatBoardError } from "./extras.ts";
 import {
 	emptyRunState,
@@ -142,7 +132,6 @@ export interface TaskFile {
 	frontmatter: TaskFrontmatter;
 	body: string;
 	criteria: TaskCriterion[];
-	dod: TaskFrontmatter["verification"];
 }
 
 /** Merge of `@mfw/board`'s lease (cross-process-meaningful) and the daemon's
@@ -169,7 +158,7 @@ export interface CreateInput {
 	labels?: string[];
 	dependsOn?: string[];
 	criteria?: TaskCriterion[];
-	dod?: TaskFrontmatter["verification"];
+	verification?: TaskFrontmatter["verification"];
 	spikeTimebox?: string | null;
 	requiresResources?: TaskFrontmatter["requires_resources"];
 	executionTarget?: string;
@@ -399,7 +388,6 @@ export class TaskIndex {
 				frontmatter: fm,
 				body: doc.body,
 				criteria: criteriaOf(doc.fields),
-				dod: fm.verification,
 			},
 			state: { ...runState, ...lease },
 		};
@@ -685,7 +673,7 @@ export class TaskIndex {
 			// every task written without it.
 			...(input.createdBy ? { created_by: input.createdBy } : {}),
 			reopen_when: input.reopenWhen ?? [],
-			verification: input.dod ?? null,
+			verification: input.verification ?? null,
 		};
 		const doc = await this.board.createDocument("task", {
 			id: input.id,
@@ -743,11 +731,6 @@ export class TaskIndex {
 				}
 				const draft: TaskFile = structuredClone(rec.file);
 				fields = await mutate(draft, rec);
-				// `draft.dod` is a compatibility alias of `draft.frontmatter.verification`
-				// for callers still written against the old TaskFile shape (where `dod`
-				// was the only slot, since frontmatter had nowhere to put it) - keep
-				// them in sync so a mutate callback that only touches one still persists.
-				draft.frontmatter.verification = draft.dod;
 				const statusChanged =
 					opts.status !== undefined && opts.status !== rec.status;
 				if (fields.length === 0 && !statusChanged) return null;
@@ -1306,66 +1289,6 @@ export class TaskIndex {
 		const result = await this.update(id, () => [], { status: "ready" });
 		await this.finishReopen(result.record);
 		return { from };
-	}
-
-	// --- claim group migration -----------------------------------------------
-
-	/** Rename every legacy sidecar's holder key under the claim lock. */
-	async migrateClaimSidecars(): Promise<ClaimGroupsReport> {
-		return this.withClaimLock(() => rewriteClaimSidecars(this.state));
-	}
-
-	// --- acceptance migration ------------------------------------------------
-
-	/**
-	 * Move each task's `## Acceptance Criteria` body list into its
-	 * `acceptance` field (see `acceptance.ts`), every task re-read and
-	 * rewritten under its own document lock and the board lock. Refuses while
-	 * the circuit breaker distrusts the board (returns null): rewriting a board
-	 * that may be a stale checkout would make it permanent. A task a board rule
-	 * refuses keeps its body and is reported as skipped.
-	 */
-	async migrateBodyCriteria(): Promise<MigrationReport | null> {
-		return this.boardLock.with("::board", async () => {
-			if (this.suspicion) return null;
-			const report: MigrationReport = { migrated: [], skipped: [] };
-			for (const doc of await this.board.listDocuments("task")) {
-				const first = planBodyMigration(doc.body, criteriaOf(doc.fields)).kind;
-				if (first === "none") continue;
-				let skipped: string | null = null;
-				let written: BoardDocument | null;
-				try {
-					written = await this.board.transact("task", doc.id, async (cur) => {
-						const plan = planBodyMigration(cur.body, criteriaOf(cur.fields));
-						if (plan.kind === "skip") skipped = plan.reason;
-						if (plan.kind !== "move") return null;
-						return {
-							fields: { [ACCEPTANCE_FIELD]: toChecklist(plan.items) },
-							body: plan.body,
-						};
-					});
-				} catch (e) {
-					if (e instanceof RuleViolationError) {
-						report.skipped.push({ id: doc.id, reason: e.message });
-						continue;
-					}
-					if (e instanceof MalformedDocumentError) {
-						report.skipped.push({ id: doc.id, reason: e.reason });
-						continue;
-					}
-					throw e;
-				}
-				if (skipped !== null) {
-					report.skipped.push({ id: doc.id, reason: skipped });
-				}
-				if (!written) continue;
-				const rec = await this.toRecord(written, { skipBumpCheck: true });
-				this.index.set(doc.id, rec);
-				this.seen.set(doc.id, written.hash);
-				report.migrated.push(doc.id);
-			}
-			return report;
-		});
 	}
 
 	// --- directory / spec / attachments -------------------------------------

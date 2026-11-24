@@ -255,7 +255,7 @@ async function fixture(
 				dependsOn: over.dependsOn ?? [],
 				owns: over.owns ?? [],
 				...(over.provider ? { provider: over.provider } : {}),
-				dod: over.withDod
+				verification: over.withDod
 					? {
 							verifier: "deterministic",
 							checks: [{ run: "true", expect_exit: 0 }],

@@ -9,7 +9,7 @@ import type { ReopenCondition } from "./tasks/types.ts";
 
 const RecordSchema = z.object({
 	hash: z.string().regex(/^[a-f0-9]{64}$/),
-	checkout: z.enum(["integration-worktree", "primary"]),
+	checkout: z.enum(["integration-workspace", "primary"]),
 	armedAt: z.number(),
 });
 const PolicySchema = z.record(z.string(), RecordSchema);

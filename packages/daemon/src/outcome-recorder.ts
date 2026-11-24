@@ -1,7 +1,6 @@
 import type { ProjectDbHandle, ProjectDbTx } from "@mfw/db/client";
 import type { EventBus, StoredEvent } from "@mfw/db/eventlog";
 import {
-	backfillAttemptOutcomesOnce,
 	harnessVendor,
 	recordAttemptOutcome,
 	recordDecisionOutcomesOfRun,
@@ -71,17 +70,10 @@ export class OutcomeRecorder {
 
 	constructor(private readonly deps: OutcomeRecorderDeps) {}
 
-	/** Subscribe and queue the one-time backfill. Idempotent. */
+	/** Subscribe. Idempotent. */
 	start(): this {
 		if (this.unsubscribe) return this;
 		this.unsubscribe = this.deps.bus.subscribe((e) => this.onEvent(e));
-		this.enqueue("backfill", async () => {
-			const chains = await this.deps.handle.withTx((tx) =>
-				backfillAttemptOutcomesOnce(tx),
-			);
-			if (chains !== null)
-				this.deps.log.info({ chains }, "backfilled task attempt outcomes");
-		});
 		return this;
 	}
 

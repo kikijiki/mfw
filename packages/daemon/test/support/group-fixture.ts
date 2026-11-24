@@ -166,7 +166,7 @@ export async function groupFixture(
 		async task(title, extra = {}) {
 			const t = await svc.tasks.create({
 				title,
-				dod: {
+				verification: {
 					verifier: "deterministic",
 					checks: [{ files_exist: ["feature.txt"] }],
 				},

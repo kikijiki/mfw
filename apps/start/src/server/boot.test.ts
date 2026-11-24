@@ -21,7 +21,7 @@ describe("eager orchestrator startup", () => {
 		const stderr = await new Response(child.stderr).text();
 
 		expect(exitCode).toBe(1);
-		expect(stderr).toContain("orchestrator boot failed");
+		expect(stderr).toContain("server boot failed");
 		expect(stderr).toContain("fatal eager boot failure");
 	});
 });

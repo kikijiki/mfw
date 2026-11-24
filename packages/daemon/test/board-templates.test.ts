@@ -16,7 +16,7 @@ const ROLES = [
 
 type StatusMap = Record<string, readonly string[]>;
 
-/** One template's yaml with the `x-mfw-daemon` block split off: board-core
+/** One template's yaml with the `x-mfw` block split off: board-core
  * rejects it (strict schema), so tests parse the board without it and check
  * the block itself as yaml text. */
 function split(
@@ -29,13 +29,11 @@ function split(
 	const template = getBoardTemplate(templateId);
 	if (!template) throw new Error(`missing template '${templateId}'`);
 	const doc = parseYaml(template.yaml(taskKey)) as Record<string, unknown>;
-	const extension = doc["x-mfw-daemon"] as
-		| { statusMap?: StatusMap }
-		| undefined;
+	const extension = doc["x-mfw"] as { statusMap?: StatusMap } | undefined;
 	if (!extension?.statusMap) {
-		throw new Error(`'${templateId}': no x-mfw-daemon statusMap`);
+		throw new Error(`'${templateId}': no x-mfw statusMap`);
 	}
-	delete doc["x-mfw-daemon"];
+	delete doc["x-mfw"];
 	return { doc, statusMap: extension.statusMap };
 }
 
@@ -91,7 +89,7 @@ describe("the board template catalogue", () => {
 	});
 
 	for (const template of BOARD_TEMPLATES) {
-		test(`${template.id}: yaml('ABC') parses without the x-mfw-daemon block, task statuses match`, () => {
+		test(`${template.id}: yaml('ABC') parses without the x-mfw block, task statuses match`, () => {
 			const { doc, statusMap } = split(template.id);
 			const config = parseBoardConfig(doc);
 			expect(Object.keys(config.types)).toEqual(["task", "adr"]);

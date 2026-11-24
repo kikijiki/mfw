@@ -310,7 +310,7 @@ describe("seed fetch transport config", () => {
 	test("enables only the one scheme, no file, no redirects", async () => {
 		const lines = await recorded("https", ALLOWED);
 		const c = lines
-			.filter((x, i) => lines[i - 1] === "ARG:-c")
+			.filter((_, i) => lines[i - 1] === "ARG:-c")
 			.map((x) => x.slice(4));
 		expect(c).toContain("protocol.https.allow=always");
 		expect(c).toContain("protocol.allow=never");

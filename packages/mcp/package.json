@@ -7,10 +7,8 @@
 	"main": "src/main.ts",
 	"dependencies": {
 		"@mfw/api": "workspace:*",
-		"@mfw/core": "workspace:*",
 		"@modelcontextprotocol/sdk": "^1.29.0",
 		"@trpc/client": "^11.7.1",
-		"superjson": "^2.2.6",
-		"zod": "^4.4.3"
+		"superjson": "^2.2.6"
 	}
 }

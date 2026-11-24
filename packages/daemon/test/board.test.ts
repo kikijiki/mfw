@@ -143,7 +143,7 @@ describe("status is a frontmatter field, not the directory", () => {
 describe("the claim is a flock-guarded, re-validated, atomic content replace", () => {
 	test("eight concurrent claimers, exactly one winner", async () => {
 		const { dir, tasks } = await freshEnv();
-		const t = await tasks.create({ title: "contested", dod: DOD });
+		const t = await tasks.create({ title: "contested", verification: DOD });
 		await tasks.move(t.id, "ready", "human");
 
 		const results = await Promise.all(
@@ -170,7 +170,7 @@ describe("the database is an optimization", () => {
 	test("deleting mfw.db loses no task, no status, and no content", async () => {
 		const env = await freshEnv();
 		const a = await env.tasks.create({ title: "alpha", body: "keep me" });
-		const b = await env.tasks.create({ title: "beta", dod: DOD });
+		const b = await env.tasks.create({ title: "beta", verification: DOD });
 		await env.tasks.move(a.id, "done", "human");
 		await env.tasks.move(b.id, "review", "human");
 		env.handle.close();
@@ -196,7 +196,7 @@ describe("the database is an optimization", () => {
 			[b.id, "review", "beta"],
 		]);
 		expect((await revived.get(a.id))?.body).toBe("keep me");
-		expect((await revived.get(b.id))?.dod).toEqual(DOD);
+		expect((await revived.get(b.id))?.verification).toEqual(DOD);
 		handle.close();
 	});
 });

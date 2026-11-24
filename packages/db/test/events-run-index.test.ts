@@ -1,11 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MfwEvent } from "@mfw/core/events";
 import { openProjectDb, type ProjectDbHandle } from "../src/client.ts";
 import { appendEvent, listEvents, type StoredEvent } from "../src/eventlog.ts";
-import { events, runs } from "../src/schema.ts";
 
 interface Env {
 	dir: string;
@@ -82,38 +81,5 @@ describe("run-indexed events", () => {
 			"run.state_changed",
 			"run.started",
 		]);
-	});
-
-	test("the migration's task_id backfill fills old run events from their run", async () => {
-		const env = await freshEnv();
-		await env.handle.db.insert(runs).values({
-			id: "R9",
-			kind: "task",
-			taskId: "MFW-9",
-			label: "MFW-9",
-			model: "m",
-			cwd: "/tmp",
-			startedAt: new Date(),
-		});
-		await env.handle.db.insert(events).values({
-			ts: new Date(),
-			type: "run.state_changed",
-			runId: "R9",
-			payload: { from: "starting", to: "running" },
-		});
-		const before = await listEvents(env.handle.db, { taskId: "MFW-9" });
-		expect(before.events).toHaveLength(0);
-		const sqlText = await readFile(
-			join(import.meta.dir, "../migrations/0013_events_run_index.sql"),
-			"utf8",
-		);
-		const update = sqlText
-			.split("--> statement-breakpoint")
-			.map((s) => s.trim())
-			.find((s) => s.startsWith("UPDATE"));
-		expect(update).toBeTruthy();
-		await env.handle.client.execute(update as string);
-		const after = await listEvents(env.handle.db, { taskId: "MFW-9" });
-		expect(after.events).toHaveLength(1);
 	});
 });

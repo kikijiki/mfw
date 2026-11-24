@@ -8,9 +8,7 @@ import { runSpans } from "./schema.ts";
  * value held on one lane of one subject between two events. Spans are derived
  * from the audit events themselves, by `spanOpsFor`, and written by
  * `appendEvent` in the SAME transaction as the event, so a span and the event
- * that opened or closed it commit or roll back together. The boot backfill
- * (`spans-backfill.ts`) folds old events through the same ops, so live writing
- * and replay cannot drift.
+ * that opened or closed it commit or roll back together.
  */
 
 export type SpanLane =

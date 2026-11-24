@@ -3,7 +3,6 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import pino from "pino";
 import {
 	buildBoardLayoutRecord,
 	DEFAULT_PROTECTED_BOARD_PATHS,
@@ -11,9 +10,7 @@ import {
 	readProtectedBoardPaths,
 	recordBoardLocation,
 } from "../src/board-layout.ts";
-import { relocateLegacyBoard } from "../src/board-relocate.ts";
 import { boot } from "../src/boot.ts";
-import { defaultBoardYaml } from "../src/default-board-config.ts";
 import { git } from "../src/git.ts";
 import { silentLogger } from "../src/log.ts";
 
@@ -61,26 +58,7 @@ async function attach(root: string, boardRoot?: string) {
 	});
 }
 
-function taskDoc(id: string, title: string): string {
-	return `---\nmfw: 1\nid: ${id}\nrev: 1\ntitle: ${title}\ntype: implementation\nstatus: done\npriority: medium\n---\n`;
-}
-
 /** A board as the `.mfw/` era left it: board.yaml and tasks under `<folder>/.mfw`. */
-async function legacyBoard(folder: string, n = 3): Promise<string[]> {
-	const mfw = join(folder, ".mfw");
-	await mkdir(join(mfw, "tasks"), { recursive: true });
-	await writeFile(join(mfw, "board.yaml"), defaultBoardYaml("MFW"));
-	const ids: string[] = [];
-	for (let i = 1; i <= n; i++) {
-		const id = `MFW-${i}`;
-		ids.push(id);
-		const dir = join(mfw, "tasks", `${id}-legacy-${i}`);
-		await mkdir(dir, { recursive: true });
-		await writeFile(join(dir, "task.md"), taskDoc(id, `legacy ${i}`));
-	}
-	return ids;
-}
-
 describe("board layout: the board sits at the root of its folder", () => {
 	test("a fresh repository attaches with board.yaml and tasks/ at its root", async () => {
 		const root = await repo();
@@ -165,143 +143,6 @@ describe("board layout: the board sits at the root of its folder", () => {
 		} finally {
 			await orch.shutdown();
 		}
-	});
-});
-
-describe("moving a legacy board out of .mfw", () => {
-	test("attach moves it: same ids, one commit, and a second attach is a no-op", async () => {
-		const root = await repo();
-		const ids = await legacyBoard(root);
-		await git(["add", "-f", "."], root);
-		await git(["commit", "-q", "-m", "legacy board"], root);
-
-		const first = await attach(root);
-		let head: string;
-		try {
-			const svc = first.get("demo");
-			expect((await svc.tasks.list()).map((t) => t.id).sort()).toEqual(ids);
-			expect(existsSync(join(root, "board.yaml"))).toBe(true);
-			expect(existsSync(join(root, "tasks", "MFW-1-legacy-1", "task.md"))).toBe(
-				true,
-			);
-			expect(existsSync(join(root, ".mfw", "board.yaml"))).toBe(false);
-			expect(existsSync(join(root, ".mfw", "tasks"))).toBe(false);
-			// path-scoped commit, and nothing of the board is left tracked under .mfw
-			const subjects = (await git(["log", "--format=%s"], root)).stdout;
-			expect(subjects).toContain("mfw: move the board out of .mfw");
-			expect((await git(["ls-files", "--", ".mfw"], root)).stdout).toBe("");
-			expect((await git(["status", "--porcelain"], root)).stdout).toBe("");
-			head = (await git(["rev-parse", "HEAD"], root)).stdout;
-		} finally {
-			await first.shutdown();
-		}
-
-		const second = await attach(root);
-		try {
-			const svc = second.get("demo");
-			expect((await svc.tasks.list()).map((t) => t.id).sort()).toEqual(ids);
-			expect((await git(["rev-parse", "HEAD"], root)).stdout).toBe(head);
-		} finally {
-			await second.shutdown();
-		}
-	});
-
-	test("a collision is refused naming the path, and nothing is moved", async () => {
-		const root = await repo();
-		await legacyBoard(root, 2);
-		// Somebody already has a `tasks` directory at the folder root.
-		await mkdir(join(root, "tasks"), { recursive: true });
-		await writeFile(join(root, "tasks", "notes.txt"), "mine\n");
-
-		const lines: string[] = [];
-		const orch = await boot({
-			projects: [{ name: "demo", root, integrationBranch: "main" }],
-			log: pino({ level: "error" }, { write: (s: string) => lines.push(s) }),
-			autostart: false,
-			mfwHome: await tmp("mfw-layout-home-"),
-		});
-		try {
-			expect(() => orch.get("demo")).toThrow();
-			expect(lines.join("\n")).toContain(join(root, "tasks"));
-		} finally {
-			await orch.shutdown();
-		}
-		expect(existsSync(join(root, ".mfw", "board.yaml"))).toBe(true);
-		expect(
-			existsSync(join(root, ".mfw", "tasks", "MFW-1-legacy-1", "task.md")),
-		).toBe(true);
-		expect(existsSync(join(root, "board.yaml"))).toBe(false);
-		expect((await readdir(join(root, "tasks"))).sort()).toEqual(["notes.txt"]);
-	});
-
-	test("relocateLegacyBoard names the colliding path and changes nothing", async () => {
-		const folder = await tmp("mfw-reloc-");
-		await legacyBoard(folder, 1);
-		await mkdir(join(folder, ".mfw", "adrs"), { recursive: true });
-		await mkdir(join(folder, "adrs"), { recursive: true });
-		const err = await relocateLegacyBoard({
-			boardFolder: folder,
-			daemonDir: join(folder, "daemon"),
-			log: silentLogger(),
-		}).catch((e: Error) => e);
-		expect(err).toBeInstanceOf(Error);
-		expect((err as Error).message).toContain(join(folder, "adrs"));
-		expect(existsSync(join(folder, ".mfw", "board.yaml"))).toBe(true);
-		expect(existsSync(join(folder, ".mfw", "tasks"))).toBe(true);
-		expect(existsSync(join(folder, "board.yaml"))).toBe(false);
-		expect(existsSync(join(folder, "tasks"))).toBe(false);
-	});
-
-	test("state moves to the daemon dir without overwriting, and an empty .mfw is removed", async () => {
-		const folder = await tmp("mfw-reloc-board-");
-		const daemon = await tmp("mfw-reloc-daemon-");
-		await legacyBoard(folder, 1);
-		await mkdir(join(folder, ".mfw", "state", "tasks"), { recursive: true });
-		await writeFile(
-			join(folder, ".mfw", "state", "tasks", "MFW-1.json"),
-			"old\n",
-		);
-		await writeFile(
-			join(folder, ".mfw", "state", "tasks", "MFW-2.json"),
-			"two\n",
-		);
-		await mkdir(join(daemon, "state", "tasks"), { recursive: true });
-		await writeFile(join(daemon, "state", "tasks", "MFW-1.json"), "kept\n");
-
-		const result = await relocateLegacyBoard({
-			boardFolder: folder,
-			daemonDir: daemon,
-			log: silentLogger(),
-		});
-		expect(result.moved.sort()).toEqual(["board.yaml", "tasks"]);
-		expect(
-			await Bun.file(join(daemon, "state", "tasks", "MFW-1.json")).text(),
-		).toBe("kept\n");
-		expect(
-			await Bun.file(join(daemon, "state", "tasks", "MFW-2.json")).text(),
-		).toBe("two\n");
-		// MFW-1.json could not move (the destination won), so .mfw stays.
-		expect(existsSync(join(folder, "board.yaml"))).toBe(true);
-
-		// Idempotent: nothing further to do.
-		const again = await relocateLegacyBoard({
-			boardFolder: folder,
-			daemonDir: daemon,
-			log: silentLogger(),
-		});
-		expect(again.moved).toEqual([]);
-	});
-
-	test("an emptied .mfw is removed", async () => {
-		const folder = await tmp("mfw-reloc-empty-");
-		await legacyBoard(folder, 1);
-		await relocateLegacyBoard({
-			boardFolder: folder,
-			daemonDir: join(await tmp("mfw-reloc-daemon-"), ".mfw"),
-			log: silentLogger(),
-		});
-		expect(existsSync(join(folder, ".mfw"))).toBe(false);
-		expect(existsSync(join(folder, "board.yaml"))).toBe(true);
 	});
 });
 
@@ -390,20 +231,6 @@ describe("the board layout record", () => {
 		expect(await readBoardLayout(root)).toBeNull();
 		expect(await readProtectedBoardPaths(root)).toEqual([
 			...DEFAULT_PROTECTED_BOARD_PATHS,
-		]);
-	});
-
-	test("a pre-record file keeps protecting its paths", async () => {
-		const root = await tmp("mfw-layout-old-");
-		await mkdir(join(root, ".mfw", "state"), { recursive: true });
-		await writeFile(
-			join(root, ".mfw", "state", "board-location.json"),
-			JSON.stringify({ paths: ["board.yaml", "notes"] }),
-		);
-		expect(await readBoardLayout(root)).toBeNull();
-		expect(await readProtectedBoardPaths(root)).toEqual([
-			"board.yaml",
-			"notes",
 		]);
 	});
 

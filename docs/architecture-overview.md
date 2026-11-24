@@ -1,7 +1,7 @@
 # Architecture overview
 
-mfw is a local-first orchestrator for coding agents. One server process holds the
-daemon, the API and the web UI. Agents run as separate sandboxed processes. The
+mfw is a local-first orchestrator for coding agents. One server process,
+`mfw-server`, holds the engine, the API and the web UI. Agents run as separate sandboxed processes. The
 board is a folder of markdown files, and SQLite keeps the run records.
 
 For the security view of the same system, see the
@@ -14,12 +14,12 @@ For the security view of the same system, see the
         │ session + key           │ scoped token              │
         ▼                         ▼                           ▼
  ┌───────────────────────────────────────────────┐   ┌────────────────┐
- │ mfw server (one process)                      │   │ mfw / mfw-board│
+ │ mfw-server (one process)                      │   │ mfw / mfw-board│
  │                                               │   └───────┬────────┘
  │  request guard ─ auth ─ typed API ─ web UI    │           │
  │                    │                          │           │
  │  ┌─────────────────▼───────────────────────┐  │           │
- │  │ daemon                                  │  │           │
+ │  │ engine                                  │  │           │
  │  │  scheduler ─ run engine ─ supervisor    │  │           │
  │  │  finalizer ─ verifier ─ merge queue     │  │           │
  │  │  brain runtime ─ triggers ─ resources   │  │           │
@@ -138,7 +138,7 @@ Each role gets its own profile
                        push
 ```
 
-- Agents run in detached tmux sessions, so a daemon restart does not stop them. The
+- Agents run in detached tmux sessions, so a server restart does not stop them. The
   supervisor adopts them again at boot.
 - Finalization is journaled (`packages/daemon/src/finalize/machine.ts`). A crash
   resumes at the step it reached.

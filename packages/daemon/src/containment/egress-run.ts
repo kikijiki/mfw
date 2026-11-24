@@ -324,8 +324,6 @@ export async function sweepRunEgress(
 		return report;
 	}
 	const socketsRoot = join(socketRoot(mfwHome), "s");
-	// Where the directories lived before sockets moved out of `$MFW_HOME`.
-	const legacyRoot = join(mfwHome, "run", "s");
 	for (const name of names) {
 		if (!/^[0-9a-f]{12}\.json$/.test(name)) continue;
 		const path = join(root, name);
@@ -356,9 +354,10 @@ export async function sweepRunEgress(
 			}
 		}
 		// Derived from the index file's name, never from its contents.
-		for (const root of [socketsRoot, legacyRoot]) {
-			rmSync(join(root, name.slice(0, 12)), { recursive: true, force: true });
-		}
+		rmSync(join(socketsRoot, name.slice(0, 12)), {
+			recursive: true,
+			force: true,
+		});
 		rmSync(path, { force: true });
 		report.removed++;
 	}

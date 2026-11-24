@@ -203,7 +203,7 @@ async function arrangeRestart(
 			"systemctl",
 			"--user",
 			"restart",
-			"mfw.service",
+			"mfw-server.service",
 		],
 		{ cwd: repoRoot, timeoutMs: 30_000 },
 	);

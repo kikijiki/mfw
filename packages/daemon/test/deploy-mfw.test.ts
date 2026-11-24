@@ -180,7 +180,7 @@ describe("deployMfw", () => {
 			"systemctl",
 			"--user",
 			"restart",
-			"mfw.service",
+			"mfw-server.service",
 		]);
 	});
 

@@ -174,7 +174,7 @@ describe.skipIf(skip !== null)("X1b: merged candidate code", () => {
 	});
 
 	const doneTask = async () => {
-		const t = await tasks.create({ title: "checked", dod });
+		const t = await tasks.create({ title: "checked", verification: dod });
 		const run = await registry.create({
 			kind: "task",
 			taskId: t.id,

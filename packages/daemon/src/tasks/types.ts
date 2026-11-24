@@ -11,8 +11,7 @@ import { z } from "zod";
 import type { StatusMap } from "../board-status-map.ts";
 
 /**
- * Task frontmatter vocabulary: the types/schemas every daemon file that used
- * to import them from `@mfw/core/taskfile` now imports from here instead.
+ * Task frontmatter vocabulary: the types and schemas of a task's fields.
  *
  * `@mfw/board-core` already validates every field `board.yaml` declares
  * as a scalar/enum/ref against its declared kind — a `BoardDocument.fields`
@@ -38,7 +37,7 @@ const VERIFIERS = [
 ] as const satisfies readonly VerifierKind[];
 
 // ---------------------------------------------------------------------------
-// Mechanical verification (`DefinitionOfDone` kept as a compatibility alias).
+// Mechanical verification.
 // ---------------------------------------------------------------------------
 
 const timeoutSchema = z.number().positive().optional();
@@ -54,52 +53,36 @@ const filesExistCheckSchema = z.object({
 	timeout: timeoutSchema,
 });
 
-// Accept `true`/`false` or the legacy `{ must_change: … }` object form.
 const diffCheckSchema = z.object({
-	diff_against_base: z.preprocess((v) => {
-		if (typeof v === "object" && v !== null) {
-			return (v as { must_change?: unknown }).must_change !== false;
-		}
-		return v;
-	}, z.boolean()),
+	diff_against_base: z.boolean(),
 	timeout: timeoutSchema,
 });
 
-const dodCheckSchema = z.union([
+/** Canonical verification schemas, shared by parser, verifier and API. */
+export const VerificationCheckSchema = z.union([
 	runCheckSchema,
 	filesExistCheckSchema,
 	diffCheckSchema,
 ]);
 
-const dodSchema = z
+export const VerificationPlanSchema = z
 	.object({
 		verifier: z.enum(VERIFIERS).default("deterministic"),
-		checks: z.array(dodCheckSchema).default([]),
+		checks: z.array(VerificationCheckSchema).default([]),
 	})
 	.refine((d) => d.verifier !== "deterministic" || d.checks.length > 0, {
 		message: "a deterministic verifier requires at least one check",
 	});
 
-/** Canonical verification schema, shared by parser, verifier and API. */
-export const VerificationPlanSchema = dodSchema;
-export const VerificationCheckSchema = dodCheckSchema;
-/** @deprecated Read legacy `dod` inputs only; use VerificationPlanSchema. */
-export const DoDSchema = VerificationPlanSchema;
-/** @deprecated Use VerificationCheckSchema. */
-export const DoDCheckSchema = VerificationCheckSchema;
-
-export type DoDCheck =
+export type VerificationCheck =
 	| { run: string; expect_exit: number; timeout?: number }
 	| { files_exist: string[]; timeout?: number }
 	| { diff_against_base: boolean; timeout?: number };
 
-export interface DefinitionOfDone {
+export interface VerificationPlan {
 	verifier: VerifierKind;
-	checks: DoDCheck[];
+	checks: VerificationCheck[];
 }
-
-export type VerificationCheck = DoDCheck;
-export type VerificationPlan = DefinitionOfDone;
 
 // ---------------------------------------------------------------------------
 // Resources

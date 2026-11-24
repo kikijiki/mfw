@@ -30,14 +30,7 @@ import {
 import { fromStored, toStored } from "./amounts.ts";
 import type { ObservationHealth, StoredObservation } from "./host-types.ts";
 import { RAM_OBSERVATION_MAX_AGE_MS } from "./quantity.ts";
-import {
-	RESOURCE_CLEANUP_SCHEMA,
-	RESOURCE_INCIDENT_SCHEMA,
-	RESOURCE_PROBE_SCHEMA,
-	RESOURCE_PROVIDER_REPORT_SCHEMA,
-	RESOURCE_SCHEMA,
-	RESOURCE_SCHEMA_VERSION,
-} from "./schema.ts";
+import { RESOURCE_SCHEMA, RESOURCE_SCHEMA_VERSION } from "./schema.ts";
 import {
 	type Actual,
 	type AdmissionVerdict,
@@ -3014,78 +3007,15 @@ export async function openResourceStore(
 					);
 					if (!table) {
 						await tx.executeMultiple(RESOURCE_SCHEMA);
-						await tx.executeMultiple(RESOURCE_CLEANUP_SCHEMA);
-						await tx.executeMultiple(RESOURCE_INCIDENT_SCHEMA);
-						await tx.executeMultiple(RESOURCE_PROBE_SCHEMA);
-						await tx.executeMultiple(RESOURCE_PROVIDER_REPORT_SCHEMA);
-						await tx.execute({
-							sql: "UPDATE rp_schema SET version=? WHERE singleton=1",
-							args: [RESOURCE_SCHEMA_VERSION],
-						});
 					}
 					const row = await one(
 						tx,
 						"SELECT version FROM rp_schema WHERE singleton=1",
 					);
-					let version = int(row?.version, "schema version");
-					if (version === 1) {
-						const columns = await all(tx, "PRAGMA table_info(rp_leases)");
-						if (!columns.some((c) => c.name === "run_json")) {
-							await tx.execute(
-								"ALTER TABLE rp_leases ADD COLUMN run_json TEXT",
-							);
-							await tx.execute(
-								"ALTER TABLE rp_leases ADD COLUMN owner_boot_id TEXT",
-							);
-						}
-						const cleanup = await one(
-							tx,
-							"SELECT name FROM sqlite_master WHERE type='table' AND name='rp_cleanup'",
-						);
-						if (!cleanup) await tx.executeMultiple(RESOURCE_CLEANUP_SCHEMA);
-						await tx.execute(
-							"UPDATE rp_schema SET version=2 WHERE singleton=1",
-						);
-						version = 2;
-					}
-					if (version === 2) {
-						const incidents = await one(
-							tx,
-							"SELECT name FROM sqlite_master WHERE type='table' AND name='rp_incidents'",
-						);
-						if (!incidents) await tx.executeMultiple(RESOURCE_INCIDENT_SCHEMA);
-						await tx.execute(
-							"UPDATE rp_schema SET version=3 WHERE singleton=1",
-						);
-						version = 3;
-					}
-					if (version === 3) {
-						const probes = await one(
-							tx,
-							"SELECT name FROM sqlite_master WHERE type='table' AND name='rp_probe_health'",
-						);
-						if (!probes) await tx.executeMultiple(RESOURCE_PROBE_SCHEMA);
-						await tx.execute(
-							"UPDATE rp_schema SET version=4 WHERE singleton=1",
-						);
-						version = 4;
-					}
-					if (version === 4) {
-						const reports = await one(
-							tx,
-							"SELECT name FROM sqlite_master WHERE type='table' AND name='rp_provider_reports'",
-						);
-						if (!reports) {
-							await tx.executeMultiple(RESOURCE_PROVIDER_REPORT_SCHEMA);
-						}
-						await tx.execute(
-							"UPDATE rp_schema SET version=5 WHERE singleton=1",
-						);
-						version = 5;
-					}
+					const version = int(row?.version, "schema version");
 					if (version !== RESOURCE_SCHEMA_VERSION) {
 						throw new ResourceError(
-							`resource schema ${version} is not the supported ${RESOURCE_SCHEMA_VERSION}`,
+							`resource schema ${version} is not this build's ${RESOURCE_SCHEMA_VERSION}, and there is no upgrade between development versions. Fix: stop the server and delete ${path}`,
 							"INCOMPATIBLE_SCHEMA",
 						);
 					}

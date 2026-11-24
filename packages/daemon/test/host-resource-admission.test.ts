@@ -19,10 +19,10 @@ import type {
 } from "../src/resources/host-types.ts";
 import {
 	HostResourceCoordinator,
-	type LegacyLiveness as LeaseLivenessInspector,
-	type LegacyEvidence as LivenessEvidence,
+	type ContractLiveness as LeaseLivenessInspector,
+	type ContractEvidence as LivenessEvidence,
 	openHostResourceStore,
-} from "./support/legacy-host.ts";
+} from "./support/host-contract.ts";
 
 const fixtureRoot = join(import.meta.dir, "fixtures", "host-probes");
 const homes: string[] = [];

@@ -266,7 +266,7 @@ export const EventSchema = z.discriminatedUnion("type", [
 		payload: z.object({
 			attemptId: z.string(),
 			definitionHash: z.string(),
-			checkout: z.enum(["integration-worktree", "primary"]),
+			checkout: z.enum(["integration-workspace", "primary"]),
 			phase: z.enum(["started", "finished"]),
 			outcome: z.enum(["passed", "failed", "error"]).optional(),
 			detail: z.string().optional(),

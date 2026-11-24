@@ -180,7 +180,7 @@ export function humanizeError(error: unknown): string {
 		const first = zod?.formErrors?.[0];
 		if (first) return first;
 		if (error.message.toLowerCase().includes("failed to fetch")) {
-			return "Daemon unreachable: the request never left the browser.";
+			return "Server unreachable: the request never left the browser.";
 		}
 		const base =
 			data?.code && !error.message.includes(data.code)

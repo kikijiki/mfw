@@ -66,9 +66,9 @@ import {
 } from "../scope-watchdog.ts";
 import type { TaskService, TaskWithRefs } from "../task-service.ts";
 import {
-	type DefinitionOfDone,
 	MODEL_TIERS,
 	type ModelTier,
+	type VerificationPlan,
 } from "../tasks/types.ts";
 import type { RateLimitObserver } from "../usage/claude-weekly.ts";
 import { type VerificationResult, verifyInClone } from "../verifier.ts";
@@ -270,7 +270,7 @@ export interface StepRunnerDeps {
 		draftExpandMaxAttempts: number;
 		/** The DoD an expanded (or expansion-exhausted) draft gets when
 		 *  nothing else supplied one. */
-		mergeChecks: DefinitionOfDone;
+		mergeChecks: VerificationPlan;
 	};
 	/** Leftover-process scan and stop for `reap_leftovers`; defaults to the real /proc ones. */
 	leftovers?: {
@@ -320,7 +320,7 @@ interface PlanEntry {
 	title: string;
 	body?: string;
 	dependsOn: (string | number)[];
-	verification: DefinitionOfDone | null;
+	verification: VerificationPlan | null;
 	criteria: string[];
 	/** Import runs only, see `IMPORT_STATUS_ALIASES`. Null = not stated. */
 	status: TaskStatus | null;
@@ -376,7 +376,7 @@ function extractJsonObject(text: string): unknown {
 	}
 }
 
-function looksLikeDod(v: unknown): v is DefinitionOfDone {
+function looksLikeVerification(v: unknown): v is VerificationPlan {
 	return (
 		typeof v === "object" &&
 		v !== null &&
@@ -441,11 +441,9 @@ function normalizePlanEntries(v: unknown): PlanEntry[] {
 				(d): d is string | number =>
 					typeof d === "string" || typeof d === "number",
 			),
-			verification: looksLikeDod(o.verification)
+			verification: looksLikeVerification(o.verification)
 				? o.verification
-				: looksLikeDod(o.dod)
-					? o.dod
-					: null,
+				: null,
 			criteria: Array.isArray(o.criteria)
 				? o.criteria.filter((c): c is string => typeof c === "string")
 				: [],
@@ -836,7 +834,7 @@ export class StepRunner {
 							// "the task is semantically done".
 							hasDod:
 								this.deps.tasks.effectiveVerification(
-									task?.verification ?? task?.dod ?? null,
+									task?.verification ?? null,
 								) != null,
 							escalation: report?.escalation ?? null,
 							attempt: run.attempt,
@@ -1355,7 +1353,7 @@ export class StepRunner {
 	private async verifyStep(built: Built): Promise<unknown> {
 		const { run, task } = built;
 		const dod = this.deps.tasks.effectiveVerification(
-			task?.verification ?? task?.dod ?? null,
+			task?.verification ?? null,
 		);
 		if (!run.workspacePath || !dod) {
 			return {

@@ -41,7 +41,7 @@ import {
 	VerificationBuilder,
 	type VerificationPlan,
 	verificationError,
-} from "../tasks/DodBuilder";
+} from "../tasks/VerificationBuilder";
 import { Setting, Toggle } from "./controls";
 import { ModelPicker, ProviderPicker, ProvidersLink } from "./ProviderPicker";
 

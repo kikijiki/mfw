@@ -7,10 +7,10 @@ import type { HostResourceDefinition } from "../src/resources/host-types.ts";
 import { ResourceError } from "../src/resources/types.ts";
 import {
 	HostResourceCoordinator,
-	type LegacyLiveness as LeaseLivenessInspector,
-	type LegacyEvidence as LivenessEvidence,
+	type ContractLiveness as LeaseLivenessInspector,
+	type ContractEvidence as LivenessEvidence,
 	openHostResourceStore,
-} from "./support/legacy-host.ts";
+} from "./support/host-contract.ts";
 import { withRealSqliteSync } from "./support/real-sqlite-sync.ts";
 
 const homes: string[] = [];

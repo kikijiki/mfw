@@ -127,7 +127,7 @@ hierarchy:
       parents: [{ type: task, where: { kind: [epic] } }]
     - child: { type: task, where: { kind: [task] } }
       parents: [{ type: task, where: { kind: [epic, group] } }]
-x-mfw-daemon:
+x-mfw:
   statusMap:
     ready: [planned]
     in_progress: [doing]

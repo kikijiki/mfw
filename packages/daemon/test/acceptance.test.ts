@@ -6,8 +6,6 @@ import { loadBoardConfig } from "@mfw/board-core";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
 import { EventBus } from "@mfw/db/eventlog";
 import { ulid } from "@mfw/db/ids";
-import { engineKv } from "@mfw/db/schema";
-import { eq } from "drizzle-orm";
 import pino from "pino";
 import { boot } from "../src/boot.ts";
 import {
@@ -16,25 +14,16 @@ import {
 } from "../src/default-board-config.ts";
 import { git } from "../src/git.ts";
 import { silentLogger } from "../src/log.ts";
-import { ACCEPTANCE_MIGRATION_KEY, TaskService } from "../src/task-service.ts";
+import { TaskService } from "../src/task-service.ts";
 import {
 	addAcceptanceField,
 	BoardUpgradeError,
-	bodyWithCriteriaSection,
-	downgradeBoardYaml,
-	planBodyMigration,
-	removeAcceptanceField,
-	revertBodyCriteria,
 	upgradeBoardYaml,
 } from "../src/tasks/acceptance.ts";
-import {
-	REVERT_COMMIT_MESSAGE,
-	revertAcceptance,
-} from "../src/tasks/acceptance-revert.ts";
 import { MFW_EXCLUDE } from "./fixtures/board.ts";
 
-/** The default board.yaml as a board created before the field existed has it. */
-function legacyBoardYaml(key = "MFW"): string {
+/** The default board.yaml without the acceptance field, as a hand-written board might be. */
+function boardYamlWithoutAcceptance(key = "MFW"): string {
 	const yaml = defaultBoardYaml(key).replace(
 		/\n {6}# Acceptance criteria:[^\n]*\n(?: {6}#[^\n]*\n)*\s*acceptance: \{ type: checklist, optional: true \}\n/,
 		"\n",
@@ -61,7 +50,7 @@ describe("board.yaml upgrade", () => {
 	test("adds the field as one inserted line, keeping the rest byte for byte, and is idempotent", async () => {
 		const dir = await tmp("mfw-acc-yaml-");
 		const path = join(dir, "board.yaml");
-		const before = legacyBoardYaml();
+		const before = boardYamlWithoutAcceptance();
 		await writeFile(path, before);
 
 		expect(await upgradeBoardYaml(path)).toBe(true);
@@ -85,7 +74,7 @@ describe("board.yaml upgrade", () => {
 	test("refuses a conflicting acceptance field and writes nothing", async () => {
 		const dir = await tmp("mfw-acc-yaml-");
 		const path = join(dir, "board.yaml");
-		const conflicting = legacyBoardYaml().replace(
+		const conflicting = boardYamlWithoutAcceptance().replace(
 			"      verification: { type: json, optional: true }\n",
 			"      verification: { type: json, optional: true }\n      acceptance: { type: json, list: true, optional: true }\n",
 		);
@@ -107,7 +96,6 @@ describe("board.yaml upgrade", () => {
 				"        default: a\n      acceptance: { type: checklist, optional: true }\n",
 			),
 		);
-		expect(removeAcceptanceField("board.yaml", out)).toBe(text);
 	});
 
 	test("a flow-style fields map is upgraded too", () => {
@@ -118,58 +106,11 @@ describe("board.yaml upgrade", () => {
 		expect(addAcceptanceField("board.yaml", out)).toBe(out);
 	});
 
-	test("downgrade is the exact inverse of the upgrade", () => {
-		const before = legacyBoardYaml();
-		const up = addAcceptanceField("board.yaml", before);
-		expect(removeAcceptanceField("board.yaml", up)).toBe(before);
-		expect(removeAcceptanceField("board.yaml", before)).toBe(before);
-	});
-
 	test("a fresh board gets the field from the default", async () => {
 		const dir = await tmp("mfw-acc-yaml-");
 		await ensureBoardConfig(dir, "ABC");
 		const config = await loadBoardConfig(join(dir, "board.yaml"));
 		expect(config.types.task?.fields.acceptance?.kind).toBe("checklist");
-	});
-});
-
-describe("body section planning", () => {
-	test("moves every item, done flags included, and keeps the rest of the body exactly", () => {
-		const body =
-			"Why this exists.\n\n## Acceptance Criteria\n\n- [x] login works with `a, b`\n- [ ] logout clears the *session*\n- plain item\n\n## Notes\n\nkeep me\n";
-		const plan = planBodyMigration(body, []);
-		expect(plan).toEqual({
-			kind: "move",
-			body: "Why this exists.\n\n## Notes\n\nkeep me",
-			items: [
-				{ text: "login works with `a, b`", done: true },
-				{ text: "logout clears the *session*", done: false },
-				{ text: "plain item", done: false },
-			],
-		});
-	});
-
-	test("anything that would lose text is skipped", () => {
-		const prose = "## Acceptance Criteria\n\nThe page must load.\n- item\n";
-		expect(planBodyMigration(prose, []).kind).toBe("skip");
-		const nested = "## Acceptance Criteria\n\n- item\n  - sub\n";
-		expect(planBodyMigration(nested, []).kind).toBe("skip");
-		const both = "## Acceptance Criteria\n\n- item\n";
-		expect(planBodyMigration(both, [{ id: "c1" }]).kind).toBe("skip");
-		expect(planBodyMigration("no section", []).kind).toBe("none");
-	});
-
-	test("the reverse renders checkboxes the forward plan reads back", () => {
-		const items = [
-			{ text: "a", done: true },
-			{ text: "b", done: false },
-		];
-		const body = bodyWithCriteriaSection("Goal.", items);
-		expect(planBodyMigration(body, [])).toEqual({
-			kind: "move",
-			body: "Goal.",
-			items,
-		});
 	});
 });
 
@@ -194,22 +135,6 @@ async function service(dir: string): Promise<Svc> {
 	});
 	await svc.load();
 	return { dir, handle, svc };
-}
-
-async function legacyTask(
-	dir: string,
-	id: string,
-	body: string,
-	extra = "",
-): Promise<string> {
-	const taskDir = join(dir, "tasks", `${id}-legacy`);
-	await mkdir(taskDir, { recursive: true });
-	const path = join(taskDir, "task.md");
-	await writeFile(
-		path,
-		`---\nmfw: 1\nid: ${id}\nrev: 3\ntitle: legacy ${id}\nstatus: backlog\n${extra}---\n\n${body}\n`,
-	);
-	return path;
 }
 
 describe("acceptance criteria persistence", () => {
@@ -292,98 +217,15 @@ describe("acceptance criteria persistence", () => {
 	});
 });
 
-describe("body -> field task migration", () => {
-	test("moves criteria into the field preserving text, skips lossy sections, runs once", async () => {
-		const dir = await tmp("mfw-acc-mig-");
-		await writeFile(join(dir, "board.yaml"), legacyBoardYaml());
-		const goodBody =
-			"Context line.\n\n## Acceptance Criteria\n\n- [x] parses `--flag=a,b`\n- [ ] errors name the file\n\n## Notes\n\nverbatim tail";
-		const goodPath = await legacyTask(dir, "MFW-1", goodBody);
-		const proseBody = "## Acceptance Criteria\n\nSee the spec.";
-		const prosePath = await legacyTask(dir, "MFW-2", proseBody);
-		const proseBefore = await readFile(prosePath, "utf8");
-		await legacyTask(dir, "MFW-3", "Nothing to move.");
-
-		const { svc, handle } = await service(dir); // upgrades board.yaml
-		const report = await svc.migrateAcceptance();
-		expect(report?.migrated).toEqual(["MFW-1"]);
-		expect(report?.skipped.map((s) => s.id)).toEqual(["MFW-2"]);
-
-		const got = await svc.get("MFW-1");
-		expect(got?.criteria).toEqual([
-			{ id: "c1", text: "parses `--flag=a,b`", checked: true },
-			{ id: "c2", text: "errors name the file", checked: false },
-		]);
-		expect(got?.body).toBe("Context line.\n\n## Notes\n\nverbatim tail");
-		const onDisk = await readFile(goodPath, "utf8");
-		expect(onDisk).not.toContain("## Acceptance Criteria");
-		expect(await readFile(prosePath, "utf8")).toBe(proseBefore);
-
-		// Once per board: a later run (or a hand-written section) is left alone.
-		expect(await svc.migrateAcceptance()).toBeNull();
-		const [marker] = await handle.db
-			.select()
-			.from(engineKv)
-			.where(eq(engineKv.key, ACCEPTANCE_MIGRATION_KEY));
-		expect(marker?.value).toMatchObject({ version: 1, migrated: 1 });
-	});
-
-	test("the reverse step restores body sections and the old board.yaml", async () => {
-		const dir = await tmp("mfw-acc-rev-");
-		const legacy = legacyBoardYaml();
-		await writeFile(join(dir, "board.yaml"), legacy);
-		const body = "Goal.\n\n## Acceptance Criteria\n\n- [x] first\n- [ ] second";
-		const path = await legacyTask(dir, "MFW-1", body);
-		const { svc } = await service(dir);
-		await svc.migrateAcceptance();
-
-		const report = await revertBodyCriteria(
-			dir,
-			await loadBoardConfig(join(dir, "board.yaml")),
-		);
-		expect(report).toEqual({ migrated: ["MFW-1"], skipped: [] });
-		expect(await downgradeBoardYaml(join(dir, "board.yaml"))).toBe(true);
-		expect(await readFile(join(dir, "board.yaml"), "utf8")).toBe(legacy);
-		// The old board validates the reverted task again.
-		const config = await loadBoardConfig(join(dir, "board.yaml"));
-		expect(config.types.task?.fields.acceptance).toBeUndefined();
-		const reverted = await readFile(path, "utf8");
-		expect(reverted).not.toContain("acceptance:");
-		expect(reverted).toContain(
-			"Goal.\n\n## Acceptance Criteria\n\n- [x] first\n- [ ] second",
-		);
-	});
-
-	test("deferred while the circuit breaker distrusts the board", async () => {
-		const dir = await tmp("mfw-acc-brk-");
-		await writeFile(join(dir, "board.yaml"), legacyBoardYaml());
-		for (let i = 1; i <= 6; i++) {
-			await legacyTask(dir, `MFW-${i}`, "## Acceptance Criteria\n\n- x");
-		}
-		const { svc } = await service(dir);
-		await rm(join(dir, "tasks"), { recursive: true, force: true });
-		await svc.refresh();
-		expect(svc.isBoardSuspended).toBe(true);
-		expect(await svc.migrateAcceptance()).toBeNull();
-	});
-});
-
 describe("attach", () => {
-	test("upgrades board.yaml and migrates tasks in one board commit", async () => {
+	test("adds the field to a board.yaml that lacks it, in one board commit", async () => {
 		const root = await tmp("mfw-acc-boot-");
 		const home = await tmp("mfw-acc-home-");
 		await git(["init", "-q", "-b", "main", "."], root);
 		await git(["config", "user.email", "t@t"], root);
 		await git(["config", "user.name", "t"], root);
 		await writeFile(join(root, ".git/info/exclude"), MFW_EXCLUDE);
-		const boardDir = root;
-		await mkdir(boardDir, { recursive: true });
-		await writeFile(join(boardDir, "board.yaml"), legacyBoardYaml());
-		await legacyTask(
-			boardDir,
-			"MFW-1",
-			"Goal.\n\n## Acceptance Criteria\n\n- [ ] it works",
-		);
+		await writeFile(join(root, "board.yaml"), boardYamlWithoutAcceptance());
 		await git(["add", "-A"], root);
 		await git(["commit", "-qm", "init"], root);
 
@@ -394,52 +236,15 @@ describe("attach", () => {
 			mfwHome: home,
 		});
 		try {
-			const svc = orch.get("demo");
-			expect((await svc.tasks.get("MFW-1"))?.criteria).toEqual([
-				{ id: "c1", text: "it works", checked: false },
-			]);
+			expect(await readFile(join(root, "board.yaml"), "utf8")).toContain(
+				"acceptance: { type: checklist, optional: true }",
+			);
 			const log = await git(["log", "--format=%s", "-n", "1"], root);
 			expect(log.stdout.trim()).toBe(
-				"mfw: move acceptance criteria into the acceptance field",
+				"mfw: add mfw's task fields to board.yaml",
 			);
-			const files = await git(
-				["show", "--name-only", "--format=", "HEAD"],
-				root,
-			);
-			expect(files.stdout).toContain("board.yaml");
-			expect(files.stdout).toContain("tasks/MFW-1-legacy/task.md");
-
-			// The reverse step refuses while a daemon has the project attached.
-			await expect(
-				revertAcceptance({ root, log: silentLogger() }),
-			).rejects.toThrow(/stop it before reverting/);
 		} finally {
 			await orch.shutdown();
-		}
-
-		// With the daemon stopped: back to the legacy board, in one commit, and
-		// the marker cleared so the next attach migrates again.
-		const reverted = await revertAcceptance({ root, log: silentLogger() });
-		expect(reverted.migrated).toEqual(["MFW-1"]);
-		expect(reverted.committed).toBe(REVERT_COMMIT_MESSAGE);
-		expect(await readFile(join(boardDir, "board.yaml"), "utf8")).toBe(
-			legacyBoardYaml(),
-		);
-		const status = await git(["status", "--porcelain"], root);
-		expect(status.stdout.trim()).toBe("");
-
-		const again = await boot({
-			projects: [{ name: "demo", root, integrationBranch: "main" }],
-			log: silentLogger(),
-			autostart: false,
-			mfwHome: home,
-		});
-		try {
-			expect((await again.get("demo").tasks.get("MFW-1"))?.criteria).toEqual([
-				{ id: "c1", text: "it works", checked: false },
-			]);
-		} finally {
-			await again.shutdown();
 		}
 	}, 30_000);
 
@@ -452,7 +257,7 @@ describe("attach", () => {
 		await mkdir(boardDir, { recursive: true });
 		await writeFile(
 			join(boardDir, "board.yaml"),
-			legacyBoardYaml().replace(
+			boardYamlWithoutAcceptance().replace(
 				"      verification: { type: json, optional: true }\n",
 				"      verification: { type: json, optional: true }\n      acceptance: { optional: true }\n",
 			),

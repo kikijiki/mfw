@@ -1,13 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-	chmod,
-	mkdir,
-	mkdtemp,
-	readdir,
-	readFile,
-	rm,
-	writeFile,
-} from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
@@ -205,8 +197,7 @@ const CRITIC_OK = JSON.stringify({
 	accepted: true,
 	criteria: [
 		{
-			criterion:
-				"Deliver the task goal described above (legacy implicit criterion).",
+			criterion: "Deliver the task goal described above (implicit criterion).",
 			verdict: "met",
 			evidenceClass: "source-confirmed",
 			evidence: "The diff implements the requested change.",
@@ -217,7 +208,7 @@ const CRITIC_OK = JSON.stringify({
 	concerns: [],
 });
 const CRITIC_FLAGGED =
-	'```json\n{"accepted":false,"criteria":[{"criterion":"Deliver the task goal described above (legacy implicit criterion).","verdict":"unmet","evidenceClass":"source-confirmed","evidence":"Tests were removed instead of implementing the goal."}],"fakeDone":true,"scopeCreep":false,"concerns":["tests were gutted"]}\n```';
+	'```json\n{"accepted":false,"criteria":[{"criterion":"Deliver the task goal described above (implicit criterion).","verdict":"unmet","evidenceClass":"source-confirmed","evidence":"Tests were removed instead of implementing the goal."}],"fakeDone":true,"scopeCreep":false,"concerns":["tests were gutted"]}\n```';
 
 describe("BrainService: happy path per decision point", () => {
 	test("critic: validated JSON becomes an ok decision with a full audit trail", async () => {
@@ -675,8 +666,7 @@ describe("BrainService: orphans, supersede, caps, disabled", () => {
 	});
 });
 
-const LEGACY =
-	"Deliver the task goal described above (legacy implicit criterion).";
+const LEGACY = "Deliver the task goal described above (implicit criterion).";
 
 function criticAnswer(
 	verdict: string,

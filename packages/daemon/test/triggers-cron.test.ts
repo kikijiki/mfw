@@ -119,7 +119,7 @@ describe("the definition format: cron + create_task (MFW-33 item 2)", () => {
 			kind: "create_task",
 			type: "maintenance",
 			dedupe: "skip_if_active",
-			dod: null,
+			verification: null,
 		});
 		await f.cleanup();
 	});

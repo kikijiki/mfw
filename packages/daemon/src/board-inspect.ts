@@ -11,8 +11,8 @@ import { parseStatusMap } from "./board-status-map.ts";
  * or a lock — no `.board/` directory appears in the inspected folder.
  */
 
-/** Where the `board.yaml` sits: at the folder itself, under the legacy `.mfw`, both, or neither. */
-export type BoardLocation = "root" | "legacy-mfw" | "none" | "ambiguous";
+/** Whether the folder has a `board.yaml` at its root. */
+export type BoardLocation = "root" | "none";
 
 export interface BoardTypeSummary {
 	/** Type name from `board.yaml`, e.g. "task". */
@@ -152,24 +152,13 @@ export async function inspectBoardFolder(
 
 	const isGitRepo = await isRepositoryRoot(folder);
 	const rootYaml = join(folder, "board.yaml");
-	const legacyYaml = join(folder, ".mfw", "board.yaml");
-	const [atRoot, atLegacy] = await Promise.all([
-		isFile(rootYaml),
-		isFile(legacyYaml),
-	]);
+	const atRoot = await isFile(rootYaml);
 	const summary = {
 		...base,
 		exists: true,
 		isGitRepo,
-		location: (atRoot
-			? atLegacy
-				? "ambiguous"
-				: "root"
-			: atLegacy
-				? "legacy-mfw"
-				: "none") as BoardLocation,
-		// Both present is `ambiguous`; the root file is the one a search finds first.
-		boardYaml: atRoot ? rootYaml : atLegacy ? legacyYaml : null,
+		location: (atRoot ? "root" : "none") as BoardLocation,
+		boardYaml: atRoot ? rootYaml : null,
 	};
 	if (summary.boardYaml === null) return summary;
 

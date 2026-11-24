@@ -550,7 +550,7 @@ export const runSubagents = sqliteTable(
 /**
  * Sandbox attestations (design "Probe barrier"): what the host observed when
  * it ran the in-child probe for a run. Append-only, enforced by triggers in
- * migration 0020 that drizzle does not model; the newest row for a run is the
+ * the baseline migration that drizzle does not model; the newest row for a run is the
  * one that counts. Written and read through
  * `containment/attestation-store.ts`, which validates each row on the way out.
  */
@@ -585,7 +585,7 @@ export const sandboxAttestations = sqliteTable(
 
 /**
  * One row per attestation a launch has used. The primary key is what makes an
- * attestation single-use. Append-only, by the triggers in migration 0020.
+ * attestation single-use. Append-only, by the triggers in the baseline migration.
  */
 export const sandboxAttestationUses = sqliteTable("sandbox_attestation_uses", {
 	attestationId: text("attestation_id").primaryKey(),
@@ -1056,7 +1056,7 @@ export type BrainTurnStatus =
 	| "aborted";
 
 /**
- * One row per brain (0011). `scope` is `{kind: "project"}` today; the field is
+ * One row per brain. `scope` is `{kind: "project"}` today; the field is
  * there so a subtree brain is another row later. The native session is a cache:
  * everything the brain needs is rebuilt from the board, `events` and
  * `decisions` by a rollover (new `generation`).

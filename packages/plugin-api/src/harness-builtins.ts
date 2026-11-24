@@ -209,7 +209,7 @@ export const BUILTIN_HARNESS_MANIFESTS: readonly HarnessManifestInput[] = [
 					kind: "api-key",
 					credentialId: "anthropic",
 					envVars: ["ANTHROPIC_API_KEY"],
-					hint: "Pay-per-token instead of a subscription. NOTE: mfw does not yet inject a stored key into the agent's environment: export ANTHROPIC_API_KEY for the daemon until it does.",
+					hint: "Pay-per-token instead of a subscription. NOTE: mfw does not yet inject a stored key into the agent's environment: export ANTHROPIC_API_KEY for the server until it does.",
 				},
 			],
 			remoteLoginFiles: [".claude/.credentials.json"],
@@ -502,7 +502,7 @@ export const BUILTIN_HARNESS_MANIFESTS: readonly HarnessManifestInput[] = [
 				{
 					kind: "api-key",
 					envVars: ["CURSOR_API_KEY"],
-					hint: "Export CURSOR_API_KEY for the daemon instead of signing in.",
+					hint: "Export CURSOR_API_KEY for the server instead of signing in.",
 				},
 			],
 			remoteLoginFiles: [".cursor/cli-config.json"],

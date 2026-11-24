@@ -103,10 +103,8 @@ export function fixture(over: Partial<DoctorProbes> = {}): DoctorProbes {
 			liveTokens: 2,
 			pendingSetup: false,
 		}),
-		legacyHost: async () => ({ state: "none" }),
 		build: async () => ({ kind: "source" }),
 		exposure: () => ({ problem: null, warnings: [] }),
-		legacySkills: async () => ({ available: true, paths: [] }),
 		project: async () => healthyProject(),
 		...over,
 	};

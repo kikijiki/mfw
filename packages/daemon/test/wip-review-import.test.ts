@@ -209,7 +209,7 @@ describe("H1: long paths cannot hide an out-of-scope edit", () => {
 	const longPaths = (n: number, sha: string): [string, string, string][] =>
 		Array.from({ length: n }, (_, i) => [
 			EMPTY_MODE,
-			`src/${"d".repeat(200)}/`.repeat(38) + `f-${i}`,
+			`${`src/${"d".repeat(200)}/`.repeat(38)}f-${i}`,
 			sha,
 		]);
 

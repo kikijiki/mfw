@@ -476,23 +476,63 @@ export const FALLBACK_MERGE_CHECKS: VerificationPlan = {
 
 const EMPTY: DaemonConfig = { projects: [] };
 
-/** Load the config. A malformed file throws rather than reverting to defaults (which looks like a fresh install). */
-/** Keys a config may no longer carry: loading one fails rather than ignore it. */
-export const REMOVED_PROJECT_KEYS: Record<string, string> = {
-	agentIsolation: "agentIsolation was removed: runs are always sandboxed",
-};
-
-export function assertNoRemovedKeys(raw: unknown): void {
-	const projects = (raw as { projects?: unknown } | null)?.projects;
-	if (!Array.isArray(projects)) return;
-	for (const project of projects) {
-		if (!project || typeof project !== "object") continue;
-		for (const [key, message] of Object.entries(REMOVED_PROJECT_KEYS)) {
-			if (Object.hasOwn(project, key)) throw new Error(message);
+/** The object keys a schema accepts at `path` (`[n]` segments step into arrays), or null when it is not an object there. */
+function keysAt(schema: z.ZodType, path: readonly string[]): string[] | null {
+	const def = (schema as unknown as { _zod: { def: Record<string, unknown> } })
+		._zod.def;
+	switch (def.type) {
+		case "optional":
+		case "nullable":
+		case "default":
+		case "prefault":
+		case "readonly":
+		case "catch":
+			return keysAt(def.innerType as z.ZodType, path);
+		case "pipe":
+			return keysAt(def.in as z.ZodType, path);
+		case "lazy":
+			return keysAt((def.getter as () => z.ZodType)(), path);
+		case "array": {
+			const [head, ...rest] = path;
+			return head?.startsWith("[")
+				? keysAt(def.element as z.ZodType, rest)
+				: null;
 		}
+		case "union": {
+			const found = (def.options as z.ZodType[])
+				.map((o) => keysAt(o, path))
+				.filter((k): k is string[] => k !== null);
+			return found.length > 0 ? [...new Set(found.flat())] : null;
+		}
+		case "object": {
+			const shape = def.shape as Record<string, z.ZodType>;
+			const [head, ...rest] = path;
+			if (head === undefined) return Object.keys(shape);
+			const next = shape[head];
+			return next ? keysAt(next, rest) : null;
+		}
+		default:
+			return null;
 	}
 }
 
+/**
+ * Refuse a key the schema does not know, anywhere in the file: zod would drop
+ * it silently, and a misspelt or outdated setting would look applied.
+ */
+function assertKnownKeys(raw: unknown, parsed: unknown): void {
+	const lost: string[] = [];
+	collectLostKeys(raw, parsed, "", lost);
+	const first = lost[0];
+	if (first === undefined) return;
+	const segments = first.match(/\[\d+\]|[^.[\]]+/g) ?? [];
+	const valid = keysAt(configSchema, segments.slice(0, -1));
+	throw new Error(
+		`unknown config key ${first}${valid ? `; valid keys: ${[...valid].sort().join(", ")}` : ""}`,
+	);
+}
+
+/** Load the config. A malformed file throws rather than reverting to defaults (which looks like a fresh install). */
 export async function loadConfig(home = mfwHome()): Promise<DaemonConfig> {
 	let raw: string;
 	try {
@@ -504,9 +544,7 @@ export async function loadConfig(home = mfwHome()): Promise<DaemonConfig> {
 		// Not absence: mutateConfig must never overwrite an unreadable file with an empty config.
 		throw error;
 	}
-	const json: unknown = JSON.parse(raw);
-	assertNoRemovedKeys(json);
-	const parsed = configSchema.parse(json);
+	const parsed = parseConfigText(raw);
 	return {
 		...parsed,
 		projects: parsed.projects.map((p) => ({
@@ -564,15 +602,12 @@ function collectLostKeys(
 	}
 }
 
-/**
- * The keys in this config text that a save would drop, because this version's
- * schema does not know them. Throws when the text is not a valid config.
- */
-export function configKeysLostOnSave(text: string): string[] {
-	const raw: unknown = JSON.parse(text);
-	const out: string[] = [];
-	collectLostKeys(raw, configSchema.parse(raw), "", out);
-	return out;
+/** Parse config text as `loadConfig` does, refusing what it refuses. */
+export function parseConfigText(text: string): DaemonConfig {
+	const json: unknown = JSON.parse(text);
+	const parsed = configSchema.parse(json);
+	assertKnownKeys(json, parsed);
+	return parsed;
 }
 
 /**

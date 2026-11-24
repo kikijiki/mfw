@@ -147,7 +147,7 @@ describe("adding a project", () => {
 
 		const yaml = await readFile(join(board, "board.yaml"), "utf8");
 		expect(yaml).toContain("values: [todo, doing, review, done]");
-		expect(yaml).toContain("x-mfw-daemon:");
+		expect(yaml).toContain("x-mfw:");
 		const stored = (await loadConfig()).projects[0] as Record<string, unknown>;
 		expect(stored.boardRoot).toBe(board);
 		expect(stored).not.toHaveProperty("template");
@@ -265,7 +265,7 @@ describe("adding a project", () => {
 		const held = await repoIn(env, "held");
 		const other = await repoIn(env, "other");
 		await mkdir(join(held, ".mfw"), { recursive: true });
-		const heldLock = await acquireKernelLock(join(held, ".mfw", "daemon.lock"));
+		const heldLock = await acquireKernelLock(join(held, ".mfw", "server.lock"));
 		await saveConfig({ projects: [{ name: "demo", root: held }] });
 		// End the bootstrap daemon (machine-wide home lock) before a fresh boot.
 		await env.orchestrator.shutdown();
@@ -350,11 +350,11 @@ describe("attaching from config at boot", () => {
 
 		// The first one wins; the second is refused rather than replacing it.
 		expect(env.orchestrator.list().map((s) => s.root)).toEqual([first]);
-		expect(existsSync(join(second, ".mfw", "daemon.lock"))).toBe(false);
+		expect(existsSync(join(second, ".mfw", "server.lock"))).toBe(false);
 
 		// shutdown reaches everything attached.
 		await env.orchestrator.shutdown();
-		expect(existsSync(join(first, ".mfw", "daemon.lock"))).toBe(true);
+		expect(existsSync(join(first, ".mfw", "server.lock"))).toBe(true);
 	});
 });
 
@@ -372,7 +372,7 @@ describe("removing a project", () => {
 		expect(detached).toMatchObject({ name: "demo", configRemoved: true });
 		expect(env.orchestrator.list()).toEqual([]);
 		expect((await loadConfig(env.home)).projects).toEqual([]);
-		expect(existsSync(join(root, ".mfw", "daemon.lock"))).toBe(true);
+		expect(existsSync(join(root, ".mfw", "server.lock"))).toBe(true);
 	});
 
 	test("settings queued behind detach cannot resurrect the project", async () => {
@@ -404,7 +404,7 @@ describe("removing a project", () => {
 		// Later windDown operations still ran; stale settings are tombstoned.
 		expect(env.orchestrator.list()).toEqual([]);
 		expect((await loadConfig(env.home)).projects).toEqual([]);
-		expect(existsSync(join(root, ".mfw", "daemon.lock"))).toBe(true);
+		expect(existsSync(join(root, ".mfw", "server.lock"))).toBe(true);
 		await expect(svc.settings.update({ maxConcurrent: 8 })).rejects.toThrow(
 			"project 'demo' is detached",
 		);
@@ -427,7 +427,7 @@ describe("removing a project", () => {
 		expect(env.orchestrator.list()).toEqual([]);
 		expect((await loadConfig()).projects).toEqual([]);
 		// The lock file remains but its kernel lock is released, so the path can be re-attached.
-		expect(existsSync(join(root, ".mfw", "daemon.lock"))).toBe(true);
+		expect(existsSync(join(root, ".mfw", "server.lock"))).toBe(true);
 
 		expect(existsSync(join(root, "app.ts"))).toBe(true);
 		expect((await git(["rev-parse", "HEAD"], root)).stdout.trim()).toBe(
@@ -496,7 +496,7 @@ describe("removing a project", () => {
 			expect((await loadConfig(env.home)).projects.map((p) => p.name)).toEqual([
 				"demo",
 			]);
-			expect(existsSync(join(root, ".mfw", "daemon.lock"))).toBe(true);
+			expect(existsSync(join(root, ".mfw", "server.lock"))).toBe(true);
 		} finally {
 			await chmod(env.home, 0o700);
 		}

@@ -23,8 +23,7 @@ import {
 } from "../src/run-workspace/factory.ts";
 
 const BRANCH = "mfw/task/T-1/x";
-const LEGACY =
-	"Deliver the task goal described above (legacy implicit criterion).";
+const LEGACY = "Deliver the task goal described above (implicit criterion).";
 
 const MERGE_REPLY = [
 	"VERDICT: merge",

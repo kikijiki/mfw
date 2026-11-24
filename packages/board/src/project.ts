@@ -41,9 +41,7 @@ function located(configPath: string): BoardLocation {
  * Finds the board gitignore-style: from `startDir` and each parent up to `/`,
  * look for `board.yaml` at the directory's root; the first directory with a
  * hit wins. `--config` beats `MFW_BOARD` beats the search. Returns null if
- * there is no board. A board from the `.mfw/` era is not searched for: the
- * daemon moves it out of `.mfw/` when it attaches the project (see
- * `legacyBoardNear`, used only to say so).
+ * there is no board.
  */
 export function discoverBoard(
 	startDir: string = process.cwd(),
@@ -62,19 +60,6 @@ export function discoverBoard(
 	for (;;) {
 		const direct = join(dir, "board.yaml");
 		if (existsSync(direct)) return located(direct);
-		const parent = dirname(dir);
-		if (parent === dir) return null;
-		dir = parent;
-	}
-}
-
-/** A `.mfw/board.yaml` (the layout before the board moved to its folder's
- * root) in `startDir` or a parent, to name in the "no board" error. */
-export function legacyBoardNear(startDir: string): string | null {
-	let dir = resolve(startDir);
-	for (;;) {
-		const nested = join(dir, ".mfw", "board.yaml");
-		if (existsSync(nested)) return nested;
 		const parent = dirname(dir);
 		if (parent === dir) return null;
 		dir = parent;
@@ -102,12 +87,8 @@ export async function openMfwProject(
 ): Promise<MfwProject> {
 	const loc = discoverBoard(startDir, opts);
 	if (!loc) {
-		const legacy = legacyBoardNear(startDir);
 		throw new Error(
-			`no board found: looked for board.yaml in ${resolve(startDir)} and every parent up to / (override with --config <board.yaml> or MFW_BOARD)` +
-				(legacy
-					? `; ${legacy} is a board from the .mfw/ layout, attach its project in mfw (it moves the board out of .mfw) or point --config at it`
-					: ""),
+			`no board found: looked for board.yaml in ${resolve(startDir)} and every parent up to / (override with --config <board.yaml> or MFW_BOARD)`,
 		);
 	}
 	const config = await loadBoardConfig(loc.configPath);

@@ -49,5 +49,5 @@ export async function sourceRunRefusal(
 	if ((await repositoryId(checkout)) !== (await repositoryId(projectRoot))) {
 		return null;
 	}
-	return `refusing to attach ${projectRoot}: this server runs from source in the same repository, so a merge would change the scripts it runs on the host. Fix: run the production build (\`bun run build\`), or set MFW_DISABLE_ORCHESTRATOR=1 for a UI-only dev server`;
+	return `refusing to attach ${projectRoot}: this server runs from source in the same repository, so a merge would change the scripts it runs on the host. Fix: run the production build (\`bun run build\`), or set MFW_SERVE_UI_ONLY=1 for a UI-only dev server`;
 }

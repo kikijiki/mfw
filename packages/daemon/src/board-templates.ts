@@ -5,7 +5,7 @@
  * for the project's task key. Nothing here writes a file or touches a
  * project; the attach flow picks a template and renders it.
  *
- * Every rendered yaml parses with `parseBoardConfig` once the `x-mfw-daemon`
+ * Every rendered yaml parses with `parseBoardConfig` once the `x-mfw`
  * block is removed (board-core's schema is strict), and every yaml carries
  * that block: the daemon-role map (`statusMap`) saying which of this board's
  * status values fill each daemon role (draft/backlog/ready/...), first value
@@ -37,11 +37,11 @@ export interface BoardTemplate {
 	yaml(taskKey: string): string;
 }
 
-/** The `x-mfw-daemon` extension block: daemon role -> board status values. */
+/** The `x-mfw` extension block: daemon role -> board status values. */
 function statusMapBlock(
 	statusMap: Readonly<Record<string, readonly string[]>>,
 ): string {
-	const lines = ["", "x-mfw-daemon:", "  statusMap:"];
+	const lines = ["", "x-mfw:", "  statusMap:"];
 	for (const role of STATUS_ROLES) {
 		lines.push(`    ${role}: [${(statusMap[role] ?? []).join(", ")}]`);
 	}

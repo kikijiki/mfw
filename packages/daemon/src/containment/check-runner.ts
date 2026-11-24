@@ -52,7 +52,7 @@ export function openStartPipe(): { read: number; write: number } {
 			throw new CheckSandboxRefusal(
 				"no_start_pipe",
 				"could not create the check's start pipe",
-				"check the daemon's open file limit",
+				"check the server's open file limit",
 			);
 		}
 	} finally {
