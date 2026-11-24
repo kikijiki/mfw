@@ -7,9 +7,7 @@ import { openProjectDb, type ProjectDbHandle } from "../src/client.ts";
 import { deriveKey, KEY_RE, parseTaskNum, ULID_RE, ulid } from "../src/ids.ts";
 import {
 	backfillAttemptOutcomes,
-	backfillAttemptOutcomesOnce,
 	listAttemptOutcomes,
-	OUTCOMES_BACKFILL_KEY,
 	outcomePrior,
 	recordAttemptOutcome,
 	summarizeOutcomes,
@@ -445,40 +443,6 @@ describe("task attempt outcomes", () => {
 		expect(await recordAttemptOutcome(h.db, "recovery")).toBeNull();
 		expect(await recordAttemptOutcome(h.db, "plan")).toBeNull();
 		expect(await backfillAttemptOutcomes(h.db)).toBe(0);
-		await cleanup(h, dir);
-	});
-
-	test("backfill is idempotent: run twice, same rows", async () => {
-		const { h, dir } = await freshDb();
-		await repairedChain(h);
-		await h.db.insert(runs).values([
-			run("other", { at: 20_000, taskId: "MFW-9", state: "failed" }),
-			// A fresh dispatch after the first chain ended is its own chain.
-			run("again", {
-				at: 30_000,
-				state: "running",
-				outcome: null,
-				finishedAt: null,
-			}),
-		]);
-		let tick = 0;
-		const clock = () => new Date(t0 + 1_000_000 + tick++ * 1000);
-		expect(await backfillAttemptOutcomesOnce(h.db, clock)).toBe(3);
-		const first = await h.db.select().from(taskAttemptOutcomes);
-		expect(first.map((r) => r.rootRunId).sort()).toEqual([
-			"again",
-			"other",
-			"root",
-		]);
-		// The marker short-circuits; the unconditional fold rewrites nothing.
-		expect(await backfillAttemptOutcomesOnce(h.db, clock)).toBeNull();
-		expect(await backfillAttemptOutcomes(h.db, clock)).toBe(3);
-		expect(await h.db.select().from(taskAttemptOutcomes)).toEqual(first);
-		const [marker] = await h.db
-			.select()
-			.from(engineKv)
-			.where(eq(engineKv.key, OUTCOMES_BACKFILL_KEY));
-		expect(marker?.value).toEqual({ version: 2, chains: 3 });
 		await cleanup(h, dir);
 	});
 

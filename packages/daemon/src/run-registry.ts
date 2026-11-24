@@ -9,7 +9,7 @@ import { writeFileAtomic } from "@mfw/core/fsatomic";
 import type { ProjectDbHandle, ProjectDbTx } from "@mfw/db/client";
 import { appendEvent, type EventBus, type StoredEvent } from "@mfw/db/eventlog";
 import { ulid } from "@mfw/db/ids";
-import { CHAIN_RELATIONS, relationOf } from "@mfw/db/lineage-backfill";
+import { CHAIN_RELATIONS, relationOf } from "@mfw/db/lineage";
 import type { FactProvenance, RunFactSource } from "@mfw/db/provenance";
 import { type ExitFactValue, recordRunFact } from "@mfw/db/run-facts";
 import {

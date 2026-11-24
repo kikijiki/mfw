@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { openProjectDb } from "@mfw/db/client";
 import { EventBus } from "@mfw/db/eventlog";
 import {
-	backfillDecisionOutcomes,
 	listAttemptOutcomes,
 	recordDecisionOutcome,
 	summarizeOutcomes,
@@ -123,7 +122,6 @@ describe("decision outcomes", () => {
 		// Idempotent: an explicit re-fold leaves the same value.
 		const before = JSON.stringify(out);
 		await f.handle.withTx((tx) => recordDecisionOutcome(tx, id));
-		await f.handle.withTx((tx) => backfillDecisionOutcomes(tx));
 		expect(JSON.stringify(await f.outcomeOf(id))).toBe(before);
 		await f.done();
 	});

@@ -3,13 +3,11 @@ import { dirname, join } from "node:path";
 import { type Client, createClient, type Transaction } from "@libsql/client";
 import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
-import { backfillLineage } from "./lineage-backfill.ts";
 import {
 	sourceMigrationsDir,
 	withVerifiedMigrations,
 } from "./migration-source.ts";
 import * as schema from "./schema.ts";
-import { backfillSpansFromEvents } from "./spans-backfill.ts";
 
 export type ProjectDb = LibSQLDatabase<typeof schema>;
 /** The transaction type accepted by every v2 mutation helper. */
@@ -258,10 +256,6 @@ export async function openDbAt(dbPath: string): Promise<ProjectDbHandle> {
 	await withVerifiedMigrations(import.meta.url, (migrationsFolder) =>
 		migrate(db, { migrationsFolder }),
 	);
-	// Rows from before typed lineage get `relation`/`chain_root_id`; a no-op once filled.
-	await backfillLineage(db);
-	// Old events become spans once; afterwards `appendEvent` writes them live.
-	await backfillSpansFromEvents(db);
 
 	let queue: Promise<unknown> = Promise.resolve();
 	const withTx = <T>(fn: (tx: ProjectDbTx) => Promise<T>): Promise<T> => {

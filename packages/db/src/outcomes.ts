@@ -1,9 +1,8 @@
-import { and, eq, gte, inArray, isNotNull } from "drizzle-orm";
+import { and, eq, gte, inArray } from "drizzle-orm";
 import type { ProjectDb, ProjectDbTx } from "./client.ts";
 import {
 	type AttemptFinal,
 	decisions,
-	engineKv,
 	mergeJobs,
 	reviewVerdicts,
 	runSteps,
@@ -497,19 +496,6 @@ export async function recordDecisionOutcomesOfRun(
 	return done;
 }
 
-/** Fold every decision that spawned a run. Idempotent; returns how many carry an outcome. */
-export async function backfillDecisionOutcomes(db: OutcomeDb): Promise<number> {
-	const spawners = await db
-		.selectDistinct({ id: runs.spawnedByDecisionId })
-		.from(runs)
-		.where(isNotNull(runs.spawnedByDecisionId));
-	let n = 0;
-	for (const s of spawners) {
-		if (s.id != null && (await recordDecisionOutcome(db, s.id))) n++;
-	}
-	return n;
-}
-
 /** Record the chain a run belongs to (a no-op for non-task runs). */
 export async function recordAttemptOutcome(
 	db: OutcomeDb,
@@ -543,37 +529,6 @@ export async function backfillAttemptOutcomes(
 			chains++;
 		}
 	}
-	return chains;
-}
-
-/** engine_kv marker gating the boot-time backfill; bump the version to refold. */
-export const OUTCOMES_BACKFILL_KEY = "outcomes_backfill";
-export const OUTCOMES_BACKFILL_VERSION = 2;
-
-/** Backfill once per DB (per marker version). Returns null when already done. */
-export async function backfillAttemptOutcomesOnce(
-	db: OutcomeDb,
-	now: () => Date = () => new Date(),
-): Promise<number | null> {
-	const [marker] = await db
-		.select()
-		.from(engineKv)
-		.where(eq(engineKv.key, OUTCOMES_BACKFILL_KEY));
-	if (
-		(marker?.value as { version?: number } | undefined)?.version ===
-		OUTCOMES_BACKFILL_VERSION
-	)
-		return null;
-	const chains = await backfillAttemptOutcomes(db, now);
-	await backfillDecisionOutcomes(db);
-	const value = { version: OUTCOMES_BACKFILL_VERSION, chains };
-	await db
-		.insert(engineKv)
-		.values({ key: OUTCOMES_BACKFILL_KEY, value, updatedAt: now() })
-		.onConflictDoUpdate({
-			target: engineKv.key,
-			set: { value, updatedAt: now() },
-		});
 	return chains;
 }
 
