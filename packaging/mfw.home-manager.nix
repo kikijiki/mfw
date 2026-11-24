@@ -128,6 +128,14 @@ in {
       # A child being OOM-killed must not tear the orchestrator down with it.
       OOMPolicy = "continue";
 
+      # Hardening that costs mfw nothing: bwrap needs no privileges (it uses an
+      # unprivileged user namespace), and the systemd scopes are asked for over
+      # the user bus. Files mfw writes are private to you.
+      UMask = "0077";
+      NoNewPrivileges = true;
+      ProtectSystem = "full";
+      RestrictSUIDSGID = true;
+
       # Agent runs are accounted to this unit's cgroup. Uncomment to cap, leaving
       # generous headroom, a legitimate agent may run a full build or test suite.
       # MemoryHigh = "24G";

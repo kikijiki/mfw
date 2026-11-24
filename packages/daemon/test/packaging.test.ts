@@ -92,6 +92,21 @@ describe("the compiled install in packaging", () => {
 		for (const text of [pkg, flake, doc]) expect(text).toContain(command);
 	});
 
+	test("the home-manager unit is hardened without touching its PATH", async () => {
+		const nix = await readFile(
+			resolve(root, "packaging/mfw.home-manager.nix"),
+			"utf8",
+		);
+		for (const line of [
+			'UMask = "0077";',
+			"NoNewPrivileges = true;",
+			'ProtectSystem = "full";',
+			"RestrictSUIDSGID = true;",
+		]) {
+			expect(nix).toContain(line);
+		}
+	});
+
 	test("the plain unit documents the compiled ExecStart", async () => {
 		const unit = await readFile(
 			resolve(root, "packaging/mfw-server.service"),
