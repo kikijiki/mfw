@@ -229,4 +229,73 @@ describe.skipIf(skip !== null)("a check with the approved environment", () => {
 			mh.close();
 		}
 	}, 300_000);
+
+	test("F4: a candidate-tracked bin/bun does not run as the check's bun", async () => {
+		const m = await lab.repo("shadow", {
+			".envrc": "PATH_add bin\nexport SHADOW_ENV=1\n",
+		});
+		await allowEnv(new EnvTrustStore(lab.mfwHome), {
+			project: "fixture",
+			root: m.root,
+			commit: m.commit,
+			setting: "auto",
+			config: undefined,
+			via: "cli",
+		});
+		const env = () =>
+			resolveDevEnv({
+				mfwHome: lab.mfwHome,
+				project: "fixture",
+				root: m.root,
+				config: undefined,
+				rev: "main",
+				build: true,
+				seams: { steps: steps() } as ResolveDevEnvInput["seams"],
+			});
+		expect((await env()).kind).toBe("ready");
+		// The candidate: a tracked bin/bun that would pass any check.
+		const {
+			mkdirSync: mk,
+			writeFileSync: wf,
+			chmodSync: ch,
+		} = await import("node:fs");
+		mk(join(m.root, "bin"), { recursive: true });
+		wf(join(m.root, "bin/bun"), "#!/bin/sh\necho fake\nexit 0\n");
+		ch(join(m.root, "bin/bun"), 0o755);
+		const { git } = await import("../src/git.ts");
+		await git(["checkout", "-q", "-b", "candidate"], m.root);
+		await git(["add", "-A"], m.root);
+		await git(["commit", "-q", "-m", "candidate"], m.root);
+		const candidate = (await git(["rev-parse", "HEAD"], m.root)).stdout;
+		await git(["checkout", "-q", "main"], m.root);
+		const mh = await openProjectDb(join(m.root, ".mfw"));
+		try {
+			const runner = createCheckSandbox({
+				db: mh.db,
+				mfwHome: lab.mfwHome,
+				projectRoot: m.root,
+				stateDir: join(m.root, ".mfw"),
+				steps: steps(),
+				devEnv: env,
+			});
+			const clones = new VerifierClones({
+				workspaceRoot: join(lab.mfwHome, "workspaces"),
+				primaryRoot: m.root,
+				checkRunner: runner,
+			});
+			const r = await verifyInClone(
+				clones,
+				candidate,
+				"live",
+				dod(
+					'test "$SHADOW_ENV" = 1 && test -x bin/bun && bun --version | grep -Eq "^1\\."',
+				),
+				m.commit,
+			);
+			expect(r.checks[0]?.detail).toBeUndefined();
+			expect(r.passed).toBe(true);
+		} finally {
+			mh.close();
+		}
+	}, 300_000);
 });

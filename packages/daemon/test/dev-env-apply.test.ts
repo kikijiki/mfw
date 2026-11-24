@@ -260,7 +260,8 @@ describe("a dev environment in the profile", () => {
 		if (!r.ok) throw new Error(r.reason);
 		expect(r.env.FIXTURE).toBe("yes");
 		expect(r.env.HOME).toBe(SANDBOX_PATHS.home);
-		expect(r.env.PATH).toBe(`${S1}/bin:/work/node_modules/.bin:${S2}/bin`);
+		// A verifier: the candidate's tree comes after the toolchain.
+		expect(r.env.PATH).toBe(`${S1}/bin:${S2}/bin:/work/node_modules/.bin`);
 		const opts = r.bwrapArgs.toString().split("\0");
 		const pairs = opts.map((o, i) => `${o} ${opts[i + 1]} ${opts[i + 2]}`);
 		expect(pairs).toContain(`--ro-bind ${S1} ${S1}`);

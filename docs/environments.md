@@ -137,7 +137,10 @@ sandbox owns (`HOME`, `TMPDIR`, `XDG_*`, `GIT_*`, the proxy) and names that chan
 how programs load code or start a shell (`LD_*`, `DYLD_*`, `BUN_*`,
 `NODE_OPTIONS`, `GLIBC_TUNABLES`, `BASH_ENV`, ...) are dropped, values are
 size-capped, and `PATH` keeps only entries inside the environment's store
-closure, its data, or the run's own tree. `mfw env status` lists what was dropped.
+closure, its data, or the run's own tree. `mfw env status` lists what was dropped. In a check (`verifier`,
+`merge-verify`) the entries in the run's tree, such as `PATH_add bin` or
+`layout node`, come after the toolchain: the tree is the candidate's, so a
+tracked `bin/bun` cannot stand in for the check's own tools.
 
 A check's `checkPrefix` that only loads the environment (`direnv exec .`,
 `nix develop -c`, `devenv shell`, `mise exec --`) is dropped: the approved

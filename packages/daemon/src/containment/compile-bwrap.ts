@@ -44,6 +44,7 @@ import {
 	ProfileRejectedError,
 	parseSandboxProfile,
 	type SandboxProfile,
+	VERIFY_ROLES,
 } from "./profile.ts";
 import { runDirLayout, runStateRoot } from "./run-dir.ts";
 import {
@@ -643,8 +644,23 @@ function buildEnv(
 	const home = SANDBOX_PATHS.home;
 	const { pathDirs } = declaredToolchain(profile, host.toolchain);
 	const devEnv = profile.filesystem?.devEnv;
-	// The environment's entries first, as in the shell it came from.
-	const path = [...new Set([...(devEnv?.path ?? []), ...pathDirs])];
+	// The environment's entries first, as in the shell it came from. In a
+	// check, the tree is the candidate's: its entries (`PATH_add bin`, `layout
+	// node`) come after the toolchain, so a tracked `bin/bun` cannot stand in
+	// for the check's own tools.
+	const envPath = devEnv?.path ?? [];
+	const inTree = (p: string) =>
+		p === SANDBOX_PATHS.workspace ||
+		p.startsWith(`${SANDBOX_PATHS.workspace}/`);
+	const path = VERIFY_ROLES.has(profile.role)
+		? [
+				...new Set([
+					...envPath.filter((p) => !inTree(p)),
+					...pathDirs,
+					...envPath.filter(inTree),
+				]),
+			]
+		: [...new Set([...envPath, ...pathDirs])];
 	const env: Record<string, string> = {
 		PATH: path.length > 0 ? path.join(":") : EMPTY_PATH,
 		HOME: home,
