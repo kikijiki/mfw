@@ -783,7 +783,7 @@ describe("single-daemon safety", () => {
 		// two supervisors on one board. `MFW_SERVE_UI_ONLY` is not a substitute.
 		const root = await makeRepo();
 		await mkdir(join(root, ".mfw"), { recursive: true });
-		const liveLock = await acquireKernelLock(join(root, ".mfw/daemon.lock"));
+		const liveLock = await acquireKernelLock(join(root, ".mfw/server.lock"));
 		const orch = await boot({
 			projects: [cfg(root)],
 			log: silentLogger(),
@@ -799,7 +799,7 @@ describe("single-daemon safety", () => {
 		const root = await makeRepo();
 		await mkdir(join(root, ".mfw"), { recursive: true });
 		await writeFile(
-			join(root, ".mfw/daemon.lock"),
+			join(root, ".mfw/server.lock"),
 			`${JSON.stringify({ pid: 1, acquiredAt: 0 })}\n`,
 		);
 		const orch = await boot({

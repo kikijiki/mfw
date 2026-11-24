@@ -198,7 +198,7 @@ const NON_PERSISTENT_ROOTS = ["/tmp", "/var/tmp", "/dev/shm", "/run"];
 /** Not a system tree, and holding a file only an mfw home has. */
 async function isRecognisableHome(p: DoctorProbes): Promise<boolean> {
 	if (isSystemPath(p.home)) return false;
-	for (const marker of ["auth.db", "daemon.lock"]) {
+	for (const marker of ["auth.db", "server.lock"]) {
 		if ((await p.stat(join(p.home, marker)))?.kind === "file") return true;
 	}
 	return false;

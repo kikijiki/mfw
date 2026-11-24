@@ -13,7 +13,7 @@ interface NitroLifecycle {
  * detaches from tmux runs rather than killing them; the next boot adopts them.
  *
  * `MFW_SERVE_UI_ONLY=1` serves the UI without attaching anything. It is
- * not a safety mechanism (the per-project `daemon.lock` prevents two servers
+ * not a safety mechanism (the per-project `server.lock` prevents two servers
  * attaching one project); it just gives a quiet dev server where mfw-server
  * already runs.
  *

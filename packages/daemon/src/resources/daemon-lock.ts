@@ -41,7 +41,7 @@ export async function acquireDaemonLock(
 	input: { processBootId: string; timeoutMs?: number },
 ): Promise<DaemonLock> {
 	const home = resolve(mfwHome);
-	const lockPath = join(home, "daemon.lock");
+	const lockPath = join(home, "server.lock");
 	if (heldHomes.has(home)) {
 		throw new DaemonLockError(
 			lockPath,

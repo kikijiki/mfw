@@ -2275,7 +2275,7 @@ async function acquireProjectLock(
 	mfwDir: string,
 	bootId: string,
 ): Promise<() => Promise<void>> {
-	const lockPath = join(mfwDir, "daemon.lock");
+	const lockPath = join(mfwDir, "server.lock");
 	// In-process conflict (two orchestrators in one server, or a test booting
 	// twice): the pid file cannot see this, since the pid is our own.
 	if (heldLocks.has(mfwDir)) {
