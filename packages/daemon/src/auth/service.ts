@@ -255,7 +255,7 @@ export interface AuthServiceOptions {
 	maxQueuedPasswordChecks?: number;
 	/** Minimum spacing of proxied attempts once the shared budget is spent. */
 	proxiedCheckIntervalMs?: number;
-	/** Runs after a password verifies, before anything is written (tests). */
+	/** Runs after a password or passkey verifies, before anything is written (tests). */
 	afterPasswordCheck?: () => Promise<void>;
 	/** Where a first-run setup token is written (0600). */
 	setupTokenFile?: string;
