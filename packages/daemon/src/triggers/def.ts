@@ -30,8 +30,8 @@ export type TriggerCatchup = "latest" | "all" | "none";
 export type TriggerConcurrency = "serial" | "latest" | "drop";
 export type TriggerOnFailure = "inbox" | "ignore" | "hold_dispatch";
 
-/** `cwd: repo` is the primary checkout: possibly dirty or on another branch, but the only place untracked deploy files (`node_modules`, `.env`) exist. `MFW_SHA` is always passed for scripts needing an exact tree. */
-export type TriggerScriptCwd = "repo" | "worktree";
+/** `cwd: repo` is the primary checkout: possibly dirty or on another branch, but the only place untracked deploy files (`node_modules`, `.env`) exist. `cwd: workspace` is a throwaway checkout of `MFW_SHA`. `MFW_SHA` is always passed for scripts needing an exact tree. */
+export type TriggerScriptCwd = "repo" | "workspace";
 
 export type TriggerTaskType =
 	| "implementation"
@@ -304,7 +304,7 @@ function parseAction(fm: Record<string, unknown>): TriggerAction {
 	}
 	const cwd = oneOf(
 		str(fm, "cwd"),
-		["repo", "worktree"] as const,
+		["repo", "workspace"] as const,
 		"cwd",
 		"repo",
 	);

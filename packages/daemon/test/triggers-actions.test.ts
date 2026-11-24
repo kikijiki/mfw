@@ -392,14 +392,14 @@ describe("action: script", () => {
 		await cleanup();
 	});
 
-	test("cwd: worktree runs hermetically at MFW_SHA and removes the worktree after", async () => {
+	test("cwd: workspace runs hermetically at MFW_SHA and removes the checkout after", async () => {
 		const root = await repo();
 		const sha = (await git(["rev-parse", "HEAD"], root)).stdout;
 		const outFile = join(root, "wt.txt");
 		const def = mkDef({
 			kind: "script",
 			run: `pwd > "${outFile}"; echo "$MFW_SHA" >> "${outFile}"`,
-			cwd: "worktree",
+			cwd: "workspace",
 			timeoutMs: 10_000,
 		});
 		const handler = armedScriptAction({

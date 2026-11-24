@@ -239,7 +239,7 @@ async function arm(
 	root: string,
 	svc: TaskService,
 	id: string,
-	checkout: "primary" | "integration-worktree" = "primary",
+	checkout: "primary" | "integration-workspace" = "primary",
 ) {
 	// An armed command runs in a clone of the integration tip, so it needs one.
 	if ((await git(["rev-parse", "--verify", "-q", "HEAD"], root)).exitCode) {
@@ -303,7 +303,7 @@ describe("reopen safety and recovery", () => {
 							"release",
 						),
 					);
-					expect(policies[id]?.checkout).toBe("integration-worktree");
+					expect(policies[id]?.checkout).toBe("integration-workspace");
 				} else expect(policies).toEqual({});
 			}
 		} finally {
@@ -396,7 +396,7 @@ describe("reopen safety and recovery", () => {
 		const id = await parked(svc, [
 			{ run: "printf ran > proof", expect_exit: 0 },
 		]);
-		await arm(root, svc, id, "integration-worktree");
+		await arm(root, svc, id, "integration-workspace");
 		expect((await maint.reopenByCommand()).reopened).toEqual([id]);
 		expect(await Bun.file(join(root, "proof")).exists()).toBe(false);
 	});
