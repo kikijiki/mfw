@@ -169,7 +169,7 @@ opens dialogs, it never submits.
 
 ```
 cd apps/start
-MFW_BASE_PATH=/ MFW_HOME=$(mktemp -d) bun --bun x vite dev --port 7790   # throwaway daemon
+MFW_BASE_PATH=/ MFW_HOME=$(mktemp -d) bun --bun x vite dev --port 7790   # throwaway server
 # attach a few repos (tRPC system.addProject / tasks.create), then:
 bun tools/ui-capture.ts --base http://127.0.0.1:7790 --out /tmp/ui-shots \
   --projects my-board,my-kanban [--only board] [--sizes 1440x900]
@@ -179,7 +179,7 @@ To look at a hover state (a tooltip), `bun run screenshots --only fleet` with
 `MFW_SHOTS_HOVER='<css selector>'` moves the pointer over the first visible match
 before the shot (`Browser.hover` in `tools/screenshots/browser.ts`).
 
-Against the deployed daemon use `--base http://127.0.0.1:7777/mfw`. `vite dev`
+Against the deployed server use `--base http://127.0.0.1:7777/mfw`. `vite dev`
 needs `MFW_BASE_PATH=/` (see `server/boot.ts`) and sometimes wedges after an
 SSR hot reload: restart it if every navigation times out.
 
