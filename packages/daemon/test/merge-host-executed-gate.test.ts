@@ -12,6 +12,7 @@ import {
 	HARNESS_CONFIG_PATHS,
 	isHostExecutedPath,
 } from "../src/brain-runtime/decision-rights.ts";
+import { EVALUATED_ENV_PATHS } from "../src/containment/dev-env-sources.ts";
 import { git, gitOk } from "../src/git.ts";
 import { InboxService } from "../src/inbox.ts";
 import { silentLogger } from "../src/log.ts";
@@ -418,7 +419,7 @@ describe("package.json asks only when what it executes changes", () => {
 
 	test.each([
 		"bun.lock",
-		"flake.lock",
+		"pnpm-lock.yaml",
 		"yarn.lock",
 	])("a %s-only change lands with a notify-after item", async (lock) => {
 		const g = await gate();
@@ -466,6 +467,14 @@ describe("the host-executed list covers what mfw launches or loads", () => {
 		"bunfig.toml",
 		"flake.nix",
 		".envrc",
+		// The dev environment: evaluated with network, bound into every run.
+		"flake.lock",
+		"devenv.lock",
+		".config/mise.toml",
+		".config/mise/config.toml",
+		".mise/config.toml",
+		"mise/config.toml",
+		"mise.local.toml",
 		".gitattributes",
 		".gitmodules",
 		"Makefile",
@@ -494,11 +503,10 @@ describe("the host-executed list covers what mfw launches or loads", () => {
 		"docs/guide.md",
 		"README.md",
 		"src/makefile.ts",
-		// Judged by content (package.json) or notify-after (lockfiles).
+		// Judged by content (package.json) or notify-after (package lockfiles).
 		"package.json",
 		"packages/x/package.json",
 		"bun.lock",
-		"flake.lock",
 		"yarn.lock",
 	])("%s is not", (path) => {
 		expect(isHostExecutedPath(path)).toBe(false);
@@ -586,5 +594,13 @@ describe("one owner decision covers the merge of the same content", () => {
 		expect(await g.state(runId)).toBe("held");
 		expect(await g.queue.tick()).toBe("idle");
 		expect(g.merged).toEqual([]);
+	});
+});
+
+describe("the dev environment files", () => {
+	test("every file an environment source evaluates is protected", () => {
+		for (const path of EVALUATED_ENV_PATHS) {
+			expect([path, isHostExecutedPath(path)]).toEqual([path, true]);
+		}
 	});
 });

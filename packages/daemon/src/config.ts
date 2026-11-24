@@ -5,6 +5,7 @@ import { writeFileAtomic } from "@mfw/core/fsatomic";
 import { ModelId, OptionalModelId } from "@mfw/core/model-id";
 import { z } from "zod";
 import type { ProjectConfig } from "./boot.ts";
+import { EnvConfigSchema } from "./containment/dev-env-config.ts";
 import { colorProblem, iconProblem } from "./project-appearance.ts";
 import { DEFAULT_REVIEW_POLICY, type ReviewPolicy } from "./review-verdict.ts";
 import {
@@ -385,6 +386,8 @@ const projectSchema = z.object({
 	workloadSecretGrants: z
 		.array(z.string().regex(/^[A-Za-z0-9._-]+$/))
 		.optional(),
+	/** The development environment (`containment/dev-env-config.ts`). */
+	env: EnvConfigSchema.optional(),
 });
 
 /**
