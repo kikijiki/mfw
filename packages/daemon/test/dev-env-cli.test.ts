@@ -74,7 +74,7 @@ describe("mfw env", () => {
 	});
 
 	test("allow prints every file and hash it approves, then records them", async () => {
-		const r = await run("allow", "proj");
+		const r = await run("allow", "proj", "--yes");
 		expect(r.code).toBe(0);
 		expect(r.out).toContain(`direnv environment of proj at ${commit}`);
 		expect(r.out).toMatch(

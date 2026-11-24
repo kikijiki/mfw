@@ -144,7 +144,7 @@ describe.skipIf(skip !== null)("mfw on mfw", () => {
 	test("mfw env allow approves its .envrc, flake and lockfile, and nothing runs yet", async () => {
 		expect(await cli("status", "mfw")).toBe(1);
 		expect(out.join("\n")).toContain("env_not_approved");
-		expect(await cli("allow", "mfw")).toBe(0);
+		expect(await cli("allow", "mfw", "--yes")).toBe(0);
 		const text = out.join("\n");
 		expect(text).toContain(`direnv environment of mfw at ${commit}`);
 		for (const f of [

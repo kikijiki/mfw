@@ -12,18 +12,28 @@ on the host, and the host's own direnv and mise state (`~/.local/share/direnv`,
 
 ```sh
 mfw env status my-project        # what runs would get, and the fix if refused
-mfw env allow my-project         # approve the environment at the integration branch
+mfw env allow my-project         # print what would be approved; approves nothing
+mfw env allow my-project --rev <commit>   # approve exactly that commit (a prefix works)
 mfw env build my-project         # optional: evaluate and install now, not at the next dispatch
 ```
 
-`mfw env allow` prints every file and hash it records before recording them.
-Running it is the approval, as with `direnv allow`. It takes `--rev <commit>` to
-approve another commit. `mfw env deny my-project` refuses the project's runs
+`mfw env allow` prints every file and hash it would record, and what to read:
+after an earlier approval, `git diff --stat` of the whole tree since that commit
+with the environment files' diffs inline; for a first approval, every `*.nix`,
+`.config/mise/**` and `.envrc*` file and every tracked path the root files name.
+It approves only with `--rev <commit>` (the one you read) or `--yes` (whatever
+the integration branch points at when it runs), because the branch can move
+between your reading and your allowing. `mfw env deny my-project` refuses the project's runs
 until it is allowed again.
 
 The same approval is offered as a card in the inbox when a dispatch finds the
 environment unapproved, or changed since you approved it. The card shows the
-commit and each file's hash; approving it is the same as `mfw env allow --rev`.
+commit, each file's hash and the same plan; approving it is the same as
+`mfw env allow --rev`.
+
+Besides the environment's own files, an approval of a nix source protects every
+`*.nix` file at any depth, and one of a mise (or direnv) source protects
+`.config/mise/`: a merge changing them is an ask-first card.
 
 ## What is supported
 

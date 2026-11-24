@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { loadConfig, type StoredProjectConfig } from "../config.ts";
 import { envReachStatement } from "./dev-env-card.ts";
 import type { EnvConfig } from "./dev-env-config.ts";
+import { approvalPlan, planLines } from "./dev-env-plan.ts";
 import {
 	type DevEnvResolution,
 	type ResolveDevEnvInput,
@@ -33,10 +34,11 @@ export const ENV_USAGE = [
 	"usage: mfw env <command>",
 	"",
 	"  status [<project>]   the dev environment of each project, as runs would get it",
-	"  allow <project> [--rev <commit>]",
-	"                approve the environment at one commit (default: the integration",
-	"                branch). Prints every file and hash it approves. Evaluation then",
-	"                happens only at that commit, inside the env-build sandbox",
+	"  allow <project> (--rev <commit> | --yes)",
+	"                approve the environment at one commit. Prints every file and hash,",
+	"                and the whole-tree diff since the last approval (or the files that",
+	"                shape it). Without --rev or --yes it prints and approves nothing.",
+	"                Evaluation then happens only at that commit, in the env-build sandbox",
 	"  deny <project>       refuse the project's environment until it is allowed again",
 	"  build <project>      evaluate and install the approved environment now, in its",
 	"                sandboxes, and print what runs will get",
@@ -139,10 +141,12 @@ export async function runEnvCommand(
 			return refused ? 1 : 0;
 		}
 		case "allow": {
-			const name = rest.find((a) => !a.startsWith("--"));
+			const at = rest.indexOf("--rev");
+			const name = rest.find(
+				(a, i) => !a.startsWith("--") && (at < 0 || i !== at + 1),
+			);
 			const p = projectOf(config.projects, name, d);
 			if (!p) return 2;
-			const at = rest.indexOf("--rev");
 			const rev = at >= 0 ? rest[at + 1] : base(p);
 			if (at >= 0 && !rev) {
 				d.err("mfw env allow: --rev needs a commit");
@@ -187,7 +191,25 @@ export async function runEnvCommand(
 			d.out(
 				`  ${envReachStatement(detection.kind, p.env?.nixDaemon === true)}`,
 			);
-			await allowEnv(new EnvTrustStore(d.home), {
+			const store = new EnvTrustStore(d.home);
+			const prior = store.read(root);
+			const plan = await approvalPlan(
+				root,
+				commit,
+				prior?.state === "allowed" ? prior.commit : null,
+			);
+			for (const line of planLines(plan)) d.out(line);
+			// The integration branch can move between reading this and allowing it.
+			if (at < 0 && !rest.includes("--yes")) {
+				d.out(
+					`not approved yet. To approve exactly this commit, run: mfw env allow ${p.name} --rev ${commit}`,
+				);
+				d.out(
+					`(or add --yes to approve whatever ${base(p)} points at when you run it)`,
+				);
+				return 3;
+			}
+			await allowEnv(store, {
 				project: p.name,
 				root,
 				commit,

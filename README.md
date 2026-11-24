@@ -235,8 +235,9 @@ setting, and the inbox tells you so. Add it to the project's entry in
 ```
 
 Keep the entry's other fields. A project with a dev environment (`.envrc`,
-`mise.toml`, a flake devShell, devenv) needs one more step: approve it with
-`mfw env allow my-project`. It is then evaluated inside a sandbox, only at the
+`mise.toml`, a flake devShell, devenv) needs one more step: read what
+`mfw env allow my-project` prints, then approve that commit with
+`mfw env allow my-project --rev <commit>`. It is then evaluated inside a sandbox, only at the
 commit you approved, and given to every run. See
 [docs/environments.md](docs/environments.md).
 

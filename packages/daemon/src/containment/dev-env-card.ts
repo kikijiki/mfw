@@ -17,6 +17,7 @@ import { appendEvent, type EventBus } from "@mfw/db/eventlog";
 import { ulid } from "@mfw/db/ids";
 import { brainActions } from "@mfw/db/schema";
 import type { EnvConfig } from "./dev-env-config.ts";
+import { type ApprovalPlan, planLines } from "./dev-env-plan.ts";
 import type { DevEnvResolution } from "./dev-env-resolve.ts";
 import {
 	allowEnv,
@@ -54,6 +55,8 @@ export interface EnvCardArgs {
 	configHash: string;
 	/** The project's `env.nixDaemon` opt-in, shown prominently. */
 	nixDaemon: boolean;
+	/** What the owner reads: the whole-tree diff, or the files that shape it. */
+	plan?: ApprovalPlan;
 }
 
 const digest = (args: Pick<EnvCardArgs, "commit" | "files" | "configHash">) =>
@@ -160,9 +163,10 @@ export function describeEnvCard(raw: Record<string, unknown>): {
 		Array.isArray(a.setup) && a.setup.length
 			? ` Setup commands: ${a.setup.map((c) => JSON.stringify(c)).join(", ")}.`
 			: "";
+	const plan = a.plan ? ` ${planLines(a.plan).join("\n").slice(0, 6000)}` : "";
 	return {
 		title: `decide: dev environment of ${a.project} at ${String(a.commit).slice(0, 12)}`,
-		detail: `${a.nixDaemon === true ? "NIX DAEMON: ON. " : ""}Approving lets mfw evaluate this ${a.source} environment, once, at commit ${a.commit}, and give the result to every run. ${envReachStatement(String(a.source), a.nixDaemon === true)} It records these files: ${files}.${changed}${setup} Declining refuses the project's runs until \`mfw env allow\`.`,
+		detail: `${a.nixDaemon === true ? "NIX DAEMON: ON. " : ""}Approving lets mfw evaluate this ${a.source} environment, once, at commit ${a.commit}, and give the result to every run. ${envReachStatement(String(a.source), a.nixDaemon === true)} It records these files: ${files}.${changed}${setup} Declining refuses the project's runs until \`mfw env allow\`.${plan}`,
 	};
 }
 

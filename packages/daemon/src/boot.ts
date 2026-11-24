@@ -52,11 +52,9 @@ import {
 } from "./containment/dev-env-card.ts";
 import type { EnvConfig } from "./containment/dev-env-config.ts";
 import { seedDeps } from "./containment/dev-env-deps.ts";
+import { approvalPlan } from "./containment/dev-env-plan.ts";
 import { resolveDevEnv } from "./containment/dev-env-resolve.ts";
-import {
-	EnvTrustStore,
-	protectedEnvPaths,
-} from "./containment/dev-env-trust.ts";
+import { EnvTrustStore, envProtection } from "./containment/dev-env-trust.ts";
 import { runDirLayout } from "./containment/run-dir.ts";
 import { assertRunDead } from "./containment/run-liveness.ts";
 import { ensureSocketRoot } from "./containment/socket-root.ts";
@@ -618,15 +616,16 @@ export async function attachProject(
 	});
 	const host = new AgentHost(plog);
 	// What this project's environment approval covers: a merge changing it is ask-first.
-	const envProtected = (): string[] => {
+	const envProtected = (): ((path: string) => boolean) => {
 		try {
-			return protectedEnvPaths(
+			return envProtection(
 				new EnvTrustStore(opts.mfwHome).read(realpathSync(root)),
 			);
 		} catch {
-			return [];
+			return () => false;
 		}
 	};
+
 	// The project's approved dev environment (containment/dev-env-resolve.ts),
 	// decided at the integrated base. Only the dispatch preflight evaluates; a
 	// launch or a check uses what is cached.
@@ -1198,6 +1197,11 @@ export async function attachProject(
 						const env = await devEnvAt(true);
 						const card = envCardArgs(cfg.name, cfg.env, env);
 						if (card) {
+							card.plan = await approvalPlan(
+								realpathSync(root),
+								card.commit,
+								card.previousCommit ?? null,
+							).catch(() => undefined);
 							await raiseEnvCard(handle, bus, card).catch((err: unknown) =>
 								plog.warn({ err }, "could not raise the dev environment card"),
 							);

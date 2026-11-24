@@ -60,6 +60,8 @@ export const EnvTrustRecordSchema = z.strictObject({
 	discovered: z.array(EnvFileSchema).max(256).default([]),
 	/** sha256 of the project's canonical `env` config at approval. */
 	configHash: z.string().regex(HEX64),
+	/** The config's `nixDaemon` opt-in at approval (also inside `configHash`). */
+	nixDaemon: z.boolean().default(false),
 	at: z.string(),
 	via: z.enum(["cli", "card"]),
 });
@@ -266,6 +268,8 @@ export async function allowEnv(
 		files: detection.files,
 		discovered: [],
 		configHash,
+		nixDaemon:
+			(input.config as { nixDaemon?: unknown } | undefined)?.nixDaemon === true,
 		at: (input.now ?? (() => new Date()))().toISOString(),
 		via: input.via,
 	};
@@ -288,6 +292,7 @@ export async function denyEnv(
 		files: [],
 		discovered: [],
 		configHash: envConfigHash(input.config),
+		nixDaemon: false,
 		at: (input.now ?? (() => new Date()))().toISOString(),
 		via: input.via,
 	};
@@ -422,6 +427,28 @@ export async function envStatusAt(input: {
 		lockfiles,
 		lockfilesChanged,
 	};
+}
+
+/**
+ * Whether a merge changing `path` is ask-first for this approval: its own
+ * files, and anything a nix or mise evaluation can read without naming it in
+ * a root file: every `*.nix` at any depth for a nix source, and mise's
+ * `.config/mise/` (its `conf.d` included) for a mise source.
+ */
+export function envProtection(
+	record: EnvTrustRecord | null,
+): (path: string) => boolean {
+	const exact = new Set(protectedEnvPaths(record));
+	if (record?.state !== "allowed") return () => false;
+	const nix =
+		record.source === "flake" ||
+		record.source === "devenv" ||
+		(record.source === "direnv" && record.nixDaemon);
+	const mise = record.source === "mise" || record.source === "direnv";
+	return (path) =>
+		exact.has(path) ||
+		(nix && path.toLowerCase().endsWith(".nix")) ||
+		(mise && path.startsWith(".config/mise/"));
 }
 
 /**

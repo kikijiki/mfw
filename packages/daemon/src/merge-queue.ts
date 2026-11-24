@@ -97,7 +97,7 @@ export interface MergeQueueDeps {
 	 * The paths this project's approved dev environment covers, read when a
 	 * merge is judged: changing one is ask-first, and invalidates the approval.
 	 */
-	envProtectedPaths?: () => readonly string[];
+	envProtectedPaths?: () => readonly string[] | ((path: string) => boolean);
 	/**
 	 * Re-run the task's DoD on the rebased branch (a disposable clone on clone
 	 * projects, the run worktree otherwise). `crashed`

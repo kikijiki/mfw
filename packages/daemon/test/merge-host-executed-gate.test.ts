@@ -44,7 +44,9 @@ interface Gate {
 
 const open: Gate[] = [];
 
-async function gate(opts: { envProtected?: string[] } = {}): Promise<Gate> {
+async function gate(
+	opts: { envProtected?: string[] | ((path: string) => boolean) } = {},
+): Promise<Gate> {
 	const root = await mkdtemp(join(tmpdir(), "mfw-host-gate-"));
 	const bare = `${root}-remote.git`;
 	await git(["init", "-q", "--bare", "-b", "main", bare], tmpdir());
@@ -673,5 +675,25 @@ describe("lockfile classes in a project with an approved environment", () => {
 		await g.enqueue(runId, "mfw/mixed");
 		expect(await g.queue.tick()).not.toBe("merged");
 		expect((await g.card())?.args).toMatchObject({ paths: [".envrc"] });
+	});
+});
+
+describe("an approved nix environment protects nix files at any depth", () => {
+	test("a nested .nix change is held; the same change lands without the approval", async () => {
+		const g = await gate({ envProtected: (p) => p.endsWith(".nix") });
+		const runId = await g.branchRun("mfw/nested", {
+			"nix/shells/dev.nix": "{ evil = 1; }\n",
+		});
+		await g.enqueue(runId, "mfw/nested");
+		expect(await g.queue.tick()).not.toBe("merged");
+		expect((await g.card())?.args).toMatchObject({
+			paths: ["nix/shells/dev.nix"],
+		});
+		const plain = await gate();
+		const lands = await plain.branchRun("mfw/nested", {
+			"nix/shells/dev.nix": "{}\n",
+		});
+		await plain.enqueue(lands, "mfw/nested");
+		expect(await plain.queue.tick()).toBe("merged");
 	});
 });
