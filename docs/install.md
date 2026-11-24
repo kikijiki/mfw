@@ -51,7 +51,7 @@ server never passes them. If you set one in your own shell, or in a unit you
 write, and run `mfw` there, that code runs with your own rights. Keep them out
 of the environment `mfw server` starts in.
 
-The hashes catch a partial upgrade, mixed versions and damaged files. They do not
+The hashes catch a partial install, mixed versions and damaged files. They do not
 stop someone who can write the install, so the install's location is checked too.
 At `mfw server` start, in `mfw version`, in `mfw doctor` and at every agent launch,
 the prefix, `bin/`, `lib/mfw/` and every parent, every file under `lib/mfw/`, both
@@ -145,19 +145,23 @@ mfw ignores one in a directory you can write, and refuses the launch. Do not add
 `~/.bun/bin` to make it work: anything you can write, any process running as
 you can replace.
 
-## Upgrading
+## Installing a new version
 
-An install is replaced whole, never edited:
+mfw is in early development, and there is no migration path between development
+versions: a new version may change the database schemas, the configuration and
+the layout under `$MFW_HOME`, and it does not read what an older one wrote.
+Install the new version as a fresh start:
 
-1. Stop the service and drain running agents (they survive a restart, but a new
-   version should not adopt runs of the old one mid-flight).
-2. Back up `$MFW_HOME` and each project's `.mfw/`. Migrations run one way at the
-   first start.
-3. Install the new version beside the old one (a new Nix generation, or a new
-   prefix such as `/opt/mfw-0.2.0`), and switch the service or a symlink to it.
-4. `mfw version` must print `install: ... verified`; then start the service.
+1. Stop the service, and stop any agents still running (from the UI, or
+   `tmux -L mfw kill-server`).
+2. Delete `$MFW_HOME` and each project's `.mfw/` (the board, in its own folder,
+   is plain files and stays).
+3. Install the new version (a new Nix generation, or a new prefix such as
+   `/opt/mfw-0.2.0`), and point the service or a symlink at it.
+4. `mfw version` must print `install: ... verified`; then start the service and
+   repeat first-run setup.
 
-Rolling back means switching back and restoring the backup from step 2.
+A database from another version is refused at open with the fix, never read.
 
 ## `mfw version`
 

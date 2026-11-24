@@ -190,7 +190,8 @@ and move tasks, check the inbox and health, and look at runs.
 A compiled install (`mfw`, `mfw-board`, the server bundle and its pinned bun) is
 the way to run mfw outside development: nothing in it is read from a checkout.
 Build it with the flake (`nix build .#mfw`) or assemble a tarball; see
-[docs/install.md](docs/install.md) for both, upgrades, and what each part checks.
+[docs/install.md](docs/install.md) for both, installing a new version (a fresh start: there is no migration path
+between development versions), and what each part checks.
 The quick start below runs from a checkout instead, which is the development
 setup.
 
@@ -443,7 +444,8 @@ a local SQLite database. The board itself is always just files.
 | [docs/egress.md](docs/egress.md) | agent network access |
 | [docs/verifier-sandbox.md](docs/verifier-sandbox.md) | where checks run |
 | [docs/exposure.md](docs/exposure.md) | reaching mfw from another device |
-| [docs/install.md](docs/install.md) | compiled installs, upgrades, `mfw version` |
+| [docs/install.md](docs/install.md) | compiled installs, new versions (no migration path), `mfw version` |
+| [docs/naming.md](docs/naming.md) | the canonical name of every executable, process, variable and file |
 
 ```
 packages/
