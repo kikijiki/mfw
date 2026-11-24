@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
+	chmodSync,
+	copyFileSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -16,8 +18,25 @@ import {
 	LIBSQL_ADDONS,
 	libsqlAddonPath,
 } from "../../../tools/compile.ts";
-import { SANDBOX_PATHS } from "../../daemon/src/containment/compile-bwrap.ts";
+import {
+	type CompileHost,
+	compileBwrap,
+	SANDBOX_PATHS,
+} from "../../daemon/src/containment/compile-bwrap.ts";
 import { HOST_CONTENT_IDS } from "../../daemon/src/containment/host-script.ts";
+import {
+	hostSpawnEnv,
+	hostSpawnEnvShell,
+} from "../../daemon/src/containment/host-spawn-env.ts";
+import { openPinnedBinds } from "../../daemon/src/containment/pinned-binds.ts";
+import { parseSandboxProfile } from "../../daemon/src/containment/profile.ts";
+import { discoverToolchain } from "../../daemon/src/containment/toolchain.ts";
+import {
+	assertContained,
+	BASE_WRITABLE,
+	hostNamespaces,
+	realHomes,
+} from "../../daemon/test/compile-bwrap-guard.ts";
 import { liveGate } from "../../daemon/test/support/live-gate.ts";
 
 /**
@@ -33,7 +52,8 @@ const TIMEOUT = 120_000;
 
 function compileUnavailable(): string | null {
 	if (typeof Bun.build !== "function") return "this bun has no Bun.build";
-	const target = hostTarget();
+	// A test of this gate makes the target unknown, to see the suite fail.
+	const target = process.env.MFW_TEST_COMPILE_TARGET ?? hostTarget();
 	if (!LIBSQL_ADDONS[target]) return `no libsql addon is known for ${target}`;
 	try {
 		libsqlAddonPath(ROOT, target);
@@ -224,18 +244,8 @@ describe.skipIf(skip !== null)("the compiled executables", () => {
 		expect(r.err).toContain("usage: egress-proxy-main");
 	});
 
-	test("internal subcommands refuse unknown ids, runtime options and the launcher's subtree", () => {
+	test("internal subcommands refuse unknown ids and the launcher's subtree", () => {
 		expect(run([mfw, "__host", "sh"]).code).toBe(78);
-		const preload = join(base, "preload.ts");
-		writeFileSync(
-			preload,
-			`require("node:fs").writeFileSync(${JSON.stringify(join(base, "preloaded"))}, "x");`,
-		);
-		const opt = run([mfw, "__host", "egress-proxy"], {
-			env: { BUN_OPTIONS: `--preload ${preload}` },
-		});
-		expect(opt.code).toBe(78);
-		expect(opt.err).toContain("BUN_OPTIONS is set");
 		const nested = run([mfw, "__host", "agent-launcher", "/x", "--", "true"], {
 			env: { MFW_HOST_ENTRY: "agent-launcher" },
 		});
@@ -244,60 +254,194 @@ describe.skipIf(skip !== null)("the compiled executables", () => {
 		const dotenv = join(base, "dotenv");
 		mkdirSync(dotenv);
 		writeFileSync(join(dotenv, ".env"), "BUN_BE_BUN=1\n");
-		writeFileSync(join(dotenv, "bunfig.toml"), `preload = ["${preload}"]\n`);
+		writeFileSync(join(dotenv, "bunfig.toml"), 'preload = ["./x.ts"]\n');
 		const cwdFiles = run([mfw, "version"], { cwd: dotenv });
 		expect(cwdFiles.code).toBe(0);
 		expect(cwdFiles.out).toStartWith("mfw ");
 	});
 
+	/**
+	 * A compiled bun executable cannot refuse these (security review REL-1 M1):
+	 * this pins down that fact, so no code or document claims otherwise.
+	 */
+	test("residual: bun runtime variables act before, or instead of, mfw's own code", () => {
+		const mark = join(base, "preloaded");
+		const preload = join(base, "preload.ts");
+		writeFileSync(
+			preload,
+			`require("node:fs").writeFileSync(${JSON.stringify(mark)}, "ran");`,
+		);
+		const opt = run([mfw, "__host", "egress-proxy"], {
+			env: { BUN_OPTIONS: `--preload ${preload}` },
+		});
+		expect(readFileSync(mark, "utf8")).toBe("ran");
+		expect(opt.err).toContain("usage: egress-proxy-main");
+		const asBun = run([mfw, "--version"], { env: { BUN_BE_BUN: "1" } });
+		expect(asBun.out.trim()).toBe(Bun.version);
+	});
+
+	test("the host's spawn environment keeps them away from mfw, in TypeScript and in run.sh", () => {
+		const mark = join(base, "preloaded-by-host");
+		const preload = join(base, "preload-host.ts");
+		writeFileSync(
+			preload,
+			`require("node:fs").writeFileSync(${JSON.stringify(mark)}, "ran");`,
+		);
+		const hostile = {
+			PATH: dirname(process.execPath),
+			HOME: join(base, "home"),
+			BUN_OPTIONS: `--preload ${preload}`,
+			BUN_BE_BUN: "1",
+			LD_PRELOAD: join(base, "no-such.so"),
+			NODE_OPTIONS: `--require ${preload}`,
+		};
+		const ts = Bun.spawnSync([mfw, "__host", "egress-proxy"], {
+			env: hostSpawnEnv(hostile),
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		expect(ts.stderr.toString()).toContain("usage: egress-proxy-main");
+		const bash = Bun.which("bash") as string;
+		const envBin = Bun.which("env") as string;
+		const script = [
+			...hostSpawnEnvShell(["BUN_OPTIONS"]),
+			`${envBin} -i "\${mfw_env[@]}" ${mfw} __host egress-proxy`,
+		].join("\n");
+		const sh = Bun.spawnSync([bash, "-c", script], {
+			env: hostile,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		expect(sh.stderr.toString()).toContain("usage: egress-proxy-main");
+		expect(() => readFileSync(mark)).toThrow();
+	});
+
 	const noBwrap = bwrapUnavailable();
 	test.skipIf(liveGate("compiled-live sandbox", noBwrap) !== null)(
-		"inside an mfw sandbox, every internal subcommand is refused",
+		"inside a real mfw sandbox (the compiled task profile), every internal subcommand is refused",
 		() => {
-			const bwrap = Bun.which("bwrap") as string;
-			const store = dirname(dirname(realpathSync(process.execPath)));
-			const r = Bun.spawnSync(
-				[
-					bwrap,
-					"--unshare-all",
-					"--die-with-parent",
-					// Whatever the executable links against, read-only.
-					...["/nix", "/usr", "/lib", "/lib64"].flatMap((d) => [
-						"--ro-bind-try",
-						d,
-						d,
-					]),
-					"--ro-bind",
-					bin,
-					"/opt/mfw",
-					"--proc",
-					"/proc",
-					"--dev",
-					"/dev",
-					"--tmpfs",
-					"/tmp",
-					"--tmpfs",
-					SANDBOX_PATHS.home,
-					"--remount-ro",
-					"/",
-					"--setenv",
-					"HOME",
-					SANDBOX_PATHS.home,
-					"--setenv",
-					"PATH",
-					`${store}/bin`,
-					"--",
-					"/opt/mfw/mfw",
-					"__host",
-					"emit",
-					"egress-relay",
-				],
-				{ stdout: "pipe", stderr: "pipe", env: {} },
-			);
-			expect(r.stdout.toString()).toBe("");
-			expect(r.stderr.toString()).toContain("inside an mfw sandbox");
-			expect(r.exitCode).toBe(78);
+			const r = inRealSandbox(mfw, [
+				["__host", "emit", "egress-relay"],
+				["__host", "agent-launcher", "/x", "--", "true"],
+			]);
+			for (const one of r) {
+				expect(one.out).toBe("");
+				expect(one.err).toContain("inside an mfw sandbox");
+				expect(one.code).toBe(78);
+			}
 		},
 		TIMEOUT,
 	);
 });
+
+/**
+ * Run the compiled mfw, copied into a run's workspace, inside the sandbox the
+ * real profile compiler builds for a task run: read-only root, seccomp, no
+ * capabilities, the toolchain closure (bun's, which `mfw` shares), and the
+ * guard the destructive live suites use. The systemd scope is left out, as in
+ * those suites, because a test host often has no user manager.
+ */
+function inRealSandbox(
+	exe: string,
+	commands: string[][],
+): { code: number | null; out: string; err: string }[] {
+	const fixtures = join(ROOT, ".live-sandbox");
+	mkdirSync(fixtures, { recursive: true });
+	const root = realpathSync(mkdtempSync(join(fixtures, "compiled-")));
+	try {
+		const home = join(root, "fake-home");
+		const work = join(root, "mfw/runs/r1/work");
+		mkdirSync(home, { recursive: true });
+		mkdirSync(work, { recursive: true });
+		copyFileSync(exe, join(work, "mfw"));
+		chmodSync(join(work, "mfw"), 0o755);
+		const bwrap = Bun.which("bwrap") as string;
+		const envBin = Bun.which("env") as string;
+		const binaries = ["sh", "bun"];
+		const pass = <T>(value: T) => ({
+			ok: true as const,
+			severity: "required" as const,
+			value,
+			detail: "ok",
+		});
+		const host: CompileHost = {
+			caps: {
+				userns: pass({ unprivileged: true } as never),
+				bwrap: pass({ version: "0.11.0", disableUserns: true }),
+				systemd: pass({
+					hostKind: "native",
+					manager: true,
+					delegated: ["cpu", "memory", "pids"],
+					missing: [],
+				}),
+				arch: pass("x86_64"),
+			},
+			bwrapPath: bwrap,
+			envPath: envBin,
+			systemdRunPath: "/unused/systemd-run",
+			toolchain: discoverToolchain({
+				home,
+				binaries,
+				path: process.env.PATH ?? "",
+			}),
+			home,
+			mfwHome: join(root, "mfw"),
+			allowedRoots: [join(root, "mfw/runs/r1")],
+			realpath: (p) => {
+				try {
+					return realpathSync(p);
+				} catch {
+					return null;
+				}
+			},
+		};
+		const profile = parseSandboxProfile({
+			version: 1,
+			role: "task",
+			filesystem: {
+				workspace: { source: work, access: "rw" },
+				scratch: "tmpfs",
+				toolchain: { binaries },
+			},
+		});
+		return commands.map((args) => {
+			const c = compileBwrap(
+				profile,
+				[`${SANDBOX_PATHS.workspace}/mfw`, ...args],
+				host,
+			);
+			if (!c.ok) throw new Error(`compile refused: ${c.reason}`);
+			const argv = assertContained(c, {
+				root,
+				bwrap,
+				env: envBin,
+				homes: realHomes(),
+				hidden: [root, home],
+				hostNs: hostNamespaces(),
+				writable: [...BASE_WRITABLE, "/scratch", "/work"],
+			});
+			const bpf = join(root, "deny.bpf");
+			writeFileSync(bpf, c.seccomp, { mode: 0o600 });
+			const opts = join(root, "bwrap.args");
+			writeFileSync(opts, c.bwrapArgs, { mode: 0o600 });
+			const pins = openPinnedBinds(c.pinnedBinds);
+			const stdio = [
+				"ignore",
+				"pipe",
+				"pipe",
+				Bun.file(bpf),
+				Bun.file(opts),
+				...pins.parentFds,
+			];
+			pins.release();
+			const r = Bun.spawnSync(argv, { stdio: stdio as never, timeout: 30_000 });
+			return {
+				code: r.exitCode,
+				out: r.stdout.toString(),
+				err: r.stderr.toString(),
+			};
+		});
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+}
