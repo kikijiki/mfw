@@ -2,9 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { boardCliArgv } from "./support/cli-argv.ts";
-
-const CLI = join(import.meta.dir, "../src/cli.ts");
+import { runBoard } from "./support/board-run.ts";
 
 const BOARD = [
 	"mfw: 1",
@@ -43,21 +41,8 @@ afterEach(async () => {
 	for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
 });
 
-async function mfwBoard(cwd: string, args: string[]) {
-	const e: Record<string, string | undefined> = { ...process.env };
-	delete e.MFW_BOARD;
-	const p = Bun.spawn(boardCliArgv(CLI, args), {
-		cwd,
-		env: e,
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	const [stdout, stderr, code] = await Promise.all([
-		new Response(p.stdout).text(),
-		new Response(p.stderr).text(),
-		p.exited,
-	]);
-	return { stdout: stdout.trim(), stderr: stderr.trim(), code };
+function mfwBoard(cwd: string, args: string[]) {
+	return runBoard(cwd, args);
 }
 
 interface Seed {

@@ -18,11 +18,11 @@ function subjectOf(i: CheckIssue): string {
 
 function ruleList(ctx: CommandContext, rules: readonly CheckRuleInfo[]): void {
 	if (ctx.json) {
-		console.log(JSON.stringify(rules));
+		ctx.out(JSON.stringify(rules));
 		return;
 	}
 	for (const r of rules) {
-		console.log(`${r.id}\t${r.severity}\t${r.reads}\t${r.description}`);
+		ctx.out(`${r.id}\t${r.severity}\t${r.reads}\t${r.description}`);
 	}
 }
 
@@ -78,7 +78,7 @@ export const check: Command = {
 					args.rule.every((r) => refsIds.has(r)) &&
 					!ctx.json
 				) {
-					console.error(
+					ctx.err(
 						"note: refs rules report a file and line, never a document, so --under skips them",
 					);
 				}
@@ -93,6 +93,8 @@ export const check: Command = {
 					: {}),
 				boardOnly: args.boardOnly,
 				stats,
+				cwd: ctx.cwd,
+				env: ctx.env,
 				...(args.roots ? { rootOverrides: args.roots } : {}),
 			});
 		} catch (e) {
@@ -110,7 +112,7 @@ export const check: Command = {
 		const advisory = issues.length - errors;
 		const failed = errors > 0 || (args.strict && advisory > 0);
 		if (ctx.json) {
-			console.log(
+			ctx.out(
 				JSON.stringify({
 					ok: !failed,
 					issues,
@@ -119,17 +121,17 @@ export const check: Command = {
 			);
 		} else {
 			for (const i of issues) {
-				console.log(`${i.severity} ${i.rule} ${subjectOf(i)}: ${i.message}`);
+				ctx.out(`${i.severity} ${i.rule} ${subjectOf(i)}: ${i.message}`);
 			}
 			for (const s of stats) {
-				console.log(
+				ctx.out(
 					s.kind === "refs"
 						? `scanned ${s.rule}: ${s.matches} ref(s) in ${s.files} file(s)${s.skipped > 0 ? `, ${s.skipped} skipped` : ""}`
 						: `coverage ${s.rule}: ${s.open} open of ${s.rows} row(s), ${s.covered} covered, ${s.waived} waived`,
 				);
 			}
-			if (issues.length === 0) console.log("ok");
-			else if (!failed) console.log(`ok: ${advisory} advisory issue(s)`);
+			if (issues.length === 0) ctx.out("ok");
+			else if (!failed) ctx.out(`ok: ${advisory} advisory issue(s)`);
 		}
 		if (failed) throw new CliError("", 1);
 	},

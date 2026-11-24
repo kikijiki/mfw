@@ -54,7 +54,7 @@ export async function runFieldOp(
 		{ baseRev: args.baseRev },
 	);
 	if (ctx.json) {
-		console.log(
+		ctx.out(
 			JSON.stringify({
 				...documentToJson(r.doc),
 				...(showItemId ? { itemId: r.itemId } : {}),
@@ -62,8 +62,8 @@ export async function runFieldOp(
 		);
 		return;
 	}
-	printDocument(r.doc);
-	if (showItemId && r.itemId) console.log(`added ${r.itemId}`);
+	printDocument(r.doc, ctx.out);
+	if (showItemId && r.itemId) ctx.out(`added ${r.itemId}`);
 }
 
 export function parseJson(raw: string, what: string): unknown {

@@ -1,7 +1,24 @@
 import type { MfwProject } from "../project.ts";
 
+/**
+ * What a command may touch of the process: where it runs, its environment, and
+ * its output and input. The real entry passes the process's own; tests pass
+ * their own, so a command never reads `process.cwd()`/`process.env` or prints
+ * through `console` itself.
+ */
+export interface CliIo {
+	cwd: string;
+	env: Record<string, string | undefined>;
+	/** One line to stdout (a newline is added). */
+	out(line: string): void;
+	/** One line to stderr (a newline is added). */
+	err(line: string): void;
+	/** All of stdin as text (`--body-file -`). */
+	stdin(): Promise<string>;
+}
+
 /** Everything a command needs besides its own arguments. */
-export interface CommandContext {
+export interface CommandContext extends CliIo {
 	project: MfwProject;
 	/** Global `--json` flag (commands that have no JSON form ignore it). */
 	json: boolean;

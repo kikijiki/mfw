@@ -10,28 +10,17 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { boardCliArgv } from "./support/cli-argv.ts";
-
-const CLI = join(import.meta.dir, "../src/cli.ts");
+import { ambientEnv, runBoard } from "./support/board-run.ts";
 
 const dirs: string[] = [];
 afterEach(async () => {
 	for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
 });
 
-async function run(args: string[], path?: string) {
-	const p = Bun.spawn(boardCliArgv(CLI, args), {
-		cwd: tmpdir(),
-		env: { ...process.env, ...(path ? { PATH: path } : {}) },
-		stdout: "pipe",
-		stderr: "pipe",
+function run(args: string[], path?: string) {
+	return runBoard(tmpdir(), args, {
+		env: { ...ambientEnv(), ...(path ? { PATH: path } : {}) },
 	});
-	const [stdout, stderr, code] = await Promise.all([
-		new Response(p.stdout).text(),
-		new Response(p.stderr).text(),
-		p.exited,
-	]);
-	return { stdout: stdout.trim(), stderr: stderr.trim(), code };
 }
 
 describe("mfw-board shim", () => {

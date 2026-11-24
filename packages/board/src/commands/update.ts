@@ -15,9 +15,9 @@ export const update: Command = {
 		const doc = await ctx.project.store.updateDocument(
 			type,
 			id,
-			{ fields, body: await resolveBody(args) },
+			{ fields, body: await resolveBody(args, ctx) },
 			{ baseRev: args.baseRev },
 		);
-		printDocument(doc);
+		printDocument(doc, ctx.out);
 	},
 };

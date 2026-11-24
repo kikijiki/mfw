@@ -47,7 +47,7 @@ async function run(ctx: CommandContext, args: ParsedArgs): Promise<void> {
 	const columns = withClass
 		? ["type", "status", "class", "count"]
 		: ["type", "status", "count"];
-	console.log(renderTable({ columns, rows }, format));
+	ctx.out(renderTable({ columns, rows }, format));
 }
 
 export const boardView: View = {

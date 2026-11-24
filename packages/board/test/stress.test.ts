@@ -10,12 +10,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openMfwProject } from "../src/project.ts";
-import { boardCliArgv } from "./support/cli-argv.ts";
+import { runBoard, spawnBoard } from "./support/board-run.ts";
 
 /** Load, edge-case and fuzz tests. Generous time bounds: they catch O(n^2)
  * regressions (repair once took minutes on 1,200 cards), not machine noise. */
-
-const CLI = join(import.meta.dir, "../src/cli.ts");
 
 const BOARD = [
 	"mfw: 1",
@@ -46,19 +44,8 @@ afterEach(async () => {
 	for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
 });
 
-async function mfwBoard(cwd: string, args: string[], stdin?: string) {
-	const p = Bun.spawn(boardCliArgv(CLI, args), {
-		cwd,
-		stdin: stdin === undefined ? "ignore" : new TextEncoder().encode(stdin),
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	const [stdout, stderr, code] = await Promise.all([
-		new Response(p.stdout).text(),
-		new Response(p.stderr).text(),
-		p.exited,
-	]);
-	return { stdout: stdout.trim(), stderr: stderr.trim(), code };
+function mfwBoard(cwd: string, args: string[], stdin?: string) {
+	return runBoard(cwd, args, { stdin });
 }
 
 /** Write `n` cards straight to disk: TK-1.. as epics of ~`fan` children each,
@@ -133,12 +120,26 @@ describe("load", () => {
 		}
 	}, 120_000);
 
+	test("a 1500-card list arrives whole through a real pipe", async () => {
+		// Real process on purpose: a large stdout written by the bin entry must be
+		// flushed through an OS pipe before the process ends, which the in-process
+		// buffer cannot show.
+		const d = await tmp();
+		await generate(d, 1500);
+		const r = await spawnBoard(d, ["list"]);
+		expect(r.code).toBe(0);
+		expect(r.stdout.split("\n")).toHaveLength(1500);
+	}, 60_000);
+
 	test("parallel creates under one parent keep children exact", async () => {
 		const d = await tmp();
 		await mfwBoard(d, ["create", "title=epic"]);
+		// Real processes on purpose: the claim is that separate `mfw-board`
+		// processes serialise on the board's lock file, which one process running
+		// twelve in-process calls cannot show. 12 spawns, each seconds under load.
 		const runs = await Promise.all(
 			Array.from({ length: 12 }, (_, i) =>
-				mfwBoard(d, ["create", `title=k${i}`, "parent=TK-1"]),
+				spawnBoard(d, ["create", `title=k${i}`, "parent=TK-1"]),
 			),
 		);
 		expect(runs.every((r) => r.code === 0)).toBe(true);

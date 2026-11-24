@@ -43,7 +43,7 @@ export const ready: Command = {
 				matchesQueryFilters(d, filters),
 		);
 		if (ctx.json) {
-			console.log(
+			ctx.out(
 				JSON.stringify(
 					found.map((d) => ({
 						id: d.id,
@@ -73,7 +73,7 @@ export const ready: Command = {
 			if (cols.length > 0) {
 				line += ` | ${cols.map((c) => show(d.fields[c])).join(" ")}`;
 			}
-			console.log(line);
+			ctx.out(line);
 		}
 	},
 };
