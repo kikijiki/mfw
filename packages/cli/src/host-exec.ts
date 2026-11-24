@@ -39,6 +39,13 @@ import {
 
 /** Set by the dispatcher for the entry it runs; every descendant inherits it. */
 export const HOST_ENTRY_ENV = "MFW_HOST_ENTRY";
+/**
+ * How many `__host` entries deep this process is. The longest real chain is
+ * driver, bridge, launcher; a fourth level is refused, whatever the edge rule
+ * says, so no configuration can turn re-exec into a process storm.
+ */
+export const HOST_DEPTH_ENV = "MFW_HOST_DEPTH";
+export const MAX_HOST_DEPTH = 3;
 
 /**
  * Mount points every mfw sandbox has on its read-only root (the sandbox home,
@@ -129,6 +136,10 @@ export function hostExecRefusal(
 		return "refusing `mfw __host` inside an mfw sandbox: host entries run only on the host";
 	}
 	if (emit) return null;
+	const depth = Number(ctx.env[HOST_DEPTH_ENV] ?? 0);
+	if (!Number.isInteger(depth) || depth < 0 || depth >= MAX_HOST_DEPTH) {
+		return `refusing \`mfw __host ${id}\`: already ${ctx.env[HOST_DEPTH_ENV]} host entries deep (at most ${MAX_HOST_DEPTH})`;
+	}
 	const parent = ctx.env[HOST_ENTRY_ENV];
 	if (parent !== undefined && parent !== "") {
 		const allowed =
@@ -170,6 +181,7 @@ export async function runHostEntry(
 	const id = args[0] as HostEntryId;
 	const env = deps.ctx.env;
 	env[HOST_ENTRY_ENV] = id;
+	env[HOST_DEPTH_ENV] = String(Number(env[HOST_DEPTH_ENV] ?? 0) + 1);
 	// Each entry reads its arguments from process.argv as a script would.
 	process.argv = [
 		process.argv[0] ?? "mfw",

@@ -7,10 +7,12 @@ import {
 } from "../../daemon/src/containment/host-script.ts";
 import {
 	ALLOWED_CHILDREN,
+	HOST_DEPTH_ENV,
 	HOST_ENTRY_ENV,
 	HOST_ENTRY_MODULES,
 	type HostExecContext,
 	hostExecRefusal,
+	MAX_HOST_DEPTH,
 	runHostEntry,
 	SANDBOX_MARKERS,
 } from "../src/host-exec.ts";
@@ -102,6 +104,27 @@ describe("mfw __host refusals", () => {
 				ctx({ env: { [HOST_ENTRY_ENV]: "x" } }),
 			),
 		).toContain("from inside x");
+	});
+
+	test("a fourth level of re-exec is refused, even along an allowed edge", () => {
+		const at = (depth: string) =>
+			hostExecRefusal(
+				["agent-launcher"],
+				ctx({
+					env: { [HOST_ENTRY_ENV]: "claude-bridge", [HOST_DEPTH_ENV]: depth },
+				}),
+			);
+		expect(at("2")).toBeNull();
+		expect(at(String(MAX_HOST_DEPTH))).toContain("host entries deep");
+		expect(at("-1")).toContain("host entries deep");
+		expect(at("x")).toContain("host entries deep");
+		// With the entry variable removed, the counter still holds.
+		expect(
+			hostExecRefusal(
+				["claude-bridge"],
+				ctx({ env: { [HOST_DEPTH_ENV]: "3" } }),
+			),
+		).toContain("host entries deep");
 	});
 
 	test("every entry id has a module", () => {
