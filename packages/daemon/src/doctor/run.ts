@@ -22,6 +22,10 @@ import {
 	detectUserns,
 } from "../containment/host-caps.ts";
 import {
+	ACK_UNTRUSTED_INSTALL,
+	installTrustFix,
+} from "../containment/install-trust.ts";
+import {
 	type LaunchPreflightItem,
 	launchPreflight,
 } from "../containment/launch-preflight.ts";
@@ -372,6 +376,20 @@ async function buildCheck(p: DoctorProbes): Promise<Outcome> {
 			.filter(Boolean)
 			.join("; ");
 		if (why) return problem("blocker", why, "reinstall mfw");
+		if (b.trust) {
+			const fix = `${installTrustFix(b.prefix)}`;
+			return b.acknowledged
+				? problem(
+						"warn",
+						`the install at ${b.prefix} is not safe from agents (${b.trust}); acknowledged by ${ACK_UNTRUSTED_INSTALL}, so autonomous runs go ahead`,
+						fix,
+					)
+				: problem(
+						"blocker",
+						`the install at ${b.prefix} is not safe from agents (${b.trust}); autonomous runs are refused`,
+						fix,
+					);
+		}
 		return ok(
 			b.install === "none"
 				? "compiled mfw: embedded migrations verify (a standalone executable, no install)"

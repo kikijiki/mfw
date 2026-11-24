@@ -152,12 +152,18 @@ export async function installBuild(
 		...(o.bunExecutable ? { bunExecutable: o.bunExecutable } : {}),
 		...(o.env ? { env: o.env } : {}),
 	};
+	// mfw-board first: its digest is built into mfw, beside the server's and
+	// the runtime's, so a manifest rewritten for other parts is still caught.
+	const board = await compileBoard(compileOpts);
 	const mfw = await compileMfw({
 		...compileOpts,
-		integrity: { server: serverDigest, runtime: runtimeSha },
+		integrity: {
+			server: serverDigest,
+			runtime: runtimeSha,
+			board: board.sha256,
+		},
 		...(o.mfwPlugins ? { plugins: o.mfwPlugins } : {}),
 	});
-	const board = await compileBoard(compileOpts);
 
 	const manifest: InstallManifest = {
 		version: INSTALL_MANIFEST_VERSION,

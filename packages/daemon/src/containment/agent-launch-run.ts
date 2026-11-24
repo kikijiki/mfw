@@ -21,6 +21,10 @@ import {
 	type LauncherSteps,
 	launchAgentSandbox,
 } from "./agent-launch.ts";
+import {
+	installLaunchCheck,
+	liveInstallLaunchCheckDeps,
+} from "./install-launch-check.ts";
 import { RUN_CONTROL_DIR } from "./run-dir.ts";
 import { recordRunProcess } from "./run-liveness.ts";
 
@@ -200,6 +204,17 @@ export async function runLauncher(
 	} catch (err) {
 		die(`bad launch request: ${(err as Error).message}`);
 	}
+	// A compiled install re-checks itself at every launch (REL-1 M2).
+	const install = await installLaunchCheck(
+		req.approvalMode,
+		liveInstallLaunchCheckDeps(req.mfwHome),
+	).catch((err: Error) => ({
+		refusal: `refusing to launch: the install check failed: ${err.message}`,
+		warning: null,
+	}));
+	if (install.refusal) die(install.refusal);
+	if (install.warning)
+		process.stderr.write(`mfw sandbox: ${install.warning}\n`);
 	let handle: Awaited<ReturnType<typeof openProjectDb>>;
 	try {
 		handle = await openProjectDb(req.stateDir);

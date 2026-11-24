@@ -8,6 +8,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { buildStamp } from "../../core/src/build-info.ts";
 import { HOST_BUN_FLAGS } from "../../daemon/src/containment/host-script.ts";
+import { builtDigests } from "../../daemon/src/containment/install-launch-check.ts";
 import {
 	checkInstall,
 	fileMismatch,
@@ -15,6 +16,10 @@ import {
 	installPath,
 	readInstallManifest,
 } from "../../daemon/src/containment/install-manifest.ts";
+import {
+	installTrustFix,
+	installTrustProblems,
+} from "../../daemon/src/containment/install-trust.ts";
 import { verifyEmbeddedMigrations } from "../../db/src/migration-source.ts";
 import type { EmbeddedPayload } from "./embedded.ts";
 import { liveHostExecContext, runHostEntry } from "./host-exec.ts";
@@ -42,17 +47,25 @@ export function embeddedScriptsDigest(scripts: Record<string, string>): string {
 export function compiledServerCommand(
 	self: string,
 ): { argv: string[]; cwd: string } | { error: string } {
-	const { libDir } = installOfExecutable(self);
-	const integrity = buildStamp()?.integrity ?? {};
-	const check = checkInstall(libDir, {
-		self,
-		...(integrity.server ? { server: integrity.server } : {}),
-		...(integrity.runtime ? { runtime: integrity.runtime } : {}),
-	});
+	const { prefix, libDir } = installOfExecutable(self);
+	const check = checkInstall(libDir, { self, ...builtDigests() });
 	if (!check.manifest || check.problems.length > 0) {
 		return {
 			error: `refusing to start the server: ${check.problems.join("; ")}. Fix: reinstall mfw (a standalone mfw without its install has no server)`,
 		};
+	}
+	const trust = installTrustProblems(prefix, libDir, check.manifest);
+	if (trust.length > 0) {
+		// Loud, and on every start. The launcher refuses autonomous runs from
+		// here until the owner acknowledges this exact prefix.
+		console.error(
+			[
+				"mfw: WARNING: this install is not safe from agents.",
+				`mfw: ${prefix}: ${trust.join("; ")}`,
+				"mfw: autonomous runs are refused until this is fixed or acknowledged.",
+				`mfw: Fix: ${installTrustFix(prefix)}`,
+			].join("\n"),
+		);
 	}
 	const runtime = installPath(libDir, check.manifest.runtime);
 	return {
@@ -133,19 +146,13 @@ export function compiledVersionLines(
 	for (const [name, digest] of Object.entries(stamp?.integrity ?? {}).sort()) {
 		lines.push(`  ${name} ${digest}`);
 	}
-	const { libDir } = installOfExecutable(self);
+	const { prefix, libDir } = installOfExecutable(self);
 	if (!existsSync(join(libDir, "install.json"))) {
 		lines.push(
 			"install: none (a standalone executable; `mfw server` needs an install)",
 		);
 	} else {
-		const check = checkInstall(libDir, {
-			self,
-			...(stamp?.integrity?.server ? { server: stamp.integrity.server } : {}),
-			...(stamp?.integrity?.runtime
-				? { runtime: stamp.integrity.runtime }
-				: {}),
-		});
+		const check = checkInstall(libDir, { self, ...builtDigests() });
 		lines.push(
 			check.problems.length === 0
 				? `install: ${libDir} verified`
@@ -158,6 +165,12 @@ export function compiledVersionLines(
 				`  install runtime ${check.manifest.runtime.sha256} (bun ${check.manifest.runtime.bunVersion})`,
 			);
 			lines.push(`  install server ${check.manifest.server.digest}`);
+			const trust = installTrustProblems(prefix, libDir, check.manifest);
+			lines.push(
+				trust.length === 0
+					? "install trust: ok (agents cannot write it)"
+					: `install trust: NOT SAFE FROM AGENTS: ${trust.join("; ")}. Autonomous runs are refused unless acknowledged. Fix: ${installTrustFix(prefix)}`,
+			);
 		}
 	}
 	return lines;

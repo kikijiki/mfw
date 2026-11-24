@@ -26,7 +26,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildKind } from "../../../core/src/build-info.ts";
@@ -348,34 +348,24 @@ export function hostEntry(moduleUrl: string, script: HostScript): string {
 		: hostScript(moduleUrl, script);
 }
 
-/** Verified once per file identity; a changed file is hashed again. */
-const verifiedBinaries = new Map<string, string>();
-
-function identity(path: string): string {
-	const st = statSync(path, { bigint: true });
-	return [st.dev, st.ino, st.size, st.mtimeNs, st.ctimeNs].join(":");
-}
-
 /**
- * The install's `mfw`, checked against the manifest. The hash is taken again
- * whenever the file's identity (device, inode, size, change times) moves.
+ * The install's `mfw`, checked against the manifest at every call, so every
+ * host entry starts from bytes that were just verified (REL-1 M2). The hash
+ * is read through one open descriptor (`sha256OfFile`); the command line names
+ * the path, because the entry starts through `run.sh` and tmux, where no
+ * descriptor can follow. That window needs write access to the install, which
+ * the launcher's install check refuses for autonomous runs.
  */
 function verifiedInstallMfw(install: {
 	libDir: string;
 	manifest: InstallManifest;
 }): string {
 	const path = installPath(install.libDir, install.manifest.mfw);
-	const key = `${path}\0${install.manifest.mfw.sha256}`;
-	let id: string;
-	try {
-		id = identity(path);
-	} catch {
+	if (!existsSync(path)) {
 		throw new Error(`refusing to launch: ${path} is missing. ${REINSTALL}`);
 	}
-	if (verifiedBinaries.get(key) === id) return path;
 	const problem = fileMismatch(path, install.manifest.mfw.sha256);
 	if (problem) throw new Error(`refusing to launch: ${problem}. ${REINSTALL}`);
-	verifiedBinaries.set(key, id);
 	return path;
 }
 

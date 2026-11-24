@@ -23,7 +23,16 @@
  */
 
 import { createHash } from "node:crypto";
-import { lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
+import {
+	closeSync,
+	constants,
+	fstatSync,
+	lstatSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	readlinkSync,
+} from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export const INSTALL_MANIFEST = "install.json";
@@ -55,8 +64,21 @@ export interface InstallManifest {
 
 const SHA256 = /^[0-9a-f]{64}$/;
 
+/**
+ * The sha256 of a file, read through one descriptor opened without following
+ * a final link and checked to be a regular file, so what is hashed is what was
+ * opened. Whoever execs it afterwards does so by path: a rename between the
+ * two needs write access to the install, which `install-trust.ts` rules out.
+ */
 export function sha256OfFile(path: string): string {
-	return createHash("sha256").update(readFileSync(path)).digest("hex");
+	const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+	try {
+		if (!fstatSync(fd).isFile())
+			throw new Error(`${path} is not a regular file`);
+		return createHash("sha256").update(readFileSync(fd)).digest("hex");
+	} finally {
+		closeSync(fd);
+	}
 }
 
 function regularFile(path: string): boolean {
@@ -142,7 +164,13 @@ export function installPath(libDir: string, file: InstallFile): string {
 /** Why `path` does not match `sha256`, or null when it does. */
 export function fileMismatch(path: string, sha256: string): string | null {
 	if (!regularFile(path)) return `${path} is not a regular file`;
-	return sha256OfFile(path) === sha256
+	let actual: string;
+	try {
+		actual = sha256OfFile(path);
+	} catch (e) {
+		return (e as Error).message;
+	}
+	return actual === sha256
 		? null
 		: `${path} does not match the hash in the install manifest`;
 }
@@ -212,7 +240,12 @@ export interface InstallCheck {
  */
 export function checkInstall(
 	libDir: string,
-	expected: { server?: string; runtime?: string; self?: string } = {},
+	expected: {
+		server?: string;
+		runtime?: string;
+		board?: string;
+		self?: string;
+	} = {},
 ): InstallCheck {
 	const problems: string[] = [];
 	let manifest: InstallManifest | null;
@@ -249,6 +282,11 @@ export function checkInstall(
 		} catch (e) {
 			problems.push(`mfw: ${(e as Error).message}`);
 		}
+	}
+	if (expected.board && expected.board !== manifest.mfwBoard.sha256) {
+		problems.push(
+			"mfw-board: the manifest names another mfw-board than this mfw was built with",
+		);
 	}
 	if (expected.runtime && expected.runtime !== manifest.runtime.sha256) {
 		problems.push(

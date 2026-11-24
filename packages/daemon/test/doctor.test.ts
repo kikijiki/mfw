@@ -475,6 +475,49 @@ describe("installation", () => {
 		expect(c.fix).toContain("bun run build");
 	});
 
+	// Security review REL-1 M2: where the install lives is reported, not only its hashes.
+	const compiled = (over: Record<string, unknown>) => ({
+		build: async () =>
+			({
+				kind: "compiled",
+				migrations: null,
+				install: null,
+				prefix: "/srv/mfw-user/opt/mfw",
+				trust: null,
+				acknowledged: false,
+				...over,
+			}) as never,
+	});
+
+	test("a compiled install agents could write is a blocker, with the exact fix", async () => {
+		const c = await check(
+			compiled({ trust: "/srv/mfw-user is not owned by root" }),
+			"install.build",
+		);
+		expect([c.status, c.severity]).toEqual(["problem", "blocker"]);
+		expect(c.detail).toContain("autonomous runs are refused");
+		expect(c.fix).toContain(
+			'"acknowledgeUntrustedInstall": "/srv/mfw-user/opt/mfw"',
+		);
+	});
+
+	test("an acknowledged one is a warning that says so", async () => {
+		const c = await check(
+			compiled({
+				trust: "/srv/mfw-user is not owned by root",
+				acknowledged: true,
+			}),
+			"install.build",
+		);
+		expect([c.status, c.severity]).toEqual(["problem", "warn"]);
+		expect(c.detail).toContain("acknowledged by acknowledgeUntrustedInstall");
+	});
+
+	test("a trusted compiled install is ok", async () => {
+		const c = await check(compiled({}), "install.build");
+		expect(c.status).toBe("ok");
+	});
+
 	test("a source checkout is not a failure", async () => {
 		const c = await check({}, "install.build");
 		expect(c.status).toBe("ok");

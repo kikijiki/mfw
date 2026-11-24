@@ -9,7 +9,7 @@ import {
 	legacyPath,
 	TOOL_ORDER,
 } from "@mfw/board/commands/skill-targets";
-import { buildKind, buildStamp } from "@mfw/core/build-info";
+import { buildKind } from "@mfw/core/build-info";
 import {
 	verifyBuiltMigrations,
 	verifyEmbeddedMigrations,
@@ -27,11 +27,13 @@ import {
 	type RunResult,
 } from "../containment/host-caps.ts";
 import { BUILT_HOST_SCRIPTS, hostScript } from "../containment/host-script.ts";
+import { builtDigests } from "../containment/install-launch-check.ts";
 import {
 	checkInstall,
 	INSTALL_MANIFEST,
 	installOfExecutable,
 } from "../containment/install-manifest.ts";
+import { installTrustProblems } from "../containment/install-trust.ts";
 import { gitRaw } from "../git.ts";
 import { repoConfigRefusal } from "../host-git/repo-config.ts";
 import { runProc } from "../proc.ts";
@@ -200,7 +202,7 @@ function readLegacyHost(home: string): LegacyHostFacts {
 }
 
 /** A compiled `mfw`: its embedded migrations, and the install around it if any. */
-function readCompiledBuild(): BuildFacts {
+async function readCompiledBuild(home: string): Promise<BuildFacts> {
 	let migrations: string | null = null;
 	try {
 		verifyEmbeddedMigrations();
@@ -208,28 +210,44 @@ function readCompiledBuild(): BuildFacts {
 		migrations = (e as Error).message;
 	}
 	const self = realpathSync(process.execPath);
-	const { libDir } = installOfExecutable(self);
+	const { prefix, libDir } = installOfExecutable(self);
 	if (!existsSync(join(libDir, INSTALL_MANIFEST))) {
-		return { kind: "compiled", migrations, install: "none" };
+		return {
+			kind: "compiled",
+			migrations,
+			install: "none",
+			prefix,
+			trust: null,
+			acknowledged: false,
+		};
 	}
-	const integrity = buildStamp()?.integrity ?? {};
-	const check = checkInstall(libDir, {
-		self,
-		...(integrity.server ? { server: integrity.server } : {}),
-		...(integrity.runtime ? { runtime: integrity.runtime } : {}),
-	});
+	const check = checkInstall(libDir, { self, ...builtDigests() });
+	const trust = check.manifest
+		? installTrustProblems(prefix, libDir, check.manifest)
+		: [];
+	let acknowledged = false;
+	try {
+		acknowledged =
+			(await loadConfig(home)).acknowledgeUntrustedInstall === prefix;
+	} catch {
+		// The config check reports a broken config on its own.
+	}
 	return {
 		kind: "compiled",
 		migrations,
 		install: check.problems.length > 0 ? check.problems.join("; ") : null,
+		prefix,
+		trust: trust.length > 0 ? trust.join("; ") : null,
+		acknowledged,
 	};
 }
 
 function readBuild(
 	installRoot: string | null,
 	env: LiveProbeOptions["env"],
-): BuildFacts {
-	if (buildKind() === "compiled") return readCompiledBuild();
+	home: string,
+): BuildFacts | Promise<BuildFacts> {
+	if (buildKind() === "compiled") return readCompiledBuild(home);
 	if (installRoot === null) {
 		return {
 			kind: "build",
@@ -560,7 +578,7 @@ export function liveDoctorProbes(o: LiveProbeOptions): DoctorProbes {
 		},
 		auth: async () => readAuth(home),
 		legacyHost: async () => readLegacyHost(home),
-		build: async () => readBuild(installRoot, env),
+		build: async () => readBuild(installRoot, env, home),
 		...(o.exposure ? { exposure: o.exposure } : {}),
 		legacySkills: async (projectRoots) => {
 			const paths = new Set<string>();

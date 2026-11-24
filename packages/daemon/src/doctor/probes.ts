@@ -55,6 +55,11 @@ export type BuildFacts =
 			migrations: string | null;
 			/** Why the install does not verify, null when it does, "none" for a standalone executable. */
 			install: string | null | "none";
+			prefix: string;
+			/** Why agents could change the install, or null. */
+			trust: string | null;
+			/** The owner set `acknowledgeUntrustedInstall` to this prefix. */
+			acknowledged: boolean;
 	  };
 
 export interface FileList {

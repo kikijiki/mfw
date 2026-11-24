@@ -290,6 +290,7 @@ await import(${JSON.stringify(BRIDGE)});
 `,
 	);
 
+	const compiled = COMPILED ? await cagedInstall(base, cageConfig) : null;
 	await saveConfig(
 		{
 			projects: [
@@ -306,6 +307,11 @@ await import(${JSON.stringify(BRIDGE)});
 				},
 			],
 			dispatchPaused: false,
+			// The fixture install sits in this user's tree, so autonomous launches
+			// from it are refused unless the owner accepts that exact prefix.
+			...(compiled
+				? { acknowledgeUntrustedInstall: dirname(dirname(compiled.mfw)) }
+				: {}),
 		} as never,
 		mfwHome,
 	);
@@ -313,7 +319,6 @@ await import(${JSON.stringify(BRIDGE)});
 	const port = await freePort();
 	const origin = `http://127.0.0.1:${port}/mfw`;
 	const logFile = join(base, "server.log");
-	const compiled = COMPILED ? await cagedInstall(base, cageConfig) : null;
 	const server = Bun.spawn(
 		compiled?.argv ?? [
 			process.execPath,

@@ -51,9 +51,29 @@ write, and run `mfw` there, that code runs with your own rights. Keep them out
 of the environment `mfw server` starts in.
 
 The hashes catch a partial upgrade, mixed versions and damaged files. They do not
-stop someone who can write the install, so put it where agents cannot write: the
-Nix store, or a root-owned prefix such as `/opt/mfw`. Agents run with your user
-id, so a prefix in your home is only as safe as your home.
+stop someone who can write the install, so the install's location is checked too.
+At `mfw server` start, in `mfw version`, in `mfw doctor` and at every agent launch,
+the prefix, `bin/`, `lib/mfw/` and every parent, every file under `lib/mfw/`, both
+executables and the runtime must be owned by root (or be in the Nix store), not be
+group- or world-writable, and not sit inside a tree agents write (your home, the
+temp directories, project roots). An install that fails still runs, loudly: the
+server warns at every start, the doctor reports a blocker, and **every autonomous
+launch is refused** until you fix it or accept that exact prefix in
+`$MFW_HOME/config.json`:
+
+```json
+{ "acknowledgeUntrustedInstall": "<the prefix that mfw version names>" }
+```
+
+Accepting it means any process running as you, including an unsandboxed agent
+run, can change the code the next autonomous run uses on the host.
+
+Each launch re-hashes the whole install, and the server re-hashes `mfw` before
+it starts each host process, reading through one open descriptor. The process is
+then started by path, through `run.sh` and tmux, where no descriptor can follow,
+so a file renamed between the hash and the start is not caught: that needs write
+access to the install, which the location check rules out. Server code the bundle
+loads lazily is trusted for the life of the server once it starts.
 
 ## With Nix
 
@@ -91,7 +111,7 @@ bun run build
 bun run tools/fetch-bun-runtime.ts --out ./bun-official
 bun run tools/install-build.ts --prefix ./mfw-install --runtime ./bun-official \
   --bun-executable ./bun-official --read-only
-tar -C ./mfw-install -czf mfw.tar.gz .
+tar -C ./mfw-install --owner=0 --group=0 --numeric-owner -czf mfw.tar.gz .
 ```
 
 `--bun-executable` compiles `mfw` and `mfw-board` from the official bun. A bun from
@@ -102,7 +122,7 @@ store is present. `--runtime` is the bun that runs the server; it is copied into
 Install it as root, so that agents cannot change it:
 
 ```sh
-sudo mkdir -p /opt/mfw && sudo tar -C /opt/mfw -xzf mfw.tar.gz
+sudo mkdir -p /opt/mfw && sudo tar -C /opt/mfw --no-same-owner -xzf mfw.tar.gz
 /opt/mfw/bin/mfw version     # verifies every part of the install
 ```
 
