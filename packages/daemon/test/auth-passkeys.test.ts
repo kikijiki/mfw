@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -780,113 +779,37 @@ describe("credential epoch and revocation", () => {
 });
 
 describe("schema", () => {
-	test("schema 5 upgrades to 6 with owner, sessions and tokens intact", async () => {
-		auth.close();
-		const old = join(dir, "old.db");
-		const db = await openAuthDb(old, { version: 5 });
-		const sha = (s: string) => createHash("sha256").update(s).digest("hex");
-		const cookie = "c".repeat(43);
-		const key = "k".repeat(43);
-		const hash = await Bun.password.hash(PASSWORD, { algorithm: "argon2id" });
-		await db.client.batch(
-			[
-				{
-					sql: "INSERT INTO principals (id, kind, display_name, password_hash, created_at, updated_at, credential_epoch) VALUES ('p1', 'owner', 'Owner', ?, 1, 1, 3)",
-					args: [hash],
-				},
-				{
-					sql: "INSERT INTO auth_sessions (id, token_hash, principal_id, created_at, last_seen_at, expires_at, request_key_hash) VALUES ('s1', ?, 'p1', ?, ?, ?, ?)",
-					args: [sha(cookie), clock, clock, clock + 1e9, sha(key)],
-				},
-				{
-					sql: "INSERT INTO api_tokens (id, name, token_hash, principal_id, scopes, created_at, expires_at) VALUES ('tok_1', 'ci', 'h', 'p1', '[\"status:read\"]', 1, ?)",
-					args: [clock + 1e9],
-				},
-			],
-			"write",
-		);
-		db.close();
-		auth = await AuthService.open(old, {
-			now: () => clock,
-			passwordCheckIntervalMs: 0,
-		});
-		const session = await auth.authenticate(cookie);
-		expect(session?.principal.id).toBe("p1");
-		expect(auth.checkRequestKey(session as never, key)).toBe(true);
-		expect((await auth.listTokens()).map((t) => t.id)).toEqual(["tok_1"]);
-		expect(await auth.listPasskeys()).toEqual([]);
-		expect(await code(auth.login(PASSWORD))).toBe("ok");
-		const raw = createClient({ url: `file:${old}` });
+	test("a new database gets the one schema, stamped", async () => {
+		const raw = createClient({ url: `file:${path}` });
 		const v = await raw.execute("PRAGMA user_version");
-		const epoch = await raw.execute("SELECT credential_epoch FROM principals");
 		raw.close();
 		expect(Number(v.rows[0]?.user_version)).toBe(AUTH_SCHEMA_VERSION);
-		expect(AUTH_SCHEMA_VERSION).toBe(7);
-		expect(Number(epoch.rows[0]?.credential_epoch)).toBe(3);
-		// Passkeys work on the upgraded database.
-		owner = session as unknown as IssuedSession;
-		const begun = await auth.beginPasskeyRegistration("s1", RP, {
-			password: PASSWORD,
-		});
-		const { json } = soft.create(begun.publicKey);
-		await auth.finishPasskeyRegistration("s1", RP, begun.ceremonyId, json, "k");
-		expect((await passkeyLogin()).token).toBeString();
 	});
 
-	test("a newer schema is refused", async () => {
+	test.each([
+		["an earlier", AUTH_SCHEMA_VERSION - 1],
+		["a newer", AUTH_SCHEMA_VERSION + 1],
+	])("%s schema is refused with the fix", async (_, version) => {
 		auth.close();
 		const raw = createClient({ url: `file:${path}` });
-		await raw.execute(`PRAGMA user_version=${AUTH_SCHEMA_VERSION + 1}`);
+		await raw.execute(`PRAGMA user_version=${version}`);
 		raw.close();
+		const refused = AuthService.open(path);
+		await expect(refused).rejects.toThrow(
+			`is at schema ${version}, not this build's ${AUTH_SCHEMA_VERSION}`,
+		);
 		await expect(AuthService.open(path)).rejects.toThrow(
-			/newer than this build/,
+			"run `mfw auth reset --yes`",
 		);
 		auth = await AuthService.open(join(dir, "fresh.db"));
 	});
-});
 
-describe("schema 7", () => {
-	test("schema 6 upgrades to 7 with passkeys, sessions and tokens intact", async () => {
-		await addPasskey({}, "old key");
-		const viaPasskey = await passkeyLogin();
-		const { info: token } = await auth.createToken({
-			name: "ci",
-			scopes: ["status:read"],
-		});
-		auth.close();
-		// Back to exactly schema 6: drop what 7 adds.
-		const raw = createClient({ url: `file:${path}` });
-		await raw.batch(
-			[
-				"DROP TABLE passkey_notice_acks",
-				"DROP TABLE passkey_notices",
-				"DROP INDEX ix_api_tokens_session",
-				"ALTER TABLE api_tokens DROP COLUMN created_by_session",
-				"ALTER TABLE passkeys DROP COLUMN created_by_session",
-				"ALTER TABLE passkeys DROP COLUMN created_from",
-				"PRAGMA user_version=6",
-			],
-			"write",
-		);
+	test("a file holding other tables is refused, not stamped", async () => {
+		const other = join(dir, "other.db");
+		const raw = createClient({ url: `file:${other}` });
+		await raw.execute("CREATE TABLE principals (id TEXT)");
 		raw.close();
-		auth = await AuthService.open(path, {
-			now: () => clock,
-			passwordCheckIntervalMs: 0,
-		});
-		const [pk] = await auth.listPasskeys();
-		expect(pk?.name).toBe("old key");
-		expect(pk?.createdFrom ?? null).toBeNull();
-		expect(await auth.authenticate(viaPasskey.token)).not.toBeNull();
-		expect((await auth.listTokens()).map((t) => t.id)).toEqual([token.id]);
-		expect((await passkeyLogin()).token).toBeString();
-		const check = createClient({ url: `file:${path}` });
-		const v = await check.execute("PRAGMA user_version");
-		const cols = await check.execute("PRAGMA table_info(api_tokens)");
-		check.close();
-		expect(Number(v.rows[0]?.user_version)).toBe(7);
-		expect(cols.rows.map((r) => String(r.name))).toContain(
-			"created_by_session",
-		);
+		await expect(openAuthDb(other)).rejects.toThrow("is at schema 0");
 	});
 });
 
