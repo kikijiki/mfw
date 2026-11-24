@@ -162,6 +162,77 @@ describe("registration", () => {
 		expect(await auth.listPasskeys()).toEqual([]);
 	});
 
+	test("a refused registration says why, without the library's text", async () => {
+		const refuse = async (knobs: Parameters<typeof soft.create>[1]) => {
+			const begun = await auth.beginPasskeyRegistration(owner.sessionId, RP, {
+				password: PASSWORD,
+			});
+			const { json } = soft.create(begun.publicKey, knobs);
+			return auth
+				.finishPasskeyRegistration(
+					owner.sessionId,
+					RP,
+					begun.ceremonyId,
+					json,
+					"x",
+				)
+				.catch((e: Error & { code: string }) => [e.code, e.message]);
+		};
+		const identityAsEs256 = new Map<number, number | Uint8Array>([
+			[1, 1],
+			[3, -7],
+			[-1, 6],
+			[-2, new Uint8Array([1, ...new Uint8Array(31)])],
+		]);
+		expect(await refuse({ cose: identityAsEs256 })).toEqual([
+			"passkey_refused",
+			"this passkey's key type is not supported; mfw accepts ES256 (P-256) and EdDSA (Ed25519) passkeys",
+		]);
+		expect(await refuse({ fmt: "tpm", attStmt: new Map() })).toEqual([
+			"passkey_refused",
+			"this authenticator's attestation format is not supported; mfw requests none",
+		]);
+		expect(await refuse({ clientData: { crossOrigin: true } })).toEqual([
+			"passkey_refused",
+			"the passkey was created inside a frame of another site; add it from mfw's own page",
+		]);
+		expect(
+			await refuse({ clientData: { origin: "http://evil.example" } }),
+		).toEqual([
+			"passkey_refused",
+			"the authenticator's response was not accepted for this site; try again, and make sure the device verifies you (PIN or biometric)",
+		]);
+		expect(await auth.listPasskeys()).toEqual([]);
+	});
+
+	test("registration makes no network call (the metadata services stay off)", async () => {
+		const real = globalThis.fetch;
+		const calls: string[] = [];
+		globalThis.fetch = (async (input: unknown) => {
+			calls.push(String(input));
+			throw new Error("no network in a registration");
+		}) as unknown as typeof fetch;
+		try {
+			for (const knobs of [{}, { alg: "EdDSA" as const, selfAttest: true }]) {
+				const begun = await auth.beginPasskeyRegistration(owner.sessionId, RP, {
+					password: PASSWORD,
+				});
+				const { json } = soft.create(begun.publicKey, knobs);
+				await auth.finishPasskeyRegistration(
+					owner.sessionId,
+					RP,
+					begun.ceremonyId,
+					json,
+					"offline",
+				);
+			}
+		} finally {
+			globalThis.fetch = real;
+		}
+		expect(calls).toEqual([]);
+		expect((await auth.listPasskeys()).length).toBe(2);
+	});
+
 	test("a registration ceremony is single use and bound to its session", async () => {
 		const other = await auth.login(PASSWORD);
 		const begun = await auth.beginPasskeyRegistration(owner.sessionId, RP, {

@@ -1115,9 +1115,18 @@ export class AuthService {
 			});
 		} catch (e) {
 			if (!isWebAuthnError(e)) throw e;
+			// Fixed text per cause: the library's own message never reaches a client.
+			const why: Partial<Record<typeof e.reason, string>> = {
+				key: "this passkey's key type is not supported; mfw accepts ES256 (P-256) and EdDSA (Ed25519) passkeys",
+				attestation:
+					"this authenticator's attestation format is not supported; mfw requests none",
+				cross_origin:
+					"the passkey was created inside a frame of another site; add it from mfw's own page",
+			};
 			throw new AuthRefused(
 				"passkey_refused",
-				"the authenticator's response was not accepted; user verification (PIN or biometric) is required",
+				why[e.reason] ??
+					"the authenticator's response was not accepted for this site; try again, and make sure the device verifies you (PIN or biometric)",
 			);
 		}
 		const owner = await this.ownerRow();
