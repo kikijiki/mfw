@@ -9,7 +9,7 @@ mfw doctor                     # grouped report
 mfw doctor --json              # for scripts (schemaVersion 1), redacted
 mfw doctor --json --no-redact  # with local paths and file names
 mfw doctor --redact            # safe to paste into an issue
-mfw doctor --harness-versions  # also run `claude --version` and `codex --version`
+mfw doctor --harness-versions  # also run each installed agent CLI's version command
 ```
 
 | Exit code | Meaning |

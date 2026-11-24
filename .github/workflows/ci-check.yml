@@ -1,5 +1,37 @@
 name: ci-check
 
+# Two jobs run the same checks; exactly one of them runs, chosen by the
+# repository variable MFW_CI_NO_USERNS (Settings -> Secrets and variables ->
+# Actions -> Variables):
+#
+#   unset or anything but "true"   `check`           live sandbox suites REQUIRED
+#   "true"                         `check-fallback`  live sandbox suites SKIPPED, loudly
+#
+# Why: the sandbox is mfw's security boundary, and its live suites (real bwrap,
+# real namespaces) are skipped when bwrap cannot create a user namespace. A
+# skip is a green run with the containment tests unrun, so `check` sets
+# MFW_REQUIRE_LIVE_SANDBOX=1, which turns a missing capability into a failure
+# at load time (packages/daemon/test/support/live-gate.ts) instead of a skip.
+#
+# Ubuntu 24.04 runners restrict unprivileged user namespaces with AppArmor
+# (kernel.apparmor_restrict_unprivileged_userns=1), so a fresh bwrap fails with
+# "setting up uid map: Permission denied". The scoped fix is the one
+# `mfw doctor` prints: an AppArmor profile for exactly the resolved bwrap path
+# that allows `userns`, leaving the host-wide restriction on (see appArmorFix
+# in packages/daemon/src/containment/host-caps.ts). The "Allow user namespaces
+# for bwrap" step below is that text with the path /usr/bin/bwrap, which is
+# where apt installs it. Do NOT turn the restriction off for the whole runner
+# (sysctl kernel.apparmor_restrict_unprivileged_userns=0): that is a host-wide
+# change and hides the very condition the live suites exist to catch.
+#
+# When `check` fails at "Probe user namespaces", the runner does not support
+# them (a container runner, a hardened self-hosted one). Set MFW_CI_NO_USERNS to
+# "true" to use `check-fallback` there, and run the live suites elsewhere: a
+# release must not be cut from a run where they were skipped.
+#
+# Not run from here: the workflow only defines the jobs. Pushing it is the
+# repository owner's call.
+
 on:
   push:
     branches: [master]
@@ -7,9 +39,51 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    if: ${{ vars.MFW_CI_NO_USERNS != 'true' }}
+    # Pinned: the AppArmor behaviour above is Ubuntu 24.04's.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      MFW_REQUIRE_LIVE_SANDBOX: "1"
     steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - name: Install tmux and bubblewrap
+        run: sudo apt-get update -q && sudo apt-get install -y -q tmux bubblewrap
+      - name: Allow user namespaces for bwrap (scoped AppArmor profile)
+        # The text `mfw doctor` prints for /usr/bin/bwrap. It stops if a
+        # profile of that name already exists, and leaves the host-wide
+        # restriction on.
+        run: |
+          test "$(command -v bwrap)" = /usr/bin/bwrap
+          sudo test ! -e /etc/apparmor.d/mfw-bwrap && printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' 'profile mfw-bwrap /usr/bin/bwrap flags=(unconfined) {' '  userns,' '}' | sudo tee /etc/apparmor.d/mfw-bwrap >/dev/null && sudo apparmor_parser -r /etc/apparmor.d/mfw-bwrap
+      - name: Probe user namespaces
+        # Fail here, with the cause, rather than as dozens of test failures.
+        run: |
+          bwrap --version
+          bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev true \
+            || { echo "::error::bwrap cannot create a user namespace on this runner. Set the repository variable MFW_CI_NO_USERNS=true to use the fallback job."; exit 1; }
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Lint (biome + tsc, tests included)
+        run: bun run lint
+      # The web app has its own tsconfig (DOM libs, JSX) and was never
+      # typechecked in CI - which is how it accumulated latent type errors.
+      - name: Typecheck web app
+        run: bun run --cwd apps/start typecheck
+      - name: Test (live sandbox suites required)
+        run: bun run test
+
+  check-fallback:
+    if: ${{ vars.MFW_CI_NO_USERNS == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: This job does not run the live sandbox suites
+        run: |
+          echo "::warning title=live sandbox suites NOT RUN::MFW_CI_NO_USERNS=true: this run verifies everything except the real-bwrap containment tests. Do not release from it."
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
@@ -20,9 +94,16 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Lint (biome + tsc, tests included)
         run: bun run lint
-      # The web app has its own tsconfig (DOM libs, JSX) and was never
-      # typechecked in CI - which is how it accumulated latent type errors.
       - name: Typecheck web app
         run: bun run --cwd apps/start typecheck
-      - name: Test
-        run: bun run test
+      - name: Test (live sandbox suites skipped)
+        shell: bash
+        run: |
+          set -o pipefail
+          bun run test 2>&1 | tee test.log
+      - name: List the skipped live suites
+        if: always()
+        shell: bash
+        run: |
+          echo "::warning title=live sandbox suites NOT RUN::the containment tests below were skipped, not passed"
+          { echo "## Live suites NOT VERIFIED (skipped)"; grep -E '^\[[^]]+\] (skipped|real systemd scope chain NOT VERIFIED)' test.log || echo "(none printed)"; } | tee -a "$GITHUB_STEP_SUMMARY"

@@ -90,7 +90,10 @@ export interface DoctorProbes {
 	host: HostReaders;
 	tool(name: string): Promise<ToolLookup>;
 	/** The parsed version from a trusted binary. Raw output never leaves the probe. */
-	toolVersion(path: string, flag?: string): Promise<string | undefined>;
+	toolVersion(
+		path: string,
+		args?: string | readonly string[],
+	): Promise<string | undefined>;
 	stat(path: string): Promise<PathStat | null>;
 	config(): Promise<
 		{ ok: true; config: DaemonConfig } | { ok: false; error: string }

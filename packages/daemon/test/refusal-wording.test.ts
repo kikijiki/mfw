@@ -37,4 +37,23 @@ describe("user-facing refusals name no internal work package", () => {
 		);
 		expect(source).not.toContain("(see `mfw doctor`)");
 	});
+
+	const fixSource = () =>
+		readFileSync(join(import.meta.dir, "../src/refusal-fix.ts"), "utf8")
+			.split("\n")
+			.filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+			.join("\n");
+
+	test("the remedies name no internal id", () => {
+		expect(fixSource()).not.toMatch(
+			/\b(P\d+[a-z]?|A\d+\.\d+|W\d+-\d+|B\d{1,2}|REL-\d+|WP-?\d+)\b/,
+		);
+	});
+
+	test("an API procedure is presented as the API, not as a command or a page", () => {
+		const source = fixSource();
+		const calls = source.match(/.{0,12}hostResources\.\w+/g) ?? [];
+		expect(calls.length).toBeGreaterThan(0);
+		for (const call of calls) expect(call).toContain("API");
+	});
 });

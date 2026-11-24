@@ -92,6 +92,10 @@ describe("a healthy host", () => {
 			"exposure.bind",
 			"harness.claude",
 			"harness.codex",
+			"harness.gemini",
+			"harness.agent",
+			"harness.opencode",
+			"harness.pi",
 			"egress.allowlist",
 			"project.root",
 			"project.git-config",
@@ -288,6 +292,53 @@ describe("tools", () => {
 		expect(ran).toContain("/usr/bin/claude");
 		expect(report.checks.find((x) => x.id === "harness.claude")?.detail).toBe(
 			"claude 1.2.3",
+		);
+	});
+});
+
+describe("harness list comes from the manifests", () => {
+	test("every manifest harness gets a check, named by its binary", async () => {
+		const { builtinHarnessRegistry } = await import(
+			"@mfw/plugin-api/harness-registry"
+		);
+		const report = await runDoctor(fixture({}));
+		for (const spec of builtinHarnessRegistry().detectionSpecs()) {
+			expect(report.checks.some((x) => x.id === `harness.${spec.bin}`)).toBe(
+				true,
+			);
+		}
+	});
+
+	test("a manifest's own version arguments are used, on a trusted path only", async () => {
+		const calls: { path: string; args: unknown }[] = [];
+		const report = await runDoctor(
+			fixture({
+				tool: async (name) =>
+					name === "mytool"
+						? { path: "/usr/bin/mytool" }
+						: { path: null, untrustedPath: `/srv/w/${name}` },
+				toolVersion: async (path, args) => {
+					calls.push({ path, args });
+					return "4.5.6";
+				},
+			}),
+			{
+				harnessVersions: true,
+				harnesses: [
+					{
+						id: "my-tool",
+						displayName: "My tool",
+						bin: "mytool",
+						versionArgs: ["version", "--short"],
+					},
+				],
+			},
+		);
+		expect(calls).toEqual([
+			{ path: "/usr/bin/mytool", args: ["version", "--short"] },
+		]);
+		expect(report.checks.find((x) => x.id === "harness.mytool")?.detail).toBe(
+			"mytool 4.5.6",
 		);
 	});
 });

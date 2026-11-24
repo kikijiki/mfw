@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
+import { runForwarding } from "./run-child.ts";
 
 /**
  * `mfw`: the one dispatcher. It owns no logic of its own; each subcommand is
@@ -32,7 +33,7 @@ export interface Deps {
 	bun: string;
 	out: (line: string) => void;
 	err: (line: string) => void;
-	/** Runs a child with inherited stdio, resolving to its exit code. */
+	/** Runs a child with inherited stdio, forwarding SIGTERM/SIGINT/SIGHUP; resolves to the code to exit with. */
 	run: (argv: string[], cwd?: string) => Promise<number>;
 	/** Runs the MCP stdio server in this process (resolves when it is set up). */
 	runMcp: (args: string[]) => Promise<void>;
@@ -178,15 +179,7 @@ function realDeps(): Deps {
 		bun: process.execPath,
 		out: (l) => console.log(l),
 		err: (l) => console.error(l),
-		run: async (argv, cwd) => {
-			const p = Bun.spawn(argv, {
-				cwd,
-				stdin: "inherit",
-				stdout: "inherit",
-				stderr: "inherit",
-			});
-			return p.exited;
-		},
+		run: (argv, cwd) => runForwarding(argv, cwd),
 		runMcp: async (args) => {
 			// The MCP entry reads process.argv itself; present it as its own script.
 			process.argv = [process.argv[0] ?? "bun", "mfw mcp", ...args];

@@ -43,7 +43,7 @@ export const DOCTOR_USAGE = [
 	"  --redact           safe to paste: no home paths, user name, URL paths, file names or tokens",
 	"  --no-redact        keep local detail in --json",
 	"  --redact-projects  also hide project names",
-	"  --harness-versions  also run `claude --version` and `codex --version`",
+	"  --harness-versions  also run each installed agent CLI's version command",
 	"  --first-run        the guided first-run flow (same as mfw init)",
 	"",
 	"  exit: 0 no blockers, 1 a blocker exists, 2 usage, 3 refused in a sandbox",
