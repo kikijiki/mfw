@@ -895,23 +895,20 @@ export class AuthService {
 		const r = await this.db.client.execute({
 			sql: `SELECT id, name, public_key, alg, rp_id, sign_count FROM passkeys
 				WHERE credential_id = ? AND principal_id = ?`,
-			args: [toBase64url(parsed.rawId), ownerId],
+			args: [parsed.rawId, ownerId],
 		});
 		const row = r.rows[0];
 		if (!row || String(row.rp_id) !== ceremony.rp.rpId) return null;
-		if (
-			parsed.userHandle &&
-			toBase64url(parsed.userHandle) !== ownerUserHandle(ownerId)
-		)
+		if (parsed.userHandle && parsed.userHandle !== ownerUserHandle(ownerId))
 			return null;
 		const stored = {
-			alg: Number(row.alg),
-			publicKeySpki: fromBase64url(String(row.public_key)) ?? new Uint8Array(),
+			id: parsed.rawId,
+			publicKey: fromBase64url(String(row.public_key)) ?? new Uint8Array(),
 			signCount: Number(row.sign_count),
 		};
-		let verified: ReturnType<typeof verifyAssertion>;
+		let verified: Awaited<ReturnType<typeof verifyAssertion>>;
 		try {
-			verified = verifyAssertion(parsed, stored, {
+			verified = await verifyAssertion(parsed.response, stored, {
 				challenge: ceremony.challenge,
 				rp: ceremony.rp,
 			});
@@ -946,7 +943,7 @@ export class AuthService {
 	async beginPasskeyLogin(
 		rp: RelyingParty,
 		source?: AuthSource,
-	): Promise<PasskeyCeremony<ReturnType<typeof requestOptions>>> {
+	): Promise<PasskeyCeremony<Awaited<ReturnType<typeof requestOptions>>>> {
 		if (!(await this.hasOwner()))
 			throw new AuthRefused("setup_required", "finish first-run setup");
 		const scope = `login:${throttleSource(sourceAddress(source))}`;
@@ -959,7 +956,7 @@ export class AuthService {
 		// and a list would tell anyone who asks whether passkeys exist.
 		return {
 			ceremonyId: ceremony.id,
-			publicKey: requestOptions(ceremony, []),
+			publicKey: await requestOptions(ceremony),
 		};
 	}
 
@@ -1026,7 +1023,7 @@ export class AuthService {
 		rp: RelyingParty,
 		proof: PasskeyProof,
 		source?: AuthSource,
-	): Promise<PasskeyCeremony<ReturnType<typeof creationOptions>>> {
+	): Promise<PasskeyCeremony<Awaited<ReturnType<typeof creationOptions>>>> {
 		if (typeof (proof as { password?: unknown })?.password !== "string")
 			throw new AuthRefused(
 				"invalid_request",
@@ -1060,7 +1057,7 @@ export class AuthService {
 			const all = await this.descriptors(rp.rpId);
 			return {
 				ceremonyId: ceremony.id,
-				publicKey: creationOptions(
+				publicKey: await creationOptions(
 					ceremony,
 					{ id: ownerUserHandle(owner.id) },
 					all,
@@ -1102,9 +1099,9 @@ export class AuthService {
 				"passkey_refused",
 				"this authenticator did not store a discoverable passkey on the device; mfw needs one (security keys without passkey storage are not supported)",
 			);
-		let verified: ReturnType<typeof verifyRegistration>;
+		let verified: Awaited<ReturnType<typeof verifyRegistration>>;
 		try {
-			verified = verifyRegistration(parsed, {
+			verified = await verifyRegistration(parsed.response, {
 				challenge: ceremony.challenge,
 				rp: ceremony.rp,
 			});
@@ -1120,7 +1117,7 @@ export class AuthService {
 			throw new AuthRefused("setup_required", "finish first-run setup");
 		const now = this.now();
 		const id = `pk_${randomUUID()}`;
-		const credentialId = toBase64url(verified.credentialId);
+		const credentialId = verified.credentialId;
 		const from = describeSource(source);
 		// One statement: only while this session is live, under the cap, and
 		// never a second row for one credential. The notice exists only if it did.
@@ -1138,7 +1135,7 @@ export class AuthService {
 						id,
 						owner.id,
 						credentialId,
-						toBase64url(verified.publicKeySpki),
+						toBase64url(verified.publicKey),
 						verified.alg,
 						ceremony.rp.rpId,
 						name,

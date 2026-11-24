@@ -106,8 +106,9 @@ const MIGRATIONS: readonly (readonly string[])[] = [
 		"DELETE FROM token_audit WHERE outcome = 'refused'",
 	],
 	[
-		// WebAuthn credentials: a public key only (SPKI DER, base64url), see
-		// `auth/webauthn.ts`. Kept across password changes; revoked one by one.
+		// WebAuthn credentials: a public key only (the COSE key, base64url, as
+		// `@simplewebauthn/server` verifies with it), see `auth/webauthn.ts`.
+		// Deleted by sign-out-everywhere and, by default, a password change.
 		`CREATE TABLE passkeys (
 			id TEXT PRIMARY KEY,
 			principal_id TEXT NOT NULL REFERENCES principals (id) ON DELETE CASCADE,

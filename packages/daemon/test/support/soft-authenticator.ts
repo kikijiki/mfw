@@ -195,12 +195,14 @@ export class SoftAuthenticator {
 	create(
 		options: {
 			challenge: string;
-			rp: { id: string };
+			rp: { id?: string };
 			user: { id: string };
 			pubKeyCredParams?: { alg: number }[];
 		},
 		knobs: CeremonyKnobs & { alg?: SoftAlg } = {},
 	): { json: RegistrationJSON; credential: SoftCredential } {
+		const rpId = options.rp.id;
+		if (!rpId) throw new Error("soft authenticator: the options name no RP ID");
 		const alg = knobs.alg ?? "ES256";
 		const pair =
 			alg === "ES256"
@@ -212,13 +214,13 @@ export class SoftAuthenticator {
 			alg,
 			privateKey: pair.privateKey,
 			publicKey: pair.publicKey,
-			rpId: options.rp.id,
+			rpId,
 			userHandle: new Uint8Array(Buffer.from(options.user.id, "base64url")),
 			signCount: knobs.signCount ?? 0,
 		};
 		const cose = encodeCbor(knobs.cose ?? coseKey(pair.publicKey, alg));
 		const authData = new Uint8Array([
-			...sha(knobs.rpId ?? options.rp.id),
+			...sha(knobs.rpId ?? rpId),
 			knobs.flags ?? UP | UV | AT,
 			...u32(credential.signCount),
 			...new Uint8Array(16),
@@ -261,7 +263,7 @@ export class SoftAuthenticator {
 	get(
 		options: {
 			challenge: string;
-			rpId: string;
+			rpId?: string;
 			allowCredentials?: { id: string }[];
 		},
 		knobs: CeremonyKnobs & { use?: SoftCredential } = {},
@@ -278,7 +280,7 @@ export class SoftAuthenticator {
 		if (knobs.signCount !== undefined) credential.signCount = knobs.signCount;
 		else if (credential.signCount > 0) credential.signCount++;
 		const authData = new Uint8Array([
-			...sha(knobs.rpId ?? options.rpId),
+			...sha(knobs.rpId ?? options.rpId ?? ""),
 			knobs.flags ?? UP | UV,
 			...u32(credential.signCount),
 			...(knobs.trailing ?? []),

@@ -1,21 +1,24 @@
 import { randomBytes } from "node:crypto";
+import type {
+	AuthenticationResponseJSON,
+	RegistrationResponseJSON,
+} from "@simplewebauthn/server";
 import {
-	type AssertionInput,
+	authenticationOptions,
 	fromBase64url,
 	MAX_CREDENTIAL_ID_BYTES,
-	type RegistrationInput,
 	type RelyingParty,
-	SUPPORTED_ALGS,
+	registrationOptions,
 } from "./webauthn.ts";
 
 /**
  * Passkey ceremonies: their server-side state and the shapes the browser sends.
- * The verification itself is in `webauthn.ts`; the rules (throttle, sessions,
+ * The verification itself is `@simplewebauthn/server` behind `webauthn.ts`; the rules (throttle, sessions,
  * credential epoch) are in `service.ts`.
  *
  * A ceremony is a random challenge held only in this process, used once, and
  * gone after `CEREMONY_TTL_MS`. A sign-in ceremony belongs to the source that
- * asked for it; a registration or re-verification belongs to one session.
+ * asked for it; a registration belongs to one session.
  */
 
 /** What the browser is told to wait. */
@@ -46,7 +49,7 @@ export interface Ceremony {
 	/** The throttle scope of a sign-in ceremony. */
 	scope: string | null;
 	proxied: boolean;
-	/** The session a registration or re-verification belongs to. */
+	/** The session a registration belongs to. */
 	sessionId: string | null;
 }
 
@@ -196,7 +199,9 @@ const TRANSPORTS = new Set([
 	"usb",
 ]);
 
-export interface RegistrationRequest extends RegistrationInput {
+export interface RegistrationRequest {
+	/** Only the fields the library reads, each bounded and canonical. */
+	response: RegistrationResponseJSON;
 	transports: string[];
 	/** `credProps.rk`: whether the authenticator stored a discoverable credential. */
 	discoverable: boolean | null;
@@ -225,17 +230,28 @@ export function parseRegistrationJSON(v: unknown): RegistrationRequest | null {
 		: {};
 	const rk = isRecord(ext.credProps) ? ext.credProps.rk : undefined;
 	return {
-		rawId,
-		clientDataJSON,
-		attestationObject,
+		response: {
+			id: v.rawId as string,
+			rawId: v.rawId as string,
+			type: "public-key",
+			response: {
+				clientDataJSON: v.response.clientDataJSON as string,
+				attestationObject: v.response.attestationObject as string,
+				transports:
+					transports as RegistrationResponseJSON["response"]["transports"],
+			},
+			clientExtensionResults: {},
+		},
 		transports,
 		discoverable: typeof rk === "boolean" ? rk : null,
 	};
 }
 
-export interface AssertionRequest extends AssertionInput {
-	rawId: Uint8Array;
-	userHandle: Uint8Array | null;
+export interface AssertionRequest {
+	/** Only the fields the library reads, each bounded and canonical. */
+	response: AuthenticationResponseJSON;
+	rawId: string;
+	userHandle: string | null;
 }
 
 /** A `PublicKeyCredential.toJSON()` from `get()`, or null. */
@@ -248,19 +264,32 @@ export function parseAssertionJSON(v: unknown): AssertionRequest | null {
 	const authenticatorData = fromBase64url(v.response.authenticatorData, 2048);
 	const signature = fromBase64url(v.response.signature, 512);
 	const handle = v.response.userHandle;
-	const userHandle =
-		handle === null || handle === undefined || handle === ""
-			? null
-			: fromBase64url(handle, 64);
+	const noHandle = handle === null || handle === undefined || handle === "";
+	const userHandle = noHandle ? null : fromBase64url(handle, 64);
 	if (
 		!rawId?.length ||
 		!clientDataJSON ||
 		!authenticatorData ||
 		!signature?.length ||
-		(handle !== null && handle !== undefined && handle !== "" && !userHandle)
+		(!noHandle && !userHandle)
 	)
 		return null;
-	return { rawId, clientDataJSON, authenticatorData, signature, userHandle };
+	return {
+		response: {
+			id: v.rawId as string,
+			rawId: v.rawId as string,
+			type: "public-key",
+			response: {
+				clientDataJSON: v.response.clientDataJSON as string,
+				authenticatorData: v.response.authenticatorData as string,
+				signature: v.response.signature as string,
+				...(noHandle ? {} : { userHandle: handle as string }),
+			},
+			clientExtensionResults: {},
+		},
+		rawId: v.rawId as string,
+		userHandle: noHandle ? null : (handle as string),
+	};
 }
 
 /** A display name: trimmed, printable, bounded. Null when unusable. */
@@ -287,37 +316,20 @@ export function creationOptions(
 	user: { id: string },
 	exclude: CredentialDescriptor[],
 ) {
-	return {
+	return registrationOptions({
+		rp: ceremony.rp,
 		challenge: ceremony.challenge,
-		rp: { id: ceremony.rp.rpId, name: "mfw" },
-		user: { id: user.id, name: "owner", displayName: "mfw owner" },
-		pubKeyCredParams: SUPPORTED_ALGS.map((alg) => ({
-			type: "public-key" as const,
-			alg,
-		})),
+		userHandle: user.id,
+		exclude: exclude.map(({ id, transports }) => ({ id, transports })),
 		timeout: CEREMONY_TIMEOUT_MS,
-		attestation: "none" as const,
-		// Discoverable only: sign-in then needs no credential list, so the public
-		// options call reveals nothing about the owner's passkeys.
-		authenticatorSelection: {
-			residentKey: "required" as const,
-			requireResidentKey: true,
-			userVerification: "required" as const,
-		},
-		excludeCredentials: exclude,
-		extensions: { credProps: true },
-	};
+	});
 }
 
-export function requestOptions(
-	ceremony: Ceremony,
-	allow: CredentialDescriptor[],
-) {
-	return {
+/** Sign-in options: never a credential list (see `authenticationOptions`). */
+export function requestOptions(ceremony: Ceremony) {
+	return authenticationOptions({
+		rp: ceremony.rp,
 		challenge: ceremony.challenge,
-		rpId: ceremony.rp.rpId,
 		timeout: CEREMONY_TIMEOUT_MS,
-		userVerification: "required" as const,
-		allowCredentials: allow,
-	};
+	});
 }

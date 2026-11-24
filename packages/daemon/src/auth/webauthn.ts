@@ -1,27 +1,31 @@
 import {
-	createHash,
-	createPublicKey,
-	type KeyObject,
-	timingSafeEqual,
-	verify,
-} from "node:crypto";
+	type AuthenticationResponseJSON,
+	generateAuthenticationOptions,
+	generateRegistrationOptions,
+	type RegistrationResponseJSON,
+	verifyAuthenticationResponse,
+	verifyRegistrationResponse,
+} from "@simplewebauthn/server";
+import {
+	decodeClientDataJSON,
+	decodeCredentialPublicKey,
+} from "@simplewebauthn/server/helpers";
 
 /**
- * WebAuthn verification for passkey sign-in, on `node:crypto` only: no
- * WebAuthn library is in the dependency tree, and this needs no network.
+ * WebAuthn for passkey sign-in. Every parse and signature check is done by
+ * `@simplewebauthn/server`; this module is the policy mfw puts around it:
  *
- * Scope is deliberately narrow:
- * - Algorithms: ES256 (COSE -7, P-256) and EdDSA (COSE -8, Ed25519).
- * - Attestation is requested as "none" and never trusted. Registration is
- *   authorized by the owner's session plus a fresh re-verification, not by the
- *   authenticator's make, so the attestation statement is not checked.
+ * - The RP ID and origin come from the server's own external origin, never
+ *   from the client, and must be a DNS name over HTTPS (or `localhost`).
  * - User verification is required on every ceremony.
- * - A signature counter that does not advance (when either value is nonzero)
- *   is refused as a possible cloned authenticator.
- *
- * Everything from the client is parsed strictly and bounded: definite-length
- * CBOR only, no tags, limited depth, and the authenticator data must be
- * consumed exactly.
+ * - Only ES256 and EdDSA. Attestation is requested as "none" and not trusted.
+ * - Discoverable credentials only (enforced by the caller from `credProps`).
+ * - No cross-origin frames, on either ceremony.
+ * - The id the client reports must be the one in the authenticator data.
+ * - Small-order and non-canonical Ed25519 keys are refused: anyone can sign for
+ *   those, and the library verifies such signatures.
+ * - The signature counter is checked here, AFTER the signature verifies, so a
+ *   counter refusal always means the key holder sent it (see `verifyAssertion`).
  */
 
 export const COSE_ES256 = -7;
@@ -31,27 +35,16 @@ export const SUPPORTED_ALGS: readonly number[] = [COSE_ES256, COSE_EDDSA];
 /** The spec's upper bound on a credential id. */
 export const MAX_CREDENTIAL_ID_BYTES = 1023;
 
-const FLAG_UP = 0x01;
-const FLAG_UV = 0x04;
-const FLAG_BE = 0x08;
-const FLAG_BS = 0x10;
-const FLAG_AT = 0x40;
-const FLAG_ED = 0x80;
-
 export type WebAuthnFailure =
+	/** The library refused it; `message` says why. */
+	| "refused"
 	| "malformed"
-	| "client_data"
-	| "challenge"
-	| "origin"
 	| "cross_origin"
-	| "rp_id"
-	| "user_presence"
-	| "user_verification"
-	| "algorithm"
+	| "credential"
 	| "key"
+	| "rp_id"
 	| "signature"
-	| "counter"
-	| "credential";
+	| "counter";
 
 /** A refused ceremony. `reason` is for tests and the server, not for clients. */
 export class WebAuthnError extends Error {
@@ -80,7 +73,7 @@ const fail = (reason: WebAuthnFailure, message: string): never => {
 
 const B64URL = /^[A-Za-z0-9_-]*$/;
 
-/** Strict base64url (no padding, canonical), or null. */
+/** Strict base64url (no padding, canonical), or null. Bounds client input. */
 export function fromBase64url(value: unknown, maxBytes = 16 * 1024) {
 	if (typeof value !== "string" || !B64URL.test(value)) return null;
 	if (value.length % 4 === 1) return null;
@@ -94,425 +87,7 @@ export function fromBase64url(value: unknown, maxBytes = 16 * 1024) {
 export const toBase64url = (bytes: Uint8Array): string =>
 	Buffer.from(bytes).toString("base64url");
 
-const sha256 = (data: Uint8Array | string) =>
-	new Uint8Array(createHash("sha256").update(data).digest());
-
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-	return a.length === b.length && timingSafeEqual(a, b);
-}
-
-// --------------------------------------------------------------------- CBOR
-
-export type CborValue =
-	| number
-	| string
-	| boolean
-	| null
-	| undefined
-	| Uint8Array
-	| CborValue[]
-	| Map<number | string, CborValue>;
-
-const MAX_CBOR_DEPTH = 16;
-const MAX_CBOR_ITEMS = 4096;
-
-/**
- * Decode one CBOR item starting at `offset`, returning it and where it ends.
- * Definite lengths only; tags, indefinite lengths, non-integer or non-text map
- * keys, duplicate keys and integers beyond 2^53 are refused.
- */
-export function decodeCbor(
-	bytes: Uint8Array,
-	offset = 0,
-): { value: CborValue; end: number } {
-	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-	let pos = offset;
-	let items = 0;
-	const need = (n: number) => {
-		if (n < 0 || pos + n > bytes.length)
-			fail("malformed", "CBOR runs past its buffer");
-	};
-	const readLength = (info: number): number => {
-		if (info < 24) return info;
-		if (info === 24) {
-			need(1);
-			return bytes[pos++] as number;
-		}
-		if (info === 25) {
-			need(2);
-			const v = view.getUint16(pos);
-			pos += 2;
-			return v;
-		}
-		if (info === 26) {
-			need(4);
-			const v = view.getUint32(pos);
-			pos += 4;
-			return v;
-		}
-		if (info === 27) {
-			need(8);
-			const v = view.getBigUint64(pos);
-			pos += 8;
-			if (v > BigInt(Number.MAX_SAFE_INTEGER))
-				fail("malformed", "CBOR integer too large");
-			return Number(v);
-		}
-		return fail("malformed", "indefinite or reserved CBOR length");
-	};
-	const item = (depth: number): CborValue => {
-		if (depth > MAX_CBOR_DEPTH) fail("malformed", "CBOR nested too deeply");
-		if (++items > MAX_CBOR_ITEMS) fail("malformed", "CBOR has too many items");
-		need(1);
-		const head = bytes[pos++] as number;
-		const major = head >> 5;
-		const info = head & 0x1f;
-		switch (major) {
-			case 0:
-				return readLength(info);
-			case 1:
-				return -1 - readLength(info);
-			case 2: {
-				const n = readLength(info);
-				need(n);
-				const out = bytes.slice(pos, pos + n);
-				pos += n;
-				return out;
-			}
-			case 3: {
-				const n = readLength(info);
-				need(n);
-				let text: string;
-				try {
-					text = new TextDecoder("utf-8", { fatal: true }).decode(
-						bytes.subarray(pos, pos + n),
-					);
-				} catch {
-					return fail("malformed", "CBOR text is not UTF-8");
-				}
-				pos += n;
-				return text;
-			}
-			case 4: {
-				const n = readLength(info);
-				// Each element is at least one byte: a cheap bound before allocating.
-				need(n);
-				const out: CborValue[] = [];
-				for (let i = 0; i < n; i++) out.push(item(depth + 1));
-				return out;
-			}
-			case 5: {
-				const n = readLength(info);
-				need(n * 2);
-				const out = new Map<number | string, CborValue>();
-				for (let i = 0; i < n; i++) {
-					const key = item(depth + 1);
-					if (typeof key !== "number" && typeof key !== "string")
-						fail("malformed", "CBOR map key is not an integer or text");
-					if (out.has(key as number | string))
-						fail("malformed", "CBOR map has a duplicate key");
-					out.set(key as number | string, item(depth + 1));
-				}
-				return out;
-			}
-			case 6:
-				return fail("malformed", "CBOR tags are not accepted");
-			default: {
-				if (info === 20) return false;
-				if (info === 21) return true;
-				if (info === 22) return null;
-				if (info === 23) return undefined;
-				if (info === 25) {
-					need(2);
-					const half = view.getUint16(pos);
-					pos += 2;
-					return decodeHalf(half);
-				}
-				if (info === 26) {
-					need(4);
-					const v = view.getFloat32(pos);
-					pos += 4;
-					return v;
-				}
-				if (info === 27) {
-					need(8);
-					const v = view.getFloat64(pos);
-					pos += 8;
-					return v;
-				}
-				return fail("malformed", "unsupported CBOR simple value");
-			}
-		}
-	};
-	const value = item(0);
-	return { value, end: pos };
-}
-
-function decodeHalf(half: number): number {
-	const exp = (half >> 10) & 0x1f;
-	const mant = half & 0x3ff;
-	const sign = half & 0x8000 ? -1 : 1;
-	if (exp === 0) return sign * 2 ** -14 * (mant / 1024);
-	if (exp === 31) return mant ? Number.NaN : sign * Number.POSITIVE_INFINITY;
-	return sign * 2 ** (exp - 15) * (1 + mant / 1024);
-}
-
-/** Decode exactly one item that fills the whole buffer. */
-export function decodeCborExact(bytes: Uint8Array): CborValue {
-	const { value, end } = decodeCbor(bytes);
-	if (end !== bytes.length) fail("malformed", "trailing bytes after CBOR");
-	return value;
-}
-
-// --------------------------------------------------------- authenticator data
-
-export interface AttestedCredential {
-	aaguid: Uint8Array;
-	credentialId: Uint8Array;
-	/** The COSE key as decoded. */
-	publicKey: Map<number | string, CborValue>;
-}
-
-export interface AuthenticatorData {
-	rpIdHash: Uint8Array;
-	flags: {
-		up: boolean;
-		uv: boolean;
-		be: boolean;
-		bs: boolean;
-		at: boolean;
-		ed: boolean;
-	};
-	signCount: number;
-	attested: AttestedCredential | null;
-	extensions: Map<number | string, CborValue> | null;
-}
-
-export function parseAuthenticatorData(data: Uint8Array): AuthenticatorData {
-	if (data.length < 37) fail("malformed", "authenticator data is too short");
-	const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-	const flagsByte = data[32] as number;
-	const flags = {
-		up: (flagsByte & FLAG_UP) !== 0,
-		uv: (flagsByte & FLAG_UV) !== 0,
-		be: (flagsByte & FLAG_BE) !== 0,
-		bs: (flagsByte & FLAG_BS) !== 0,
-		at: (flagsByte & FLAG_AT) !== 0,
-		ed: (flagsByte & FLAG_ED) !== 0,
-	};
-	if (flags.bs && !flags.be)
-		fail("malformed", "backed up but not backup eligible");
-	let pos = 37;
-	let attested: AttestedCredential | null = null;
-	if (flags.at) {
-		if (data.length < pos + 18)
-			fail("malformed", "attested credential data is too short");
-		const aaguid = data.slice(pos, pos + 16);
-		const idLength = view.getUint16(pos + 16);
-		pos += 18;
-		if (idLength === 0 || idLength > MAX_CREDENTIAL_ID_BYTES)
-			fail("credential", "credential id length is out of range");
-		if (data.length < pos + idLength)
-			fail("malformed", "credential id runs past the data");
-		const credentialId = data.slice(pos, pos + idLength);
-		pos += idLength;
-		const key = decodeCbor(data, pos);
-		if (!(key.value instanceof Map))
-			fail("key", "the credential public key is not a COSE map");
-		pos = key.end;
-		attested = {
-			aaguid,
-			credentialId,
-			publicKey: key.value as Map<number | string, CborValue>,
-		};
-	}
-	let extensions: Map<number | string, CborValue> | null = null;
-	if (flags.ed) {
-		const ext = decodeCbor(data, pos);
-		if (!(ext.value instanceof Map))
-			fail("malformed", "extension data is not a map");
-		extensions = ext.value as Map<number | string, CborValue>;
-		pos = ext.end;
-	}
-	if (pos !== data.length)
-		fail("malformed", "trailing bytes after authenticator data");
-	return {
-		rpIdHash: data.slice(0, 32),
-		flags,
-		signCount: view.getUint32(33),
-		attested,
-		extensions,
-	};
-}
-
-// ------------------------------------------------------- Ed25519 key checks
-
-const ED_P = 2n ** 255n - 19n;
-const edMod = (a: bigint) => {
-	const r = a % ED_P;
-	return r < 0n ? r + ED_P : r;
-};
-function edPow(base: bigint, exp: bigint): bigint {
-	let result = 1n;
-	let b = edMod(base);
-	let e = exp;
-	while (e > 0n) {
-		if (e & 1n) result = edMod(result * b);
-		b = edMod(b * b);
-		e >>= 1n;
-	}
-	return result;
-}
-const edInv = (a: bigint) => edPow(a, ED_P - 2n);
-const ED_D = edMod(-121665n * edInv(121666n));
-const ED_SQRT_M1 = edPow(2n, (ED_P - 1n) / 4n);
-
-type EdPoint = { x: bigint; y: bigint };
-
-/** RFC 8032 §5.1.3 decoding, refusing non-canonical encodings. Null if invalid. */
-export function decodeEd25519Point(bytes: Uint8Array): EdPoint | null {
-	if (bytes.length !== 32) return null;
-	const sign = (bytes[31] as number) >> 7;
-	let y = 0n;
-	for (let i = 31; i >= 0; i--)
-		y =
-			(y << 8n) |
-			BigInt(i === 31 ? (bytes[i] as number) & 0x7f : (bytes[i] as number));
-	if (y >= ED_P) return null;
-	const y2 = edMod(y * y);
-	const u = edMod(y2 - 1n);
-	const v = edMod(ED_D * y2 + 1n);
-	const v3 = edMod(v * v * v);
-	let x = edMod(u * v3 * edPow(u * v3 * v3 * v, (ED_P - 5n) / 8n));
-	const vx2 = edMod(v * x * x);
-	if (vx2 === edMod(-u)) x = edMod(x * ED_SQRT_M1);
-	else if (vx2 !== u) return null;
-	if (x === 0n && sign === 1) return null;
-	if (Number(x & 1n) !== sign) x = edMod(-x);
-	return { x, y };
-}
-
-/** Twisted Edwards addition (a = -1); complete, so no special cases. */
-function edAdd(p: EdPoint, q: EdPoint): EdPoint {
-	const t = edMod(ED_D * p.x * q.x * p.y * q.y);
-	return {
-		x: edMod((p.x * q.y + p.y * q.x) * edInv(1n + t)),
-		y: edMod((p.y * q.y + p.x * q.x) * edInv(1n - t)),
-	};
-}
-
-/**
- * True for a canonical encoding of a point outside the small-order subgroup.
- * A small-order key (the identity, for one) has signatures anyone can forge.
- */
-export function isSafeEd25519Key(bytes: Uint8Array): boolean {
-	const a = decodeEd25519Point(bytes);
-	if (!a) return false;
-	let p = a;
-	for (let i = 0; i < 3; i++) p = edAdd(p, p);
-	return !(p.x === 0n && p.y === 1n);
-}
-
-// ------------------------------------------------------------------ COSE keys
-
-export interface CredentialKey {
-	alg: number;
-	key: KeyObject;
-}
-
-const bytesOf = (
-	v: CborValue | undefined,
-	length: number,
-): Uint8Array | null =>
-	v instanceof Uint8Array && v.length === length ? v : null;
-
-/** A COSE public key as a verified `KeyObject`. Points are checked on the curve. */
-export function coseToKey(
-	cose: Map<number | string, CborValue>,
-	allowedAlgs: readonly number[] = SUPPORTED_ALGS,
-): CredentialKey {
-	const kty = cose.get(1);
-	const alg = cose.get(3);
-	if (typeof alg !== "number" || !allowedAlgs.includes(alg))
-		fail("algorithm", "unsupported credential algorithm");
-	// A private component must never be sent; refuse rather than ignore it.
-	if (cose.has(-4)) fail("key", "the key carries a private component");
-	const b64 = (b: Uint8Array) => Buffer.from(b).toString("base64url");
-	try {
-		if (alg === COSE_ES256) {
-			const x = bytesOf(cose.get(-2), 32);
-			const y = bytesOf(cose.get(-3), 32);
-			if (kty !== 2 || cose.get(-1) !== 1 || !x || !y)
-				fail("key", "not a P-256 EC2 key");
-			const key = createPublicKey({
-				key: {
-					kty: "EC",
-					crv: "P-256",
-					x: b64(x as Uint8Array),
-					y: b64(y as Uint8Array),
-				},
-				format: "jwk",
-			});
-			return { alg, key };
-		}
-		if (alg !== COSE_EDDSA)
-			fail("algorithm", "unsupported credential algorithm");
-		const x = bytesOf(cose.get(-2), 32);
-		if (kty !== 1 || cose.get(-1) !== 6 || !x)
-			fail("key", "not an Ed25519 OKP key");
-		if (!isSafeEd25519Key(x as Uint8Array))
-			fail("key", "a small-order or non-canonical Ed25519 key");
-		const key = createPublicKey({
-			key: { kty: "OKP", crv: "Ed25519", x: b64(x as Uint8Array) },
-			format: "jwk",
-		});
-		return { alg: alg as number, key };
-	} catch (e) {
-		if (isWebAuthnError(e)) throw e;
-		return fail("key", "the public key is not valid");
-	}
-}
-
-/** The stored form: SPKI DER. */
-export const keyToSpki = (key: KeyObject): Uint8Array =>
-	new Uint8Array(key.export({ format: "der", type: "spki" }));
-
-export function spkiToKey(spki: Uint8Array, alg: number): KeyObject {
-	const key = createPublicKey({
-		key: Buffer.from(spki),
-		format: "der",
-		type: "spki",
-	});
-	const type = key.asymmetricKeyType;
-	if (
-		(alg === COSE_ES256 &&
-			(type !== "ec" ||
-				key.asymmetricKeyDetails?.namedCurve !== "prime256v1")) ||
-		(alg === COSE_EDDSA && type !== "ed25519") ||
-		!SUPPORTED_ALGS.includes(alg)
-	)
-		throw new WebAuthnError("key", "stored key does not match its algorithm");
-	return key;
-}
-
-function verifySignature(
-	alg: number,
-	key: KeyObject,
-	data: Uint8Array,
-	signature: Uint8Array,
-): boolean {
-	try {
-		if (alg === COSE_ES256)
-			return verify("sha256", data, { key, dsaEncoding: "der" }, signature);
-		if (alg === COSE_EDDSA)
-			return signature.length === 64 && verify(null, data, key, signature);
-	} catch {
-		return false;
-	}
-	return false;
-}
-
-// ---------------------------------------------------------------- ceremonies
+// ---------------------------------------------------------- relying party
 
 /** Where a ceremony runs: derived by the server, never taken from the client. */
 export interface RelyingParty {
@@ -546,124 +121,210 @@ export function relyingPartyError(rp: RelyingParty): string | null {
 	return "passkeys need HTTPS (or http://localhost)";
 }
 
-interface ClientData {
-	type: string;
-	challenge: string;
-	origin: string;
-	crossOrigin?: boolean;
-	topOrigin?: string;
-	tokenBinding?: { status?: string };
+function assertRelyingParty(rp: RelyingParty): void {
+	const why = relyingPartyError(rp);
+	if (why) fail("rp_id", why);
 }
 
-function parseClientData(
-	raw: Uint8Array,
-	type: "webauthn.create" | "webauthn.get",
-	challenge: string,
-	rp: RelyingParty,
-): void {
-	let parsed: unknown;
+/**
+ * The library allows `crossOrigin: true` without a `topOrigin` (for Safari),
+ * and checks neither on registration. mfw is never framed, so both are refused.
+ */
+function assertTopLevel(clientDataJSON: string): void {
+	let parsed: unknown = null;
 	try {
-		parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
+		parsed = decodeClientDataJSON(clientDataJSON);
 	} catch {
-		fail("client_data", "client data is not JSON");
+		// Refused just below.
 	}
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-		fail("client_data", "client data is not an object");
-	const c = parsed as ClientData;
-	if (c.type !== type) fail("client_data", `client data type is not ${type}`);
-	if (
-		typeof c.challenge !== "string" ||
-		!bytesEqual(Buffer.from(c.challenge), Buffer.from(challenge))
-	)
-		fail("challenge", "the challenge does not match");
-	if (c.origin !== rp.origin) fail("origin", "the origin does not match");
+	if (!parsed || typeof parsed !== "object")
+		fail("malformed", "client data is not JSON");
+	const c = parsed as { crossOrigin?: unknown; topOrigin?: unknown };
 	if (c.crossOrigin !== undefined && c.crossOrigin !== false)
 		fail("cross_origin", "the ceremony ran in a cross-origin frame");
 	if (c.topOrigin !== undefined)
 		fail("cross_origin", "the ceremony ran in a frame");
-	if (c.tokenBinding?.status === "present")
-		fail("client_data", "token binding is not supported");
 }
 
-function checkAuthenticatorFlags(
-	auth: AuthenticatorData,
-	rp: RelyingParty,
-): void {
-	if (!bytesEqual(auth.rpIdHash, sha256(rp.rpId)))
-		fail("rp_id", "the RP ID hash does not match");
-	if (!auth.flags.up) fail("user_presence", "the user was not present");
-	if (!auth.flags.uv) fail("user_verification", "the user was not verified");
+/** Run a library call, turning its refusals into ours. */
+async function library<T>(run: () => Promise<T>): Promise<T> {
+	try {
+		return await run();
+	} catch (e) {
+		if (isWebAuthnError(e)) throw e;
+		return fail("refused", e instanceof Error ? e.message : String(e));
+	}
 }
 
-export interface RegistrationInput {
-	clientDataJSON: Uint8Array;
-	attestationObject: Uint8Array;
-	/** The id the client reports; must match the one in the authenticator data. */
-	rawId: Uint8Array;
+// ------------------------------------------------------- Ed25519 key checks
+
+/** p = 2^255 - 19, little-endian. */
+const ED_P = (() => {
+	const b = new Uint8Array(32).fill(0xff);
+	b[0] = 0xed;
+	b[31] = 0x7f;
+	return b;
+})();
+
+/**
+ * The y coordinates (little-endian, sign bit clear) of the eight points of
+ * small order: 0 (order 4), 1 (the identity), p - 1 (order 2) and the two of
+ * order 8. The same list libsodium refuses in `crypto_sign_verify`.
+ */
+const ED_SMALL_ORDER_Y = [
+	"0000000000000000000000000000000000000000000000000000000000000000",
+	"0100000000000000000000000000000000000000000000000000000000000000",
+	"ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+	"26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+	"c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+];
+
+/**
+ * False for a key anyone can sign for: one of small order, or one whose y is
+ * not reduced below p (two encodings of one key). A pure byte comparison;
+ * the curve arithmetic stays in the library and the runtime.
+ */
+export function isSafeEd25519Key(x: Uint8Array): boolean {
+	if (x.length !== 32) return false;
+	const y = Uint8Array.from(x);
+	y[31] = (y[31] as number) & 0x7f;
+	let reduced = false;
+	for (let i = 31; i >= 0; i--) {
+		if (y[i] === ED_P[i]) continue;
+		reduced = (y[i] as number) < (ED_P[i] as number);
+		break;
+	}
+	if (!reduced) return false;
+	const hex = Buffer.from(y).toString("hex");
+	return !ED_SMALL_ORDER_Y.includes(hex);
 }
+
+/** The COSE key's algorithm, after mfw's own checks on it. */
+function checkCredentialKey(cose: Uint8Array): number {
+	let key: Map<number, unknown>;
+	try {
+		key = decodeCredentialPublicKey(new Uint8Array(cose)) as unknown as Map<
+			number,
+			unknown
+		>;
+	} catch {
+		return fail("key", "the public key is not valid COSE");
+	}
+	const alg = key.get(3);
+	if (typeof alg !== "number" || !SUPPORTED_ALGS.includes(alg))
+		fail("key", "unsupported credential algorithm");
+	// A private component must never be sent; refuse rather than ignore it.
+	if (key.has(-4)) fail("key", "the key carries a private component");
+	if (alg === COSE_EDDSA) {
+		const x = key.get(-2);
+		if (!(x instanceof Uint8Array) || !isSafeEd25519Key(x))
+			fail("key", "a small-order or non-canonical Ed25519 key");
+	}
+	return alg as number;
+}
+
+// --------------------------------------------------------------- options
+
+export async function registrationOptions(opts: {
+	rp: RelyingParty;
+	/** base64url, from the ceremony store. */
+	challenge: string;
+	/** base64url user handle. */
+	userHandle: string;
+	exclude: { id: string; transports?: string[] }[];
+	timeout: number;
+}) {
+	return generateRegistrationOptions({
+		rpName: "mfw",
+		rpID: opts.rp.rpId,
+		userName: "owner",
+		userDisplayName: "mfw owner",
+		userID: new Uint8Array(Buffer.from(opts.userHandle, "base64url")),
+		// Bytes, not a string: the library would encode a string as UTF-8.
+		challenge: new Uint8Array(Buffer.from(opts.challenge, "base64url")),
+		timeout: opts.timeout,
+		attestationType: "none",
+		// Discoverable only: sign-in then needs no credential list, so the public
+		// options call reveals nothing about the owner's passkeys.
+		authenticatorSelection: {
+			residentKey: "required",
+			requireResidentKey: true,
+			userVerification: "required",
+		},
+		excludeCredentials: opts.exclude,
+		supportedAlgorithmIDs: [...SUPPORTED_ALGS],
+	});
+}
+
+export async function authenticationOptions(opts: {
+	rp: RelyingParty;
+	challenge: string;
+	timeout: number;
+}) {
+	return generateAuthenticationOptions({
+		rpID: opts.rp.rpId,
+		challenge: new Uint8Array(Buffer.from(opts.challenge, "base64url")),
+		timeout: opts.timeout,
+		userVerification: "required",
+		// Always empty: credentials are discoverable, and a list would tell anyone
+		// who asks whether passkeys exist.
+		allowCredentials: [],
+	});
+}
+
+// ---------------------------------------------------------------- ceremonies
 
 export interface VerifiedRegistration {
-	credentialId: Uint8Array;
+	/** base64url, as stored and as browsers report it. */
+	credentialId: string;
 	alg: number;
-	publicKeySpki: Uint8Array;
+	/** The COSE public key, as the library verifies with it. */
+	publicKey: Uint8Array;
 	signCount: number;
 	backupEligible: boolean;
 	backedUp: boolean;
 }
 
-/** Registration (WebAuthn L3 §7.1), with attestation "none" and UV required. */
-export function verifyRegistration(
-	input: RegistrationInput,
+/** Registration: the library's checks, then mfw's. */
+export async function verifyRegistration(
+	response: RegistrationResponseJSON,
 	expected: { challenge: string; rp: RelyingParty },
-	allowedAlgs: readonly number[] = SUPPORTED_ALGS,
-): VerifiedRegistration {
-	const rpError = relyingPartyError(expected.rp);
-	if (rpError) fail("rp_id", rpError);
-	parseClientData(
-		input.clientDataJSON,
-		"webauthn.create",
-		expected.challenge,
-		expected.rp,
+): Promise<VerifiedRegistration> {
+	assertRelyingParty(expected.rp);
+	assertTopLevel(response.response.clientDataJSON);
+	const out = await library(() =>
+		verifyRegistrationResponse({
+			response,
+			expectedChallenge: expected.challenge,
+			expectedOrigin: expected.rp.origin,
+			expectedRPID: expected.rp.rpId,
+			requireUserPresence: true,
+			requireUserVerification: true,
+			supportedAlgorithmIDs: [...SUPPORTED_ALGS],
+		}),
 	);
-	const att = decodeCborExact(input.attestationObject);
-	if (!(att instanceof Map)) fail("malformed", "attestation is not a map");
-	const map = att as Map<number | string, CborValue>;
-	const fmt = map.get("fmt");
-	const authDataRaw = map.get("authData");
-	if (
-		typeof fmt !== "string" ||
-		!(map.get("attStmt") instanceof Map) ||
-		!(authDataRaw instanceof Uint8Array)
-	)
-		fail("malformed", "attestation is missing fmt, attStmt or authData");
-	// Any format is accepted and its statement ignored: nothing here trusts it.
-	const auth = parseAuthenticatorData(authDataRaw as Uint8Array);
-	checkAuthenticatorFlags(auth, expected.rp);
-	if (!auth.attested)
-		fail("credential", "no attested credential in the registration");
-	const attested = auth.attested as AttestedCredential;
-	if (!bytesEqual(attested.credentialId, input.rawId))
+	if (!out.verified) return fail("refused", "the attestation did not verify");
+	const info = out.registrationInfo;
+	// The library takes the id from the authenticator data and does not compare
+	// it with the one the client reports.
+	if (info.credential.id !== response.rawId)
 		fail("credential", "the credential id does not match");
-	const { alg, key } = coseToKey(attested.publicKey, allowedAlgs);
+	const alg = checkCredentialKey(info.credential.publicKey);
 	return {
-		credentialId: attested.credentialId,
+		credentialId: info.credential.id,
 		alg,
-		publicKeySpki: keyToSpki(key),
-		signCount: auth.signCount,
-		backupEligible: auth.flags.be,
-		backedUp: auth.flags.bs,
+		publicKey: info.credential.publicKey,
+		signCount: info.credential.counter,
+		backupEligible: info.credentialDeviceType === "multiDevice",
+		backedUp: info.credentialBackedUp,
 	};
 }
 
-export interface AssertionInput {
-	clientDataJSON: Uint8Array;
-	authenticatorData: Uint8Array;
-	signature: Uint8Array;
-}
-
 export interface StoredCredential {
-	alg: number;
-	publicKeySpki: Uint8Array;
+	/** base64url. */
+	id: string;
+	/** COSE. */
+	publicKey: Uint8Array;
 	signCount: number;
 }
 
@@ -673,40 +334,43 @@ export interface VerifiedAssertion {
 }
 
 /**
- * Authentication (WebAuthn L3 §7.2), UV required. A counter that does not
- * advance, when either value is nonzero, is refused: two authenticators hold
- * this key, so one of them is a copy.
+ * Authentication, UV required. The library is given a counter of 0, so its
+ * own counter check (which runs before the signature) never fires; mfw's runs
+ * after a verified signature instead. A counter that does not advance, when
+ * either value is nonzero, is refused: two authenticators hold this key, so
+ * one of them is a copy. Synced passkeys report 0 every time, which passes.
  */
-export function verifyAssertion(
-	input: AssertionInput,
+export async function verifyAssertion(
+	response: AuthenticationResponseJSON,
 	stored: StoredCredential,
 	expected: { challenge: string; rp: RelyingParty },
-): VerifiedAssertion {
-	const rpError = relyingPartyError(expected.rp);
-	if (rpError) fail("rp_id", rpError);
-	parseClientData(
-		input.clientDataJSON,
-		"webauthn.get",
-		expected.challenge,
-		expected.rp,
+): Promise<VerifiedAssertion> {
+	assertRelyingParty(expected.rp);
+	assertTopLevel(response.response.clientDataJSON);
+	checkCredentialKey(stored.publicKey);
+	const out = await library(() =>
+		verifyAuthenticationResponse({
+			response,
+			expectedChallenge: expected.challenge,
+			expectedOrigin: expected.rp.origin,
+			expectedRPID: expected.rp.rpId,
+			credential: {
+				id: stored.id,
+				publicKey: new Uint8Array(stored.publicKey),
+				counter: 0,
+			},
+			requireUserVerification: true,
+		}),
 	);
-	const auth = parseAuthenticatorData(input.authenticatorData);
-	if (auth.attested)
-		fail("malformed", "an assertion must not carry a credential");
-	checkAuthenticatorFlags(auth, expected.rp);
-	const key = spkiToKey(stored.publicKeySpki, stored.alg);
-	const signed = new Uint8Array(input.authenticatorData.length + 32);
-	signed.set(input.authenticatorData, 0);
-	signed.set(sha256(input.clientDataJSON), input.authenticatorData.length);
-	if (!verifySignature(stored.alg, key, signed, input.signature))
-		fail("signature", "the signature does not verify");
-	if (
-		(auth.signCount !== 0 || stored.signCount !== 0) &&
-		auth.signCount <= stored.signCount
-	)
+	if (!out.verified) fail("signature", "the signature does not verify");
+	const counter = out.authenticationInfo.newCounter;
+	if ((counter !== 0 || stored.signCount !== 0) && counter <= stored.signCount)
 		fail(
 			"counter",
 			"the signature counter did not advance: possibly a cloned authenticator",
 		);
-	return { signCount: auth.signCount, backedUp: auth.flags.bs };
+	return {
+		signCount: counter,
+		backedUp: out.authenticationInfo.credentialBackedUp,
+	};
 }

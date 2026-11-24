@@ -137,12 +137,14 @@ describe("registration", () => {
 		const begun = await auth.beginPasskeyRegistration(owner.sessionId, RP, {
 			password: PASSWORD,
 		});
-		expect(begun.publicKey.authenticatorSelection.userVerification).toBe(
+		expect(begun.publicKey.authenticatorSelection?.userVerification).toBe(
 			"required",
 		);
 		expect(begun.publicKey.attestation).toBe("none");
-		expect(begun.publicKey.authenticatorSelection.residentKey).toBe("required");
-		expect(begun.publicKey.authenticatorSelection.requireResidentKey).toBe(
+		expect(begun.publicKey.authenticatorSelection?.residentKey).toBe(
+			"required",
+		);
+		expect(begun.publicKey.authenticatorSelection?.requireResidentKey).toBe(
 			true,
 		);
 		const { json } = soft.create(begun.publicKey, { flags: UP | 0x40 });
@@ -283,7 +285,7 @@ describe("registration", () => {
 			password: PASSWORD,
 		});
 		// The authenticator is told which credentials exist already.
-		expect(second.publicKey.excludeCredentials.map((c) => c.id)).toEqual([
+		expect(second.publicKey.excludeCredentials?.map((c) => c.id)).toEqual([
 			json.rawId,
 		]);
 		// An authenticator that ignores the exclude list and reuses the id.
