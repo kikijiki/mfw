@@ -985,3 +985,20 @@ describe("L5: a counter refusal", () => {
 		);
 	});
 });
+
+describe("L6: one IPv6 /48 cannot fill the challenge pool", () => {
+	test("many /64s of one /48 share a small cap; others keep their room", async () => {
+		const cred = await addPasskey();
+		for (let i = 0; i < 600; i++)
+			await auth.beginPasskeyLogin(RP, `2001:db8:1:${i.toString(16)}::1`);
+		expect(auth.pendingPasskeyCeremonies).toBe(16);
+		// Tailnet addresses are separate hosts, not one /48.
+		for (let i = 0; i < 40; i++)
+			await auth.beginPasskeyLogin(
+				RP,
+				`fd7a:115c:a1e0::${(i + 1).toString(16)}`,
+			);
+		expect(auth.pendingPasskeyCeremonies).toBe(16 + 40);
+		expect(await code(passkeyLogin({ use: cred }, "2001:db8:2::1"))).toBe("ok");
+	});
+});

@@ -24,6 +24,11 @@ export const CEREMONY_TIMEOUT_MS = 2 * 60 * 1000;
 export const CEREMONY_TTL_MS = CEREMONY_TIMEOUT_MS + 30 * 1000;
 /** Pending sign-in ceremonies per throttle source; a new one drops its oldest. */
 const PER_SOURCE = 4;
+/**
+ * Per IPv6 /48 across its /64 sources, the same way: one routed /48 has 65,536
+ * throttle sources, enough to fill the pool on its own.
+ */
+const PER_PREFIX48 = 16;
 /** Ceremonies from forwarded clients, which can be forged (see `AuthSource`). */
 const MAX_PROXIED = 128;
 const MAX_TOTAL = 1024;
@@ -88,6 +93,15 @@ export class CeremonyStore {
 		return this.all.size;
 	}
 
+	/** The /48 of an IPv6 /64 throttle scope; null for anything else. */
+	private static prefix48(scope: string | null): string | null {
+		return (
+			/^[a-z]+:([0-9a-f]{1,4}:[0-9a-f]{1,4}:[0-9a-f]{1,4}):[0-9a-f]{1,4}::\/64$/.exec(
+				scope ?? "",
+			)?.[1] ?? null
+		);
+	}
+
 	private prune(): void {
 		const now = this.now();
 		for (const [id, c] of this.all) if (c.expiresAt <= now) this.all.delete(id);
@@ -112,6 +126,17 @@ export class CeremonyStore {
 		const share = isSession ? 1 : PER_SOURCE;
 		for (const c of mine.slice(0, Math.max(0, mine.length - share + 1)))
 			this.all.delete(c.id);
+		const prefix = isSession ? null : CeremonyStore.prefix48(owner.scope);
+		if (prefix) {
+			const group = [...this.all.values()].filter(
+				(c) => CeremonyStore.prefix48(c.scope) === prefix,
+			);
+			for (const c of group.slice(
+				0,
+				Math.max(0, group.length - PER_PREFIX48 + 1),
+			))
+				this.all.delete(c.id);
+		}
 		const proxied = !isSession && owner.proxied;
 		const proxiedCount = [...this.all.values()].filter((c) => c.proxied).length;
 		if (

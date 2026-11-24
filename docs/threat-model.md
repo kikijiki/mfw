@@ -262,7 +262,7 @@ is acceptable for your setup.
 | R15 | **Browser origin.** Script on the mfw origin could read the request key, and a sibling HTTPS port on the same name can sign you out | Session misuse, or a nuisance sign-out | CSP, nothing rendered as raw HTML, and a dedicated origin ([exposure.md](exposure.md)) |
 | R16 | **The fleet write allowlist is provisional** (`unattested-config`) and has not been audited against authenticated CLIs. Files in the config root are read-only, which may stop a CLI saving a refreshed login | Runs may fail on login refresh | Per-run private session directories |
 | R17 | **Token rate limits live in memory** and reset on restart | A short extra burst after a restart | Scopes, expiry, audit log |
-| R18 | **Passkey challenges live in memory.** A trusted loopback proxy lets a local process forge clients and keep the shared pool of proxied passkey challenges full | Passkey sign-in through that proxy is delayed; password sign-in is not | Per-source and pooled caps, two-minute expiry, the private unix socket (R1) |
+| R18 | **Passkey challenges live in memory, in one bounded pool.** A trusted loopback proxy lets a local process forge clients and keep the proxied share full. Without a proxy, a directly exposed listener can be filled by an attacker with many addresses: IPv4 addresses, or IPv6 prefixes beyond one /48 | Passkey sign-in is delayed (`busy`) while the flood lasts; password sign-in is not, and stays the fallback | 4 challenges per source, 16 per IPv6 /48, 128 for proxied clients, 1024 in all, a 2.5-minute expiry, and the private unix socket (R1) |
 
 ## Not yet verified
 
