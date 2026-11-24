@@ -47,6 +47,13 @@ The first source present wins:
 | flake | `flake.nix` with `devShells.<system>.default` | `nix print-dev-env --json` |
 | devenv | `devenv.nix`, `devenv.yaml` | `devenv print-dev-env --json` |
 
+Nothing an evaluation starts outlives it: a process an `.envrc` leaves in the
+background is stopped with the sandbox. direnv 2.37 also waits for such a
+process when it still holds the descriptors direnv gave the `.envrc`, so the
+evaluation runs until `timeoutSeconds` and fails as timed out; detach it
+(close its inherited descriptors) or do not start it from the `.envrc`.
+direnv 2.38 does not wait.
+
 A setup mfw cannot evaluate, such as a lone `shell.nix` or an `.nvmrc`, is
 refused with a fix: add an `.envrc` (`use nix`) or a `mise.toml`, or set
 `"env": { "source": "none" }` in the project's entry in `$MFW_HOME/config.json`
