@@ -17,8 +17,12 @@ import { pathToFileURL } from "node:url";
 import { migrationsDir } from "../src/client.ts";
 import {
 	buildMigrations,
+	type EmbeddedMigrations,
+	embeddableMigrations,
 	MIGRATIONS_MANIFEST,
 	MIGRATIONS_OUTPUT_DIR,
+	registerEmbeddedMigrations,
+	verifyEmbeddedMigrations,
 	withVerifiedMigrations,
 } from "../src/migration-source.ts";
 
@@ -202,5 +206,70 @@ describe("the migration build", () => {
 				...journal.entries.map((e) => `${e.tag}.sql`),
 			].sort(),
 		);
+	});
+});
+
+describe("a compiled mfw's embedded migrations", () => {
+	const real = () => embeddableMigrations(migrationsDir());
+	const EMBEDDED = Symbol.for("mfw.embeddedMigrations");
+	afterEach(() => {
+		delete (globalThis as Record<symbol, unknown>)[EMBEDDED];
+	});
+
+	test("carry every journal entry with the build's manifest, and verify", () => {
+		const embedded = real();
+		const names = Object.keys(embedded.files);
+		expect(names).toContain("meta/_journal.json");
+		expect(names.filter((n) => n.endsWith(".sql")).length).toBe(
+			names.length - 1,
+		);
+		const manifest = JSON.parse(embedded.manifest);
+		expect(Object.keys(manifest.files).sort()).toEqual([...names].sort());
+		registerEmbeddedMigrations(embedded);
+		expect(Object.keys(verifyEmbeddedMigrations().files).length).toBe(
+			names.length,
+		);
+	});
+
+	test("an executable built without them refuses", () => {
+		expect(() => verifyEmbeddedMigrations()).toThrow(/carries no migrations/);
+	});
+
+	test("a changed, added or missing file is refused, like a build directory", () => {
+		const embedded = real();
+		const sql = Object.keys(embedded.files).find((n) =>
+			n.endsWith(".sql"),
+		) as string;
+		const cases: EmbeddedMigrations[] = [
+			{ ...embedded, files: { ...embedded.files, [sql]: "DROP TABLE runs;" } },
+			{
+				...embedded,
+				files: { ...embedded.files, "9999_planted.sql": "SELECT 1;" },
+			},
+			{
+				...embedded,
+				files: Object.fromEntries(
+					Object.entries(embedded.files).filter(([n]) => n !== sql),
+				),
+			},
+			{ ...embedded, manifest: "{" },
+		];
+		const expected = [
+			/does not match its manifest hash/,
+			/is not in the manifest/,
+			/is not a regular file/,
+			/manifest is unreadable/,
+		];
+		cases.forEach((c, i) => {
+			registerEmbeddedMigrations(c);
+			expect(() => verifyEmbeddedMigrations()).toThrow(expected[i] as RegExp);
+		});
+	});
+
+	test("registration is frozen: later code cannot swap a file in", () => {
+		registerEmbeddedMigrations(real());
+		const stored = (globalThis as Record<symbol, EmbeddedMigrations>)[EMBEDDED];
+		expect(Object.isFrozen(stored)).toBe(true);
+		expect(Object.isFrozen(stored?.files)).toBe(true);
 	});
 });
