@@ -145,7 +145,7 @@ See [verifier-sandbox.md](verifier-sandbox.md).
 | Control | Mechanism | Code |
 | --- | --- | --- |
 | Owner auth | setup token, argon2id password, revocable server-side sessions, throttling | `packages/daemon/src/auth/service.ts` |
-| Passkeys | WebAuthn with user verification required, attestation not trusted, single-use server-side challenges, counter-regression refusal, RP ID from the trusted external origin, the password's throttle | `packages/daemon/src/auth/webauthn.ts`, `packages/daemon/src/auth/passkeys.ts`, `apps/start/src/server/passkey-origin.ts` |
+| Passkeys | WebAuthn verified by `@simplewebauthn/server` 14.1.0, not by mfw's own code. mfw passes the challenge, the origin and RP ID from the trusted external origin, required user verification, ES256 and EdDSA only, attestation "none" and required discoverable credentials, and adds what the library does not check: no cross-origin frames on either ceremony, the reported credential id must match the authenticator data, no private key component, no small-order or non-canonical Ed25519 key (the library verifies signatures that anyone can forge for those), and a counter-regression refusal applied after the signature verifies. Challenges are single use, short lived and capped per source and per IPv6 /48. The sign-in options never list credentials. Passkey sign-ins share the password's throttle | `packages/daemon/src/auth/webauthn.ts`, `packages/daemon/src/auth/passkeys.ts`, `apps/start/src/server/passkey-origin.ts` |
 | Request guard | exact Host and Origin checks | `apps/start/src/server/request-guard.ts` |
 | Session guard | cookie plus a per-session request key, because cookies are shared across ports | `apps/start/src/server/auth-guard.ts` |
 | Bind policy | non-loopback needs TLS or a trusted proxy, and wildcard binds are refused | `apps/start/src/server/exposure.ts` |
@@ -211,10 +211,14 @@ This group is any other process of any local user, an unsandboxed
 - **Owner session:** treat this as code execution on the host. An owner can set
   notify commands, check prefixes and merge checks, arm triggers, and approve
   cards. Revoke with `mfw auth sign-out-everywhere`, or change the password.
-  A stolen session cannot add a passkey: that needs the password or an existing
-  passkey again. It can revoke passkeys, which the password undoes.
+  A stolen session cannot add a passkey: that needs the password again. If the
+  password is stolen too and a passkey is added, the log and a banner in every
+  other session say so, Settings shows the address it came from, and both
+  sign-out-everywhere and a password change delete it. A stolen session can
+  revoke passkeys; each revocation is announced the same way.
 - **Passkey:** a synced passkey is as safe as the account that syncs it. Revoke
-  it with `mfw auth passkey revoke`, which also ends the sessions it opened.
+  it with `mfw auth passkey revoke`, which also ends the sessions it opened and
+  revokes the API tokens those sessions created.
 - **Scoped token:** limited to its scopes and project until it expires. A
   `board:write` token cannot cause work to start, and its text is permanently
   marked untrusted. A `runs:act` token can start and stop task runs. Revoke with

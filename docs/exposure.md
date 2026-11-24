@@ -108,6 +108,13 @@ Changing the external name strands the passkeys added on the old one: they stay
 listed under that name in Settings > Passkeys until you revoke them, and the
 password still works.
 
+The signatures are verified by `@simplewebauthn/server`, which is given exactly
+that origin and RP ID; mfw never passes it a list or a pattern. Passkeys are
+discoverable only, so the public sign-in options carry no credential list, and
+an unauthenticated visitor cannot tell whether any exist. Adding one needs the
+password, and is announced in every other session with the address it came
+from: through a proxy, that is the forwarded client.
+
 ## Why mfw needs its own origin
 
 The browser keeps the per-session request key in `localStorage`, which belongs to
