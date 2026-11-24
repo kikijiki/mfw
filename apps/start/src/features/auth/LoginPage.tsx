@@ -14,6 +14,8 @@ import {
 	type AuthState,
 	afterLogin,
 	fetchAuthState,
+	passkeysSupported,
+	signInWithPasskey,
 	submitLogin,
 	submitSetup,
 } from "~/lib/auth-client";
@@ -50,6 +52,20 @@ export function LoginPage() {
 	}, []);
 
 	const isSetup = state === "setup";
+	const [canUsePasskey, setCanUsePasskey] = useState(false);
+	useEffect(() => setCanUsePasskey(passkeysSupported()), []);
+
+	async function onPasskey() {
+		setError(null);
+		setBusy(true);
+		try {
+			await signInWithPasskey();
+			afterLogin(window.location.search);
+		} catch (e) {
+			setError(describe(e));
+			setBusy(false);
+		}
+	}
 
 	async function onSubmit(event: FormEvent) {
 		event.preventDefault();
@@ -139,6 +155,16 @@ export function LoginPage() {
 							<Button type="submit" disabled={busy}>
 								{isSetup ? "Create owner" : "Sign in"}
 							</Button>
+							{!isSetup && canUsePasskey && (
+								<Button
+									type="button"
+									variant="outline"
+									disabled={busy}
+									onClick={() => void onPasskey()}
+								>
+									Sign in with a passkey
+								</Button>
+							)}
 						</form>
 					)}
 				</CardContent>

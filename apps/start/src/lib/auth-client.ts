@@ -290,3 +290,242 @@ export async function changePassword(
 		data?.retryAfterSeconds ?? 0,
 	);
 }
+
+// ------------------------------------------------------------------ passkeys
+
+/** A registered passkey as the owner sees it. Never its key. */
+export interface Passkey {
+	id: string;
+	name: string;
+	rpId: string;
+	createdAt: number;
+	lastUsedAt: number | null;
+	backedUp: boolean;
+	discoverable: boolean | null;
+}
+
+export function passkeysSupported(): boolean {
+	return (
+		typeof window !== "undefined" &&
+		typeof window.PublicKeyCredential === "function" &&
+		!!navigator.credentials
+	);
+}
+
+const fromB64url = (s: string): ArrayBuffer => {
+	const b64 = s.replace(/-/g, "+").replace(/_/g, "/");
+	const bin = atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4));
+	const out = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+	return out.buffer;
+};
+
+const toB64url = (buf: ArrayBuffer | ArrayBufferView): string => {
+	const bytes =
+		buf instanceof ArrayBuffer
+			? new Uint8Array(buf)
+			: new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+	let bin = "";
+	for (const b of bytes) bin += String.fromCharCode(b);
+	return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
+
+interface DescriptorJSON {
+	type: "public-key";
+	id: string;
+	transports?: string[];
+}
+
+const descriptors = (list: DescriptorJSON[] | undefined) =>
+	(list ?? []).map((d) => ({
+		type: d.type,
+		id: fromB64url(d.id),
+		transports: d.transports as AuthenticatorTransport[] | undefined,
+	}));
+
+interface CreationJSON
+	extends Omit<
+		PublicKeyCredentialCreationOptions,
+		"challenge" | "user" | "excludeCredentials"
+	> {
+	challenge: string;
+	user: { id: string; name: string; displayName: string };
+	excludeCredentials?: DescriptorJSON[];
+}
+
+interface RequestJSON
+	extends Omit<
+		PublicKeyCredentialRequestOptions,
+		"challenge" | "allowCredentials"
+	> {
+	challenge: string;
+	allowCredentials?: DescriptorJSON[];
+}
+
+interface Begun<T> {
+	ceremonyId: string;
+	publicKey: T;
+}
+
+function assertionJSON(cred: PublicKeyCredential) {
+	const r = cred.response as AuthenticatorAssertionResponse;
+	return {
+		id: cred.id,
+		rawId: toB64url(cred.rawId),
+		type: cred.type,
+		response: {
+			clientDataJSON: toB64url(r.clientDataJSON),
+			authenticatorData: toB64url(r.authenticatorData),
+			signature: toB64url(r.signature),
+			userHandle: r.userHandle ? toB64url(r.userHandle) : null,
+		},
+	};
+}
+
+function registrationJSON(cred: PublicKeyCredential) {
+	const r = cred.response as AuthenticatorAttestationResponse;
+	const ext = cred.getClientExtensionResults() as {
+		credProps?: { rk?: boolean };
+	};
+	return {
+		id: cred.id,
+		rawId: toB64url(cred.rawId),
+		type: cred.type,
+		response: {
+			clientDataJSON: toB64url(r.clientDataJSON),
+			attestationObject: toB64url(r.attestationObject),
+			transports: r.getTransports?.() ?? [],
+		},
+		clientExtensionResults: ext.credProps ? { credProps: ext.credProps } : {},
+	};
+}
+
+/**
+ * A passkey call. Plain `fetch`, as for the password change: a refused
+ * passkey answers 401 and must not bounce the owner to the login page.
+ */
+async function passkeyCall<T>(
+	action: string,
+	body?: unknown,
+	withKey = true,
+): Promise<T> {
+	const res = await fetch(authUrl(action), {
+		method: body === undefined ? "GET" : "POST",
+		credentials: "same-origin",
+		headers: {
+			...(withKey ? keyHeaders() : {}),
+			...(body === undefined
+				? {}
+				: { "content-type": "application/json", "x-mfw-auth": "1" }),
+		},
+		...(body === undefined ? {} : { body: JSON.stringify(body) }),
+	});
+	const data = (await res.json().catch(() => null)) as
+		| (T & { error?: string; message?: string; retryAfterSeconds?: number })
+		| null;
+	if (!res.ok || data === null)
+		throw new AuthRequestError(
+			data?.message ?? `request failed (${res.status})`,
+			data?.error ?? "error",
+			data?.retryAfterSeconds ?? 0,
+		);
+	return data;
+}
+
+/** The browser's own refusal (cancelled, timed out) as an `AuthRequestError`. */
+function browserRefusal(e: unknown): never {
+	if (e instanceof AuthRequestError) throw e;
+	const name = (e as { name?: string })?.name;
+	throw new AuthRequestError(
+		name === "NotAllowedError"
+			? "The passkey request was cancelled or timed out."
+			: name === "InvalidStateError"
+				? "This authenticator already holds a passkey for mfw."
+				: name === "SecurityError"
+					? "Passkeys are not available on this address."
+					: "The browser could not use a passkey.",
+		"passkey_browser",
+		0,
+	);
+}
+
+async function getAssertion(begun: Begun<RequestJSON>) {
+	const cred = (await navigator.credentials
+		.get({
+			publicKey: {
+				...begun.publicKey,
+				challenge: fromB64url(begun.publicKey.challenge),
+				allowCredentials: descriptors(begun.publicKey.allowCredentials),
+			},
+		})
+		.catch(browserRefusal)) as PublicKeyCredential | null;
+	if (!cred) browserRefusal(null);
+	return assertionJSON(cred as PublicKeyCredential);
+}
+
+/** Sign in with a passkey: the same session and request key as a password. */
+export async function signInWithPasskey(): Promise<void> {
+	const begun = await passkeyCall<Begun<RequestJSON>>(
+		"passkey-login-options",
+		{},
+		false,
+	);
+	const credential = await getAssertion(begun);
+	const data = await passkeyCall<{ requestKey?: string }>(
+		"passkey-login",
+		{ ceremonyId: begun.ceremonyId, credential },
+		false,
+	);
+	writeRequestKey(data.requestKey ?? null);
+}
+
+export const listPasskeys = async (): Promise<Passkey[]> =>
+	(await passkeyCall<{ passkeys: Passkey[] }>("passkeys")).passkeys;
+
+export const revokePasskey = async (id: string): Promise<void> => {
+	await passkeyCall("passkey-revoke", { id });
+};
+
+/**
+ * Add a passkey. The server wants a fresh proof first: the password, or an
+ * existing passkey (`"passkey"`).
+ */
+export async function addPasskey(
+	name: string,
+	proof: { password: string } | "passkey",
+): Promise<void> {
+	let body: unknown = proof;
+	if (proof === "passkey") {
+		const reauth = await passkeyCall<Begun<RequestJSON>>(
+			"passkey-reauth-options",
+			{},
+		);
+		body = {
+			ceremonyId: reauth.ceremonyId,
+			credential: await getAssertion(reauth),
+		};
+	}
+	const begun = await passkeyCall<Begun<CreationJSON>>(
+		"passkey-register-options",
+		body,
+	);
+	const cred = (await navigator.credentials
+		.create({
+			publicKey: {
+				...begun.publicKey,
+				challenge: fromB64url(begun.publicKey.challenge),
+				user: {
+					...begun.publicKey.user,
+					id: fromB64url(begun.publicKey.user.id),
+				},
+				excludeCredentials: descriptors(begun.publicKey.excludeCredentials),
+			},
+		})
+		.catch(browserRefusal)) as PublicKeyCredential | null;
+	if (!cred) browserRefusal(null);
+	await passkeyCall("passkey-register", {
+		ceremonyId: begun.ceremonyId,
+		credential: registrationJSON(cred as PublicKeyCredential),
+		name,
+	});
+}
