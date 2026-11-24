@@ -52,10 +52,12 @@ agent CLIs through the whole path, and project dev shells in the sandbox.
 
 Two limits follow today:
 
-- A project with an `.envrc` is refused, because dev shells do not run inside the
-  sandbox yet.
-- A check only has the repository's tracked files. If it needs installed
-  dependencies, it is reported as an infrastructure result.
+- A project with a dev environment (`.envrc`, `mise.toml`, a flake devShell,
+  devenv) runs once you approve it with `mfw env allow`; see
+  [environments.md](environments.md).
+- A check has the repository's tracked files, the approved environment, and the
+  dependencies `env.setup` installed. Anything else it needs is reported as an
+  infrastructure result.
 
 ## Host-run triggers
 

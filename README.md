@@ -107,6 +107,10 @@ spending. With the default `agentIsolation: "bwrap"`:
 - **The host does not trust results.** It imports work as a validated git bundle,
   runs checks in a no-network sandbox, and asks you before merging changes to
   files it later executes.
+- **A project's dev environment runs only where you allowed it.** `.envrc`,
+  mise, flake and devenv setups are evaluated in their own sandbox, only at a
+  commit you approved with `mfw env allow`, with network only to the hosts they
+  need ([docs/environments.md](docs/environments.md)).
 
 What this does **not** stop:
 
@@ -116,6 +120,9 @@ What this does **not** stop:
   you build or run it.
 - `agentIsolation: "none"`, ACP agents, armed host triggers and remote targets do
   not have this protection.
+- An approved environment's evaluation and dependency install run project code
+  with network to their allowed hosts, and the nix daemon builds what the
+  evaluation asks for, with its own network.
 - The systemd limits and real agent CLIs have not yet been verified end to end
   under the full sandbox.
 
@@ -225,8 +232,11 @@ setting, and the inbox tells you so. Add it to the project's entry in
 { "projects": [{ "name": "my-project", "runWorkspace": "clone" }] }
 ```
 
-Keep the entry's other fields. A project with an `.envrc` is refused for now,
-because dev shells do not run inside the sandbox yet.
+Keep the entry's other fields. A project with a dev environment (`.envrc`,
+`mise.toml`, a flake devShell, devenv) needs one more step: approve it with
+`mfw env allow my-project`. It is then evaluated inside a sandbox, only at the
+commit you approved, and given to every run. See
+[docs/environments.md](docs/environments.md).
 
 **5. Direct the work.** The project opens on **Lead**. Give it a direction or create
 a few tasks on the board, then switch the scheduler on. Nothing runs until you do,
