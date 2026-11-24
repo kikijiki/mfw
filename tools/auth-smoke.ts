@@ -550,11 +550,20 @@ async function plantedCookie(port: number): Promise<void> {
 }
 
 /** N2 in a real browser: script on a sibling localhost port plants the cookie. */
+/** Chrome for the browser cases, or null. `MFW_SMOKE_CHROME=1` makes null a failure. */
+function chromeBinary(): string | null {
+	return (
+		Bun.which("google-chrome") ??
+		Bun.which("google-chrome-stable") ??
+		Bun.which("chromium")
+	);
+}
+
 async function plantedCookieInChrome(
 	port: number,
 	scratch: string,
 ): Promise<void> {
-	const chromeBin = Bun.which("google-chrome") ?? Bun.which("chromium");
+	const chromeBin = chromeBinary();
 	if (!chromeBin) {
 		if (process.env.MFW_SMOKE_CHROME === "1")
 			check("Chrome is available", false);
@@ -734,10 +743,7 @@ async function passkeysInChrome(
 	scratch: string,
 	logFile: string,
 ): Promise<void> {
-	const chromeBin =
-		Bun.which("google-chrome") ??
-		Bun.which("google-chrome-stable") ??
-		Bun.which("chromium");
+	const chromeBin = chromeBinary();
 	if (!chromeBin) {
 		if (process.env.MFW_SMOKE_CHROME === "1")
 			check("passkeys: Chrome is available", false);
@@ -2441,6 +2447,14 @@ async function main(): Promise<number> {
 	if (!existsSync(ENTRY)) {
 		console.error("auth-smoke: no production build. Fix: bun run build");
 		return 2;
+	}
+	// CI sets this with Chrome installed: the browser cases are the only check of
+	// passkeys against a signer other than mfw's own test authenticator.
+	if (process.env.MFW_SMOKE_CHROME === "1" && !chromeBinary()) {
+		console.error(
+			"auth-smoke: MFW_SMOKE_CHROME=1 but no google-chrome, google-chrome-stable or chromium is on PATH. Fix: install Chrome or put it on PATH.",
+		);
+		return 1;
 	}
 	if (process.env.MFW_SMOKE_REFUSALS === "1") {
 		await refusalsInDevelopmentMode();

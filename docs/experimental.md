@@ -47,7 +47,10 @@ lifetimes and the narrowest scope.
 
 Passkey sign-in is verified by mfw's own WebAuthn code (ES256 and EdDSA), tested
 with a software authenticator and Chrome's virtual authenticator. It has not been
-reviewed or tried on real devices. RSA keys (RS256), which some older Windows
+reviewed or tried on real devices. CI must run `bun run smoke:auth` with Chrome
+installed and `MFW_SMOKE_CHROME=1`: that is the only run against a signer other
+than mfw's own test authenticator, and without the variable a missing Chrome only
+skips it. RSA keys (RS256), which some older Windows
 Hello setups create, are not accepted. The password always keeps working.
 
 ## Clone workspaces
