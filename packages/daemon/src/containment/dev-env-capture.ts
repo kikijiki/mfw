@@ -23,140 +23,16 @@
  */
 
 import { inflateSync } from "node:zlib";
-import { SANDBOX_PATHS } from "./compile-bwrap.ts";
-import { ENV_DATA_CACHE } from "./role-profiles.ts";
+import {
+	DEV_ENV_LIMITS,
+	DEV_ENV_WORKSPACE,
+	type DropReason,
+	devEnvNameProblem,
+	ENV_DATA_SANDBOX_PATH,
+} from "./dev-env-rules.ts";
 import { storePathOf, storeRefsIn } from "./store-closure.ts";
 
-/** Where the environment's private data (mise installs) is seen in every sandbox. */
-export const ENV_DATA_SANDBOX_PATH = `${SANDBOX_PATHS.caches}/${ENV_DATA_CACHE}`;
-
-export const DEV_ENV_LIMITS = {
-	maxValueBytes: 32 * 1024,
-	maxTotalBytes: 512 * 1024,
-	maxVariables: 512,
-	maxPathEntries: 256,
-	/** The raw output of an evaluation; past it the evaluation fails. */
-	maxOutputBytes: 4 * 1024 * 1024,
-	maxWatches: 256,
-} as const;
-
-const NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
-
-/** Set by the sandbox compiler or the run itself: never taken from the env. */
-const RUNTIME_NAMES = new Set([
-	"PATH",
-	"HOME",
-	"USER",
-	"LOGNAME",
-	"SHELL",
-	"TERM",
-	"LANG",
-	"PWD",
-	"OLDPWD",
-	"SHLVL",
-	"TMPDIR",
-	"TEMP",
-	"TMP",
-	"TEMPDIR",
-	"NIX_BUILD_TOP",
-	"NIX_REMOTE",
-	"NIX_CONFIG",
-	"NIX_CONF_DIR",
-	"NIX_USER_CONF_FILES",
-	"NODE_USE_ENV_PROXY",
-	"EDITOR",
-	"VISUAL",
-	"PAGER",
-	"DISPLAY",
-	"WAYLAND_DISPLAY",
-	"XAUTHORITY",
-	"DBUS_SESSION_BUS_ADDRESS",
-	"SUDO_ASKPASS",
-	"SSH_ASKPASS",
-	"_",
-]);
-
-const RUNTIME_PREFIXES = [
-	"XDG_",
-	"GIT_",
-	"SSH_",
-	"GPG_",
-	"GNUPG",
-	"MFW_",
-	"CLAUDE",
-	"CODEX_",
-	"ANTHROPIC_",
-	"OPENAI_",
-	"OPENROUTER_",
-	"DIRENV_",
-	"MISE_",
-	"__MISE_",
-	"KRB5",
-];
-
-/** Change how programs load code, resolve names or start a shell. */
-const LOADER_NAMES = new Set([
-	"NODE_OPTIONS",
-	"NODE_EXTRA_CA_CERTS",
-	"NODE_REPL_EXTERNAL_MODULE",
-	"GLIBC_TUNABLES",
-	"GCONV_PATH",
-	"LOCPATH",
-	"NLSPATH",
-	"HOSTALIASES",
-	"LOCALDOMAIN",
-	"RES_OPTIONS",
-	"BASH_ENV",
-	"ENV",
-	"ZDOTDIR",
-	"PROMPT_COMMAND",
-	"PS4",
-	"SHELLOPTS",
-	"BASHOPTS",
-	"IFS",
-	"CDPATH",
-	"GLOBIGNORE",
-	"PYTHONSTARTUP",
-	"PYTHONINSPECT",
-	"PERL5OPT",
-	"PERL5DB",
-	"RUBYOPT",
-	"JAVA_TOOL_OPTIONS",
-	"_JAVA_OPTIONS",
-	"JDK_JAVA_OPTIONS",
-	"LUA_INIT",
-]);
-
-const LOADER_PREFIXES = ["LD_", "DYLD_", "BUN_", "MALLOC_", "LUA_INIT_"];
-
-export type DropReason =
-	| "invalid_name"
-	| "runtime"
-	| "loader"
-	| "too_large"
-	| "too_many"
-	| "unset";
-
-/** Why `name` may not come from a dev environment, or null when it may. */
-export function devEnvNameProblem(name: string): DropReason | null {
-	if (!NAME.test(name)) return "invalid_name";
-	const upper = name.toUpperCase();
-	if (/^(?:HTTPS?|ALL|NO|FTP)_PROXY$/.test(upper)) return "runtime";
-	if (
-		RUNTIME_NAMES.has(name) ||
-		RUNTIME_PREFIXES.some((p) => upper.startsWith(p))
-	) {
-		return "runtime";
-	}
-	if (upper.endsWith("_API_KEY") || upper.endsWith("_TOKEN")) return "runtime";
-	if (
-		LOADER_NAMES.has(name) ||
-		LOADER_PREFIXES.some((p) => upper.startsWith(p))
-	) {
-		return "loader";
-	}
-	return null;
-}
+export { DEV_ENV_LIMITS, ENV_DATA_SANDBOX_PATH } from "./dev-env-rules.ts";
 
 export class DevEnvParseError extends Error {
 	constructor(message: string) {
@@ -283,7 +159,7 @@ export function decodeDirenvWatches(
 
 /** Watched files inside the work tree, as repository paths. */
 export function watchedRepoPaths(watches: readonly string[]): string[] {
-	const prefix = `${SANDBOX_PATHS.workspace}/`;
+	const prefix = `${DEV_ENV_WORKSPACE}/`;
 	const out = new Set<string>();
 	for (const w of watches) {
 		if (!w.startsWith(prefix)) continue;
@@ -325,7 +201,7 @@ function pathEntryAllowed(entry: string): boolean {
 	if (!entry.startsWith("/") || entry.includes("\0")) return false;
 	if (entry.split("/").some((s) => s === "." || s === "..")) return false;
 	if (storePathOf(entry)) return true;
-	const roots = [SANDBOX_PATHS.workspace, ENV_DATA_SANDBOX_PATH];
+	const roots = [DEV_ENV_WORKSPACE, ENV_DATA_SANDBOX_PATH];
 	return roots.some((r) => entry === r || entry.startsWith(`${r}/`));
 }
 

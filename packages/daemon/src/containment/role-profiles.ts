@@ -25,7 +25,11 @@ import {
 	TEMPORARY_FLEET_WRITABLE,
 } from "./agent-profile.ts";
 import { BRAIN_TRANSCRIPT_DIR } from "./brain-transcript.ts";
-import { parseSandboxProfile, type SandboxProfile } from "./profile.ts";
+import {
+	type DevEnvGrant,
+	parseSandboxProfile,
+	type SandboxProfile,
+} from "./profile.ts";
 
 /** The roles an agent CLI runs in with a read-only workspace. */
 export const READ_ONLY_AGENT_ROLES = [
@@ -124,6 +128,8 @@ export interface VerifierProfileInput {
 	tree: string;
 	binaries: readonly string[];
 	env?: Record<string, string>;
+	/** The project's approved dev environment. */
+	devEnv?: DevEnvGrant;
 }
 
 /** A check: the clone's tree writable, its gitdir read-only, nothing else. */
@@ -144,6 +150,7 @@ export function buildVerifierProfile(
 			},
 			scratch: "tmpfs",
 			toolchain: { binaries: [...new Set(input.binaries)] },
+			...(input.devEnv ? { devEnv: input.devEnv } : {}),
 		},
 		process: { ...SANDBOX_PROCESS, env: input.env ?? {} },
 		network: { mode: "none" },
@@ -228,6 +235,8 @@ export interface EnvProfileInput {
 	dataDir?: string;
 	/** `env-build` only: the whole store and the nix daemon. */
 	nixDaemon?: boolean;
+	/** `env-install` only: the evaluated environment the setup runs in. */
+	devEnv?: DevEnvGrant;
 }
 
 /**
@@ -260,6 +269,7 @@ export function buildEnvProfile(input: EnvProfileInput): SandboxProfile {
 					}
 				: {}),
 			...(input.nixDaemon ? { nixDaemon: true } : {}),
+			...(input.devEnv ? { devEnv: input.devEnv } : {}),
 		},
 		process: { ...SANDBOX_PROCESS, env: {} },
 		network: { mode: "proxy", socketDir: input.egressSocketDir },
