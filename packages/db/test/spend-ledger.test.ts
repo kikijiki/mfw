@@ -181,8 +181,8 @@ describe("spend ledger", () => {
 	});
 });
 
-describe("migration 0010 is additive", () => {
-	test("decisions and runs keep working with the new columns unset", async () => {
+describe("decision attribution is optional", () => {
+	test("decisions and runs work with the attribution columns unset", async () => {
 		await withDb(async (h) => {
 			await h.db.insert(decisions).values({
 				ts: new Date(),

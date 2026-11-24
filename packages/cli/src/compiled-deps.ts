@@ -134,7 +134,8 @@ export function compiledVersionLines(
 	let migrations: string;
 	try {
 		const manifest = verifyEmbeddedMigrations();
-		migrations = `${createHash("sha256").update(payload.migrations.manifest).digest("hex")} (${Object.keys(manifest.files).length - 1} migrations, verified)`;
+		const count = Object.keys(manifest.files).length - 1;
+		migrations = `${createHash("sha256").update(payload.migrations.manifest).digest("hex")} (${count} migration${count === 1 ? "" : "s"}, verified)`;
 	} catch (e) {
 		migrations = `FAILED: ${(e as Error).message}`;
 	}

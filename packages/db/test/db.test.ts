@@ -1,17 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createClient } from "@libsql/client";
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/libsql";
-import { migrate } from "drizzle-orm/libsql/migrator";
-import {
-	migrationsDir,
-	openDbAt,
-	openProjectDb,
-	type ProjectDbHandle,
-} from "../src/client.ts";
+import { openProjectDb, type ProjectDbHandle } from "../src/client.ts";
 import { deriveKey, KEY_RE, parseTaskNum, ULID_RE, ulid } from "../src/ids.ts";
 import {
 	backfillAttemptOutcomes,
@@ -54,133 +46,6 @@ describe("v2 client", () => {
 		const journal = await h2.client.execute("PRAGMA journal_mode");
 		expect(String(journal.rows[0]?.journal_mode)).toBe("wal");
 		await cleanup(h2, dir);
-	});
-
-	test("0004 preserves old runs and gives them a nullable reasoning effort", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "mfw-v2-migration-"));
-		const path = join(dir, "old.db");
-		const client = createClient({ url: `file:${path}` });
-		await client.executeMultiple(`
-			CREATE TABLE runs (
-				id text PRIMARY KEY NOT NULL,
-				capabilities text NOT NULL
-			);
-			INSERT INTO runs (id, capabilities)
-			VALUES ('old-run', '{"steer":true,"verified":true}');
-		`);
-		const migration = await readFile(
-			join(import.meta.dir, "../migrations/0004_run-launch-metadata.sql"),
-			"utf8",
-		);
-		await client.executeMultiple(migration);
-		const row = await client.execute(
-			"SELECT reasoning_effort, capabilities FROM runs WHERE id = 'old-run'",
-		);
-		expect(row.rows[0]?.reasoning_effort).toBeNull();
-		expect(JSON.parse(String(row.rows[0]?.capabilities))).toEqual({
-			steer: true,
-			verified: true,
-		});
-		client.close();
-		await rm(dir, { recursive: true, force: true });
-	});
-
-	test("0006 upgrades legacy runs as local targets and journals cleanup/absence", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "mfw-target-migration-"));
-		const path = join(dir, "old.db");
-		const client = createClient({ url: `file:${path}` });
-		await client.executeMultiple(`
-			PRAGMA foreign_keys=ON;
-			CREATE TABLE runs (
-				id text PRIMARY KEY NOT NULL,
-				state text NOT NULL
-			);
-			INSERT INTO runs (id, state) VALUES ('legacy-run', 'completed');
-		`);
-		const migration = await readFile(
-			join(import.meta.dir, "../migrations/0006_execution-targets.sql"),
-			"utf8",
-		);
-		await client.executeMultiple(migration);
-		const row = await client.execute(
-			"SELECT execution_target, target_requested_shape, target_lifecycle_state, target_lease_ref, target_execution_path FROM runs WHERE id = 'legacy-run'",
-		);
-		expect(row.rows[0]).toMatchObject({
-			execution_target: "local",
-			target_requested_shape: "{}",
-			target_lifecycle_state: "legacy",
-			target_lease_ref: null,
-			target_execution_path: null,
-		});
-
-		await client.execute({
-			sql: `INSERT INTO run_target_journal
-				(operation_id, run_id, seq, target_kind, phase, status, lifecycle_state, detail, created_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			args: [
-				"legacy-run/dispose/intent",
-				"legacy-run",
-				1,
-				"local",
-				"dispose",
-				"intent",
-				"disposing",
-				JSON.stringify({ reason: "reconcile" }),
-				Date.now(),
-			],
-		});
-		expect(
-			(
-				await client.execute(
-					"SELECT COUNT(*) AS count FROM run_target_journal WHERE run_id = 'legacy-run'",
-				)
-			).rows[0]?.count,
-		).toBe(1);
-		client.close();
-		await rm(dir, { recursive: true, force: true });
-	});
-
-	test("0009 applies on a 0008 database: old rows read NULL outcome facts", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "mfw-0009-"));
-		// A migrations folder that stops at 0008, so the DB is exactly what a
-		// pre-outcomes daemon would have left behind.
-		const old = join(dir, "migrations-0008");
-		await cp(migrationsDir(), old, { recursive: true });
-		await rm(join(old, "0009_outcomes.sql"));
-		const journalPath = join(old, "meta", "_journal.json");
-		const journal = JSON.parse(await readFile(journalPath, "utf8")) as {
-			entries: { idx: number }[];
-		};
-		journal.entries = journal.entries.filter((e) => e.idx <= 8);
-		await writeFile(journalPath, JSON.stringify(journal));
-		const path = join(dir, "mfw.db");
-		const client = createClient({ url: `file:${path}` });
-		await migrate(drizzle(client), { migrationsFolder: old });
-		await client.execute({
-			sql: `INSERT INTO runs (id, kind, task_id, label, model, cwd, argv, capabilities, started_at)
-				VALUES ('old-run', 'task', 'MFW-1', 'MFW-1', 'sonnet', '/w', '[]', '{}', ?)`,
-			args: [Date.now()],
-		});
-		const before = await client.execute("PRAGMA table_info(runs)");
-		expect(before.rows.some((r) => r.name === "harness")).toBe(false);
-		client.close();
-
-		const h = await openDbAt(path);
-		const [row] = await h.db.select().from(runs).where(eq(runs.id, "old-run"));
-		expect(row).toMatchObject({
-			harness: null,
-			modelVendor: null,
-			taskSize: null,
-			taskType: null,
-			modelTier: null,
-			hostId: null,
-			activity: null,
-		});
-		expect(await h.db.select().from(taskAttemptOutcomes)).toEqual([]);
-		expect(await h.db.select().from(reviewVerdicts)).toEqual([]);
-		const decisionCols = await h.client.execute("PRAGMA table_info(decisions)");
-		expect(decisionCols.rows.some((r) => r.name === "usage")).toBe(true);
-		await cleanup(h, dir);
 	});
 });
 

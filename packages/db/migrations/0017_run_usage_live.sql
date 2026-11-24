@@ -1,1 +1,0 @@
-ALTER TABLE `runs` ADD `usage_live` text;

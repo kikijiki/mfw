@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -188,75 +188,33 @@ describe("run_facts store", () => {
 	});
 });
 
-describe("migration chain", () => {
+describe("the baseline migration", () => {
 	const meta = join(migrationsDir(), "meta");
 	const journal = JSON.parse(
 		readFileSync(join(meta, "_journal.json"), "utf8"),
-	) as { entries: { idx: number; when: number; tag: string }[] };
-	const snapshot = (tag: string) =>
-		JSON.parse(
-			readFileSync(join(meta, `${tag.slice(0, 4)}_snapshot.json`), "utf8"),
+	) as { entries: { idx: number; tag: string }[] };
+
+	test("is the only journaled migration, and its snapshot holds the code's CHECK", () => {
+		expect(journal.entries.map((e) => e.tag)).toEqual(["0000_baseline"]);
+		const snap = JSON.parse(
+			readFileSync(join(meta, "0000_snapshot.json"), "utf8"),
 		) as {
-			id: string;
-			prevId: string;
 			tables: Record<
 				string,
 				{ checkConstraints: Record<string, { value: string }> }
 			>;
 		};
-
-	test("journal indexes are contiguous and timestamps strictly increase", () => {
-		journal.entries.forEach((e, i) => {
-			expect(e.idx).toBe(i);
-			if (i > 0) {
-				expect(e.when).toBeGreaterThan(
-					(journal.entries[i - 1] as { when: number }).when,
-				);
-			}
-			expect(existsSync(join(migrationsDir(), `${e.tag}.sql`))).toBe(true);
-		});
-	});
-
-	test("each snapshot links to the previous one, across the 0011 gap", () => {
-		const withSnapshot = journal.entries.filter((e) =>
-			existsSync(join(meta, `${e.tag.slice(0, 4)}_snapshot.json`)),
-		);
-		expect(withSnapshot).toHaveLength(journal.entries.length);
-		// 0011 was never journaled: the numbering has a gap, the chain does not.
-		expect(journal.entries.some((e) => e.tag.startsWith("0011"))).toBe(false);
-		const ids = new Set<string>();
-		for (let i = 1; i < withSnapshot.length; i++) {
-			const current = snapshot((withSnapshot[i] as { tag: string }).tag);
-			const previous = snapshot((withSnapshot[i - 1] as { tag: string }).tag);
-			expect(current.prevId).toBe(previous.id);
-			expect(ids.has(current.id)).toBe(false);
-			ids.add(current.id);
-		}
-	});
-
-	test("the latest run_facts migration is journaled and its snapshot holds the table", () => {
-		const last = journal.entries.find(
-			(e) => e.tag === "0024_run_result_import",
-		) as { tag: string; idx: number };
-		expect(last.idx).toBe(23);
-		const snap = snapshot(last.tag);
 		expect(
 			snap.tables.run_facts?.checkConstraints.ck_run_facts_pair?.value,
 		).toBe(runFactsPairCheck());
 	});
 
-	test("the migration's CHECK is the one the code derives", () => {
+	test("its CHECK is the one the code derives", () => {
 		const text = readFileSync(
-			join(migrationsDir(), "0024_run_result_import.sql"),
+			join(migrationsDir(), "0000_baseline.sql"),
 			"utf8",
 		);
 		expect(text).toContain(runFactsPairCheck());
-	});
-
-	test("the 0020 snapshot was not rewritten", () => {
-		expect(snapshot("0020_sandbox_attestations").id).toBe(
-			"8a505b40-2240-4477-84b4-3cc97546db51",
-		);
 	});
 
 	test("a fresh database gets the table and the marker column", async () => {

@@ -172,30 +172,16 @@ describe("the migration build", () => {
 		expect(() => buildMigrations(b.checkout, output)).toThrow(/no file/);
 	});
 
-	test("the real chain is complete, ordered, snapshotted and fully listed", () => {
+	test("the real migrations are the one baseline, snapshotted and fully listed", () => {
 		const source = migrationsDir();
 		const journal = JSON.parse(
 			readFileSync(join(source, "meta/_journal.json"), "utf8"),
-		) as { entries: { idx: number; when: number; tag: string }[] };
-		const numbers = journal.entries.map((e) => Number(e.tag.slice(0, 4)));
-		// 0011 was never issued; every other number appears once, in order.
-		const last = numbers.at(-1) as number;
-		const expected = Array.from({ length: last + 1 }, (_, n) => n).filter(
-			(n) => n !== 11,
-		);
-		expect(numbers).toEqual(expected);
-		journal.entries.forEach((e, i) => {
-			expect(e.idx).toBe(i);
-			if (i > 0) {
-				expect(e.when).toBeGreaterThan(
-					(journal.entries[i - 1] as { when: number }).when,
-				);
-			}
-			const name = e.tag.slice(0, 4);
-			expect(existsSync(join(source, "meta", `${name}_snapshot.json`))).toBe(
-				true,
-			);
-		});
+		) as { entries: { idx: number; tag: string }[] };
+		expect(journal.entries.map((e) => [e.idx, e.tag])).toEqual([
+			[0, "0000_baseline"],
+		]);
+		expect(existsSync(join(source, "meta", "0000_snapshot.json"))).toBe(true);
+		expect(readdirSync(source).sort()).toEqual(["0000_baseline.sql", "meta"]);
 
 		const root = mkdtempSync(join(tmpdir(), "mfw-migration-chain-"));
 		roots.push(root);
