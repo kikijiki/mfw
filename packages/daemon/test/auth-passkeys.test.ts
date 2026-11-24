@@ -369,24 +369,36 @@ describe("sign-in", () => {
 
 	test("the public options never list credentials", async () => {
 		await addPasskey();
-		// A credential whose browser did not report credProps is still discoverable
-		// as far as we know, and must not cause a list either.
-		const begun = await auth.beginPasskeyRegistration(owner.sessionId, RP, {
-			password: PASSWORD,
-		});
-		const { json } = soft.create(begun.publicKey);
-		delete (json as { clientExtensionResults?: unknown })
-			.clientExtensionResults;
-		await auth.finishPasskeyRegistration(
-			owner.sessionId,
-			RP,
-			begun.ceremonyId,
-			json,
-			"no props",
-		);
 		const options = (await auth.beginPasskeyLogin(RP)).publicKey;
 		expect(options.allowCredentials).toEqual([]);
 		expect(options.userVerification).toBe("required");
+	});
+
+	test("L2: a browser that does not report credProps.rk cannot add a passkey", async () => {
+		for (const results of [undefined, {}, { credProps: {} }]) {
+			const begun = await auth.beginPasskeyRegistration(owner.sessionId, RP, {
+				password: PASSWORD,
+			});
+			const { json } = soft.create(begun.publicKey);
+			if (results === undefined)
+				delete (json as { clientExtensionResults?: unknown })
+					.clientExtensionResults;
+			else json.clientExtensionResults = results;
+			const refused = await auth
+				.finishPasskeyRegistration(
+					owner.sessionId,
+					RP,
+					begun.ceremonyId,
+					json,
+					"no props",
+				)
+				.catch((e) => e);
+			expect(refused.code).toBe("passkey_refused");
+			expect(refused.message).toBe(
+				"this browser did not confirm that the passkey is stored on the device (credProps); mfw needs that, so use a browser that reports it",
+			);
+		}
+		expect(await auth.listPasskeys()).toEqual([]);
 	});
 
 	test("a credential that reports it is not discoverable is refused", async () => {

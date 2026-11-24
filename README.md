@@ -334,7 +334,8 @@ session as the password.
 - The device must verify you (PIN, fingerprint or face); a key that only checks
   presence is refused. Attestation is not requested, so any authenticator that
   stores the passkey on the device works. A security key that cannot store one
-  (a non-discoverable credential) is refused. Only ES256 and EdDSA keys are
+  (a non-discoverable credential) is refused, and so is a browser that does not
+  say whether it stored one (see [experimental.md](docs/experimental.md#passkeys)). Only ES256 and EdDSA keys are
   accepted, not RSA.
 - Each passkey records the session and address that added it. Adding or
   revoking one is logged, and every other signed-in session shows a banner

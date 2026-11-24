@@ -1094,6 +1094,14 @@ export class AuthService {
 				"invalid_request",
 				"malformed passkey registration",
 			);
+		// `credProps` is the browser's word, not signed, and the library cannot
+		// know: a credential that is not discoverable could never sign in, since
+		// the sign-in options list none. Absent is refused too, not assumed.
+		if (parsed.discoverable === null)
+			throw new AuthRefused(
+				"passkey_refused",
+				"this browser did not confirm that the passkey is stored on the device (credProps); mfw needs that, so use a browser that reports it",
+			);
 		if (parsed.discoverable === false)
 			throw new AuthRefused(
 				"passkey_refused",

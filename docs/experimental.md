@@ -52,7 +52,16 @@ devices. CI must run `bun run smoke:auth` with Chrome
 installed and `MFW_SMOKE_CHROME=1`: that is the only run against a signer other
 than mfw's own test authenticator, and without the variable a missing Chrome only
 skips it. RSA keys (RS256), which some older Windows
-Hello setups create, are not accepted. The password always keeps working.
+Hello setups create, are not accepted.
+
+Adding a passkey needs the browser to report the `credProps` extension, which
+says whether the passkey was stored on the device. mfw refuses the passkey
+when the browser leaves it out, because one that is not stored there could
+never sign in. Chrome reports it (tested with its virtual authenticator).
+Recent Firefox and Safari releases are expected to, but that has not been
+checked here. Older releases, and password-manager extensions that take over
+WebAuthn without passing it through, cannot add a passkey; use the password
+or another browser. The password always keeps working.
 
 ## Clone workspaces
 
