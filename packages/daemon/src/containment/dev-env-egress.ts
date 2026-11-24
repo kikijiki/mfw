@@ -60,8 +60,9 @@ const FLAKE_INPUTS: readonly EnvEgressEntry[] = [
 ];
 
 /**
- * mise resolving and downloading a tool from GitHub releases. `api.github.com`
- * is not here: mise asked it only when its own version index was refused.
+ * mise resolving and downloading a tool from GitHub releases. Older mise asked
+ * `api.github.com` only when its own version index was refused; mise 2026.6.5
+ * asks it on every install as well as the index, so it is listed here too.
  */
 const MISE: readonly EnvEgressEntry[] = [
 	{
@@ -81,6 +82,13 @@ const MISE: readonly EnvEgressEntry[] = [
 		port: 443,
 		purpose: "mise-download",
 		source: "mise fixture (jq 1.7.1): the redirect target of the release asset",
+	},
+	{
+		host: "api.github.com",
+		port: 443,
+		purpose: "mise-registry",
+		source:
+			"mise fixture (jq 1.7.1), observed with mise 2026.6.5: the GitHub releases API, asked as well as the version index",
 	},
 ];
 

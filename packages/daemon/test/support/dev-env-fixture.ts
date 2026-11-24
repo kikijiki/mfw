@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import type { LauncherSteps } from "../../src/containment/agent-launch.ts";
 import {
 	type EnvRunRequest,
 	type EnvRunResult,
@@ -180,7 +181,12 @@ export interface EnvLab {
 		name: string,
 		files: Record<string, string>,
 	): Promise<{ root: string; commit: string }>;
-	/** Run one env step in the caged chain. */
+	/**
+	 * Run one env step in the caged chain. Rejects, naming the phase it was in,
+	 * if the step has not returned 30 s after its own deadline: a deadline that
+	 * does not stop the run fails the test fast with a diagnosis instead of
+	 * running into the test runner's timeout.
+	 */
 	run(
 		root: string,
 		commit: string,
@@ -209,7 +215,44 @@ export function createEnvLab(label: string): EnvLab {
 		'#!/bin/sh\nwhile [ "$#" -gt 0 ]; do a="$1"; shift; [ "$a" = "--" ] && break; done\nexec "$@"\n',
 	);
 	chmodSync(shim, 0o755);
-	const steps = cagedSteps({ home, path: process.env.PATH ?? "", shim });
+	const caged = cagedSteps({ home, path: process.env.PATH ?? "", shim });
+	// Which launcher step the current run is in, for the guard's message.
+	let phase = "idle";
+	let phaseSince = Date.now();
+	const enter = (p: string) => {
+		phase = p;
+		phaseSince = Date.now();
+	};
+	const steps: LauncherSteps = {
+		compileHost: async (...a) => {
+			enter("compileHost");
+			const r = await caged.compileHost(...a);
+			enter("after compileHost (compile, probe next)");
+			return r;
+		},
+		attest: async (...a) => {
+			enter("attest (the sandbox probe)");
+			const r = await caged.attest(...a);
+			enter("after attest (gate next)");
+			return r;
+		},
+		authorize: async (...a) => {
+			enter("authorize (the gate)");
+			return caged.authorize(...a);
+		},
+		launch: (...a) => {
+			enter(
+				"launch: the step is running, waiting for it to exit and close its output",
+			);
+			const child = caged.launch(...a);
+			void child.exited.then((code) =>
+				enter(
+					`cleanup: the step exited ${code} (proxy stop, egress record, clone removal)`,
+				),
+			);
+			return child;
+		},
+	};
 	return {
 		base,
 		home,
@@ -240,17 +283,36 @@ export function createEnvLab(label: string): EnvLab {
 			const commit = (await git(["rev-parse", "HEAD"], root)).stdout;
 			return { root, commit };
 		},
-		run(root, commit, req) {
-			return runEnvStep({
+		async run(root, commit, req) {
+			const full: EnvRunRequest = {
 				projectRoot: root,
 				stateDir: join(root, ".mfw"),
 				mfwHome,
 				commit,
 				dataDir: join(mfwHome, "env", "data", "lab"),
-				timeoutMs: 300_000,
+				// Under the suite's 300 s test timeout, with room for the guard.
+				timeoutMs: 240_000,
 				steps,
 				...req,
+			};
+			enter("clone and proxy start");
+			const started = Date.now();
+			let guard: ReturnType<typeof setTimeout> | undefined;
+			const stuck = new Promise<never>((_, reject) => {
+				guard = setTimeout(() => {
+					reject(
+						new Error(
+							`the ${full.step} step did not return ${Math.round((Date.now() - started) / 1000)} s after it started (deadline ${Math.round(full.timeoutMs / 1000)} s): stuck in ${phase} for ${Math.round((Date.now() - phaseSince) / 1000)} s`,
+						),
+					);
+				}, full.timeoutMs + 30_000);
 			});
+			try {
+				return await Promise.race([runEnvStep(full), stuck]);
+			} finally {
+				clearTimeout(guard);
+				enter("idle");
+			}
 		},
 		dispose() {
 			rmSync(base, { recursive: true, force: true });

