@@ -61,6 +61,26 @@ describe("the live gate", () => {
 		}
 	});
 
+	test("a compiled-executable suite fails instead of skipping under MFW_REQUIRE_COMPILED", () => {
+		const saved = process.env.MFW_REQUIRE_COMPILED;
+		process.env.MFW_REQUIRE_COMPILED = "1";
+		try {
+			expect(() => liveGate("t", "cannot compile", "compiled")).toThrow(
+				"MFW_REQUIRE_COMPILED is set, but cannot compile",
+			);
+		} finally {
+			if (saved === undefined) delete process.env.MFW_REQUIRE_COMPILED;
+			else process.env.MFW_REQUIRE_COMPILED = saved;
+		}
+		const cli = readFileSync(
+			resolve(TESTS, "../../cli/test/compiled-live.test.ts"),
+			"utf8",
+		);
+		expect(cli).toContain(
+			'liveGate("compiled-live", compileUnavailable(), "compiled")',
+		);
+	});
+
 	test("every *-live test file uses it, or is listed as needing no capability", () => {
 		const live = testFiles.filter((f) => /-live.*\.test\.ts$/.test(f));
 		expect(live.length).toBeGreaterThan(0);

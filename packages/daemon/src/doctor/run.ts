@@ -367,6 +367,17 @@ async function authFilesCheck(p: DoctorProbes): Promise<Outcome> {
 async function buildCheck(p: DoctorProbes): Promise<Outcome> {
 	const b = await p.build();
 	if (b.kind === "source") return ok("running from source, no build to verify");
+	if (b.kind === "compiled") {
+		const why = [b.migrations, b.install === "none" ? null : b.install]
+			.filter(Boolean)
+			.join("; ");
+		if (why) return problem("blocker", why, "reinstall mfw");
+		return ok(
+			b.install === "none"
+				? "compiled mfw: embedded migrations verify (a standalone executable, no install)"
+				: "compiled mfw: embedded migrations and the install verify",
+		);
+	}
 	const why = [b.hostScripts, b.migrations].filter(Boolean).join("; ");
 	return why
 		? problem("blocker", why, "bun run build, then restart the server")

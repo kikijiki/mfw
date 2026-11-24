@@ -1,5 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { buildKind } from "../../../core/src/build-info.ts";
+// Embedded, so a compiled mfw-board carries the skill it installs.
+import packagedSkill from "../../skill/SKILL.md" with { type: "text" };
 import {
 	ALL_TOOLS,
 	detect,
@@ -58,11 +61,15 @@ export const skill: Command = {
 		const scope: Scope = args.global ? "global" : "project";
 		// Project scope installs at the repo root (nearest .git), not a subdirectory.
 		const cwd = args.here ? ctx.cwd : findProjectRoot(ctx.cwd);
-		// The packaged text says `<mfw-checkout>`; installed copies name the real one.
-		const packaged = readFileSync(
-			join(import.meta.dir, "../../skill/SKILL.md"),
-			"utf8",
-		).replaceAll("<mfw-checkout>", resolve(import.meta.dir, "../../../.."));
+		// The packaged text says `<mfw-checkout>`; installed copies name the real
+		// one. A compiled mfw-board has no checkout, and keeps the placeholder.
+		const packaged =
+			buildKind() === "compiled"
+				? packagedSkill
+				: packagedSkill.replaceAll(
+						"<mfw-checkout>",
+						resolve(import.meta.dir, "../../../.."),
+					);
 		const targetArg = args.target ?? (verb === "install" ? "detected" : "all");
 		const selected: ToolId[] | null = parseTargets(targetArg, env);
 		if (!selected) throw new UsageError();

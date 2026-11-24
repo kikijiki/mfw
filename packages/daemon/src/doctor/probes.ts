@@ -48,6 +48,13 @@ export type BuildFacts =
 			hostScripts: string | null;
 			/** Why the migration manifest does not verify, or null. */
 			migrations: string | null;
+	  }
+	| {
+			kind: "compiled";
+			/** Why the embedded migrations do not verify, or null. */
+			migrations: string | null;
+			/** Why the install does not verify, null when it does, "none" for a standalone executable. */
+			install: string | null | "none";
 	  };
 
 export interface FileList {

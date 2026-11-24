@@ -9,7 +9,11 @@ import {
 	legacyPath,
 	TOOL_ORDER,
 } from "@mfw/board/commands/skill-targets";
-import { verifyBuiltMigrations } from "@mfw/db/migration-source";
+import { buildKind, buildStamp } from "@mfw/core/build-info";
+import {
+	verifyBuiltMigrations,
+	verifyEmbeddedMigrations,
+} from "@mfw/db/migration-source";
 import pino from "pino";
 import { ZodError } from "zod";
 import { authDbPath } from "../auth/service.ts";
@@ -23,6 +27,11 @@ import {
 	type RunResult,
 } from "../containment/host-caps.ts";
 import { BUILT_HOST_SCRIPTS, hostScript } from "../containment/host-script.ts";
+import {
+	checkInstall,
+	INSTALL_MANIFEST,
+	installOfExecutable,
+} from "../containment/install-manifest.ts";
 import { gitRaw } from "../git.ts";
 import { repoConfigRefusal } from "../host-git/repo-config.ts";
 import { runProc } from "../proc.ts";
@@ -190,10 +199,37 @@ function readLegacyHost(home: string): LegacyHostFacts {
 	}
 }
 
+/** A compiled `mfw`: its embedded migrations, and the install around it if any. */
+function readCompiledBuild(): BuildFacts {
+	let migrations: string | null = null;
+	try {
+		verifyEmbeddedMigrations();
+	} catch (e) {
+		migrations = (e as Error).message;
+	}
+	const self = realpathSync(process.execPath);
+	const { libDir } = installOfExecutable(self);
+	if (!existsSync(join(libDir, INSTALL_MANIFEST))) {
+		return { kind: "compiled", migrations, install: "none" };
+	}
+	const integrity = buildStamp()?.integrity ?? {};
+	const check = checkInstall(libDir, {
+		self,
+		...(integrity.server ? { server: integrity.server } : {}),
+		...(integrity.runtime ? { runtime: integrity.runtime } : {}),
+	});
+	return {
+		kind: "compiled",
+		migrations,
+		install: check.problems.length > 0 ? check.problems.join("; ") : null,
+	};
+}
+
 function readBuild(
 	installRoot: string | null,
 	env: LiveProbeOptions["env"],
 ): BuildFacts {
+	if (buildKind() === "compiled") return readCompiledBuild();
 	if (installRoot === null) {
 		return {
 			kind: "build",
