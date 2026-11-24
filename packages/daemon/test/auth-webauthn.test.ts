@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import {
 	verifyAuthenticationResponse,
 	verifyRegistrationResponse,
@@ -769,5 +771,32 @@ describe("relying party and encoding", () => {
 		expect(fromBase64url(42)).toBeNull();
 		expect(fromBase64url("A".repeat(100), 10)).toBeNull();
 		expect(fromBase64url(randomBytes(9).toString("base64url"))).not.toBeNull();
+	});
+});
+
+describe("loading", () => {
+	test("no source imports the library eagerly: the compiled CLI would fail on start", () => {
+		// In the `bun build --compile` bundle, the library's reflect-metadata
+		// import runs after tsyringe checks for it; see `webauthn()` in
+		// webauthn.ts. Only `import type` may name it at the top of a module.
+		const root = join(import.meta.dir, "..", "..", "..");
+		const offenders: string[] = [];
+		const walk = (dir: string) => {
+			for (const name of readdirSync(dir)) {
+				const p = join(dir, name);
+				if (statSync(p).isDirectory()) {
+					if (name !== "node_modules") walk(p);
+				} else if (/\.tsx?$/.test(name)) {
+					const text = readFileSync(p, "utf8");
+					for (const m of text.matchAll(
+						/^import\s+(?!type\b)[^;]*?from\s+"@simplewebauthn\/[^"]+";/gms,
+					))
+						offenders.push(`${p}: ${m[0].split("\n")[0]}`);
+				}
+			}
+		};
+		walk(join(root, "packages/daemon/src"));
+		walk(join(root, "apps/start/src"));
+		expect(offenders).toEqual([]);
 	});
 });

@@ -1,16 +1,27 @@
-import {
-	type AuthenticationResponseJSON,
-	generateAuthenticationOptions,
-	generateRegistrationOptions,
-	type RegistrationResponseJSON,
-	verifyAuthenticationResponse,
-	verifyRegistrationResponse,
+import type {
+	AuthenticationResponseJSON,
+	RegistrationResponseJSON,
 } from "@simplewebauthn/server";
-import {
-	decodeAttestationObject,
-	decodeClientDataJSON,
-	decodeCredentialPublicKey,
-} from "@simplewebauthn/server/helpers";
+
+type Library = typeof import("@simplewebauthn/server");
+type Helpers = typeof import("@simplewebauthn/server/helpers");
+let loading: Promise<Library & Helpers> | null = null;
+
+/**
+ * The library, loaded on first use rather than with this module. The compiled
+ * `mfw` CLI bundles everything that imports auth, and in that bundle the
+ * library's `import 'reflect-metadata'` runs after tsyringe checks for it, so
+ * an eager import breaks every compiled command that touches auth. The CLI
+ * never verifies a passkey (`mfw server` runs the separate server build), so
+ * loading it only for a ceremony keeps the CLI working.
+ */
+function webauthn(): Promise<Library & Helpers> {
+	loading ??= Promise.all([
+		import("@simplewebauthn/server"),
+		import("@simplewebauthn/server/helpers"),
+	]).then(([library, helpers]) => ({ ...helpers, ...library }));
+	return loading;
+}
 
 /**
  * WebAuthn for passkey sign-in, around `@simplewebauthn/server`.
@@ -146,7 +157,8 @@ function assertRelyingParty(rp: RelyingParty): void {
  * The library allows `crossOrigin: true` without a `topOrigin` (for Safari),
  * and checks neither on registration. mfw is never framed, so both are refused.
  */
-function assertTopLevel(clientDataJSON: string): void {
+async function assertTopLevel(clientDataJSON: string): Promise<void> {
+	const { decodeClientDataJSON } = await webauthn();
 	let parsed: unknown = null;
 	try {
 		parsed = decodeClientDataJSON(clientDataJSON);
@@ -169,7 +181,10 @@ function assertTopLevel(clientDataJSON: string): void {
  * others would only feed attacker-shaped bytes to its X.509 and ASN.1
  * parsers. Decoded with the library's own helper, before it verifies.
  */
-function assertAttestationFormat(attestationObject: string): void {
+async function assertAttestationFormat(
+	attestationObject: string,
+): Promise<void> {
+	const { decodeAttestationObject } = await webauthn();
 	const raw = fromBase64url(attestationObject);
 	let decoded: { fmt: unknown; x5c: unknown } | null = null;
 	try {
@@ -260,7 +275,8 @@ const bytes32 = (v: unknown): v is Uint8Array =>
  * ES256 is EC2 on P-256 with 32-byte x and y, EdDSA is OKP on Ed25519 with a
  * safe 32-byte x. Run on registration and again on every sign-in.
  */
-function checkCredentialKey(cose: Uint8Array): number {
+async function checkCredentialKey(cose: Uint8Array): Promise<number> {
+	const { decodeCredentialPublicKey } = await webauthn();
 	let key: Map<number, unknown>;
 	try {
 		key = decodeCredentialPublicKey(new Uint8Array(cose)) as unknown as Map<
@@ -305,6 +321,7 @@ export async function registrationOptions(opts: {
 	exclude: { id: string; transports?: string[] }[];
 	timeout: number;
 }) {
+	const { generateRegistrationOptions } = await webauthn();
 	return generateRegistrationOptions({
 		rpName: "mfw",
 		rpID: opts.rp.rpId,
@@ -332,6 +349,7 @@ export async function authenticationOptions(opts: {
 	challenge: string;
 	timeout: number;
 }) {
+	const { generateAuthenticationOptions } = await webauthn();
 	return generateAuthenticationOptions({
 		rpID: opts.rp.rpId,
 		challenge: new Uint8Array(Buffer.from(opts.challenge, "base64url")),
@@ -362,8 +380,9 @@ export async function verifyRegistration(
 	expected: { challenge: string; rp: RelyingParty },
 ): Promise<VerifiedRegistration> {
 	assertRelyingParty(expected.rp);
-	assertTopLevel(response.response.clientDataJSON);
-	assertAttestationFormat(response.response.attestationObject);
+	await assertTopLevel(response.response.clientDataJSON);
+	await assertAttestationFormat(response.response.attestationObject);
+	const { verifyRegistrationResponse } = await webauthn();
 	const out = await library(() =>
 		verifyRegistrationResponse({
 			response,
@@ -381,7 +400,7 @@ export async function verifyRegistration(
 	// it with the one the client reports.
 	if (info.credential.id !== response.rawId)
 		fail("credential", "the credential id does not match");
-	const alg = checkCredentialKey(info.credential.publicKey);
+	const alg = await checkCredentialKey(info.credential.publicKey);
 	return {
 		credentialId: info.credential.id,
 		alg,
@@ -418,8 +437,9 @@ export async function verifyAssertion(
 	expected: { challenge: string; rp: RelyingParty },
 ): Promise<VerifiedAssertion> {
 	assertRelyingParty(expected.rp);
-	assertTopLevel(response.response.clientDataJSON);
-	checkCredentialKey(stored.publicKey);
+	await assertTopLevel(response.response.clientDataJSON);
+	await checkCredentialKey(stored.publicKey);
+	const { verifyAuthenticationResponse } = await webauthn();
 	const out = await library(() =>
 		verifyAuthenticationResponse({
 			response,
