@@ -58,7 +58,6 @@ function deps(over: Partial<Deps> = {}) {
 		runMcp: async (args) => {
 			mcp.push(args);
 		},
-		runHost: async () => 0,
 		runDoctor: async (command, args) => {
 			doctor.push([command, ...args]);
 			return 7;

@@ -34,12 +34,6 @@ export type AuthFacts =
 			pendingSetup: boolean;
 	  };
 
-export type LegacyHostFacts =
-	| { state: "none" }
-	| { state: "acknowledged"; rows: Record<string, number> }
-	| { state: "unacknowledged"; rows: Record<string, number> }
-	| { state: "unreadable"; reason: string };
-
 export type BuildFacts =
 	| { kind: "source" }
 	| {
@@ -122,15 +116,11 @@ export interface DoctorProbes {
 		{ ok: true; config: DaemonConfig } | { ok: false; error: string }
 	>;
 	auth(): Promise<AuthFacts>;
-	legacyHost(): Promise<LegacyHostFacts>;
 	build(): Promise<BuildFacts>;
 	/** The server's own exposure policy. Absent means the check is skipped. */
 	exposure?: (env: Record<string, string | undefined>) => {
 		problem: string | null;
 		warnings: string[];
 	};
-	legacySkills(
-		projectRoots: readonly string[],
-	): Promise<{ available: boolean; paths: string[] }>;
 	project(entry: StoredProjectConfig): Promise<ProjectFacts>;
 }

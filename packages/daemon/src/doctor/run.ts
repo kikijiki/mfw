@@ -398,38 +398,6 @@ async function buildCheck(p: DoctorProbes): Promise<Outcome> {
 		: ok("host script and migration manifests verify");
 }
 
-async function legacyCheck(p: DoctorProbes): Promise<Outcome> {
-	const l = await p.legacyHost();
-	if (l.state === "none") return ok("no legacy host.db state");
-	if (l.state === "unreadable") {
-		return problem("warn", `host.db could not be read: ${l.reason}`);
-	}
-	const list = Object.entries(l.rows)
-		.map(([t, n]) => `${t} (${n})`)
-		.join(", ");
-	return l.state === "acknowledged"
-		? ok(`legacy host.db rows acknowledged: ${list}`)
-		: problem(
-				"blocker",
-				`host.db holds unacknowledged rows, and the server will refuse to start: ${list}`,
-				"drain all runs, back up $MFW_HOME, then: mfw host acknowledge-legacy --yes",
-			);
-}
-
-async function skillsCheck(
-	p: DoctorProbes,
-	roots: readonly string[],
-): Promise<Outcome> {
-	const s = await p.legacySkills(roots);
-	if (!s.available) return skipped("no stale-skill detector in this build");
-	if (s.paths.length === 0) return ok("no old-name skill copies");
-	return problem(
-		"warn",
-		`old-name skill copies: ${s.paths.join(", ")}`,
-		commandFor(s.paths, (q) => `remove them after checking: rm -- ${q}`),
-	);
-}
-
 function exposureCheck(p: DoctorProbes): Outcome {
 	if (!p.exposure) return skipped("the exposure policy is not available here");
 	const { problem: refusal, warnings } = p.exposure(p.env);
@@ -834,13 +802,6 @@ export async function runDoctor(
 					),
 		),
 		guarded("install.build", "install", () => buildCheck(p)),
-		guarded("install.legacy-host", "install", () => legacyCheck(p)),
-		guarded("install.skills", "install", () =>
-			skillsCheck(
-				p,
-				projects.map((e) => e.root),
-			),
-		),
 		guarded("exposure.bind", "exposure", () => exposureCheck(p)),
 	]);
 	const harness = await harnessChecks(p, opts);

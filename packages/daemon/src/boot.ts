@@ -138,7 +138,6 @@ import {
 	readKernelBootId,
 	stableProjectIdentity,
 } from "./resources/identity.ts";
-import { checkLegacyHostState } from "./resources/legacy-host-state.ts";
 import {
 	type SessionLiveness,
 	SystemLeaseLiveness,
@@ -2372,15 +2371,6 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 	let hostResources!: HostLedger;
 	let resourceStore: ResourceStore | undefined;
 	try {
-		// Before anything opens the store: what this version will not read must
-		// be drained and acknowledged, never silently abandoned.
-		const legacyHost = await checkLegacyHostState(home);
-		if (legacyHost.status === "acknowledged") {
-			log.warn(
-				{ ignoredTables: legacyHost.ignoredTables },
-				"ignoring acknowledged legacy host state from before the resource-core upgrade",
-			);
-		}
 		resourceStore = await openResourceStore(home, {
 			processBootId: bootId,
 			kernelBootId,

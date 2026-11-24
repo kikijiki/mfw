@@ -3,12 +3,6 @@ import { existsSync, realpathSync } from "node:fs";
 import { lstat, stat } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import {
-	installPath,
-	LEGACY_SKILL_DIR,
-	legacyPath,
-	TOOL_ORDER,
-} from "@mfw/board/commands/skill-targets";
 import { buildKind } from "@mfw/core/build-info";
 import {
 	verifyBuiltMigrations,
@@ -39,11 +33,6 @@ import { gitRaw } from "../git.ts";
 import { repoConfigRefusal } from "../host-git/repo-config.ts";
 import { runProc } from "../proc.ts";
 import {
-	LEGACY_ACK_TABLE,
-	LEGACY_HOST_TABLES,
-	legacyRowsMatch,
-} from "../resources/legacy-host-state.ts";
-import {
 	addAgentWritableRoots,
 	type PathTrustIo,
 	pinnedToolIn,
@@ -55,7 +44,6 @@ import type {
 	BuildFacts,
 	DoctorProbes,
 	FileList,
-	LegacyHostFacts,
 	PathStat,
 	ProjectFacts,
 	ToolLookup,
@@ -162,40 +150,6 @@ function readAuth(home: string): AuthFacts {
 						now,
 					) > 0,
 			};
-		});
-	} catch (e) {
-		return { state: "unreadable", reason: (e as Error).message };
-	}
-}
-
-function readLegacyHost(home: string): LegacyHostFacts {
-	const path = join(home, "host", "host.db");
-	if (!existsSync(path)) return { state: "none" };
-	try {
-		return withReadOnlyDb(path, (db): LegacyHostFacts => {
-			const has = (name: string) =>
-				db
-					.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?")
-					.get(name) !== null;
-			const rows: Record<string, number> = {};
-			for (const table of LEGACY_HOST_TABLES) {
-				if (!has(table)) continue;
-				const n = count(db, `SELECT count(*) AS n FROM "${table}"`);
-				if (n > 0) rows[table] = n;
-			}
-			if (Object.keys(rows).length === 0) return { state: "none" };
-			const recorded = has(LEGACY_ACK_TABLE)
-				? (
-						db
-							.query(
-								`SELECT counts_json AS j FROM ${LEGACY_ACK_TABLE} WHERE singleton=1`,
-							)
-							.get() as { j: string } | null
-					)?.j
-				: undefined;
-			return recorded && legacyRowsMatch(JSON.parse(recorded), rows)
-				? { state: "acknowledged", rows }
-				: { state: "unacknowledged", rows };
 		});
 	} catch (e) {
 		return { state: "unreadable", reason: (e as Error).message };
@@ -616,26 +570,8 @@ export function liveDoctorProbes(o: LiveProbeOptions): DoctorProbes {
 			}
 		},
 		auth: async () => readAuth(home),
-		legacyHost: async () => readLegacyHost(home),
 		build: async () => readBuild(installRoot, env, home),
 		...(o.exposure ? { exposure: o.exposure } : {}),
-		legacySkills: async (projectRoots) => {
-			const paths = new Set<string>();
-			const skillEnv = env as Parameters<typeof installPath>[3];
-			for (const tool of TOOL_ORDER) {
-				const installs = [
-					installPath(tool, "global", home, skillEnv),
-					...projectRoots.map((r) => installPath(tool, "project", r, skillEnv)),
-				];
-				for (const p of installs) {
-					const legacy = legacyPath(p);
-					if (legacy.includes(`/${LEGACY_SKILL_DIR}/`) && existsSync(legacy)) {
-						paths.add(legacy);
-					}
-				}
-			}
-			return { available: true, paths: [...paths] };
-		},
 		project: (entry) =>
 			withDeadline(
 				readProject(entry),

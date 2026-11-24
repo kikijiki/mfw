@@ -18,7 +18,6 @@ const SUBCOMMANDS = [
 	"board",
 	"doctor",
 	"env",
-	"host",
 	"init",
 	"mcp",
 	"server",
@@ -56,8 +55,6 @@ export interface Deps {
 	runAuth: (args: string[]) => Promise<number>;
 	/** Runs `mfw env ...` against this install's dev environment approvals. */
 	runEnv: (args: string[]) => Promise<number>;
-	/** Runs `mfw host ...` against this install's host state. */
-	runHost: (args: string[]) => Promise<number>;
 	/** Runs the read-only `mfw doctor`, or `mfw init`. */
 	runDoctor: (command: "doctor" | "init", args: string[]) => Promise<number>;
 }
@@ -69,7 +66,6 @@ export const USAGE = [
 	"  board ...     the markdown board (runs mfw-board; no server needed)",
 	"  doctor        read-only host and install check; prints fixes, applies none",
 	"  env ...       owner tools for each project's dev environment: status, allow, deny, build",
-	"  host ...      owner tools for host state: acknowledge-legacy",
 	"  init          guided first run: doctor, setup token path, minimal project config",
 	"  mcp [--token-file <path>]   MCP server over stdio, using a scoped API token",
 	"  server        run the orchestrator + web UI in the foreground",
@@ -134,8 +130,6 @@ export async function dispatch(argv: string[], d: Deps): Promise<number> {
 			return d.runAuth(rest);
 		case "env":
 			return d.runEnv(rest);
-		case "host":
-			return d.runHost(rest);
 		case "doctor":
 		case "init":
 			return d.runDoctor(cmd, rest);
@@ -240,14 +234,7 @@ export function sourceDeps(): Deps {
 /** The commands that run in this process, the same from source and compiled. */
 export function inProcessCommands(): Pick<
 	Deps,
-	| "out"
-	| "err"
-	| "run"
-	| "runMcp"
-	| "runHost"
-	| "runDoctor"
-	| "runAuth"
-	| "runEnv"
+	"out" | "err" | "run" | "runMcp" | "runDoctor" | "runAuth" | "runEnv"
 > {
 	return {
 		out: (l) => console.log(l),
@@ -257,17 +244,6 @@ export function inProcessCommands(): Pick<
 			// The MCP entry reads process.argv itself; present it as its own script.
 			process.argv = [process.argv[0] ?? "bun", "mfw mcp", ...args];
 			await import("@mfw/mcp");
-		},
-		runHost: async (args) => {
-			const [{ runHostCommand }, { mfwHome }] = await Promise.all([
-				import("../../daemon/src/resources/legacy-host-state.ts"),
-				import("../../daemon/src/config.ts"),
-			]);
-			return runHostCommand(args, {
-				home: mfwHome(),
-				out: (l) => console.log(l),
-				err: (l) => console.error(l),
-			});
 		},
 		runDoctor: async (command, args) => {
 			const [{ runDoctorCommand, runInitCommand }, { mfwHome }, policy] =

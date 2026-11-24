@@ -80,7 +80,7 @@ function git(cwd: string, ...args: string[]): void {
 	if (r.exitCode !== 0) throw new Error(r.stderr.toString());
 }
 
-/** A real install: config, auth store, legacy db, a project with a public remote. */
+/** A real install: config, auth store, a project with a public remote. */
 async function install() {
 	const base = tmp();
 	const home = join(base, "home");
@@ -107,12 +107,6 @@ async function install() {
 	const auth = await AuthService.open(authDbPath(home));
 	await auth.issueSetupToken();
 	auth.close();
-	mkdirSync(join(home, "host"), { mode: 0o700 });
-	const legacy = new Database(join(home, "host", "host.db"));
-	legacy.exec(
-		"CREATE TABLE leases (id TEXT); INSERT INTO leases VALUES ('x');",
-	);
-	legacy.close();
 	// A fake CLI on a temp PATH: agent-writable, so it must never be executed.
 	const marker = join(base, "claude-ran");
 	writeFileSync(
@@ -145,7 +139,6 @@ describe("the live doctor on a real install", () => {
 		const by = (id: string) => report.checks.find((c) => c.id === id);
 		expect(by("harness.claude")?.detail).toContain("not run");
 		expect(by("auth.state")?.detail).toContain("first-run setup");
-		expect(by("install.legacy-host")?.severity).toBe("blocker");
 		expect(by("project.untracked")?.detail).toContain("1 untracked");
 		expect(by("project.untracked")?.detail).toContain("1 ignored");
 		expect(by("project.push")?.status).toBe("problem");
