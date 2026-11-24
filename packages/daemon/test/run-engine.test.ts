@@ -35,6 +35,7 @@ import {
 import { RunRegistry } from "../src/run-registry.ts";
 import { TaskOwnershipHeldError } from "../src/tasks/index.ts";
 import { makeTasks } from "./fixtures/board.ts";
+import { useCheckClones } from "./support/check-clones.ts";
 
 async function waitFor(cond: () => Promise<boolean>, timeoutMs = 8000) {
 	const t0 = Date.now();
@@ -98,6 +99,8 @@ async function fixture(
 	} = {},
 ) {
 	const root = await mkdtemp(join(tmpdir(), "mfw-eng-"));
+	// Run clones live beside the fixture repo, as `$MFW_HOME/workspaces` would.
+	useCheckClones(root, { workspaceRoot: `${root}-workspaces` });
 	await git(["init", "-q", "-b", "main"], root);
 	await git(["config", "user.email", "t@t"], root);
 	await git(["config", "user.name", "t"], root);
@@ -331,7 +334,7 @@ describe("RunEngine v2", () => {
 		expect(await f.registry.list()).toEqual([]);
 	});
 
-	test("startTask: claim → worktree off integration branch → tmux → running → agent works", async () => {
+	test("startTask: claim → clone off integration branch → tmux → running → agent works", async () => {
 		const f = await fixture();
 		const t = await f.tasks.create({ title: "build a thing" });
 		await f.tasks.move(t.id, "ready", "human");
@@ -339,7 +342,7 @@ describe("RunEngine v2", () => {
 		const { runId } = await f.engine.startTask(t.id);
 		const run = await f.registry.get(runId);
 		expect(run?.state).toBe("running");
-		expect(run?.worktreePath).toContain("worktrees/");
+		expect(run?.worktreePath).toBe(`${f.root}-workspaces/${run?.id}/tree`);
 		expect(run?.branch).toBe(`mfw/${runId}`);
 		expect(run?.integrationBranch).toBe("main");
 		expect(run?.providerId).toBe("claude-cli");
@@ -573,7 +576,7 @@ describe("RunEngine v2", () => {
 		await rm(f.root, { recursive: true, force: true });
 	}, 20_000);
 
-	test("prepareTaskRun writes claim, starting row, worktree, and target journal without launching", async () => {
+	test("prepareTaskRun writes claim, starting row, clone, and target journal without launching", async () => {
 		const f = await fixture();
 		const task = await f.tasks.create({ title: "admit before launch" });
 		await f.tasks.move(task.id, "ready", "human");
@@ -586,7 +589,7 @@ describe("RunEngine v2", () => {
 			targetLifecycleState: "prepared",
 			targetProjectId: "demo",
 		});
-		expect(run?.worktreePath).toContain("worktrees/");
+		expect(run?.worktreePath).toBe(`${f.root}-workspaces/${run?.id}/tree`);
 		expect((await f.tasks.get(task.id))?.claimedByRunId).toBe(prepared.runId);
 		expect(await f.host.isAlive(prepared.runId)).toBe(false);
 		expect(
@@ -1156,7 +1159,7 @@ describe("RunEngine v2", () => {
 		return { taskId: t.id, runId, parent };
 	}
 
-	test("a continue: group run reuses the parent's worktree and branch, takes the claim as its own group, and writes relation continue", async () => {
+	test("a continue: group run gets its own clone of the parent's work on the parent's base, takes the claim as its own group, and writes relation continue", async () => {
 		const f = await fixture();
 		const { taskId, runId, parent } = await settledParent(f, "flaky");
 		const childId = ulid();
@@ -1173,8 +1176,8 @@ describe("RunEngine v2", () => {
 		await f.engine.startGroupRun(spec);
 
 		const child = await f.registry.get(childId);
-		expect(child?.worktreePath).toBe(parent?.worktreePath);
-		expect(child?.branch).toBe(parent?.branch);
+		expect(child?.worktreePath).toBe(`${f.root}-workspaces/${childId}/tree`);
+		expect(child?.branch).toBe(`mfw/${childId}`);
 		expect(child?.baseSha).toBe(parent?.baseSha);
 		expect(child?.attempt).toBe((parent?.attempt ?? 1) + 1);
 		// With no pick from the brain, the continuation keeps the parent's route.
@@ -1209,7 +1212,7 @@ describe("RunEngine v2", () => {
 		await rm(f.root, { recursive: true, force: true });
 	}, 20_000);
 
-	test("a continuation never re-asks the parent's journaled question: its report is removed from the worktree", async () => {
+	test("a continuation never re-asks the parent's journaled question: its report is in neither clone", async () => {
 		const f = await fixture();
 		const { taskId, runId, parent } = await settledParent(f, "asks");
 		const worktree = parent?.worktreePath as string;
@@ -1231,9 +1234,12 @@ describe("RunEngine v2", () => {
 		});
 
 		const child = await f.registry.get(childId);
-		expect(child?.worktreePath).toBe(worktree);
+		expect(child?.worktreePath).not.toBe(worktree);
 		expect(child?.initialPrompt).toContain("until March");
 		expect(existsSync(join(worktree, "MFW_REPORT.json"))).toBe(false);
+		expect(
+			existsSync(join(child?.worktreePath as string, "MFW_REPORT.json")),
+		).toBe(false);
 		f.handle.close();
 		await rm(f.root, { recursive: true, force: true });
 	}, 20_000);

@@ -20,7 +20,6 @@ import {
 const PROJECT = {
 	name: "demo",
 	root: "/srv/demo",
-	runWorkspace: "clone" as const,
 };
 
 const withProject = (
@@ -597,17 +596,13 @@ describe("exposure", () => {
 });
 
 describe("project checks", () => {
-	test("the default worktree with bwrap cannot dispatch", async () => {
-		const c = await check(
-			withProject({}, { runWorkspace: undefined }),
-			"project.dispatch",
-		);
-		expect([c.status, c.severity]).toEqual(["problem", "blocker"]);
-		expect(c.fix).toContain('"runWorkspace": "clone"');
+	test("the default config can dispatch", async () => {
+		const c = await check(withProject({}), "project.dispatch");
+		expect(c.status).toBe("ok");
 		expect(c.project).toBe("demo");
 	});
 
-	test("an .envrc blocks a clone project", async () => {
+	test("an .envrc blocks a project", async () => {
 		const c = await check(withProject({ hasEnvrc: true }), "project.dispatch");
 		expect(c.severity).toBe("blocker");
 		expect(c.detail).toContain(".envrc");

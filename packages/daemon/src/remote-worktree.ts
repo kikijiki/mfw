@@ -67,6 +67,13 @@ export interface CreateRemoteStageOptions extends RemoteWorkspaceLimits {
 	runDir: string;
 	branch: string;
 	baseSha: string;
+	/**
+	 * Stage from commits in this trusted repository instead of reading the
+	 * canonical tree with git: a run's clone is agent-writable, and the host
+	 * never runs git in it. `rev` is what the stage snapshot holds (the base,
+	 * or the run's imported work when it is continued).
+	 */
+	source?: { repo: string; rev: string };
 }
 
 export interface MaterializeRemoteStageOptions extends RemoteWorkspaceLimits {
@@ -542,10 +549,16 @@ export async function createRemoteStage(
 	opts: CreateRemoteStageOptions,
 ): Promise<{ stagePath: string; digest: string }> {
 	const maxFileBytes = checkedLimit(opts.maxFileBytes, DEFAULT_MAX_FILE_BYTES);
-	const [baseline, snapshot] = await Promise.all([
-		baseEntries(opts.canonicalPath, opts.baseSha, maxFileBytes),
-		listedSnapshot(opts.canonicalPath, maxFileBytes),
-	]);
+	const source = opts.source;
+	const [baseline, snapshot] = source
+		? await Promise.all([
+				baseEntries(source.repo, opts.baseSha, maxFileBytes),
+				baseEntries(source.repo, source.rev, maxFileBytes),
+			])
+		: await Promise.all([
+				baseEntries(opts.canonicalPath, opts.baseSha, maxFileBytes),
+				listedSnapshot(opts.canonicalPath, maxFileBytes),
+			]);
 	const bundle = withDigest({
 		version: FORMAT_VERSION,
 		kind: "stage",

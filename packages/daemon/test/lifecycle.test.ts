@@ -15,9 +15,15 @@ import {
 } from "../src/lifecycle.ts";
 import { silentLogger } from "../src/log.ts";
 import { RunRegistry } from "../src/run-registry.ts";
+import { createRunWorkspace } from "../src/run-workspace/factory.ts";
 import type { TaskService } from "../src/task-service.ts";
-import { WorktreeManager } from "../src/worktree.ts";
 import { MFW_EXCLUDE, makeTasks } from "./fixtures/board.ts";
+import {
+	agentWork,
+	importResult,
+	seedRun,
+	useCheckClones,
+} from "./support/check-clones.ts";
 
 interface F {
 	root: string;
@@ -39,6 +45,7 @@ async function fixture(): Promise<F> {
 	await writeFile(join(root, ".git/info/exclude"), MFW_EXCLUDE);
 	const mfwDir = join(root, ".mfw");
 	const handle = await openProjectDb(mfwDir);
+	const dropClones = useCheckClones(root);
 	const bus = new EventBus();
 	const tasks = await makeTasks(handle, bus, mfwDir, "MFW");
 	const registry = new RunRegistry({
@@ -63,24 +70,25 @@ async function fixture(): Promise<F> {
 		lifecycle,
 		cleanup: async () => {
 			handle.close();
+			await dropClones();
 			await rm(root, { recursive: true, force: true });
 		},
 	};
 }
 
-/** An owned worktree + run row for `taskId`, with one committed file. */
+/** An owned clone + run row for `taskId`, with one committed file. */
 async function runWithWork(
 	f: F,
 	runId: string,
 	taskId: string,
 	opts: { commit?: boolean; state?: "completed" | "running" } = {},
 ) {
-	const wt = await new WorktreeManager(f.root).create(runId, "main");
-	await writeFile(join(wt.path, `${runId}.txt`), "work\n");
-	if (opts.commit !== false) {
-		await git(["add", "-A"], wt.path);
-		await git(["commit", "-qm", "agent work"], wt.path);
-	}
+	const wt = await seedRun(f.root, runId);
+	await agentWork(
+		wt.path,
+		{ [`${runId}.txt`]: "work\n" },
+		{ commit: opts.commit !== false },
+	);
 	const run = await f.registry.create({
 		id: runId,
 		kind: "task",
@@ -93,8 +101,11 @@ async function runWithWork(
 		integrationBranch: "main",
 		baseSha: wt.baseSha,
 	});
-	if (opts.state !== "running") await f.registry.finish(run.id, "completed");
-	else await f.registry.transition(run.id, "running");
+	if (opts.state !== "running") {
+		await f.registry.finish(run.id, "completed");
+		// Finalize imports a finished run's result from its clone.
+		await importResult(f.root, wt);
+	} else await f.registry.transition(run.id, "running");
 	return wt;
 }
 
@@ -110,8 +121,8 @@ describe("discard saves work to wip/ before removing it", () => {
 		expect(result.removed).toBe(true);
 		expect(existsSync(wt.path)).toBe(false);
 		expect(
-			(await git(["rev-parse", "--verify", wt.branch], f.root)).exitCode,
-		).not.toBe(0);
+			(await git(["for-each-ref", "refs/mfw/quarantine/run-a"], f.root)).stdout,
+		).toBe("");
 		expect(
 			(await git(["show", `wip/${t.id}-run-a:run-a.txt`], f.root)).stdout,
 		).toBe("work");
@@ -145,7 +156,9 @@ describe("discard saves work to wip/ before removing it", () => {
 		await expect(f.lifecycle.discardTask(t.id)).rejects.toBeInstanceOf(
 			RunLiveError,
 		);
-		expect(existsSync(join(f.root, "worktrees", "run-old"))).toBe(true);
+		expect(
+			existsSync(createRunWorkspace(f.root).paths("run-old").workPath),
+		).toBe(true);
 		await f.cleanup();
 	}, 30_000);
 
@@ -161,9 +174,7 @@ describe("discard saves work to wip/ before removing it", () => {
 			`wip/${t.id}-run-1`,
 			`wip/${t.id}-run-2`,
 		]);
-		expect((await git(["worktree", "list"], f.root)).stdout).not.toContain(
-			"run-1",
-		);
+		expect(await createRunWorkspace(f.root).list()).toEqual([]);
 		await f.cleanup();
 	}, 30_000);
 });
@@ -206,7 +217,10 @@ describe("a human close refuses while the task branch is unmerged", () => {
 		f.tasks.closeGuard = f.lifecycle;
 		const t = await f.tasks.create({ title: "merged" });
 		await runWithWork(f, "run-m", t.id);
-		await git(["merge", "-q", "--no-ff", "-m", "merge", "mfw/run-m"], f.root);
+		await git(
+			["merge", "-q", "--no-ff", "-m", "merge", "refs/mfw/quarantine/run-m"],
+			f.root,
+		);
 
 		expect((await f.tasks.move(t.id, "done", "human")).status).toBe("done");
 		await f.cleanup();

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DefinitionOfDone } from "@mfw/core/taskfile";
@@ -11,11 +11,11 @@ import { git } from "../src/git.ts";
 import { silentLogger } from "../src/log.ts";
 import { Maintenance } from "../src/maintenance.ts";
 import { RunRegistry } from "../src/run-registry.ts";
+import { createRunWorkspace } from "../src/run-workspace/factory.ts";
 import { SessionService } from "../src/session.ts";
 import type { TaskService } from "../src/task-service.ts";
-import { WorktreeManager } from "../src/worktree.ts";
 import { MFW_EXCLUDE, makeTasks } from "./fixtures/board.ts";
-import { useCheckClones } from "./support/check-clones.ts";
+import { agentWork, useCheckClones } from "./support/check-clones.ts";
 
 interface F {
 	root: string;
@@ -1247,8 +1247,10 @@ describe("gc", () => {
 				title: "writer still live",
 				status: "ready",
 			});
-			const wm = new WorktreeManager(f.root);
-			const owned = await wm.create("pending-cleanup", "main");
+			const owned = await createRunWorkspace(f.root).seed(
+				"pending-cleanup",
+				"main",
+			);
 			const run = await f.registry.create({
 				id: "pending-cleanup",
 				kind: "task",
@@ -1273,8 +1275,7 @@ describe("gc", () => {
 			expect((await f.tasks.get(task.id))?.claimedByRunId).toBe(run.id);
 			expect(await f.maint.gc({ keepRuns: 0 })).toEqual({
 				runDirsPruned: 0,
-				worktreesRemoved: 0,
-				branchesDeleted: 0,
+				workspacesRemoved: 0,
 			});
 			expect(
 				await Bun.file(join(f.registry.runDir(run.id), "meta.json")).exists(),
@@ -1388,31 +1389,39 @@ describe("gc retention for work awaiting a human", () => {
 		await f.cleanup();
 	}, 30_000);
 
-	test("owned worktrees survive until both clean and integrated", async () => {
-		const f = await fixture();
-		const createOwned = async (runId: string) => {
-			const owned = await new WorktreeManager(f.root).create(runId, "main");
-			const run = await f.registry.create({
-				id: runId,
-				kind: "task",
-				label: runId,
-				model: "test",
-				cwd: owned.path,
-				worktreePath: owned.path,
-				branch: owned.branch,
-				integrationBranch: "main",
-				baseSha: owned.baseSha,
-			});
-			await f.registry.finish(run.id, "completed");
-			return owned;
-		};
+	/** A finished run's clone, seeded and owned as a launch would leave it. */
+	const ownedRun = async (
+		f: Awaited<ReturnType<typeof fixture>>,
+		runId: string,
+	) => {
+		const owned = await createRunWorkspace(f.root).seed(runId, "main");
+		const run = await f.registry.create({
+			id: runId,
+			kind: "task",
+			label: runId,
+			model: "test",
+			cwd: owned.path,
+			worktreePath: owned.path,
+			branch: owned.branch,
+			integrationBranch: "main",
+			baseSha: owned.baseSha,
+		});
+		await f.registry.finish(run.id, "completed");
+		return owned;
+	};
 
-		const dirty = await createOwned("owned-dirty");
-		await writeFile(join(dirty.path, "uncommitted.txt"), "must survive\n");
-		const unintegrated = await createOwned("owned-unintegrated");
-		await writeFile(join(unintegrated.path, "new.txt"), "not merged\n");
-		await git(["add", "new.txt"], unintegrated.path);
-		await git(["commit", "-qm", "unintegrated"], unintegrated.path);
+	test("owned clones survive until their newest work has landed", async () => {
+		const f = await fixture();
+		const dirty = await ownedRun(f, "owned-dirty");
+		await agentWork(
+			dirty.path,
+			{ "uncommitted.txt": "must survive\n" },
+			{
+				commit: false,
+			},
+		);
+		const unintegrated = await ownedRun(f, "owned-unintegrated");
+		await agentWork(unintegrated.path, { "new.txt": "not merged\n" });
 
 		await f.maint.gc({ keepRuns: 0 });
 
@@ -1422,50 +1431,33 @@ describe("gc retention for work awaiting a human", () => {
 		expect(await Bun.file(join(unintegrated.path, "new.txt")).exists()).toBe(
 			true,
 		);
-		const listed = await git(["worktree", "list", "--porcelain"], f.root);
-		expect(listed.stdout).toContain(`worktree ${dirty.path}`);
-		expect(listed.stdout).toContain(`worktree ${unintegrated.path}`);
+		const listed = await createRunWorkspace(f.root).list();
+		expect(listed).toContain(dirty.path);
+		expect(listed).toContain(unintegrated.path);
 		await f.cleanup();
 	}, 30_000);
 
-	test("ignored files in an owned worktree are data and survive GC", async () => {
+	test("a clone's ignored files are not its work: once that landed, gc removes the clone", async () => {
 		const f = await fixture();
 		await writeFile(join(f.root, ".gitignore"), "*.secret\n");
 		await git(["add", ".gitignore"], f.root);
 		await git(["commit", "-qm", "ignore secrets"], f.root);
-		const owned = await new WorktreeManager(f.root).create(
-			"owned-ignored",
-			"main",
-		);
-		const run = await f.registry.create({
-			id: "owned-ignored",
-			kind: "task",
-			label: "owned ignored",
-			model: "test",
-			cwd: owned.path,
-			worktreePath: owned.path,
-			branch: owned.branch,
-			integrationBranch: "main",
-			baseSha: owned.baseSha,
-		});
-		await f.registry.finish(run.id, "completed");
-		await writeFile(join(owned.path, "credential.secret"), "must survive\n");
+		const owned = await ownedRun(f, "owned-ignored");
+		await writeFile(join(owned.path, "build.secret"), "build output\n");
 
 		await f.maint.gc({ keepRuns: 0 });
 
-		expect(await Bun.file(join(owned.path, "credential.secret")).text()).toBe(
-			"must survive\n",
-		);
+		expect(await createRunWorkspace(f.root).list()).not.toContain(owned.path);
 		await f.cleanup();
 	}, 30_000);
 
-	test("a replayed path and branch without the ownership marker survive GC", async () => {
+	test("a replayed path without the ownership marker survives GC", async () => {
 		const f = await fixture();
 		const runId = "replayed-run";
-		const path = join(f.root, "worktrees", runId);
-		const branch = `mfw/${runId}`;
+		const path = createRunWorkspace(f.root).paths(runId).workPath;
+		await mkdir(path, { recursive: true });
+		await writeFile(join(path, "feature.txt"), "not ours to delete\n");
 		const baseSha = (await git(["rev-parse", "main"], f.root)).stdout.trim();
-		await git(["worktree", "add", "-q", "-b", branch, path, "main"], f.root);
 		const run = await f.registry.create({
 			id: runId,
 			kind: "task",
@@ -1473,7 +1465,7 @@ describe("gc retention for work awaiting a human", () => {
 			model: "test",
 			cwd: path,
 			worktreePath: path,
-			branch,
+			branch: `mfw/${runId}`,
 			integrationBranch: "main",
 			baseSha,
 		});
@@ -1485,125 +1477,16 @@ describe("gc retention for work awaiting a human", () => {
 		await f.cleanup();
 	}, 30_000);
 
-	test("historical rows never authorize branch deletion", async () => {
+	test("a clean integrated clone with exact durable MFW ownership is removed", async () => {
 		const f = await fixture();
-		const owned = await new WorktreeManager(f.root).create(
-			"old-branch",
-			"main",
-		);
-		await writeFile(join(owned.path, "unmerged.txt"), "keep the commit\n");
-		await git(["add", "unmerged.txt"], owned.path);
-		await git(["commit", "-qm", "unmerged work"], owned.path);
-		const run = await f.registry.create({
-			id: "old-branch",
-			kind: "task",
-			label: "old branch",
-			model: "test",
-			cwd: owned.path,
-			worktreePath: owned.path,
-			branch: owned.branch,
-			integrationBranch: "main",
-			baseSha: owned.baseSha,
-		});
-		await f.registry.finish(run.id, "failed");
-		await git(["worktree", "remove", "--force", owned.path], f.root);
-		f.now.value += 30 * 86_400_000;
+		const owned = await ownedRun(f, "owned-run");
 
-		await f.maint.gc({ keepRuns: 0 });
-
-		expect((await git(["rev-parse", owned.branch], f.root)).exitCode).toBe(0);
-		await f.cleanup();
-	}, 30_000);
-
-	test("merged mfw/* branches of finished runs are deleted; wip/*, unmerged, live and unknown ones are kept", async () => {
-		const f = await fixture();
-		const run = async (
-			runId: string,
-			opts: { merge: boolean; state?: "running" },
-		) => {
-			const owned = await new WorktreeManager(f.root).create(runId, "main");
-			await writeFile(join(owned.path, `${runId}.txt`), "work\n");
-			await git(["add", "-A"], owned.path);
-			await git(["commit", "-qm", runId], owned.path);
-			await f.registry.create({
-				id: runId,
-				kind: "task",
-				label: runId,
-				model: "test",
-				cwd: owned.path,
-				worktreePath: owned.path,
-				branch: owned.branch,
-				integrationBranch: "main",
-				baseSha: owned.baseSha,
-			});
-			if (opts.state === "running")
-				await f.registry.transition(runId, "running");
-			else await f.registry.finish(runId, "completed");
-			if (opts.merge) {
-				await git(
-					["merge", "-q", "--no-ff", "-m", runId, owned.branch],
-					f.root,
-				);
-			}
-			return owned;
-		};
-		// Worktree still present: gc removes it and then its merged branch.
-		await run("merged-wt", { merge: true });
-		// Worktree already gone, branch left behind (the leak).
-		const leaked = await run("merged-leak", { merge: true });
-		await git(["worktree", "remove", "--force", leaked.path], f.root);
-		const unmerged = await run("unmerged", { merge: false });
-		await git(["worktree", "remove", "--force", unmerged.path], f.root);
-		const live = await run("live", { merge: true, state: "running" });
-		await git(["worktree", "remove", "--force", live.path], f.root);
-		await git(["branch", "wip/MFW-1-old", "main"], f.root);
-		await git(["branch", "mfw/no-row", "main"], f.root);
-
-		const result = await f.maint.gc({ keepRuns: 0 });
-
-		const branches = (
-			await git(
-				["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
-				f.root,
-			)
-		).stdout
-			.split("\n")
-			.sort();
-		expect(branches).toEqual([
-			"main",
-			"mfw/live",
-			"mfw/no-row",
-			"mfw/unmerged",
-			"wip/MFW-1-old",
-		]);
-		expect(result.branchesDeleted).toBe(2);
-		await f.cleanup();
-	}, 30_000);
-
-	test("a clean integrated worktree with exact durable MFW ownership is removed", async () => {
-		const f = await fixture();
-		const runId = "owned-run";
-		const owned = await new WorktreeManager(f.root).create(runId, "main");
-		const run = await f.registry.create({
-			id: runId,
-			kind: "task",
-			label: runId,
-			model: "test",
-			cwd: owned.path,
-			worktreePath: owned.path,
-			branch: owned.branch,
-			integrationBranch: "main",
-			baseSha: owned.baseSha,
-		});
-		await f.registry.finish(run.id, "completed");
-
-		await f.maint.gc({ keepRuns: 0 });
+		expect((await f.maint.gc({ keepRuns: 0 })).workspacesRemoved).toBe(1);
 
 		expect(await Bun.file(join(owned.path, "feature.txt")).exists()).toBe(
 			false,
 		);
-		const listed = await git(["worktree", "list", "--porcelain"], f.root);
-		expect(listed.stdout).not.toContain(`worktree ${owned.path}`);
+		expect(await createRunWorkspace(f.root).list()).not.toContain(owned.path);
 		await f.cleanup();
 	}, 30_000);
 });

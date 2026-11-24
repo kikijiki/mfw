@@ -2,6 +2,7 @@ import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { git } from "./git.ts";
 import { type RefusalFix, refusalFix } from "./refusal-fix.ts";
+import { workspaceRootOf } from "./run-workspace/factory.ts";
 
 /**
  * Refuse a local dispatch early, before anything is claimed or leased, when
@@ -12,8 +13,7 @@ import { type RefusalFix, refusalFix } from "./refusal-fix.ts";
 
 export type PreflightCode =
 	| "integration_branch_missing"
-	| "branch_exists"
-	| "worktree_exists"
+	| "workspace_exists"
 	| "memory_floor"
 	/** The task's route is rate-limit held (`provider-holds.ts`); waitingFor = [hold key]. */
 	| "provider_held"
@@ -112,29 +112,19 @@ export async function preflightDispatch(
 			`integration branch '${integration}' does not exist`,
 		);
 	}
-	const branch = `mfw/${runId}`;
-	const existing = await git(
-		["rev-parse", "--verify", "-q", `refs/heads/${branch}`],
-		root,
-	);
-	if (existing.exitCode === 0) {
-		throw new DispatchPreflightError(
-			"branch_exists",
-			[branch],
-			`run branch '${branch}' already exists`,
-		);
-	}
-	const path = join(root, "worktrees", runId);
+	const workspaces = workspaceRootOf(root);
+	const path = workspaces ? join(workspaces, runId) : null;
 	if (
-		await access(path).then(
+		path &&
+		(await access(path).then(
 			() => true,
 			() => false,
-		)
+		))
 	) {
 		throw new DispatchPreflightError(
-			"worktree_exists",
+			"workspace_exists",
 			[path],
-			`run worktree path '${path}' already exists`,
+			`run workspace '${path}' already exists`,
 		);
 	}
 	const floor = deps.memoryFloorBytes ?? 0n;

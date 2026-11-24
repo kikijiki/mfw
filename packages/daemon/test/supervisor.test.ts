@@ -12,10 +12,12 @@ import { git } from "../src/git.ts";
 import { silentLogger } from "../src/log.ts";
 import type { NotificationType } from "../src/notify.ts";
 import { RunRegistry } from "../src/run-registry.ts";
+import { createRunWorkspace } from "../src/run-workspace/factory.ts";
+import { isBookkeeping } from "../src/scope-watchdog.ts";
 import { Supervisor, type WatchdogLimitsInput } from "../src/supervisor.ts";
 import type { TaskService } from "../src/task-service.ts";
-import { WorktreeManager } from "../src/worktree.ts";
 import { makeTasks } from "./fixtures/board.ts";
+import { agentGit, useCheckClones } from "./support/check-clones.ts";
 
 /** A scriptable AgentHost double: no tmux, so these run in milliseconds. */
 class FakeHost {
@@ -834,26 +836,68 @@ describe("trigger dispatch rides the supervisor loop, not the scheduler", () => 
 });
 
 // ---------------------------------------------------------------------------
-// Diff-scope watchdog over a real fixture worktree
+// Diff-scope watchdog over a real fixture clone
 // ---------------------------------------------------------------------------
 
-/** A git repo at the fixture root and a worktree whose run claims a task. */
+/**
+ * What the in-sandbox WIP helper's snapshot would list: the clone's changes
+ * against the base, read on the agent's side of the clone. The real sampler
+ * (`cloneScopeFiles`, over a fetched snapshot) is covered by clone-wip-e2e.
+ */
+async function agentSideScope(
+	tree: string,
+	base: string,
+): Promise<{ files: string[]; truncated: boolean }> {
+	const tracked = await agentGit(tree, [
+		"diff",
+		"--name-only",
+		"--no-renames",
+		"-z",
+		base,
+		"--",
+	]);
+	const untracked = await agentGit(tree, [
+		"ls-files",
+		"--others",
+		"--exclude-standard",
+		"-z",
+	]);
+	const files = [
+		...new Set(
+			[...tracked.stdout.split("\0"), ...untracked.stdout.split("\0")].filter(
+				(p) => p && !isBookkeeping(p),
+			),
+		),
+	].sort();
+	return { files, truncated: false };
+}
+
+/** A git repo at the fixture root and a clone whose run claims a task. */
 async function scopeFixture(
 	limits: Parameters<typeof fixture>[0] = {},
 	extra: Record<string, unknown> = {},
 ) {
-	const f = await fixture({ idleMs: 0, wallMs: 0, ...limits }, extra as never);
+	const f = await fixture({ idleMs: 0, wallMs: 0, ...limits }, {
+		scopeFiles: agentSideScope,
+		...extra,
+	} as never);
 	await git(["init", "-q", "-b", "main"], f.root);
 	await git(["config", "user.email", "t@t"], f.root);
 	await git(["config", "user.name", "t"], f.root);
-	await writeFile(join(f.root, ".git/info/exclude"), ".mfw/\nworktrees/\n");
+	await writeFile(join(f.root, ".git/info/exclude"), ".mfw/\n");
 	await mkdir(join(f.root, "src/mine"), { recursive: true });
 	await writeFile(join(f.root, "src/mine/a.ts"), "a\n");
 	await git(["add", "-A"], f.root);
 	await git(["commit", "-q", "-m", "init"], f.root);
 
+	const dropClones = useCheckClones(f.root);
+	const cleanup = f.cleanup;
+	f.cleanup = async () => {
+		await cleanup();
+		await dropClones();
+	};
 	const runId = ulid();
-	const wt = await new WorktreeManager(f.root).create(runId, "main");
+	const wt = await createRunWorkspace(f.root).seed(runId, "main");
 	const own = await f.tasks.create({
 		title: "mine",
 		status: "ready",
@@ -908,7 +952,7 @@ async function scopeEvents(f: Fixture, runId: string) {
 	return rows.rows.map((r) => JSON.parse(String(r.payload)));
 }
 
-/** Real git and worktrees: generous on a loaded machine. */
+/** Real git and clones: generous on a loaded machine. */
 const SCOPE_TEST_MS = 30_000;
 
 describe("Supervisor: diff-scope watchdog", () => {
@@ -987,8 +1031,8 @@ describe("Supervisor: diff-scope watchdog", () => {
 			try {
 				await s.write("docs/notes.md");
 				// Committed work counts too (diff against the base, not HEAD).
-				await git(["add", "-A"], s.wt.path);
-				await git(["commit", "-q", "-m", "notes"], s.wt.path);
+				await agentGit(s.wt.path, ["add", "-A"]);
+				await agentGit(s.wt.path, ["commit", "-q", "-m", "notes"]);
 				await s.f.sup.pass();
 				expect(s.f.host.killed).toEqual([]);
 				expect((await s.f.registry.get(s.run.id))?.scopeSample).toMatchObject({
@@ -1072,32 +1116,6 @@ describe("Supervisor: diff-scope watchdog", () => {
 					unsampled: true,
 					files: 1,
 				});
-			} finally {
-				await s.f.cleanup();
-			}
-		},
-		SCOPE_TEST_MS,
-	);
-
-	test(
-		"a worktree run's failed samples are not recorded as unsampled",
-		async () => {
-			const s = await scopeFixture(
-				{ scope: { sampleMs: 1000 } },
-				{
-					scopeFiles: async () => {
-						throw new Error("index.lock: worktree mid-rewrite");
-					},
-				},
-			);
-			try {
-				for (let i = 0; i < 4; i++) {
-					s.f.now.value += 1_000;
-					await Bun.sleep(5);
-					await s.progress();
-					await s.f.sup.pass();
-				}
-				expect((await s.f.registry.get(s.run.id))?.scopeSample).toBeNull();
 			} finally {
 				await s.f.cleanup();
 			}

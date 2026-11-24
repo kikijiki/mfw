@@ -945,7 +945,8 @@ describe("project-to-host task admission", () => {
 		const child = await service.registry.get(childRunId);
 		expect(child?.parentRunId).toBe(parent.runId);
 		expect(child?.relation).toBe("continue");
-		expect(child?.worktreePath).toBe(parentRow.worktreePath);
+		// Its own clone, seeded from the parent's imported work.
+		expect(child?.worktreePath).not.toBe(parentRow.worktreePath);
 	});
 
 	test("restart compensates an activated pre-launch lease before dispatch resumes", async () => {

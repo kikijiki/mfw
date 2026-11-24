@@ -190,17 +190,13 @@ export const REFUSAL_FIXES: Record<RefusalCode, FixFor> = {
 		kind: "setting",
 		text: `Create the integration branch (git branch ${waitingFor[0] ?? "<branch>"} <commit>), or set integrationBranch in this project's entry in $MFW_HOME/config.json to a branch that exists.`,
 	}),
-	branch_exists: (waitingFor) => ({
+	workspace_exists: (waitingFor) => ({
 		kind: "command",
-		text: `Move the leftover branch out of the way, keeping its commits: git branch -m ${waitingFor[0] ?? "<branch>"} wip/${(waitingFor[0] ?? "<branch>").replace(/^mfw\//, "")}-leftover`,
-	}),
-	worktree_exists: (waitingFor) => ({
-		kind: "command",
-		text: `Inspect ${waitingFor[0] ?? "the worktree path"}; if it holds nothing you need, remove it: git worktree remove --force ${waitingFor[0] ?? "<path>"} (or delete the directory if git does not list it).`,
+		text: `A run clone is already at ${waitingFor[0] ?? "the workspace path"}. Inspect it; if it holds nothing you need, delete that directory and retry.`,
 	}),
 	sandbox_unavailable: (waitingFor) => ({
 		kind: "command",
-		text: `${waitingFor[0] ? `${waitingFor[0]}. ` : ""}Autonomous runs need bubblewrap (bwrap) with agentIsolation bwrap, a systemd user manager and runWorkspace clone; otherwise set approvalMode to interactive for this project. They are refused without that sandbox.`,
+		text: `${waitingFor[0] ? `${waitingFor[0]}. ` : ""}Autonomous runs need bubblewrap (bwrap) with agentIsolation bwrap, and a systemd user manager; otherwise set approvalMode to interactive for this project. They are refused without that sandbox.`,
 	}),
 	sandbox_probe_failed: (waitingFor) => ({
 		kind: "command",

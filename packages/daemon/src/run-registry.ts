@@ -913,20 +913,6 @@ export class RunRegistry {
 	}
 
 	/**
-	 * Record what the run's workspace is, once. Later code routes on this and
-	 * never on the project's current `runWorkspace`.
-	 */
-	async recordWorkspaceKind(
-		runId: string,
-		kind: "worktree" | "clone",
-	): Promise<void> {
-		await this.handle.db
-			.update(runs)
-			.set({ workspaceKind: kind })
-			.where(and(eq(runs.id, runId), isNull(runs.workspaceKind)));
-	}
-
-	/**
 	 * Record the mode the agent is about to launch under. Autonomous always
 	 * wins: a relaunch without a person approving each action must not keep an
 	 * earlier `interactive`, which would let its checks run on the host.

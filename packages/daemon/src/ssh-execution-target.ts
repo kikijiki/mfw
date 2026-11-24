@@ -39,9 +39,9 @@ import {
 } from "./remote-experimental.ts";
 import { applyRemoteCollection, createRemoteStage } from "./remote-worktree.ts";
 import {
-	createRunWorkspace,
+	newestImportedWork,
+	projectWorkspacePort,
 	type WorkspacePort,
-	workspacePort,
 } from "./run-workspace/factory.ts";
 import { RemoteTransportError, type SshTransport } from "./ssh-transport.ts";
 
@@ -215,8 +215,7 @@ export class SshExecutionTarget implements ExecutionTarget {
 
 	constructor(private readonly options: SshExecutionTargetOptions) {
 		this.worktrees =
-			options.worktrees ??
-			workspacePort(createRunWorkspace(options.projectRoot));
+			options.worktrees ?? projectWorkspacePort(options.projectRoot);
 	}
 
 	private get maxTransferBytes(): number {
@@ -352,6 +351,15 @@ export class SshExecutionTarget implements ExecutionTarget {
 			runDir: request.runDir,
 			branch: request.workspace.branch,
 			baseSha: request.workspace.baseSha,
+			// From the trusted primary: the base, or the work a continued run imported.
+			source: {
+				repo: this.options.projectRoot,
+				rev:
+					(await newestImportedWork(
+						this.options.projectRoot,
+						request.workspace.canonicalPath,
+					)) ?? request.workspace.baseSha,
+			},
 			maxTransferBytes: this.maxTransferBytes,
 		});
 		const bridgeLocal = request.driver.bridgeArgv?.find(

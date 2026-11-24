@@ -13,8 +13,10 @@ import { git } from "../src/git.ts";
 import { type Logger, silentLogger } from "../src/log.ts";
 
 /**
- * Wave 2 exit review, M1: the default config (bwrap + worktree) is refused at
- * preflight, correctly, but nothing said so until a task failed to start.
+ * Wave 2 exit review, M1: the default config used to be refused at preflight
+ * (bwrap with worktrees) and nothing said so. Every run is a clone now, so the
+ * default dispatches; what still refuses (an .envrc) is reported at boot, in
+ * the inbox and in Settings.
  */
 
 const dirs: string[] = [];
@@ -67,65 +69,36 @@ async function booted(project: Record<string, unknown>, lines: string[] = []) {
 
 describe("isolationDispatchProblem agrees with the preflight", () => {
 	test.each([
-		[{}, /runWorkspace/],
-		[{ agentIsolation: "bwrap" }, /runWorkspace/],
-		[{ agentIsolation: "bwrap", runWorkspace: "worktree" }, /runWorkspace/],
-		[{ approvalMode: "interactive" }, /runWorkspace/],
-		[{ runWorkspace: "clone" }, null],
+		[{}, null],
+		[{ agentIsolation: "bwrap" }, null],
+		[{ approvalMode: "interactive" }, null],
 		[{ agentIsolation: "none", approvalMode: "interactive" }, null],
-		[{ runWorkspace: "clone", hasDevShell: true }, /\.envrc/],
+		[{ hasDevShell: true }, /\.envrc/],
 	] as const)("%j", (input, want) => {
 		const problem = isolationDispatchProblem(input);
 		if (want) expect(problem?.detail).toMatch(want);
 		else expect(problem).toBeNull();
 	});
 
-	test("the fix is the exact config change", () => {
-		expect(isolationDispatchProblem({})?.fix).toContain(
-			'"runWorkspace": "clone"',
-		);
-	});
-
 	test("what it reports is what preflight refuses", async () => {
+		const root = await repo({ ".envrc": "use flake\n" });
 		const refusal = await agentSandboxRefusal({
 			approvalMode: "autonomous",
 			isolation: "bwrap" as never,
-			runWorkspace: "worktree",
-			projectRoot: "/nonexistent",
+			projectRoot: root,
 			mfwHome: "/nonexistent",
 		});
 		expect(refusal?.code).toBe("sandbox_unavailable");
-		expect(
-			isolationDispatchProblem({ runWorkspace: "worktree" }),
-		).not.toBeNull();
+		expect(isolationDispatchProblem({ hasDevShell: true })).not.toBeNull();
 	});
 });
 
-describe("a project that cannot dispatch says so", () => {
-	test("at boot, in the inbox and in Settings, with the fix", async () => {
+describe("what a project's dispatch problem says", () => {
+	test("the default config reports nothing, at boot, in the inbox or in Settings", async () => {
 		const lines: string[] = [];
 		const { orch, svc } = await booted({ root: await repo() }, lines);
 		try {
-			expect(lines.some((l) => l.includes('"runWorkspace": "clone"'))).toBe(
-				true,
-			);
-			const item = (await svc.inbox.list()).find(
-				(i) => i.id === "admission:sandbox-workspace",
-			);
-			expect(item?.fix).toContain('"runWorkspace": "clone"');
-			const view = await svc.settings.get();
-			expect(view.dispatchProblem?.fix).toContain('"runWorkspace": "clone"');
-		} finally {
-			await orch.shutdown();
-		}
-	}, 30_000);
-
-	test("a clone project reports nothing", async () => {
-		const { orch, svc } = await booted({
-			root: await repo(),
-			runWorkspace: "clone",
-		});
-		try {
+			expect(lines.some((l) => l.includes("cannot dispatch"))).toBe(false);
 			expect(
 				(await svc.inbox.list()).some(
 					(i) => i.id === "admission:sandbox-workspace",
@@ -137,16 +110,19 @@ describe("a project that cannot dispatch says so", () => {
 		}
 	}, 30_000);
 
-	test("a clone project with an .envrc reports that instead", async () => {
-		const { orch, svc } = await booted({
-			root: await repo({ ".envrc": "use flake\n" }),
-			runWorkspace: "clone",
-		});
+	test("a project with an .envrc says so, with the fix", async () => {
+		const lines: string[] = [];
+		const { orch, svc } = await booted(
+			{ root: await repo({ ".envrc": "use flake\n" }) },
+			lines,
+		);
 		try {
+			expect(lines.some((l) => l.includes(".envrc"))).toBe(true);
 			const item = (await svc.inbox.list()).find(
 				(i) => i.id === "admission:sandbox-workspace",
 			);
 			expect(item?.detail).toContain(".envrc");
+			expect((await svc.settings.get()).dispatchProblem?.fix).toBeTruthy();
 		} finally {
 			await orch.shutdown();
 		}

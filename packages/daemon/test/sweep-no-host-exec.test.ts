@@ -156,21 +156,18 @@ describe.skipIf(skip !== null)("X1b: merged candidate code", () => {
 		);
 		chmodSync(shim, 0o755);
 		configureRunWorkspace(root, {
-			kind: "worktree",
-			clone: {
-				workspaceRoot: join(mfwHome, "workspaces"),
-				checkRunner: createCheckSandbox({
-					db: handle.db,
-					mfwHome,
-					projectRoot: root,
-					stateDir: mfwDir,
-					steps: cagedSteps({
-						home: join(base, "home"),
-						path: process.env.PATH ?? "",
-						shim,
-					}),
+			workspaceRoot: join(mfwHome, "workspaces"),
+			checkRunner: createCheckSandbox({
+				db: handle.db,
+				mfwHome,
+				projectRoot: root,
+				stateDir: mfwDir,
+				steps: cagedSteps({
+					home: join(base, "home"),
+					path: process.env.PATH ?? "",
+					shim,
 				}),
-			},
+			}),
 		});
 		maint = new Maintenance({
 			handle,

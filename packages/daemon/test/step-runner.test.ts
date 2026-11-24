@@ -37,11 +37,11 @@ import { runProvenanceView } from "../src/run-provenance-view.ts";
 import { RunRegistry, type RunRow } from "../src/run-registry.ts";
 import {
 	clearRunWorkspace,
-	configureRunWorkspace,
+	createRunWorkspace,
 } from "../src/run-workspace/factory.ts";
 import { TaskService } from "../src/task-service.ts";
-import { WorktreeManager } from "../src/worktree.ts";
 import { makeTasks } from "./fixtures/board.ts";
+import { agentGit, useCheckClones } from "./support/check-clones.ts";
 
 /**
  * StepRunner integration tests over real temp git repos and a real project DB.
@@ -88,16 +88,14 @@ async function makeEnv(
 ): Promise<Env> {
 	const { mergeChecks, ...stepRunnerConfig } = configOverrides;
 	const root = await mkdtemp(join(tmpdir(), "mfw-sr-"));
+	const dropClones = useCheckClones(root);
 	await git(["init", "-q", "-b", "main"], root);
 	await git(["config", "user.email", "t@t"], root);
 	await git(["config", "user.name", "t"], root);
 	await writeFile(join(root, "base.txt"), "base\n");
 	await git(["add", "-A"], root);
 	await git(["commit", "-q", "-m", "init"], root);
-	await writeFile(
-		join(root, ".git/info/exclude"),
-		".mfw/\nworktrees/\nMFW_REPORT.json\n",
-	);
+	await writeFile(join(root, ".git/info/exclude"), ".mfw/\nMFW_REPORT.json\n");
 
 	const mfwDir = join(root, ".mfw");
 	const handle = await openProjectDb(mfwDir);
@@ -186,6 +184,7 @@ async function makeEnv(
 		makeRunner,
 		cleanup: async () => {
 			handle.close();
+			await dropClones();
 			await rm(root, { recursive: true, force: true });
 		},
 	};
@@ -197,10 +196,12 @@ interface Worktree {
 	baseSha: string;
 }
 
+/** A run's private clone, seeded as a launch would. */
 async function addWorktree(root: string, name: string): Promise<Worktree> {
-	return new WorktreeManager(root).create(name, "main");
+	return createRunWorkspace(root).seed(name, "main");
 }
 
+/** The agent commits in its clone, with the sandbox's `GIT_DIR`. */
 async function commitIn(
 	wt: string,
 	file: string,
@@ -208,8 +209,8 @@ async function commitIn(
 ): Promise<void> {
 	await mkdir(join(wt, file, ".."), { recursive: true });
 	await writeFile(join(wt, file), content);
-	await git(["add", "-A"], wt);
-	await git(["commit", "-q", "-m", `work: ${file}`], wt);
+	await agentGit(wt, ["add", "-A"]);
+	await agentGit(wt, ["commit", "-q", "-m", `work: ${file}`]);
 }
 
 /** Run row in state "ended" (what the supervisor hands to the StepRunner). */
@@ -226,8 +227,6 @@ async function seedRun(
 		report?: unknown;
 		routing?: Record<string, unknown>;
 		providerId?: string;
-		/** The mode it launched under; null is a row from before 0026. */
-		approvalMode?: "autonomous" | "interactive" | null;
 	},
 ): Promise<RunRow> {
 	const run = await env.registry.create({
@@ -248,10 +247,6 @@ async function seedRun(
 			: {}),
 		integrationBranch: "main",
 	});
-	// These runs are plain worktrees, the one case a check may run on the host.
-	const mode =
-		spec.approvalMode === undefined ? "interactive" : spec.approvalMode;
-	if (mode) await env.registry.recordApprovalMode(run.id, mode);
 	const dir = env.registry.runDir(run.id);
 	if (spec.events !== undefined)
 		await writeFile(join(dir, "events.jsonl"), spec.events);
@@ -358,59 +353,11 @@ async function claimedTask(
 	return t.id;
 }
 
-describe("host execution of checks follows the run's own approval mode", () => {
-	const finalizeWith = async (
-		runMode: "autonomous" | "interactive" | null,
-	): Promise<boolean> => {
-		// The runner has no project mode to consult: only the run row decides.
-		const env = await makeEnv();
-		try {
-			const canary = join(env.root, "check-ran-on-host");
-			const wt = await addWorktree(env.root, `m2-${runMode}`);
-			await commitIn(wt.path, "a.txt", "work\n");
-			const runId = ulid();
-			const taskId = await claimedTask(env, runId, {
-				title: "in flight",
-				dod: {
-					verifier: "deterministic",
-					checks: [{ run: `touch ${canary}`, expect_exit: 0 }],
-				},
-			});
-			await seedRun(env, {
-				kind: "task",
-				runId,
-				taskId,
-				wt,
-				events: doneEvent("all done"),
-				exit: "exit:0",
-				report: { summary: "did the work" },
-				approvalMode: runMode,
-			});
-			await env.runner.finalize(runId);
-			return existsSync(canary);
-		} finally {
-			await env.cleanup();
-		}
-	};
-
-	test("an autonomous run stays off the host after the project turns interactive", async () => {
-		expect(await finalizeWith("autonomous")).toBe(false);
-	});
-
-	test("a run with no recorded mode counts as autonomous", async () => {
-		expect(await finalizeWith(null)).toBe(false);
-	});
-
-	test("a run launched interactive still runs its checks", async () => {
-		expect(await finalizeWith("interactive")).toBe(true);
-	});
-});
-
 describe("recordApprovalMode", () => {
 	test("autonomous replaces interactive; interactive never replaces autonomous", async () => {
 		const env = await makeEnv();
 		try {
-			const run = await seedRun(env, { kind: "task", approvalMode: null });
+			const run = await seedRun(env, { kind: "task" });
 			const mode = async () => (await env.registry.get(run.id))?.approvalMode;
 			expect(await mode()).toBeNull();
 			await env.registry.recordApprovalMode(run.id, "interactive");
@@ -478,7 +425,7 @@ describe("StepRunner v2: finalization end to end", () => {
 		const env = await makeEnv();
 		const wt = await addWorktree(env.root, "t-pin");
 		await commitIn(wt.path, "a.txt", "work\n");
-		const head = (await git(["rev-parse", "HEAD"], wt.path)).stdout.trim();
+		const head = (await agentGit(wt.path, ["rev-parse", "HEAD"])).stdout;
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "pinned work",
@@ -501,7 +448,7 @@ describe("StepRunner v2: finalization end to end", () => {
 		await env.cleanup();
 	});
 
-	test("checks that passed on files the commit lacks verify nothing and queue nothing", async () => {
+	test("a file left uncommitted is never what was verified: the commit is checked and queued as it is", async () => {
 		const env = await makeEnv();
 		const wt = await addWorktree(env.root, "t-uncommitted");
 		await commitIn(wt.path, "a.txt", "work\n");
@@ -523,8 +470,17 @@ describe("StepRunner v2: finalization end to end", () => {
 
 		await env.runner.finalize(run.id);
 
-		expect((await env.registry.get(run.id))?.verifiedSha).toBeNull();
-		expect(env.merges).toEqual([]);
+		// The checks ran on a clone of the committed tip, which lacks the file.
+		const verified = (await env.registry.get(run.id))?.verifiedSha;
+		expect(verified).toBe(
+			(await agentGit(wt.path, ["rev-parse", "mfw/t-uncommitted"])).stdout,
+		);
+		const files = await git(
+			["ls-tree", "-r", "--name-only", verified as string],
+			env.root,
+		);
+		expect(files.stdout.split("\n")).not.toContain("only-on-disk.txt");
+		expect(env.merges).toHaveLength(1);
 		await env.cleanup();
 	});
 
@@ -1762,7 +1718,7 @@ describe("report ingestion is the non-forced cleanup boundary", () => {
 		await env.cleanup();
 	});
 
-	test("a report rewritten after journaled ingestion survives restart cleanup", async () => {
+	test("a report rewritten after journaled ingestion survives cleanup", async () => {
 		const env = await makeEnv();
 		const wt = await addWorktree(env.root, "report-post-ingest-rewrite");
 		const original = '{"summary":"first version"}\n';
@@ -1786,6 +1742,7 @@ describe("report ingestion is the non-forced cleanup boundary", () => {
 
 		await env.runner.finalize(run.id);
 
+		// Not the journaled report, and never imported: the clone is kept.
 		expect(existsSync(wt.path)).toBe(true);
 		expect(await readFile(reportPath, "utf8")).toContain("late rewrite");
 		expect(
@@ -2798,7 +2755,7 @@ describe("provenance: a forged outbox never renders as host-observed", () => {
 	});
 });
 
-describe("an autonomous worktree run on the default config", () => {
+describe("a run on the default config", () => {
 	const dodOn = (word: string) => ({
 		verifier: "deterministic" as const,
 		checks: [{ run: `grep -q ${word} state.txt`, expect_exit: 0 }],
@@ -2807,7 +2764,6 @@ describe("an autonomous worktree run on the default config", () => {
 	/** Default mode and workspace, with a stand-in for the verifier sandbox. */
 	async function defaultEnv() {
 		expect(PROJECT_DEFAULTS.approvalMode).toBe("autonomous");
-		expect(PROJECT_DEFAULTS.runWorkspace).toBe("worktree");
 		const env = await makeEnv();
 		const workspaces = await mkdtemp(join(tmpdir(), "mfw-sr-clones-"));
 		const trees: string[] = [];
@@ -2819,9 +2775,9 @@ describe("an autonomous worktree run on the default config", () => {
 				maxOutputBytes: req.maxOutputBytes,
 			});
 		};
-		configureRunWorkspace(env.root, {
-			kind: PROJECT_DEFAULTS.runWorkspace,
-			clone: { workspaceRoot: workspaces, checkRunner },
+		const drop = useCheckClones(env.root, {
+			workspaceRoot: workspaces,
+			checkRunner,
 		});
 		return {
 			env,
@@ -2829,8 +2785,7 @@ describe("an autonomous worktree run on the default config", () => {
 			workspaces,
 			runner: env.runner,
 			done: async () => {
-				clearRunWorkspace(env.root);
-				await rm(workspaces, { recursive: true, force: true });
+				await drop();
 				await env.cleanup();
 			},
 		};
@@ -2853,7 +2808,6 @@ describe("an autonomous worktree run on the default config", () => {
 			wt,
 			events: doneEvent("done"),
 			exit: "exit:0",
-			approvalMode: PROJECT_DEFAULTS.approvalMode,
 		});
 		return { wt, run };
 	}
@@ -2925,17 +2879,19 @@ describe("an autonomous worktree run on the default config", () => {
 		await t.done();
 	});
 
-	test("with no check clones registered the check is refused, never run on the host", async () => {
+	test("with no run workspace settings finalize refuses, and nothing runs on the host", async () => {
 		const t = await defaultEnv();
-		clearRunWorkspace(t.env.root);
 		const marker = join(t.env.root, "ran-on-host");
 		const dod = {
 			verifier: "deterministic" as const,
 			checks: [{ run: `touch '${marker}'`, expect_exit: 0 }],
 		};
 		const { run } = await endedRun(t.env, "d-none", dod, "good\n");
+		clearRunWorkspace(t.env.root);
 
-		await t.runner.finalize(run.id);
+		await expect(t.runner.finalize(run.id)).rejects.toThrow(
+			"no run workspace settings",
+		);
 
 		expect(existsSync(marker)).toBe(false);
 		expect(t.env.merges).toEqual([]);

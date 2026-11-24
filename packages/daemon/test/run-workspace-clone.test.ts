@@ -20,7 +20,6 @@ import {
 	createRunWorkspace,
 } from "../src/run-workspace/factory.ts";
 import type { RunWorkspace } from "../src/run-workspace/run-workspace.ts";
-import { WorktreeRunWorkspace } from "../src/run-workspace/worktree-impl.ts";
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -89,45 +88,20 @@ class FakeSandbox {
 	}
 }
 
-type Impl = "worktree" | "clone";
-
-async function make(impl: Impl) {
+async function make() {
 	const root = await tmp();
 	const p = await primary(root);
 	const home = join(root, "home");
-	let ws: RunWorkspace;
-	if (impl === "worktree") {
-		ws = new WorktreeRunWorkspace(p);
-	} else {
-		ws = new CloneRunWorkspace(p, {
-			workspaceRoot: join(home, "workspaces"),
-			assertProcessesDead: () => {},
-		});
-	}
-	/** The run does `file`, and leaves the result where the implementation expects it. */
+	const ws: RunWorkspace = new CloneRunWorkspace(p, {
+		workspaceRoot: join(home, "workspaces"),
+		assertProcessesDead: () => {},
+	});
+	/** The run does `file`, and leaves its bundle in the outbox as the helper would. */
 	const work = async (
 		runId: string,
-		handle: { path: string },
+		_handle: { path: string },
 		file: string,
 	) => {
-		if (impl === "worktree") {
-			await writeFile(join(handle.path, file), "work\n");
-			await git(["add", "-A"], handle.path);
-			await git(
-				[
-					"-c",
-					"user.name=t",
-					"-c",
-					"user.email=t@t",
-					"commit",
-					"-q",
-					"-m",
-					"w",
-				],
-				handle.path,
-			);
-			return;
-		}
 		const sb = new FakeSandbox(join(home, "workspaces", runId), runId);
 		await sb.checkoutRunBranch();
 		await sb.commit(file, "work\n");
@@ -136,74 +110,71 @@ async function make(impl: Impl) {
 	return { root, p, home, ws, work };
 }
 
-for (const impl of ["worktree", "clone"] as const) {
-	describe(`RunWorkspace contract over ${impl}`, () => {
-		test("seed, paths, ownership and list agree", async () => {
-			const { ws, p } = await make(impl);
-			expect(ws.kind).toBe(impl);
-			const h = await ws.seed("r1", "main");
-			expect(h.branch).toBe("mfw/r1");
-			expect(h.path).toBe(ws.paths("r1").workPath);
-			const head = (await git(["rev-parse", "main"], p)).stdout;
-			expect(h.baseSha).toBe(head);
-			expect(await ws.ownership(h.path)).toMatchObject({
-				runId: "r1",
-				branch: "mfw/r1",
-				baseSha: head,
-			});
-			expect(await ws.list()).toContain(h.path);
-			expect(await ws.ownership(p)).toBeNull();
-			expect(await ws.ownership(join(h.path, ".."))).toBeNull();
+describe("RunWorkspace contract over private clones", () => {
+	test("seed, paths, ownership and list agree", async () => {
+		const { ws, p } = await make();
+		const h = await ws.seed("r1", "main");
+		expect(h.branch).toBe("mfw/r1");
+		expect(h.path).toBe(ws.paths("r1").workPath);
+		const head = (await git(["rev-parse", "main"], p)).stdout;
+		expect(h.baseSha).toBe(head);
+		expect(await ws.ownership(h.path)).toMatchObject({
+			runId: "r1",
+			branch: "mfw/r1",
+			baseSha: head,
 		});
-
-		test("fetchResult reports the tip once the run committed", async () => {
-			const { ws, work } = await make(impl);
-			const h = await ws.seed("r2", "main");
-			const before = await ws.fetchResult(h);
-			expect(before.sha === null || before.sha === h.baseSha).toBe(true);
-			await work("r2", h, "b.txt");
-			const after = await ws.fetchResult(h);
-			expect(after.sha).not.toBeNull();
-			expect(after.sha).not.toBe(h.baseSha);
-		});
-
-		test("remove refuses unproven paths, then removes the workspace", async () => {
-			const { ws, root } = await make(impl);
-			const h = await ws.seed("r3", "main");
-			await expect(
-				ws.remove({ ...h, path: join(root, "elsewhere") }, { force: true }),
-			).rejects.toThrow();
-			await ws.remove(h, { force: true });
-			expect(await ws.list()).not.toContain(h.path);
-			expect(await ws.ownership(h.path)).toBeNull();
-		});
-
-		test("archive and discard save the run's work on a wip branch", async () => {
-			const { ws, p, work } = await make(impl);
-			const h = await ws.seed("r4", "main");
-			await work("r4", h, "b.txt");
-			await ws.fetchResult(h);
-			const { archive, removed } = await ws.discard(h, {
-				runId: "r4",
-				taskId: "T-1",
-			});
-			expect(removed).toBe(true);
-			expect(archive?.ref).toBe("wip/T-1-r4");
-			const tip = await git(["rev-parse", "refs/heads/wip/T-1-r4"], p);
-			expect(tip.stdout).toBe(archive?.sha ?? "");
-			const files = await git(["ls-tree", "-r", "--name-only", tip.stdout], p);
-			expect(files.stdout).toContain("b.txt");
-			expect(await ws.list()).not.toContain(h.path);
-			// A run that did nothing archives nothing.
-			const idle = await ws.seed("r5", "main");
-			expect((await ws.discard(idle, { runId: "r5" })).archive).toBeNull();
-		});
+		expect(await ws.list()).toContain(h.path);
+		expect(await ws.ownership(p)).toBeNull();
+		expect(await ws.ownership(join(h.path, ".."))).toBeNull();
 	});
-}
+
+	test("fetchResult reports the tip once the run committed", async () => {
+		const { ws, work } = await make();
+		const h = await ws.seed("r2", "main");
+		const before = await ws.fetchResult(h);
+		expect(before.sha === null || before.sha === h.baseSha).toBe(true);
+		await work("r2", h, "b.txt");
+		const after = await ws.fetchResult(h);
+		expect(after.sha).not.toBeNull();
+		expect(after.sha).not.toBe(h.baseSha);
+	});
+
+	test("remove refuses unproven paths, then removes the workspace", async () => {
+		const { ws, root } = await make();
+		const h = await ws.seed("r3", "main");
+		await expect(
+			ws.remove({ ...h, path: join(root, "elsewhere") }, { force: true }),
+		).rejects.toThrow();
+		await ws.remove(h, { force: true });
+		expect(await ws.list()).not.toContain(h.path);
+		expect(await ws.ownership(h.path)).toBeNull();
+	});
+
+	test("archive and discard save the run's work on a wip branch", async () => {
+		const { ws, p, work } = await make();
+		const h = await ws.seed("r4", "main");
+		await work("r4", h, "b.txt");
+		await ws.fetchResult(h);
+		const { archive, removed } = await ws.discard(h, {
+			runId: "r4",
+			taskId: "T-1",
+		});
+		expect(removed).toBe(true);
+		expect(archive?.ref).toBe("wip/T-1-r4");
+		const tip = await git(["rev-parse", "refs/heads/wip/T-1-r4"], p);
+		expect(tip.stdout).toBe(archive?.sha ?? "");
+		const files = await git(["ls-tree", "-r", "--name-only", tip.stdout], p);
+		expect(files.stdout).toContain("b.txt");
+		expect(await ws.list()).not.toContain(h.path);
+		// A run that did nothing archives nothing.
+		const idle = await ws.seed("r5", "main");
+		expect((await ws.discard(idle, { runId: "r5" })).archive).toBeNull();
+	});
+});
 
 describe("CloneRunWorkspace", () => {
 	test("hasLocalChanges is true until the result is imported", async () => {
-		const { ws, work } = await make("clone");
+		const { ws, work } = await make();
 		const h = await ws.seed("c1", "main");
 		expect(await ws.hasLocalChanges(h)).toBe(true);
 		await expect(ws.remove(h, { force: false })).rejects.toThrow(/dirty/);
@@ -215,7 +186,7 @@ describe("CloneRunWorkspace", () => {
 	});
 
 	test("without a liveness proof nothing is imported", async () => {
-		const { p, home, work } = await make("clone");
+		const { p, home, work } = await make();
 		const ws = new CloneRunWorkspace(p, {
 			workspaceRoot: join(home, "workspaces"),
 		});
@@ -225,7 +196,7 @@ describe("CloneRunWorkspace", () => {
 	});
 
 	test("a run that is not confirmed dead is not imported", async () => {
-		const { p, home, work } = await make("clone");
+		const { p, home, work } = await make();
 		const ws = new CloneRunWorkspace(p, {
 			workspaceRoot: join(home, "workspaces"),
 			assertProcessesDead: () => {
@@ -241,7 +212,7 @@ describe("CloneRunWorkspace", () => {
 	});
 
 	test("the merge ref is the quarantine ref, and the run branch never reaches the primary", async () => {
-		const { ws, p, work } = await make("clone");
+		const { ws, p, work } = await make();
 		const h = await ws.seed("c4", "main");
 		await work("c4", h, "b.txt");
 		const res = await ws.fetchResult(h);
@@ -272,7 +243,7 @@ describe("CloneRunWorkspace", () => {
 			["abs symlink", (t) => symlink("/etc/passwd", join(t, "abs")), /symlink/],
 		];
 		for (const [name, tamper, msg] of cases) {
-			const { ws, p, home } = await make("clone");
+			const { ws, p, home } = await make();
 			const id = `v-${name.replace(/\W/g, "")}`;
 			const h = await ws.seed(id, "main");
 			const dir = join(home, "workspaces", id);
@@ -289,7 +260,7 @@ describe("CloneRunWorkspace", () => {
 	});
 
 	test("an in-tree relative symlink is accepted", async () => {
-		const { ws, home } = await make("clone");
+		const { ws, home } = await make();
 		const h = await ws.seed("ok1", "main");
 		const dir = join(home, "workspaces", "ok1");
 		const sb = new FakeSandbox(dir, "ok1");
@@ -320,7 +291,7 @@ function fingerprint(primaryRoot: string): string {
 
 describe("E3b: a tampered clone cannot reach the primary", () => {
 	test("hostile clone config and hooks run nothing, and the primary gitdir fingerprint is unchanged", async () => {
-		const { ws, p, home, work } = await make("clone");
+		const { ws, p, home, work } = await make();
 		const h = await ws.seed("e3b", "main");
 		await work("e3b", h, "b.txt");
 		const dir = join(home, "workspaces", "e3b");
@@ -370,20 +341,16 @@ describe("E3b: a tampered clone cannot reach the primary", () => {
 });
 
 describe("the factory", () => {
-	test("worktree by default, clone once the project is configured", async () => {
+	test("a configured project gets clones; an unconfigured one is refused", async () => {
 		const root = await tmp();
 		const p = await primary(root);
-		expect(createRunWorkspace(p).kind).toBe("worktree");
-		configureRunWorkspace(p, {
-			kind: "clone",
-			clone: { workspaceRoot: join(root, "ws") },
-		});
+		expect(() => createRunWorkspace(p)).toThrow("no run workspace settings");
+		configureRunWorkspace(p, { workspaceRoot: join(root, "ws") });
 		try {
-			expect(createRunWorkspace(p).kind).toBe("clone");
+			expect(createRunWorkspace(p)).toBeInstanceOf(CloneRunWorkspace);
 		} finally {
 			clearRunWorkspace(p);
 		}
-		expect(createRunWorkspace(p).kind).toBe("worktree");
-		expect(() => configureRunWorkspace(p, { kind: "clone" })).toThrow();
+		expect(() => createRunWorkspace(p)).toThrow("no run workspace settings");
 	});
 });

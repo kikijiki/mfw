@@ -104,9 +104,7 @@ const leaky = () =>
 		config: async () => ({
 			ok: true,
 			config: {
-				projects: [
-					{ name: "acme", root: "/home/user/acme", runWorkspace: "clone" },
-				],
+				projects: [{ name: "acme", root: "/home/user/acme" }],
 			},
 		}),
 		project: async () =>

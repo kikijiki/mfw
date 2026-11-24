@@ -610,7 +610,7 @@ describe("D. a failed run waits for the brain, which continues it", () => {
 		);
 		expect(runs.map((r) => r.id)).toEqual([runId]);
 
-		// The brain decides: continue it in the same worktree.
+		// The brain decides: continue its work.
 		await f.control({});
 		const cont = await f.act("spawn", {
 			taskId,
@@ -634,8 +634,11 @@ describe("D. a failed run waits for the brain, which continues it", () => {
 		expect(child).toMatchObject({
 			parentRunId: runId,
 			relation: "continue",
-			worktreePath: (await f.svc.registry.get(runId))?.worktreePath,
 		});
+		// Its own clone, seeded from the parent's imported work.
+		expect(child?.worktreePath).not.toBe(
+			(await f.svc.registry.get(runId))?.worktreePath,
+		);
 		expect(child?.initialPrompt).toContain("did not pass verification");
 		expect(child?.initialPrompt).toContain("Create feature.txt.");
 		expect((await f.svc.tasks.get(taskId))?.status).toBe("done");

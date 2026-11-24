@@ -7,13 +7,8 @@ import { DEV_SHELL_REFUSAL } from "../src/containment/agent-preflight.ts";
 describe("user-facing refusals name no internal work package", () => {
 	test("the dev-shell refusals", () => {
 		expect(DEV_SHELL_REFUSAL).not.toContain("P8");
-		for (const runWorkspace of ["worktree", "clone"] as const) {
-			const issue = isolationDispatchProblem({
-				runWorkspace,
-				hasDevShell: true,
-			});
-			expect(`${issue?.detail} ${issue?.fix}`).not.toContain("P8");
-		}
+		const issue = isolationDispatchProblem({ hasDevShell: true });
+		expect(`${issue?.detail} ${issue?.fix}`).not.toContain("P8");
 	});
 
 	test("no string literal in the refusal sources mentions it", () => {

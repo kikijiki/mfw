@@ -20,7 +20,7 @@ import type { ProcResult } from "../src/proc.ts";
 import {
 	clearRunWorkspace,
 	configureRunWorkspace,
-	createVerifierClones,
+	createCheckClones,
 } from "../src/run-workspace/factory.ts";
 import { createRoleClone } from "../src/run-workspace/role-clone.ts";
 import { SandboxUnavailableError } from "../src/sandbox.ts";
@@ -84,20 +84,9 @@ describe("a brain turn's command inside the sandbox", () => {
 });
 
 // Review P7, m1: a null here sent a clone's agent-writable path to the host.
-describe("verifier clones for a run", () => {
-	test("a clone run with no clone settings is refused", () => {
-		expect(() =>
-			createVerifierClones("/nonexistent-project", { workspaceKind: "clone" }),
-		).toThrow("no clone settings");
-	});
-
-	test("a worktree run still gets none", () => {
-		expect(
-			createVerifierClones("/nonexistent-project", {
-				workspaceKind: "worktree",
-			}),
-		).toBeNull();
-		expect(createVerifierClones("/nonexistent-project")).toBeNull();
+describe("verifier clones for a project", () => {
+	test("a project that never attached has none, so nothing is verified", () => {
+		expect(createCheckClones("/nonexistent-project")).toBeNull();
 	});
 });
 
@@ -128,8 +117,7 @@ describe("the reviewer's sandboxed path", () => {
 		await git(["branch", BRANCH], project);
 		tip = (await git(["rev-parse", "HEAD"], project)).stdout.trim();
 		configureRunWorkspace(project, {
-			kind: "worktree",
-			clone: { workspaceRoot: join(root, "mfw/workspaces") },
+			workspaceRoot: join(root, "mfw/workspaces"),
 		});
 	});
 

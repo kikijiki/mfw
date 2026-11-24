@@ -1,5 +1,5 @@
 import { rm } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { ProjectDbHandle } from "@mfw/db/client";
 import { ulid } from "@mfw/db/ids";
 import type { RunReasoningEffort, RunRelation, RunRole } from "@mfw/db/schema";
@@ -49,7 +49,6 @@ import {
 } from "./routing.ts";
 import { RunEventTail } from "./run-event-tail.ts";
 import type { RunRegistry, RunRow } from "./run-registry.ts";
-import { runWorkspaceKind } from "./run-workspace/factory.ts";
 import type { BwrapIsolation } from "./sandbox.ts";
 import {
 	runHoldsClaim,
@@ -1442,10 +1441,6 @@ export class RunEngine {
 				secretEnvironment?.names() ?? [],
 				workloadSecrets?.binding ?? null,
 			);
-			await this.deps.registry.recordWorkspaceKind(
-				run.id,
-				runWorkspaceKind(this.deps.projectRoot, run),
-			);
 			await this.deps.registry.recordApprovalMode(
 				run.id,
 				this.deps.defaults.approvalMode ?? "autonomous",
@@ -1472,6 +1467,15 @@ export class RunEngine {
 						MFW_TASK_ID: run.taskId ?? "",
 						MFW_RUN_KIND: run.kind,
 						MFW_REPORT_PATH: join(run.worktreePath, "MFW_REPORT.json"),
+						// The sandbox binds the clone's gitdir and sets these. An
+						// unsandboxed run gets the same, so its git never walks up
+						// out of the clone into a repository around it.
+						...(target.kind === "local" && !this.deps.isolation
+							? {
+									GIT_DIR: join(dirname(run.worktreePath), "git"),
+									GIT_WORK_TREE: run.worktreePath,
+								}
+							: {}),
 					},
 					model: run.model,
 					reasoningEffort:

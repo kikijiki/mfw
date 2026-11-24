@@ -9,10 +9,9 @@ import { readProjectFile } from "./containment/safe-file.ts";
  *
  * The board lives at the root of its board folder (`board.yaml`, `tasks/`,
  * `adrs/`, `templates/`), which is the repository root unless the project has a
- * `boardRoot`. Run worktrees (`worktree.ts`) and the merge firewall
- * (`merge-queue.ts`) are built from a bare repository path in many places, so
- * `boot` records the board's repository-relative paths in the daemon's own
- * state and both read them from there.
+ * `boardRoot`. The merge firewall (`merge-queue.ts`) is built from a bare
+ * repository path, so `boot` records the board's repository-relative paths in
+ * the daemon's own state and the firewall reads them from there.
  */
 
 /** What a repository gets before `boot` has recorded anything (fail closed). */

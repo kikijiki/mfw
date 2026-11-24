@@ -244,7 +244,12 @@ export async function snapshotWip(
 			} else {
 				await gitOk(env, ["read-tree", "HEAD"], idx);
 			}
-			await gitOk(env, ["add", "-A"], idx);
+			// The agent's report is mfw's to read, never part of the run's work.
+			await gitOk(
+				env,
+				["add", "-A", "--", ".", ":(exclude,top)MFW_REPORT.json"],
+				idx,
+			);
 			const tree = await gitOk(env, ["write-tree"], idx);
 			if (tree !== (await gitOk(env, ["rev-parse", "HEAD^{tree}"]))) {
 				const prefix = `refs/heads/mfw-wip/${env.runId}/`;

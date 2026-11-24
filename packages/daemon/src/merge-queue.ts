@@ -646,11 +646,10 @@ export class MergeQueue {
 	 * The mfw firewall: a run branch may change trigger definitions and nothing
 	 * else mfw owns.
 	 *
-	 * Sparse checkout (`worktree.ts`) keeps protected `.mfw/` paths out of run
-	 * worktrees; this catches what it cannot (older worktrees, `sparse-checkout
-	 * disable`, human edits on a feature branch). The danger is silent: git
-	 * follows a task rename and applies the branch's edit at the new path with
-	 * no conflict.
+	 * A run's clone holds the whole tracked tree, board included, so this is
+	 * the one place a run's edit to a protected path is undone (as is a human
+	 * edit on a feature branch). The danger is silent: git follows a task
+	 * rename and applies the branch's edit at the new path with no conflict.
 	 *
 	 * Protected set: every tracked path under `.mfw/` except `.mfw/triggers/`,
 	 * plus the board's own files (`board.yaml`, `tasks/`, `adrs/` at the root of

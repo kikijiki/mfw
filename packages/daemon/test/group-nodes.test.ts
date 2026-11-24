@@ -235,7 +235,7 @@ describe("groups.get and a person's select_winner", () => {
 });
 
 describe("reroute", () => {
-	test("stops the run keeping its worktree, then continues it on another model as a human decision", async () => {
+	test("stops the run keeping its work, then continues it on another model as a human decision", async () => {
 		fx = await groupFixture();
 		const f = fx;
 		await f.control({ slowMs: 30_000 });
@@ -276,11 +276,12 @@ describe("reroute", () => {
 			taskId,
 			relation: "continue",
 			parentRunId: oldId,
-			worktreePath: worktree,
 			model: "opus",
 			originRef: "human:ui",
 			spawnedByDecisionId: out.decisionId,
 		});
+		// A clone of its own, seeded from what the stopped run left.
+		expect(next?.worktreePath).not.toBe(worktree);
 		const [d] = await f.svc.handle.db
 			.select()
 			.from(decisions)

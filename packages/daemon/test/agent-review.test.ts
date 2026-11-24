@@ -64,10 +64,7 @@ async function repo(): Promise<{
 	await writeFile(join(runWt, "a.txt"), "changed\n");
 	await git(["commit", "-qam", "work"], runWt);
 	const workspaces = await mkdtemp(join(tmpdir(), "mfw-agent-review-ws-"));
-	configureRunWorkspace(root, {
-		kind: "worktree",
-		clone: { workspaceRoot: workspaces },
-	});
+	configureRunWorkspace(root, { workspaceRoot: workspaces });
 	return {
 		root,
 		runWt,

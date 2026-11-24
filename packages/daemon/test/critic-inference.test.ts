@@ -116,10 +116,7 @@ describe("the critic runs through the sandboxed reviewer launch", () => {
 		await mkdir(project);
 		await mkdir(home);
 		await writeFile(join(project, "secret.txt"), "project file\n");
-		configureRunWorkspace(project, {
-			kind: "worktree",
-			clone: { workspaceRoot: join(home, "workspaces") },
-		});
+		configureRunWorkspace(project, { workspaceRoot: join(home, "workspaces") });
 	});
 	afterEach(() => clearRunWorkspace(project));
 

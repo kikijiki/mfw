@@ -53,10 +53,7 @@ beforeEach(async () => {
 	mkdirSync(primary);
 	await gitOk(["init", "-q", "-b", "main"], primary);
 	baseSha = await commit("base");
-	configureRunWorkspace(primary, {
-		kind: "clone",
-		clone: { workspaceRoot: workspaces },
-	});
+	configureRunWorkspace(primary, { workspaceRoot: workspaces });
 });
 
 afterEach(() => {

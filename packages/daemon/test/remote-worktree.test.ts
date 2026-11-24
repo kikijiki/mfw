@@ -20,7 +20,6 @@ import {
 	RemoteCollectionConflictError,
 	RemoteWorkspaceError,
 } from "../src/remote-worktree.ts";
-import { WorktreeManager } from "../src/worktree.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -48,8 +47,11 @@ async function fixture() {
 	await gitOk(["add", "-A"], root);
 	await gitOk(["commit", "-m", "base"], root);
 	const baseSha = await gitOk(["rev-parse", "HEAD"], root);
-	const manager = new WorktreeManager(root);
-	const worktree = await manager.create("run-97", "main");
+	// The canonical local tree is a plain checkout of the base on the run branch.
+	const path = join(root, "canonical");
+	await gitOk(["clone", "-q", "--no-hardlinks", root, path], root);
+	await gitOk(["checkout", "-q", "-b", "mfw/run-97"], path);
+	const worktree = { path, branch: "mfw/run-97", baseSha };
 	const runDir = join(root, "run-dir");
 	await mkdir(runDir, { recursive: true });
 	return { root, baseSha, worktree, runDir };

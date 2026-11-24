@@ -6,14 +6,10 @@ import { appendEvent, type EventBus } from "@mfw/db/eventlog";
 import { engineKv, events as eventRows } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
 import { runEventsPath } from "./containment/run-dir.ts";
-import { git, gitComplete } from "./git.ts";
+import { git } from "./git.ts";
 import type { Logger } from "./log.ts";
 import { loadReopenPolicies, reopenDefinitionHash } from "./reopen-policy.ts";
-import {
-	CLAIM_HOLDING_RUN_STATES,
-	type RunRegistry,
-	type RunRow,
-} from "./run-registry.ts";
+import { CLAIM_HOLDING_RUN_STATES, type RunRegistry } from "./run-registry.ts";
 import {
 	createCheckClones,
 	createRunWorkspace,
@@ -202,9 +198,7 @@ export const REOPEN_CHECK_INTERVAL_MS = 10 * 60_000;
 
 export interface GcResult {
 	runDirsPruned: number;
-	worktreesRemoved: number;
-	/** Merged `mfw/<runId>` branches of finished runs (never `wip/*`). */
-	branchesDeleted: number;
+	workspacesRemoved: number;
 }
 
 export class Maintenance {
@@ -1207,7 +1201,7 @@ export class Maintenance {
 			runDirsPruned++;
 		}
 
-		// --- worktrees + branches ---
+		// --- run workspaces ---
 		const wm = createRunWorkspace(this.deps.projectRoot);
 		const liveStates = new Set<string>([
 			"starting",
@@ -1244,10 +1238,9 @@ export class Maintenance {
 			...[...preserved].map((path) => resolve(path)),
 		]);
 
-		// Git lists every repository worktree; only those with the durable identity
-		// from RunWorkspace.seed() (`<repo>/worktrees/<runId>` on branch
-		// `mfw/<runId>`) are removable. The creator row supplies the base SHA, so
-		// manual/IDE/terminal-manager worktrees are never candidates.
+		// Only a workspace with the durable identity from RunWorkspace.seed()
+		// (`$MFW_HOME/workspaces/<runId>`, branch `mfw/<runId>`) whose creator row
+		// matches is removable.
 		const registered = new Set((await wm.list()).map((path) => resolve(path)));
 		const ownedCandidates = new Map<
 			string,
@@ -1274,31 +1267,34 @@ export class Maintenance {
 			});
 		}
 
-		let worktreesRemoved = 0;
+		let workspacesRemoved = 0;
 		for (const [path, owned] of ownedCandidates) {
 			if (keepPaths.has(path)) continue;
 
-			// Never erase work: preserve a dirty tree or a branch whose tip has not landed. GC is not a finalizer.
+			// Never erase work: preserve a clone whose result was never imported,
+			// or whose imported tip has not landed. GC is not a finalizer.
+			// The first read performs the end-of-run import. The newest work
+			// includes the WIP snapshot of anything left uncommitted.
+			const imported = await wm
+				.fetchResult({ path, ...owned })
+				.then(() => wm.newestWorkOf({ path }))
+				.catch(() => null);
 			const localChanges = await wm.hasLocalChanges({ path }).catch(() => true);
-			// A clone's HEAD is agent-written; only a linked worktree's is asked.
-			const onBranch =
-				wm.kind === "clone" ||
-				(await git(["symbolic-ref", "--short", "HEAD"], path).then(
-					(b) => b.exitCode === 0 && b.stdout.trim() === owned.branch,
-				));
-			const integrated = await git(
-				[
-					"merge-base",
-					"--is-ancestor",
-					owned.branch,
-					this.deps.integrationBranch,
-				],
-				this.deps.projectRoot,
-			);
-			if (localChanges || !onBranch || integrated.exitCode !== 0) {
+			const integrated = imported
+				? await git(
+						[
+							"merge-base",
+							"--is-ancestor",
+							imported,
+							this.deps.integrationBranch,
+						],
+						this.deps.projectRoot,
+					)
+				: null;
+			if (localChanges || integrated?.exitCode !== 0) {
 				this.deps.log.warn(
 					{ path, branch: owned.branch },
-					"preserving MFW worktree because clean integrated state is not proven",
+					"preserving a run workspace: its result is not proven landed",
 				);
 				continue;
 			}
@@ -1311,78 +1307,13 @@ export class Maintenance {
 			} catch (error) {
 				this.deps.log.warn(
 					{ path, error },
-					"preserving MFW worktree because Git refused removal",
+					"preserving a run workspace: its removal was refused",
 				);
 				continue;
 			}
-			worktreesRemoved++;
+			workspacesRemoved++;
 		}
-		await git(["worktree", "prune"], this.deps.projectRoot);
-
-		const branchesDeleted = await this.gcMergedBranches(
-			allRuns,
-			liveRuns,
-			keepPaths,
-		);
-		return { runDirsPruned, worktreesRemoved, branchesDeleted };
-	}
-
-	/**
-	 * Delete `mfw/<runId>` branches that can lose nothing: the run row exists
-	 * and is finished, no worktree has the branch checked out, nothing keeps
-	 * the run's worktree (live, preserved, awaiting a human), and the tip is
-	 * already contained in the integration branch. Deletion is
-	 * compare-and-delete on the tip just checked. `wip/*` and every other
-	 * namespace are never touched; an unmerged branch is never deleted.
-	 */
-	private async gcMergedBranches(
-		allRuns: RunRow[],
-		liveRuns: RunRow[],
-		keepPaths: Set<string>,
-	): Promise<number> {
-		const root = this.deps.projectRoot;
-		const refs = await git(
-			["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/mfw/"],
-			root,
-		);
-		if (refs.exitCode !== 0 || !refs.stdout) return 0;
-		// A cut list could leave a checked-out branch looking free to delete.
-		const worktrees = await gitComplete(
-			["worktree", "list", "--porcelain"],
-			root,
-		).catch(() => null);
-		if (worktrees === null) return 0;
-		const checkedOut = new Set(
-			worktrees
-				.split("\n")
-				.filter((line) => line.startsWith("branch "))
-				.map((line) => line.slice("branch ".length)),
-		);
-		const byId = new Map(allRuns.map((run) => [run.id, run]));
-		const live = new Set(liveRuns.map((run) => run.id));
-		let deleted = 0;
-		for (const line of refs.stdout.split("\n")) {
-			const [ref, sha] = line.split(" ");
-			if (!ref || !sha || checkedOut.has(ref)) continue;
-			const runId = ref.slice("refs/heads/mfw/".length);
-			const run = byId.get(runId);
-			if (!run || run.branch !== `mfw/${runId}` || live.has(run.id)) continue;
-			if (run.worktreePath && keepPaths.has(resolve(run.worktreePath)))
-				continue;
-			const integrated = await git(
-				[
-					"merge-base",
-					"--is-ancestor",
-					sha,
-					`refs/heads/${run.integrationBranch ?? this.deps.integrationBranch}`,
-				],
-				root,
-			);
-			if (integrated.exitCode !== 0) continue;
-			const removed = await git(["update-ref", "-d", ref, sha], root);
-			if (removed.exitCode === 0) deleted++;
-		}
-		return deleted;
+		return { runDirsPruned, workspacesRemoved };
 	}
 
 	/**

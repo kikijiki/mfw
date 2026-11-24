@@ -12,6 +12,7 @@ import type { StoredBrainConfig } from "../../src/config.ts";
 import { git } from "../../src/git.ts";
 import { silentLogger } from "../../src/log.ts";
 import type { Orchestrator, ProjectServices } from "../../src/services.ts";
+import { useHostSnapshots } from "./host-snapshot.ts";
 import { TEST_TMUX_SOCKET } from "./tmux-test-socket.ts";
 
 export const FAKE_CLAUDE = join(
@@ -112,6 +113,8 @@ export async function brainFixture(
 			log: silentLogger(),
 		});
 		svc = orchestrator.get(config.name);
+		// Scripted agents run unsandboxed: the end-of-run snapshot runs on the host.
+		useHostSnapshots(config.root);
 		// The real adapter argv, with the CLI swapped for the fake.
 		const adapters = (
 			svc.engine as unknown as { deps: { adapters: AdapterRegistry } }

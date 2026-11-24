@@ -104,7 +104,6 @@ describe("config: agentIsolation none needs interactive approvals (X5)", () => {
 		const refusal = await agentSandboxRefusal({
 			approvalMode: "autonomous",
 			isolation: undefined,
-			runWorkspace: "worktree",
 			projectRoot: "/nonexistent",
 			mfwHome: "/nonexistent",
 		});

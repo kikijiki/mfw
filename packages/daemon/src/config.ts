@@ -251,7 +251,7 @@ const projectSchema = z.object({
 	 * tracked in a separate docs checkout like `~/docs/projects/app`.
 	 * Defaults to `root`. Irrelevant to the standalone `board` CLI, which only
 	 * ever cares about wherever its `board.yaml` is; this only matters for the
-	 * service, which also needs to know the code repo for worktrees/git. */
+	 * service, which also needs to know the code repo for runs and git. */
 	boardRoot: z.string().min(1).optional(),
 	integrationBranch: z.string().optional(),
 	/** Display options: a curated icon key or a 1-2 character mark, and a swatch key (`project-appearance.ts`). Absent = derived from the name. */
@@ -357,13 +357,6 @@ const projectSchema = z.object({
 			totalBytes: z.number().int().positive().optional(),
 		})
 		.optional(),
-	/**
-	 * Where a run's files live: a git `worktree` under the project (default),
-	 * or a private `clone` under `$MFW_HOME/workspaces` whose result the host
-	 * imports as a verified bundle (`run-workspace/clone-impl.ts`). Experimental
-	 * until the clone paths of the WIP, verifier and conflict-rebase work land.
-	 */
-	runWorkspace: z.enum(["worktree", "clone"]).optional(),
 	/** Failed expansion runs before a `draft` is marked failed (see `TaskService.recordDraftExpandFailure`). */
 	draftExpandMaxAttempts: z.number().int().positive().optional(),
 	/** Budget for draft expansion runs, separate from `maxConcurrent` like `maxConcurrentTriggers`. */
@@ -407,29 +400,16 @@ export function isolationConfigProblem(p: {
 /**
  * Why the preflight will refuse every sandboxed launch of this project, with
  * the exact fix, or null. Separate from `isolationConfigProblem`, which vets
- * what may be written: the default config lands here, and it must stay
- * attachable so the owner can see this and change it. Reported, never fixed
- * for them: the default workspace is the owner's decision.
+ * what may be written: such a project must stay attachable so the owner can
+ * see this and act on it.
  */
 export function isolationDispatchProblem(p: {
 	agentIsolation?: "none" | "bwrap";
 	approvalMode?: "autonomous" | "interactive";
-	runWorkspace?: "worktree" | "clone";
 	hasDevShell?: boolean;
 }): { detail: string; fix: string } | null {
 	// `none` is the other rule's case: refused if autonomous, allowed if not.
 	if (p.agentIsolation === "none") return null;
-	if ((p.runWorkspace ?? "worktree") !== "clone") {
-		return {
-			detail:
-				'agentIsolation "bwrap" with runWorkspace "worktree": sandboxed runs need a private clone, so no run of this project can start.',
-			fix: `Add "runWorkspace": "clone" to this project's entry in $MFW_HOME/config.json and restart the daemon.${
-				p.hasDevShell
-					? " This project also has an .envrc, which is refused until dev shells work in the sandbox or the file is removed."
-					: ""
-			}`,
-		};
-	}
 	if (p.hasDevShell) {
 		return {
 			detail:
@@ -511,7 +491,6 @@ export const PROJECT_DEFAULTS = {
 	pushOnMerge: true,
 	pushRemote: "origin",
 	agentIsolation: "bwrap",
-	runWorkspace: "worktree" as const,
 	// Enough to rule out a blip without leaving a draft unusable through an outage.
 	draftExpandMaxAttempts: 3,
 	// Read-only planning; should not serialize a capture burst.

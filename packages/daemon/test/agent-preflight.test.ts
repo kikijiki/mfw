@@ -28,7 +28,6 @@ afterEach(() => rmSync(base, { recursive: true, force: true }));
 const input = (over = {}) => ({
 	approvalMode: "autonomous" as const,
 	isolation,
-	runWorkspace: "clone" as const,
 	projectRoot: base,
 	mfwHome: join(base, "mfw"),
 	...over,
@@ -72,18 +71,6 @@ describe("agentSandboxRefusal", () => {
 			deps().value,
 		);
 		expect(r?.code).toBe("sandbox_unavailable");
-	});
-
-	test.each([
-		"autonomous",
-		"interactive",
-	] as const)("a %s sandboxed run on a worktree is refused with the fix", async (approvalMode) => {
-		const r = await agentSandboxRefusal(
-			input({ approvalMode, runWorkspace: "worktree" }),
-			deps().value,
-		);
-		expect(r?.code).toBe("sandbox_unavailable");
-		expect(r?.detail).toContain('"runWorkspace": "clone"');
 	});
 
 	test("a project with an .envrc is refused and the file is not read", async () => {

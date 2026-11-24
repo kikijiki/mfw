@@ -37,7 +37,6 @@ export interface AgentPreflightRefusal {
 export interface AgentPreflightInput {
 	approvalMode: "autonomous" | "interactive";
 	isolation: BwrapIsolation | undefined;
-	runWorkspace: "worktree" | "clone";
 	projectRoot: string;
 	mfwHome: string;
 }
@@ -179,13 +178,6 @@ export async function agentSandboxRefusal(
 		return input.approvalMode === "autonomous"
 			? { code: "sandbox_unavailable", detail: "agentIsolation is none" }
 			: null;
-	}
-	if (input.runWorkspace !== "clone") {
-		return {
-			code: "sandbox_unavailable",
-			detail:
-				'runWorkspace is "worktree": sandboxed runs need a private clone, so set "runWorkspace": "clone" for this project',
-		};
 	}
 	if (needsDevShell(input.projectRoot)) {
 		return { code: "sandbox_unavailable", detail: DEV_SHELL_REFUSAL };

@@ -52,10 +52,7 @@ beforeEach(async () => {
 	await repo(project);
 	await repo(other);
 	for (const p of [project, other]) {
-		configureRunWorkspace(p, {
-			kind: "worktree",
-			clone: { workspaceRoot: workspaces },
-		});
+		configureRunWorkspace(p, { workspaceRoot: workspaces });
 	}
 });
 

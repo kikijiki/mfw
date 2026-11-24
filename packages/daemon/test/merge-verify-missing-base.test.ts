@@ -36,7 +36,7 @@ test("a merge whose run has no base commit is not verified, so it does not land"
 	await git(["checkout", "-q", "main"], root);
 	await writeFile(
 		join(home, "config.json"),
-		JSON.stringify({ projects: [{ name: "p", root, runWorkspace: "clone" }] }),
+		JSON.stringify({ projects: [{ name: "p", root }] }),
 	);
 	const orch = await boot({
 		projects: toBootProjects(await loadConfig(home)),

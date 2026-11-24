@@ -26,13 +26,11 @@ import {
 	type RunRegistry,
 	type RunRow,
 } from "./run-registry.ts";
-import { CloneRunWorkspace } from "./run-workspace/clone-impl.ts";
-import { runWorkspaceKind, workspaceForRun } from "./run-workspace/factory.ts";
+import { createRunWorkspace } from "./run-workspace/factory.ts";
 import { cloneScopeFiles } from "./run-workspace/scope-files.ts";
 import {
 	asScopeSample,
 	assessScope,
-	changedFiles,
 	DEFAULT_SCOPE_POLICY,
 	foreignClaims,
 	type ScopeOwners,
@@ -654,7 +652,7 @@ export class Supervisor {
 	): Promise<void> {
 		if (policy.mode === "off") return;
 		if (run.kind !== "task" && run.kind !== "repair") return;
-		// Remote targets have no local worktree to sample (deferred).
+		// Remote targets have no local workspace to sample (deferred).
 		if (run.executionTarget !== "local") return;
 		if (!run.worktreePath || !run.baseSha) return;
 		const now = this.now();
@@ -665,15 +663,14 @@ export class Supervisor {
 		try {
 			const sampler =
 				this.deps.scopeFiles ??
-				(() => {
-					const workspace = workspaceForRun(this.deps.projectRoot, run);
-					return workspace instanceof CloneRunWorkspace
-						? (wt: string, base: string) =>
-								cloneScopeFiles(workspace, this.deps.projectRoot, wt, base, {
-									timeoutMs: SCOPE_WIP_TIMEOUT_MS,
-								})
-						: changedFiles;
-				})();
+				((wt: string, base: string) =>
+					cloneScopeFiles(
+						createRunWorkspace(this.deps.projectRoot),
+						this.deps.projectRoot,
+						wt,
+						base,
+						{ timeoutMs: SCOPE_WIP_TIMEOUT_MS },
+					));
 			const listed = await sampler(run.worktreePath, run.baseSha);
 			sample = assessScope(
 				listed.files,
@@ -716,7 +713,6 @@ export class Supervisor {
 		policy: ScopePolicy,
 		now: number,
 	): Promise<void> {
-		if (runWorkspaceKind(this.deps.projectRoot, run) !== "clone") return;
 		const seen = this.scopeFailures.get(run.id);
 		if (seen && now - seen.at < policy.sampleMs) return;
 		const count = (seen?.count ?? 0) + 1;

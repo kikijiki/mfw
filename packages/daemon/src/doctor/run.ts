@@ -708,7 +708,7 @@ async function projectChecks(
 			});
 			return issue
 				? problem("blocker", issue.detail, issue.fix)
-				: ok(`run workspace: ${entry.runWorkspace ?? "worktree"}`);
+				: ok("runs can be dispatched in a private clone");
 		}),
 		at("push", () => pushCheck(entry, facts)),
 		at("triggers", () => triggersCheck(facts)),
