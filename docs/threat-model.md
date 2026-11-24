@@ -145,6 +145,7 @@ See [verifier-sandbox.md](verifier-sandbox.md).
 | Control | Mechanism | Code |
 | --- | --- | --- |
 | Owner auth | setup token, argon2id password, revocable server-side sessions, throttling | `packages/daemon/src/auth/service.ts` |
+| Passkeys | WebAuthn with user verification required, attestation not trusted, single-use server-side challenges, counter-regression refusal, RP ID from the trusted external origin, the password's throttle | `packages/daemon/src/auth/webauthn.ts`, `packages/daemon/src/auth/passkeys.ts`, `apps/start/src/server/passkey-origin.ts` |
 | Request guard | exact Host and Origin checks | `apps/start/src/server/request-guard.ts` |
 | Session guard | cookie plus a per-session request key, because cookies are shared across ports | `apps/start/src/server/auth-guard.ts` |
 | Bind policy | non-loopback needs TLS or a trusted proxy, and wildcard binds are refused | `apps/start/src/server/exposure.ts` |
@@ -210,6 +211,10 @@ This group is any other process of any local user, an unsandboxed
 - **Owner session:** treat this as code execution on the host. An owner can set
   notify commands, check prefixes and merge checks, arm triggers, and approve
   cards. Revoke with `mfw auth sign-out-everywhere`, or change the password.
+  A stolen session cannot add a passkey: that needs the password or an existing
+  passkey again. It can revoke passkeys, which the password undoes.
+- **Passkey:** a synced passkey is as safe as the account that syncs it. Revoke
+  it with `mfw auth passkey revoke`, which also ends the sessions it opened.
 - **Scoped token:** limited to its scopes and project until it expires. A
   `board:write` token cannot cause work to start, and its text is permanently
   marked untrusted. A `runs:act` token can start and stop task runs. Revoke with
@@ -257,6 +262,7 @@ is acceptable for your setup.
 | R15 | **Browser origin.** Script on the mfw origin could read the request key, and a sibling HTTPS port on the same name can sign you out | Session misuse, or a nuisance sign-out | CSP, nothing rendered as raw HTML, and a dedicated origin ([exposure.md](exposure.md)) |
 | R16 | **The fleet write allowlist is provisional** (`unattested-config`) and has not been audited against authenticated CLIs. Files in the config root are read-only, which may stop a CLI saving a refreshed login | Runs may fail on login refresh | Per-run private session directories |
 | R17 | **Token rate limits live in memory** and reset on restart | A short extra burst after a restart | Scopes, expiry, audit log |
+| R18 | **Passkey challenges live in memory.** A trusted loopback proxy lets a local process forge clients and keep the shared pool of proxied passkey challenges full | Passkey sign-in through that proxy is delayed; password sign-in is not | Per-source and pooled caps, two-minute expiry, the private unix socket (R1) |
 
 ## Not yet verified
 
@@ -267,6 +273,8 @@ These protections exist in code but have not been exercised end to end:
 - real Claude Code and Codex CLIs through the probe, launch, resume and import
   path under the full profile, including token refresh;
 - a real `tailscale serve`, on two devices and over IPv6;
+- passkeys on real authenticators and browsers other than Chrome (tested with
+  Chrome's virtual authenticator and a software authenticator only);
 - Ubuntu with its AppArmor user-namespace restriction, and distributions other
   than NixOS;
 - the egress allowlist against what authenticated CLIs actually contact;

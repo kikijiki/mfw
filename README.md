@@ -302,6 +302,8 @@ Run these on the host, outside any agent sandbox:
 | `mfw auth sign-out-everywhere` | revoke every session, including a stolen one |
 | `mfw auth setup-token` | issue a new first-run token (before an owner exists) |
 | `mfw auth token ...` | create, list and revoke API tokens (see below) |
+| `mfw auth passkey list` | show registered passkeys: name, created, last used |
+| `mfw auth passkey revoke <id>` | remove a passkey and sign out the sessions it opened |
 | `mfw auth reset --yes` | forget the password and all sessions, then repeat setup |
 
 Failed sign-ins are limited per address (behind a trusted proxy, per forwarded
@@ -313,6 +315,28 @@ your limit. An unsandboxed run
 
 To change the password, use Settings > Session. It asks for the current password
 and signs out every other session.
+
+#### Passkeys
+
+**[Experimental](docs/experimental.md#passkeys)** until reviewed. A passkey is an
+extra way for the owner to sign in; the password stays, and `mfw auth reset` is
+still the recovery. Add one under Settings > Passkeys: it asks for the password
+(or an existing passkey) again first. The login page then offers **Sign in with a
+passkey**, which opens the same kind of session as the password.
+
+- Passkeys work on `http://localhost:<port>` and on an HTTPS name listed in
+  `MFW_ALLOWED_HOSTS` (directly or through a trusted proxy). They are refused on a
+  bare IP address such as `127.0.0.1`, and on plain HTTP anywhere else. A passkey
+  belongs to the name it was added on, so one added on `localhost` does not work
+  on your tailnet name, and the other way round.
+- The device must verify you (PIN, fingerprint or face); a key that only checks
+  presence is refused. Attestation is not requested, so any authenticator works.
+- A passkey whose signature counter goes backwards is refused as a possible copy,
+  and the server log names it. Revoke it if that was not you.
+- Changing the password or signing out everywhere ends passkey sessions too, but
+  keeps the passkeys. Revoking a passkey ends the sessions it signed in; use
+  sign-out-everywhere to also revoke API tokens.
+- Failed passkey sign-ins count against the same per-address limit as passwords.
 
 `mfw auth reset` refuses while the server or any agent session is running (it finds
 tmux sockets itself, whatever your shell's environment says, and refuses if unsure), because

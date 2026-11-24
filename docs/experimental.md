@@ -11,6 +11,7 @@ cannot afford to lose.
 | [RunPod](#remote-targets-ssh-and-runpod) | off by default, never autonomous | `MFW_EXPERIMENTAL_REMOTE=1` plus account setup | same, and it spends money |
 | [ACP agents](#acp-agents) | unsandboxed only | `agentIsolation: "none"`, `approvalMode: "interactive"` | run as your user |
 | [Scoped API tokens](#scoped-api-tokens) | on, awaiting outside review | `mfw auth token create` | no second-party review yet |
+| [Passkeys](#passkeys) | on, awaiting review | Settings > Passkeys | Chrome's virtual authenticator only |
 | [Clone workspaces](#clone-workspaces) | required for sandboxed runs, not yet the default | `"runWorkspace": "clone"` | default flip is pending |
 | [Host-run triggers](#host-run-triggers) | inert until armed | arm in the Triggers view | run as your user |
 | [Tailscale and proxy exposure](#tailscale-and-proxy-exposure) | opt-in | `MFW_LISTEN_SOCKET`, `MFW_TRUSTED_PROXIES` | not run against a real `tailscale serve` |
@@ -41,6 +42,13 @@ transports, because they could read the machine while handling untrusted text.
 Tokens for MCP clients and scripts have had an internal security review. They
 stay labelled experimental until a second party reviews them. Prefer short
 lifetimes and the narrowest scope.
+
+## Passkeys
+
+Passkey sign-in is verified by mfw's own WebAuthn code (ES256 and EdDSA), tested
+with a software authenticator and Chrome's virtual authenticator. It has not been
+reviewed or tried on real devices. RSA keys (RS256), which some older Windows
+Hello setups create, are not accepted. The password always keeps working.
 
 ## Clone workspaces
 
