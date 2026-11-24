@@ -3,6 +3,7 @@ import {
 	type AuthService,
 	type AuthSource,
 	isAuthRefused,
+	type PasskeyChoice,
 } from "@mfw/daemon/auth/service";
 import {
 	appBase,
@@ -321,6 +322,8 @@ export async function handleAuthAction(
 				body.next,
 				guarded.session.sessionId,
 				peer,
+				// Absent means the default: delete every passkey.
+				(body.passkeys ?? "revoke-all") as PasskeyChoice,
 			);
 			return jsonResponse(200, { ok: true });
 		} catch (e) {

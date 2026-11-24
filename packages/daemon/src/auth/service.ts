@@ -125,6 +125,19 @@ export interface PasskeyInfo {
 	createdBySession: string | null;
 }
 
+/** What a password change does to passkeys; see `changePassword`. */
+export type PasskeyChoice = "revoke-all" | "keep" | readonly string[];
+
+export function isPasskeyChoice(v: unknown): v is PasskeyChoice {
+	return (
+		v === "revoke-all" ||
+		v === "keep" ||
+		(Array.isArray(v) &&
+			v.length <= MAX_PASSKEYS &&
+			v.every((id) => typeof id === "string" && id.length <= 64))
+	);
+}
+
 /** What re-verifies the owner before a passkey is added. */
 export type PasskeyProof =
 	| { password: string }
@@ -664,7 +677,18 @@ export class AuthService {
 		next: string,
 		keepSessionId: string,
 		source?: AuthSource,
+		/**
+		 * What happens to passkeys: all deleted (the default: a password change
+		 * is an eviction, and a thief may have added one), all kept, or only the
+		 * listed ids kept. Never kept implicitly.
+		 */
+		passkeys: PasskeyChoice = "revoke-all",
 	): Promise<void> {
+		if (!isPasskeyChoice(passkeys))
+			throw new AuthRefused(
+				"invalid_request",
+				"passkeys must be 'revoke-all', 'keep' or a list of passkey ids to keep",
+			);
 		if (!(await this.hasOwner()))
 			throw new AuthRefused("setup_required", "finish first-run setup");
 		const scope = `login:${throttleSource(sourceAddress(source))}`;
@@ -705,6 +729,22 @@ export class AuthService {
 							RETURNING id`,
 						args: [now, owner.id, owner.epoch + 1, hash],
 					},
+					...(passkeys === "keep"
+						? []
+						: [
+								{
+									sql: `DELETE FROM passkeys
+										WHERE id NOT IN (SELECT value FROM json_each(?))
+										AND EXISTS (SELECT 1 FROM principals WHERE id = ? AND credential_epoch = ? AND password_hash = ?)`,
+									args: [
+										JSON.stringify(passkeys === "revoke-all" ? [] : passkeys),
+										owner.id,
+										owner.epoch + 1,
+										hash,
+									],
+								},
+								"DELETE FROM passkey_notices WHERE passkey_id NOT IN (SELECT id FROM passkeys)",
+							]),
 				],
 				"write",
 			);

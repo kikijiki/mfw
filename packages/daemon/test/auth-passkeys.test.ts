@@ -525,17 +525,66 @@ describe("sign-in", () => {
 });
 
 describe("credential epoch and revocation", () => {
-	test("a password change revokes passkey sessions and keeps the passkeys", async () => {
-		await addPasskey();
-		const viaPasskey = await passkeyLogin();
+	test("a password change deletes every passkey by default", async () => {
+		const cred = await addPasskey();
+		const viaPasskey = await passkeyLogin({ use: cred });
 		await auth.changePassword(
 			PASSWORD,
 			"another long password",
 			owner.sessionId,
 		);
 		expect(await auth.authenticate(viaPasskey.token)).toBeNull();
+		expect(await auth.listPasskeys()).toEqual([]);
+		expect(await code(passkeyLogin({ use: cred }))).toBe("passkey_refused");
+		// The session that changed it stays.
+		expect(await auth.authenticate(owner.token)).not.toBeNull();
+	});
+
+	test("a password change with 'keep' keeps them all, and still ends their sessions", async () => {
+		const cred = await addPasskey();
+		const viaPasskey = await passkeyLogin({ use: cred });
+		await auth.changePassword(
+			PASSWORD,
+			"another long password",
+			owner.sessionId,
+			undefined,
+			"keep",
+		);
+		expect(await auth.authenticate(viaPasskey.token)).toBeNull();
 		expect(await auth.listPasskeys()).toHaveLength(1);
-		expect((await passkeyLogin()).token).toBeString();
+		expect((await passkeyLogin({ use: cred })).token).toBeString();
+	});
+
+	test("a password change with a list keeps exactly those passkeys", async () => {
+		await addPasskey({}, "a");
+		await addPasskey({}, "b");
+		await addPasskey({}, "c");
+		const ids = (await auth.listPasskeys()).map((p) => p.id);
+		await auth.changePassword(
+			PASSWORD,
+			"another long password",
+			owner.sessionId,
+			undefined,
+			[ids[0] as string, ids[2] as string, "pk_unknown"],
+		);
+		expect((await auth.listPasskeys()).map((p) => p.name)).toEqual(["a", "c"]);
+	});
+
+	test("a malformed passkey choice changes nothing", async () => {
+		await addPasskey();
+		expect(
+			await code(
+				auth.changePassword(
+					PASSWORD,
+					"another long password",
+					owner.sessionId,
+					undefined,
+					[42] as never,
+				),
+			),
+		).toBe("invalid_request");
+		expect(await code(auth.login(PASSWORD))).toBe("ok");
+		expect(await auth.listPasskeys()).toHaveLength(1);
 	});
 
 	test("sign out everywhere deletes every passkey: a passkey sign-in then fails", async () => {

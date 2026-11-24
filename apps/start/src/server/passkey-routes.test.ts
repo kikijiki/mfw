@@ -248,6 +248,40 @@ describe("passkey sign-in over HTTP", () => {
 		expect((await login(soft)).status).toBe(401);
 	});
 
+	test("a password change over HTTP deletes passkeys unless told which to keep", async () => {
+		const soft = new SoftAuthenticator(ORIGIN);
+		await register(soft);
+		await register(soft);
+		const [keep] = await auth.listPasskeys();
+		const kept = await call("password", {
+			body: {
+				current: PASSWORD,
+				next: "a second long password",
+				passkeys: [keep?.id],
+			},
+		});
+		expect(kept.status).toBe(200);
+		expect((await auth.listPasskeys()).map((p) => p.id)).toEqual([
+			keep?.id as string,
+		]);
+		const bad = await call("password", {
+			body: {
+				current: "a second long password",
+				next: "a third long password!",
+				passkeys: "maybe",
+			},
+		});
+		expect(bad.status).toBe(400);
+		const plain = await call("password", {
+			body: {
+				current: "a second long password",
+				next: "a third long password!",
+			},
+		});
+		expect(plain.status).toBe(200);
+		expect(await auth.listPasskeys()).toEqual([]);
+	});
+
 	test("revoke over HTTP ends that passkey's sessions", async () => {
 		const soft = new SoftAuthenticator(ORIGIN);
 		await register(soft);

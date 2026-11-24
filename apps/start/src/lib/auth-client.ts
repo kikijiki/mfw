@@ -263,10 +263,14 @@ export const revokeApiToken = async (id: string): Promise<void> => {
 	await tokenCall("token-revoke", { id });
 };
 
-/** Change the password. Every other session is revoked by the server. */
+/**
+ * Change the password. Every other session is revoked by the server, and
+ * passkeys are deleted unless `passkeys` is "keep" or the ids to keep.
+ */
 export async function changePassword(
 	current: string,
 	next: string,
+	passkeys: "revoke-all" | "keep" | string[] = "revoke-all",
 ): Promise<void> {
 	const res = await fetch(authUrl("password"), {
 		method: "POST",
@@ -276,7 +280,7 @@ export async function changePassword(
 			"content-type": "application/json",
 			"x-mfw-auth": "1",
 		},
-		body: JSON.stringify({ current, next }),
+		body: JSON.stringify({ current, next, passkeys }),
 	});
 	if (res.ok) return;
 	const data = (await res.json().catch(() => null)) as {
@@ -302,6 +306,8 @@ export interface Passkey {
 	lastUsedAt: number | null;
 	backedUp: boolean;
 	discoverable: boolean | null;
+	/** Where it was added from; null for passkeys older than this record. */
+	createdFrom: string | null;
 }
 
 export function passkeysSupported(): boolean {
