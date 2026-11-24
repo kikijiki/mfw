@@ -16,6 +16,7 @@
   lib,
   stdenvNoCC,
   bun,
+  nodejs,
   src,
   version,
   gitRev ? "unknown",
@@ -61,12 +62,16 @@ in
   stdenvNoCC.mkDerivation {
     pname = "mfw";
     inherit version src;
-    nativeBuildInputs = [bun];
+    # node is a BUILD-time tool only: vite and friends ship `#!/usr/bin/env node`
+    # shebangs, and the build sandbox has no /usr/bin/env. Nothing from it reaches
+    # the output (dontFixup, and the compiled executables embed bun, not node).
+    nativeBuildInputs = [bun nodejs];
     dontConfigure = true;
     buildPhase = ''
       runHook preBuild
       cp -a ${nodeModules}/. ./
       chmod -R u+w .
+      patchShebangs --build node_modules apps/start/node_modules packages
       export HOME=$TMPDIR
       export SOURCE_DATE_EPOCH=${toString sourceDateEpoch}
       export MFW_BUILD_GIT_SHA=${gitRev}

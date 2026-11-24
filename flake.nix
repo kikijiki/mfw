@@ -18,11 +18,10 @@
           src = self;
           gitRev = self.rev or self.dirtyRev or "unknown";
           sourceDateEpoch = self.lastModified or 0;
-          # Not set yet: the build fails, and evaluation warns, until this is the
-          # real hash. One-time, with the network:
+          # Fixed-output hash of node_modules (bun install --frozen-lockfile
+          # --ignore-scripts). Refresh it whenever bun.lock changes, with the network:
           #   nix build .#mfw.nodeModules 2>&1 | grep 'got:'
-          # Refresh it the same way whenever bun.lock changes.
-          nodeModulesHash = pkgs.lib.fakeHash;
+          nodeModulesHash = "sha256-N30M3A9KxVGtBkq3RhW/2Njv0s3ZRGgyh22hQ0RTzHY=";
         };
       in
       {
