@@ -156,6 +156,7 @@ export function createCheckClones(projectRoot: string): VerifierClones | null {
 		...(clone.gitBin ? { gitBin: clone.gitBin } : {}),
 		...(clone.log ? { log: clone.log } : {}),
 		...(clone.checkRunner ? { checkRunner: clone.checkRunner } : {}),
+		...(clone.prepareTree ? { prepareTree: clone.prepareTree } : {}),
 	});
 }
 

@@ -22,8 +22,8 @@ import {
 	AGENT_LAUNCH_ENV,
 } from "./containment/agent-launch-argv.ts";
 import {
-	DEV_SHELL_REFUSAL,
-	needsDevShell,
+	declaresDevEnv,
+	NO_DEV_ENV_RESOLVER,
 } from "./containment/agent-preflight.ts";
 import {
 	AgentProfileError,
@@ -808,12 +808,22 @@ export class AgentHost {
 			);
 		}
 		const readOnly = isReadOnlyAgentRole(role);
-		// Only a role that builds needs the dev shell. Nothing here evaluates it.
-		if (
-			!readOnly &&
-			(needsDevShell(spec.projectRoot) || needsDevShell(spec.cwd))
-		) {
-			throw new SandboxUnavailableError(DEV_SHELL_REFUSAL);
+		// Only a role that builds gets the dev environment, and only the approved,
+		// already evaluated one: nothing here evaluates anything.
+		let devEnvFingerprint: string | undefined;
+		if (!readOnly) {
+			const resolve = spec.isolation?.devEnv;
+			if (!resolve) {
+				if (declaresDevEnv(spec.projectRoot) || declaresDevEnv(spec.cwd)) {
+					throw new SandboxUnavailableError(NO_DEV_ENV_RESOLVER);
+				}
+			} else {
+				const env = await resolve();
+				if (env.kind === "refused") {
+					throw new SandboxUnavailableError(`${env.reason}. Fix: ${env.fix}`);
+				}
+				if (env.kind === "ready") devEnvFingerprint = env.fingerprint;
+			}
 		}
 		if (!(await exists(join(stateDir, "mfw.db")))) {
 			throw new SandboxUnavailableError(
@@ -915,6 +925,9 @@ export class AgentHost {
 			secretNames: secretEnvironment.names(),
 			egressSocketDir: egress.socketDir,
 			...(brain ? { brainSocketDir: brain.brainSocketDir } : {}),
+			...(devEnvFingerprint
+				? { devEnv: { fingerprint: devEnvFingerprint } }
+				: {}),
 		};
 		// Only a transcript whose hash still matches is carried in. Otherwise
 		// `--resume` fails and the runtime starts a fresh generation.

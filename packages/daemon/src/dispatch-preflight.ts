@@ -26,7 +26,11 @@ export type PreflightCode =
 	/** Autonomy on a target whose sandbox is not attested; waitingFor = [target kind]. */
 	| "remote_autonomy_unsupported"
 	/** This run kind has no sandbox profile yet, so it cannot run autonomously. */
-	| "sandbox_role_unavailable";
+	| "sandbox_role_unavailable"
+	/** The project's dev environment is not approved, was denied, or changed since (`containment/dev-env-resolve.ts`). */
+	| "env_not_approved"
+	/** The approved dev environment cannot be evaluated or installed; waitingFor carries the log. */
+	| "env_unavailable";
 
 export class DispatchPreflightError extends Error {
 	readonly fix: RefusalFix;
@@ -55,7 +59,11 @@ export interface DispatchPreflightDeps {
 	 * minimal probe, null when it may go. Absent = no sandbox gate.
 	 */
 	sandbox?: () => Promise<{
-		code: "sandbox_unavailable" | "sandbox_probe_failed";
+		code:
+			| "sandbox_unavailable"
+			| "sandbox_probe_failed"
+			| "env_not_approved"
+			| "env_unavailable";
 		detail: string;
 	} | null>;
 }
@@ -96,7 +104,9 @@ export async function preflightDispatch(
 		throw new DispatchPreflightError(
 			refused.code,
 			[refused.detail],
-			`autonomous runs need a working sandbox: ${refused.detail}`,
+			refused.code.startsWith("env_")
+				? `the project's dev environment: ${refused.detail}`
+				: `autonomous runs need a working sandbox: ${refused.detail}`,
 		);
 	}
 	const root = deps.projectRoot;

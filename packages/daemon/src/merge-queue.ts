@@ -94,6 +94,11 @@ export interface MergeQueueDeps {
 	projectRoot: string;
 	log: Logger;
 	/**
+	 * The paths this project's approved dev environment covers, read when a
+	 * merge is judged: changing one is ask-first, and invalidates the approval.
+	 */
+	envProtectedPaths?: () => readonly string[] | ((path: string) => boolean);
+	/**
 	 * Re-run the task's DoD on the rebased branch (a disposable clone on clone
 	 * projects, the run worktree otherwise). `crashed`
 	 * mirrors `VerificationResult.crashed`: a check process died to a signal,
@@ -274,9 +279,12 @@ export class MergeQueue {
 			.from(runs)
 			.where(eq(runs.id, runId));
 		if (!run?.baseSha) return null;
-		return hostExecutedChange(this.deps.projectRoot, run.baseSha, pinned).catch(
-			() => null,
-		);
+		return hostExecutedChange(
+			this.deps.projectRoot,
+			run.baseSha,
+			pinned,
+			this.deps.envProtectedPaths?.() ?? [],
+		).catch(() => null);
 	}
 
 	async paused(): Promise<boolean> {
@@ -735,6 +743,7 @@ export class MergeQueue {
 			this.deps.projectRoot,
 			baseSha,
 			sha,
+			this.deps.envProtectedPaths?.() ?? [],
 		);
 		if (!change) return true;
 		const [row] = await this.deps.handle.db
@@ -1137,7 +1146,12 @@ export class MergeQueue {
 	): Promise<string[]> {
 		try {
 			const root = this.deps.projectRoot;
-			const held = await hostExecutedChange(root, baseSha, sha);
+			const held = await hostExecutedChange(
+				root,
+				baseSha,
+				sha,
+				this.deps.envProtectedPaths?.() ?? [],
+			);
 			return await landedDependencyPaths(root, baseSha, sha, held?.paths ?? []);
 		} catch (e) {
 			this.deps.log.warn(

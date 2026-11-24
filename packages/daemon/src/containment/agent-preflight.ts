@@ -26,11 +26,17 @@ import {
 	ensureFleetPrivateState,
 } from "./agent-profile.ts";
 import type { CompileHost } from "./compile-bwrap.ts";
+import type { DevEnvResolution } from "./dev-env-resolve.ts";
+import { EVALUATED_ENV_PATHS } from "./dev-env-sources.ts";
 import { attestSandbox } from "./probe-run.ts";
 import { ensureRunDirLayout } from "./run-dir.ts";
 
 export interface AgentPreflightRefusal {
-	code: "sandbox_unavailable" | "sandbox_probe_failed";
+	code:
+		| "sandbox_unavailable"
+		| "sandbox_probe_failed"
+		| "env_not_approved"
+		| "env_unavailable";
 	detail: string;
 }
 
@@ -40,6 +46,12 @@ export interface AgentPreflightInput {
 	runWorkspace: "worktree" | "clone";
 	projectRoot: string;
 	mfwHome: string;
+	/**
+	 * The project's dev environment at its integrated base. Evaluated and
+	 * installed here when approved and not yet cached, so a launch only loads
+	 * it. Absent: the project is treated as declaring none.
+	 */
+	devEnv?: () => Promise<DevEnvResolution>;
 }
 
 export interface AgentPreflightDeps {
@@ -61,21 +73,39 @@ export function resetAgentPreflightCache(): void {
 }
 
 /**
- * A project with an `.envrc` needs a dev shell, which only exists inside the
- * sandbox once P8 lands. The host only checks that the file exists, and never
- * reads or evaluates it.
+ * Whether a tree declares a dev environment, by the presence of a file a
+ * source evaluates. Only `lstat`: nothing is opened, read or evaluated.
  */
-export function needsDevShell(root: string): boolean {
-	try {
-		lstatSync(join(root, ".envrc"));
-		return true;
-	} catch {
-		return false;
-	}
+export function declaresDevEnv(root: string): boolean {
+	return EVALUATED_ENV_PATHS.some((rel) => {
+		try {
+			lstatSync(join(root, rel));
+			return true;
+		} catch {
+			return false;
+		}
+	});
 }
 
-export const DEV_SHELL_REFUSAL =
-	"this project has an .envrc, and dev shells inside the sandbox are not available yet. Sandboxed runs of this project can start once they are, or now if the project works with its plain toolchain and its .envrc is removed";
+/** A launch that cannot learn the approved environment refuses rather than run without it. */
+export const NO_DEV_ENV_RESOLVER =
+	"this project declares a dev environment (.envrc, mise.toml, flake.nix or devenv.nix), and this launch has no way to apply the approved one, so it is refused rather than run without it";
+
+/** The preflight refusal for an environment that cannot be applied, or null. */
+export function devEnvRefusal(
+	env: DevEnvResolution,
+): AgentPreflightRefusal | null {
+	if (env.kind !== "refused") return null;
+	const owner =
+		env.code === "env_not_approved" ||
+		env.code === "env_denied" ||
+		env.code === "env_drifted";
+	const log = env.log ? ` Last lines of the log: ${env.log.slice(-1500)}` : "";
+	return {
+		code: owner ? "env_not_approved" : "env_unavailable",
+		detail: `${env.reason}. Fix: ${env.fix}.${log}`,
+	};
+}
 
 /** Build the fixture and probe it. Every path is inside a fresh private directory. */
 async function probeLayout(
@@ -187,8 +217,11 @@ export async function agentSandboxRefusal(
 				'runWorkspace is "worktree": sandboxed runs need a private clone, so set "runWorkspace": "clone" for this project',
 		};
 	}
-	if (needsDevShell(input.projectRoot)) {
-		return { code: "sandbox_unavailable", detail: DEV_SHELL_REFUSAL };
+	// Projects with an environment are refused only when it is not approved or
+	// cannot be prepared; then with the exact command or the evaluation's log.
+	if (input.devEnv) {
+		const refused = devEnvRefusal(await input.devEnv());
+		if (refused) return refused;
 	}
 	const now = deps.now();
 	const key = `${input.mfwHome}\0${input.projectRoot}`;

@@ -142,6 +142,8 @@ export interface CloneWorkspaceOptions {
 	) => void | Promise<void>;
 	/** Caches carried into the clone; none by default. */
 	caches?: CacheDeclaration[];
+	/** After the seed, before any sandbox: the approved environment's dependencies (dev-env-deps.ts). */
+	prepareTree?: (tree: string, baseSha: string) => Promise<void>;
 	gitBin?: string;
 	log?: (msg: string) => void;
 }
@@ -479,6 +481,7 @@ export class CloneRunWorkspace implements RunWorkspace {
 				branch: `mfw/${runId}`,
 				createdAt: new Date().toISOString(),
 			});
+			await this.opts.prepareTree?.(seeded.treeDir, baseSha);
 		} catch (e) {
 			await rm(dir, { recursive: true, force: true });
 			throw e;

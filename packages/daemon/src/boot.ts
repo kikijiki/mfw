@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { loadBoardConfig } from "@mfw/board-core";
@@ -42,11 +43,18 @@ import {
 	normalizeRoot,
 	PROJECT_DEFAULTS,
 } from "./config.ts";
-import {
-	agentSandboxRefusal,
-	needsDevShell,
-} from "./containment/agent-preflight.ts";
+import { agentSandboxRefusal } from "./containment/agent-preflight.ts";
 import { createCheckSandbox } from "./containment/check-sandbox.ts";
+import {
+	applyEnvCard,
+	envCardArgs,
+	raiseEnvCard,
+} from "./containment/dev-env-card.ts";
+import type { EnvConfig } from "./containment/dev-env-config.ts";
+import { seedDeps } from "./containment/dev-env-deps.ts";
+import { approvalPlan } from "./containment/dev-env-plan.ts";
+import { resolveDevEnv } from "./containment/dev-env-resolve.ts";
+import { EnvTrustStore, envProtection } from "./containment/dev-env-trust.ts";
 import { runDirLayout } from "./containment/run-dir.ts";
 import { assertRunDead } from "./containment/run-liveness.ts";
 import { ensureSocketRoot } from "./containment/socket-root.ts";
@@ -258,6 +266,8 @@ export interface ProjectConfig {
 	budgets?: import("./config.ts").StoredBudgets;
 	/** Wrapper command for verification checks (sandbox or dev-env entrypoint, e.g. `direnv exec .`). Never auto-detected. */
 	checkPrefix?: string;
+	/** The project's development environment (`containment/dev-env-config.ts`). */
+	env?: EnvConfig;
 	/** Ambient environment a verification check may read. */
 	envPolicy?: EnvPolicy;
 	/** Repository-wide checks applied to every candidate before merge. */
@@ -605,6 +615,30 @@ export async function attachProject(
 		runsDir: join(mfwDir, "runs"),
 	});
 	const host = new AgentHost(plog);
+	// What this project's environment approval covers: a merge changing it is ask-first.
+	const envProtected = (): ((path: string) => boolean) => {
+		try {
+			return envProtection(
+				new EnvTrustStore(opts.mfwHome).read(realpathSync(root)),
+			);
+		} catch {
+			return () => false;
+		}
+	};
+
+	// The project's approved dev environment (containment/dev-env-resolve.ts),
+	// decided at the integrated base. Only the dispatch preflight evaluates; a
+	// launch or a check uses what is cached.
+	const devEnvAt = (build: boolean) =>
+		resolveDevEnv({
+			mfwHome: opts.mfwHome,
+			project: cfg.name,
+			root,
+			stateDir: mfwDir,
+			config: cfg.env,
+			rev: integrationBranch,
+			build,
+		});
 	configureRunWorkspace(root, {
 		kind: cfg.runWorkspace ?? DEFAULTS.runWorkspace,
 		// Kept for a worktree project too: a clone run that outlives a change of
@@ -620,7 +654,13 @@ export async function attachProject(
 				...(cfg.checkMaxTreeMb
 					? { maxTreeBytes: cfg.checkMaxTreeMb * 1024 * 1024 }
 					: {}),
+				devEnv: () => devEnvAt(false),
 			}),
+			// Every clone gets the approved environment's installed dependencies.
+			prepareTree: async (tree) => {
+				const env = await devEnvAt(false);
+				if (env.kind === "ready" && env.deps) await seedDeps(tree, env.deps);
+			},
 			runDirOf: (runId) => registry.runDir(runId),
 			controlPath: (runId) =>
 				join(runDirLayout(registry.runDir(runId)).control, "control.jsonl"),
@@ -806,6 +846,7 @@ export async function attachProject(
 		bus,
 		projectRoot: root,
 		log: plog,
+		envProtectedPaths: envProtected,
 		// The same lookup `reverify` makes, so "has checks" means it runs them.
 		hasChecks: async (job) => {
 			const task = job.taskId ? await tasks.get(job.taskId) : null;
@@ -1149,6 +1190,24 @@ export async function attachProject(
 					runWorkspace: cfg.runWorkspace ?? DEFAULTS.runWorkspace,
 					projectRoot: root,
 					mfwHome: opts.mfwHome,
+					// The one place the approved environment is evaluated and
+					// installed, before anything is claimed. A refusal the owner can
+					// answer becomes an ask-first card.
+					devEnv: async () => {
+						const env = await devEnvAt(true);
+						const card = envCardArgs(cfg.name, cfg.env, env);
+						if (card) {
+							card.plan = await approvalPlan(
+								realpathSync(root),
+								card.commit,
+								card.previousCommit ?? null,
+							).catch(() => undefined);
+							await raiseEnvCard(handle, bus, card).catch((err: unknown) =>
+								plog.warn({ err }, "could not raise the dev environment card"),
+							);
+						}
+						return env;
+					},
 				}),
 		},
 		globalPaused: opts.globalPaused,
@@ -1166,6 +1225,7 @@ export async function attachProject(
 						mode: "bwrap",
 						hidePaths: [opts.mfwHome],
 						mfwHome: opts.mfwHome,
+						devEnv: () => devEnvAt(false),
 						...(cfg.agentEgressTelemetry === true
 							? { egressTelemetry: true }
 							: {}),
@@ -1452,6 +1512,12 @@ export async function attachProject(
 				if (!run.branch || !run.baseSha) return null;
 				return branchChangedFiles(root, run.baseSha, run.branch);
 			},
+			envDecision: (args, approved) =>
+				applyEnvCard(
+					{ mfwHome: opts.mfwHome, root, config: cfg.env },
+					args,
+					approved,
+				),
 			hostExecutedChange: async (run) => {
 				if (!run.branch || !run.baseSha) return null;
 				const quarantine = quarantineRef(run.id);
@@ -1463,6 +1529,7 @@ export async function attachProject(
 					root,
 					run.baseSha,
 					found.exitCode === 0 ? quarantine : run.branch,
+					envProtected(),
 				);
 			},
 			routeHeld: async (task, pick) => {
@@ -1595,7 +1662,6 @@ export async function attachProject(
 			agentIsolation: cfg.agentIsolation,
 			approvalMode: cfg.approvalMode,
 			runWorkspace: cfg.runWorkspace,
-			hasDevShell: needsDevShell(root),
 		});
 	const inbox = new InboxService({
 		handle,

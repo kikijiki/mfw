@@ -643,6 +643,23 @@ function untrackedCheck(f: ProjectFacts, omitNames: boolean): Outcome {
 	);
 }
 
+/** The project's dev environment at its integration branch, as runs would get it. */
+function devEnvCheck(facts: ProjectFacts): Outcome {
+	const env = facts.devEnv;
+	if (!env) return ok("dev environment: not checked (no repository)");
+	if (env.state === "none") return ok("dev environment: none declared");
+	if (env.state === "ready") return ok(`dev environment: ${env.detail}`);
+	// Approved but not evaluated yet: the next dispatch does it.
+	if (env.code === "env_not_built") {
+		return problem(
+			"warn",
+			env.detail,
+			env.fix ?? "run `mfw env build <project>`",
+		);
+	}
+	return problem("blocker", env.detail, env.fix ?? "run `mfw env status`");
+}
+
 async function projectChecks(
 	p: DoctorProbes,
 	entry: StoredProjectConfig,
@@ -702,14 +719,12 @@ async function projectChecks(
 			return ok(`agent isolation: ${entry.agentIsolation ?? "bwrap"}`);
 		}),
 		at("dispatch", () => {
-			const issue = isolationDispatchProblem({
-				...entry,
-				hasDevShell: facts.hasEnvrc,
-			});
+			const issue = isolationDispatchProblem(entry);
 			return issue
 				? problem("blocker", issue.detail, issue.fix)
 				: ok(`run workspace: ${entry.runWorkspace ?? "worktree"}`);
 		}),
+		at("env", () => devEnvCheck(facts)),
 		at("push", () => pushCheck(entry, facts)),
 		at("triggers", () => triggersCheck(facts)),
 		at("egress", () => projectEgressCheck(entry)),

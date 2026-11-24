@@ -82,7 +82,18 @@ export interface TriggerFacts {
 export interface ProjectFacts {
 	rootExists: boolean;
 	isGit: boolean;
-	hasEnvrc: boolean;
+	/**
+	 * The dev environment at the integration branch, read-only: the trust
+	 * store and the repository's objects, nothing evaluated. Null when the
+	 * repository cannot be read.
+	 */
+	devEnv: {
+		state: "none" | "ready" | "refused";
+		/** For a refusal, its code (`containment/dev-env-resolve.ts`). */
+		code?: string;
+		detail: string;
+		fix?: string;
+	} | null;
 	/** Why host git refuses this repository, or null. */
 	gitConfigRefusal: string | null;
 	remotes: { name: string; url: string }[];

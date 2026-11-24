@@ -132,6 +132,8 @@ export const HARNESS_CONFIG_PATHS: Readonly<Record<string, readonly string[]>> =
 	);
 
 const HOST_EXECUTED_DIRS = [
+	// mise config directory (`.mise/config.toml`).
+	".mise",
 	// Harness configuration.
 	".claude",
 	".codex",
@@ -153,6 +155,9 @@ const HOST_EXECUTED_NESTED_DIRS = [
 	[".github", "actions"],
 	[".forgejo", "workflows"],
 	[".gitea", "workflows"],
+	// mise reads these as config (`.config/mise/config.toml`, `.config/mise/conf.d/*`).
+	[".config", "mise"],
+	["mise", "config.toml"],
 ];
 const HOST_EXECUTED_FILES = [
 	// Harness instructions and configuration.
@@ -176,6 +181,13 @@ const HOST_EXECUTED_FILES = [
 	".tool-versions",
 	"mise.toml",
 	".mise.toml",
+	"mise.local.toml",
+	".mise.local.toml",
+	"devenv.local.nix",
+	// Evaluated with network in the env-build sandbox, and the result is bound
+	// into every run (dev-env-build.ts): ask-first, no longer notify-after.
+	"flake.lock",
+	"devenv.lock",
 	// Package managers: registries and install behaviour.
 	"bunfig.toml",
 	".npmrc",
@@ -209,7 +221,9 @@ const HOST_EXECUTED_FILES = [
 
 /**
  * Dependency files are not ask-first by name: run checks are sandboxed and
- * host-run triggers pin the whole tree. A landed change is a notify-after inbox
+ * host-run triggers pin the whole tree. A project whose approved environment
+ * installs from a lockfile protects it per project instead (dev-env-trust.ts).
+ * `flake.lock` and `devenv.lock` are not here: they are host-executed. A landed change is a notify-after inbox
  * item. `package.json` is the exception by content: the merge gate holds it
  * when a field that executes something changes (`merge-gate.ts`).
  */
@@ -221,8 +235,9 @@ const DEPENDENCY_FILES = [
 	"package-lock.json",
 	"npm-shrinkwrap.json",
 	"yarn.lock",
-	"flake.lock",
-	"devenv.lock",
+	"cargo.lock",
+	"uv.lock",
+	"poetry.lock",
 ];
 
 const baseName = (path: string) =>

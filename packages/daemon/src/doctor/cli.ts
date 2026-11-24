@@ -396,9 +396,9 @@ export async function runInitCommand(
 		}
 		entry = minimalProjectEntry({ name, root, branch });
 		const facts = await probes.project(entry);
-		if (facts.hasEnvrc) {
+		if (facts.devEnv?.state === "refused") {
 			notes.push(
-				"This project has an .envrc, and runs are refused until dev shells work in the sandbox or the file is removed.",
+				`It declares a dev environment, and runs are refused until you approve it: ${facts.devEnv.fix ?? `mfw env allow ${name}`}`,
 			);
 		}
 		if (facts.remotes.length > 0) {

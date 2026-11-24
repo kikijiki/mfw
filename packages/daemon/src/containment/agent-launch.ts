@@ -44,6 +44,12 @@ import {
 	compileBwrap,
 	SANDBOX_PATHS,
 } from "./compile-bwrap.ts";
+import {
+	type DevEnvCapture,
+	devEnvBindRoot,
+	devEnvSection,
+	loadDevEnv,
+} from "./dev-env-cached.ts";
 import { EGRESS_SOCKET_NAME } from "./egress-run.ts";
 import { EGRESS_RELAY, hostScriptText } from "./host-script.ts";
 import { launchSandbox } from "./launch-sandbox.ts";
@@ -78,6 +84,10 @@ export const AgentLaunchRequestSchema = z.strictObject({
 	brainSocketDir: AbsolutePath.optional(),
 	/** A host-started one-shot: the WIP helper alone, with no agent, secret or network. */
 	purpose: z.literal("wip-snapshot").optional(),
+	/** The approved dev environment, by fingerprint; the launcher loads and re-checks it. */
+	devEnv: z
+		.strictObject({ fingerprint: z.string().regex(/^[0-9a-f]{64}$/) })
+		.optional(),
 });
 
 export type AgentLaunchRequest = z.infer<typeof AgentLaunchRequestSchema>;
@@ -91,7 +101,8 @@ export type AgentLaunchRefusalCode =
 	| "bind_parent_writable"
 	| "probe_refused"
 	| "probe_failed"
-	| "not_authorized";
+	| "not_authorized"
+	| "dev_env_missing";
 
 export interface AgentLaunchRefusal {
 	ok: false;
@@ -263,6 +274,22 @@ export async function launchAgentSandbox(
 	const needsBun =
 		!readOnly || req.egressSocketDir !== undefined || req.role === "brain";
 	const required = [...(needsBun ? ["bun"] : []), "git", "sh", command];
+	// Only a role that builds or checks the project gets its dev environment.
+	let devEnv: DevEnvCapture | null = null;
+	if (req.devEnv && !readOnly && !snapshot) {
+		devEnv = await loadDevEnv(
+			req.mfwHome,
+			req.projectRoot,
+			req.devEnv.fingerprint,
+		);
+		if (!devEnv) {
+			return refuse(
+				"dev_env_missing",
+				"the approved dev environment of this project is not in the cache",
+				"run `mfw env build <project>`, then retry",
+			);
+		}
+	}
 	let host: CompileHost;
 	let profile: SandboxProfile;
 	try {
@@ -274,11 +301,10 @@ export async function launchAgentSandbox(
 				join(req.mfwHome, "agents", req.cli),
 			);
 		}
-		const looked = await deps.compileHost(
-			req,
-			agentToolCandidates(required),
-			launchRoots(req),
-		);
+		const looked = await deps.compileHost(req, agentToolCandidates(required), [
+			...launchRoots(req),
+			...(devEnv ? [devEnvBindRoot(req.mfwHome, devEnv)] : []),
+		]);
 		const binaries = declaredAgentBinaries(required, looked.toolchain.resolved);
 		host = {
 			...looked,
@@ -321,6 +347,7 @@ export async function launchAgentSandbox(
 						? { egressSocketDir: req.egressSocketDir }
 						: {}),
 					...(snapshot ? { snapshotOnly: true } : {}),
+					...(devEnv ? { devEnv: devEnvSection(req.mfwHome, devEnv) } : {}),
 				});
 	} catch (err) {
 		if (err instanceof AgentProfileError) {

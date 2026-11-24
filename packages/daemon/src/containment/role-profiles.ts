@@ -25,7 +25,11 @@ import {
 	TEMPORARY_FLEET_WRITABLE,
 } from "./agent-profile.ts";
 import { BRAIN_TRANSCRIPT_DIR } from "./brain-transcript.ts";
-import { parseSandboxProfile, type SandboxProfile } from "./profile.ts";
+import {
+	type DevEnvGrant,
+	parseSandboxProfile,
+	type SandboxProfile,
+} from "./profile.ts";
 
 /** The roles an agent CLI runs in with a read-only workspace. */
 export const READ_ONLY_AGENT_ROLES = [
@@ -124,6 +128,8 @@ export interface VerifierProfileInput {
 	tree: string;
 	binaries: readonly string[];
 	env?: Record<string, string>;
+	/** The project's approved dev environment. */
+	devEnv?: DevEnvGrant;
 }
 
 /** A check: the clone's tree writable, its gitdir read-only, nothing else. */
@@ -144,6 +150,7 @@ export function buildVerifierProfile(
 			},
 			scratch: "tmpfs",
 			toolchain: { binaries: [...new Set(input.binaries)] },
+			...(input.devEnv ? { devEnv: input.devEnv } : {}),
 		},
 		process: { ...SANDBOX_PROCESS, env: input.env ?? {} },
 		network: { mode: "none" },
@@ -201,6 +208,72 @@ export function buildReadOnlyAgentProfile(
 			? { mode: "proxy", socketDir: input.egressSocketDir }
 			: { mode: "none" },
 		resources: READ_ONLY_AGENT_LIMITS,
+		lifecycle: LIFECYCLE,
+	});
+}
+
+/**
+ * Limits of a dev environment evaluation or setup: a nix evaluation and a
+ * package install, bounded against a fork bomb. The wall clock is the
+ * runner's (`env.timeoutSeconds`).
+ */
+export const ENV_BUILD_LIMITS = { tasksMax: 2048, memoryMax: "8G" } as const;
+
+/** The environment's private data (mise installs): `/cache/env-data`. */
+export const ENV_DATA_CACHE = "env-data";
+
+export interface EnvProfileInput {
+	role: "env-build" | "env-install";
+	/** The disposable clone of the approved commit. */
+	tree: string;
+	/** Its run directory: the entry script in `control/`, the result in `outbox/`. */
+	runDir: string;
+	binaries: readonly string[];
+	/** The run's own proxy socket directory: the only way out. */
+	egressSocketDir: string;
+	/** Host directory for the environment's data, writable here and read-only in runs. */
+	dataDir?: string;
+	/** `env-build` only: the whole store and the nix daemon. */
+	nixDaemon?: boolean;
+	/** `env-install` only: the evaluated environment the setup runs in. */
+	devEnv?: DevEnvGrant;
+}
+
+/**
+ * Where project environment code runs with network (design "Dev environment
+ * runs inside the sandbox"): a disposable clone of the approved commit, a
+ * private home, tmpfs scratch, egress only through the run's proxy, and no
+ * credentials, agent config or project state. The gitdir is read-only.
+ */
+export function buildEnvProfile(input: EnvProfileInput): SandboxProfile {
+	const clone = cloneLayout(input.tree);
+	return parseSandboxProfile({
+		version: 1,
+		role: input.role,
+		home: "synthetic",
+		filesystem: {
+			workspace: {
+				source: clone.tree,
+				gitDir: clone.gitDir,
+				access: "rw",
+				gitAccess: "ro",
+			},
+			runDir: { source: input.runDir, outbox: "rw" },
+			scratch: "tmpfs",
+			toolchain: { binaries: [...new Set(input.binaries)] },
+			...(input.dataDir
+				? {
+						caches: [
+							{ name: ENV_DATA_CACHE, source: input.dataDir, access: "rw" },
+						],
+					}
+				: {}),
+			...(input.nixDaemon ? { nixDaemon: true } : {}),
+			...(input.devEnv ? { devEnv: input.devEnv } : {}),
+		},
+		process: { ...SANDBOX_PROCESS, env: {} },
+		network: { mode: "proxy", socketDir: input.egressSocketDir },
+		resources: ENV_BUILD_LIMITS,
 		lifecycle: LIFECYCLE,
 	});
 }

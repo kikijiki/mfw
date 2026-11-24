@@ -19,6 +19,7 @@ import { ZodError } from "zod";
 import { authDbPath } from "../auth/service.ts";
 import { readBoardLayout } from "../board-layout.ts";
 import { loadConfig, type StoredProjectConfig } from "../config.ts";
+import { resolveDevEnv } from "../containment/dev-env-resolve.ts";
 import { verifyExecPin } from "../containment/exec-pin.ts";
 import {
 	type FsInfo,
@@ -504,6 +505,37 @@ export function liveDoctorProbes(o: LiveProbeOptions): DoctorProbes {
 		}
 	};
 
+	/** Read only: `build: false`, so nothing is evaluated, installed or created. */
+	const readDevEnv = async (
+		mfwHome: string,
+		entry: StoredProjectConfig,
+	): Promise<ProjectFacts["devEnv"]> => {
+		try {
+			const r = await resolveDevEnv({
+				mfwHome,
+				project: entry.name,
+				root: entry.root,
+				config: entry.env,
+				rev: entry.integrationBranch ?? "HEAD",
+				build: false,
+			});
+			if (r.kind === "none") return { state: "none", detail: "none declared" };
+			if (r.kind === "ready") {
+				return {
+					state: "ready",
+					detail: `${r.capture.source ?? "setup"} approved at ${r.capture.commit.slice(0, 12)}, evaluated${r.deps ? ", dependencies installed" : ""}`,
+				};
+			}
+			return { state: "refused", code: r.code, detail: r.reason, fix: r.fix };
+		} catch (e) {
+			return {
+				state: "refused",
+				code: "unreadable",
+				detail: (e as Error).message,
+			};
+		}
+	};
+
 	const readProject = async (
 		entry: StoredProjectConfig,
 	): Promise<ProjectFacts> => {
@@ -515,7 +547,7 @@ export function liveDoctorProbes(o: LiveProbeOptions): DoctorProbes {
 			return {
 				rootExists,
 				isGit,
-				hasEnvrc: rootExists && (await statPath(join(root, ".envrc"))) !== null,
+				devEnv: null,
 				gitConfigRefusal: null,
 				remotes: [],
 				untracked: empty,
@@ -524,30 +556,37 @@ export function liveDoctorProbes(o: LiveProbeOptions): DoctorProbes {
 				triggers: { armedCurrent: 0, drifted: [], quarantined: [], unarmed: 0 },
 			};
 		}
-		const [remotes, untracked, ignoredState, layout, triggers, envrc, refusal] =
-			await Promise.all([
-				readRemotes(root),
-				listFiles(root, ["--others", "--exclude-standard", "-z"]),
-				listFiles(root, [
-					"--others",
-					"--ignored",
-					"--exclude-standard",
-					"-z",
-					"--",
-					".mfw",
-				]),
-				readBoardLayout(root),
-				readTriggers(home, entry),
-				statPath(join(root, ".envrc")),
-				repoConfigRefusal(root).catch((e: unknown) => ({
-					keys: [],
-					message: `could not audit the repository's git config: ${(e as Error).message}`,
-				})),
-			]);
+		const [
+			remotes,
+			untracked,
+			ignoredState,
+			layout,
+			triggers,
+			devEnv,
+			refusal,
+		] = await Promise.all([
+			readRemotes(root),
+			listFiles(root, ["--others", "--exclude-standard", "-z"]),
+			listFiles(root, [
+				"--others",
+				"--ignored",
+				"--exclude-standard",
+				"-z",
+				"--",
+				".mfw",
+			]),
+			readBoardLayout(root),
+			readTriggers(home, entry),
+			readDevEnv(home, entry),
+			repoConfigRefusal(root).catch((e: unknown) => ({
+				keys: [],
+				message: `could not audit the repository's git config: ${(e as Error).message}`,
+			})),
+		]);
 		return {
 			rootExists,
 			isGit,
-			hasEnvrc: envrc !== null,
+			devEnv,
 			gitConfigRefusal: refusal?.message ?? null,
 			remotes,
 			untracked,

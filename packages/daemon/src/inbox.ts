@@ -17,6 +17,7 @@ import { decisionCardId } from "./brain-runtime/decision-rights.ts";
 import { guardText, HostEvidence } from "./claims.ts";
 import { loadHostEvidence } from "./claims-evidence.ts";
 import { TASK_QUESTION_KIND } from "./clarify.ts";
+import { describeEnvCard, ENV_ALLOW_TOOL } from "./containment/dev-env-card.ts";
 import { EGRESS_BREACH_KEY_PREFIX } from "./egress-ledger.ts";
 import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
 import {
@@ -1083,6 +1084,7 @@ export function describeHeld(row: {
 	effects: Record<string, unknown> | null;
 }): { title: string; detail: string; taskId?: string } {
 	if (row.tool === HOST_MERGE_TOOL) return describeHostMerge(row.args);
+	if (row.tool === ENV_ALLOW_TOOL) return describeEnvCard(row.args);
 	const {
 		rationale,
 		alternatives: _a,

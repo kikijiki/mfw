@@ -64,7 +64,7 @@ export function healthyProject(over: Partial<ProjectFacts> = {}): ProjectFacts {
 	return {
 		rootExists: true,
 		isGit: true,
-		hasEnvrc: false,
+		devEnv: { state: "none", detail: "none declared" },
 		gitConfigRefusal: null,
 		remotes: [],
 		untracked: { count: 0, sample: [], truncated: false },

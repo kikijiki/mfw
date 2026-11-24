@@ -17,6 +17,7 @@ const SUBCOMMANDS = [
 	"auth",
 	"board",
 	"doctor",
+	"env",
 	"host",
 	"init",
 	"mcp",
@@ -53,6 +54,8 @@ export interface Deps {
 	runMcp: (args: string[]) => Promise<void>;
 	/** Runs `mfw auth ...` against this install's auth store. */
 	runAuth: (args: string[]) => Promise<number>;
+	/** Runs `mfw env ...` against this install's dev environment approvals. */
+	runEnv: (args: string[]) => Promise<number>;
 	/** Runs `mfw host ...` against this install's host state. */
 	runHost: (args: string[]) => Promise<number>;
 	/** Runs the read-only `mfw doctor`, or `mfw init`. */
@@ -65,6 +68,7 @@ export const USAGE = [
 	"  auth ...      owner tools: token, passkey, unlock, setup-token, sign-out-everywhere, reset",
 	"  board ...     the markdown board (runs mfw-board; no server needed)",
 	"  doctor        read-only host and install check; prints fixes, applies none",
+	"  env ...       owner tools for each project's dev environment: status, allow, deny, build",
 	"  host ...      owner tools for host state: acknowledge-legacy",
 	"  init          guided first run: doctor, setup token path, minimal project config",
 	"  mcp [--token-file <path>]   MCP server over stdio, using a scoped API token",
@@ -128,6 +132,8 @@ export async function dispatch(argv: string[], d: Deps): Promise<number> {
 	switch (cmd) {
 		case "auth":
 			return d.runAuth(rest);
+		case "env":
+			return d.runEnv(rest);
 		case "host":
 			return d.runHost(rest);
 		case "doctor":
@@ -234,7 +240,14 @@ export function sourceDeps(): Deps {
 /** The commands that run in this process, the same from source and compiled. */
 export function inProcessCommands(): Pick<
 	Deps,
-	"out" | "err" | "run" | "runMcp" | "runHost" | "runDoctor" | "runAuth"
+	| "out"
+	| "err"
+	| "run"
+	| "runMcp"
+	| "runHost"
+	| "runDoctor"
+	| "runAuth"
+	| "runEnv"
 > {
 	return {
 		out: (l) => console.log(l),
@@ -281,6 +294,17 @@ export function inProcessCommands(): Pick<
 			return command === "doctor"
 				? runDoctorCommand(args, deps)
 				: runInitCommand(args, deps);
+		},
+		runEnv: async (args) => {
+			const [{ runEnvCommand }, { mfwHome }] = await Promise.all([
+				import("../../daemon/src/containment/dev-env-cli.ts"),
+				import("../../daemon/src/config.ts"),
+			]);
+			return runEnvCommand(args, {
+				home: mfwHome(),
+				out: (l) => console.log(l),
+				err: (l) => console.error(l),
+			});
 		},
 		runAuth: async (args) => {
 			const [{ runAuthCommand }, { mfwHome }] = await Promise.all([
