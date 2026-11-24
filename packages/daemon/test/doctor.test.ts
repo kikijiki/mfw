@@ -98,7 +98,6 @@ describe("a healthy host", () => {
 			"egress.allowlist",
 			"project.root",
 			"project.git-config",
-			"project.dispatch",
 			"project.env",
 			"project.push",
 			"project.triggers",
@@ -596,12 +595,6 @@ describe("exposure", () => {
 });
 
 describe("project checks", () => {
-	test("the default config can dispatch", async () => {
-		const c = await check(withProject({}), "project.dispatch");
-		expect(c.status).toBe("ok");
-		expect(c.project).toBe("demo");
-	});
-
 	test("an unapproved dev environment blocks, with the allow command", async () => {
 		const c = await check(
 			withProject({

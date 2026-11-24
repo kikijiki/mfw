@@ -44,6 +44,8 @@ const OTHER: Record<string, string> = {
 		"`codex login status`: a login check, never a prompt or a session",
 	"packages/daemon/src/usage/codex-usage.ts":
 		"`codex app-server` asked for rate-limit usage only, never a turn",
+	"packages/daemon/src/containment/dev-env-build.ts":
+		"runs project environment code through the sandbox launch; its one host spawn is a `nix store` trust query",
 	"packages/daemon/src/agents/detect.ts":
 		"`--version` probes of installed CLIs, never a session",
 };
