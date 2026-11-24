@@ -53,9 +53,11 @@ export interface OneShotAgentRequest {
 /** Past the proxy's own hard exit deadline. */
 const PROXY_STOP_MS = 4_000;
 
-async function startRealProxy(
+/** Start a one-call proxy process; the result stops it and waits for its exit. */
+export async function startRealProxy(
 	configPath: string,
 	socketPath: string,
+	who = "the reviewer's",
 ): Promise<() => Promise<void>> {
 	const proxy = Bun.spawn(
 		[
@@ -88,9 +90,7 @@ async function startRealProxy(
 	while (!existsSync(socketPath)) {
 		if (proxy.exitCode !== null || Date.now() > deadline) {
 			await stop();
-			throw new SandboxUnavailableError(
-				"the reviewer's egress proxy did not start",
-			);
+			throw new SandboxUnavailableError(`${who} egress proxy did not start`);
 		}
 		await Bun.sleep(25);
 	}

@@ -178,6 +178,8 @@ export interface ProbeExpectation {
 	fleetExecBaseline: readonly { path: string; sha256: string }[];
 	/** The one further socket this role may hold: its brain socket. */
 	brainSocket?: string;
+	/** The env-build role's nix daemon socket. */
+	nixDaemonSocket?: string;
 	/** The child descriptors holding the probe's own sealed runtime. */
 	sealedFds?: readonly number[];
 }
@@ -259,7 +261,7 @@ function checkSockets(o: ProbeObservations, e: ProbeExpectation): Verdict {
 			? `${e.egressDir}/${o.egress.entries[0].name}`
 			: null;
 	const bad = o.sweep.sockets.filter(
-		(s) => s !== allowed && s !== e.brainSocket,
+		(s) => s !== allowed && s !== e.brainSocket && s !== e.nixDaemonSocket,
 	);
 	return bad.length ? `sockets in bound paths: ${list(bad)}` : null;
 }

@@ -32,6 +32,9 @@ export const PROFILE_ROLES = [
 	"import",
 	"brain",
 	"trigger",
+	// The project's dev environment (dev-env-build.ts): evaluation, then setup.
+	"env-build",
+	"env-install",
 ] as const;
 
 /** The limits an omitted `resources` section means. */
@@ -154,6 +157,12 @@ const FilesystemSection = z.strictObject({
 	fleetConfig: FleetConfigSection.optional(),
 	/** A directory holding one turn's brain socket and token. Brain role only. */
 	brainSocket: z.strictObject({ source: AbsolutePath }).optional(),
+	/**
+	 * The whole Nix store read-only and the nix daemon's socket, so the
+	 * evaluation can realise a dev shell. Builds run in the daemon's own
+	 * sandbox. `env-build` role only; the paths are fixed by the compiler.
+	 */
+	nixDaemon: z.literal(true).optional(),
 	/** Host paths no bind may equal, contain or sit inside. Deny wins. */
 	deny: z.array(AbsolutePath).max(256).optional(),
 });
@@ -248,6 +257,17 @@ export const READ_ONLY_ROLES: ReadonlySet<(typeof PROFILE_ROLES)[number]> =
 export const VERIFY_ROLES: ReadonlySet<(typeof PROFILE_ROLES)[number]> =
 	new Set(["verifier", "merge-verify"]);
 
+/**
+ * Roles that run the project's environment code at an approved commit: a
+ * writable disposable tree, egress only through the run's proxy, no
+ * credentials, no agent config, and a gitdir they cannot change. Only
+ * `env-build` may reach the nix daemon.
+ */
+export const ENV_ROLES: ReadonlySet<(typeof PROFILE_ROLES)[number]> = new Set([
+	"env-build",
+	"env-install",
+]);
+
 type Role = (typeof PROFILE_ROLES)[number];
 type Deny = (path: (string | number)[], what: string) => void;
 type Filesystem = z.infer<typeof FilesystemSection> | undefined;
@@ -263,6 +283,21 @@ function readOnlyCeiling(fs: Filesystem, deny: Deny): void {
 	});
 	if (fs?.fleetConfig?.writable.length && !fs.fleetConfig.privateState) {
 		deny(["fleetConfig", "writable"], "writable shared fleet directories");
+	}
+}
+
+function envCeiling(
+	profile: { process?: { env?: object } },
+	fs: Filesystem,
+	deny: Deny,
+): void {
+	if (fs?.fleetConfig) deny(["fleetConfig"], "agent config");
+	if (fs?.workspace?.gitDir && fs.workspace.gitAccess !== "ro") {
+		deny(["workspace", "gitAccess"], "a writable gitdir");
+	}
+	const names = Object.keys(profile.process?.env ?? {});
+	if (names.some((n) => n.startsWith("MFW_GRANT_") || n.endsWith("_API_KEY"))) {
+		deny(["process", "env"], "credentials");
 	}
 }
 
@@ -312,8 +347,12 @@ export const SandboxProfileSchema = z
 		if (fs?.brainSocket && role !== "brain") {
 			deny(["brainSocket"], "the brain socket");
 		}
+		if (fs?.nixDaemon && role !== "env-build") {
+			deny(["nixDaemon"], "the nix daemon");
+		}
 		if (READ_ONLY_ROLES.has(role)) readOnlyCeiling(fs, deny);
 		if (VERIFY_ROLES.has(role)) verifyCeiling(profile, fs, deny);
+		if (ENV_ROLES.has(role)) envCeiling(profile, fs, deny);
 	});
 
 export type SandboxProfile = z.infer<typeof SandboxProfileSchema>;

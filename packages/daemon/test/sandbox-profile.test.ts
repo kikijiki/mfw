@@ -231,7 +231,14 @@ describe("schema", () => {
 });
 
 describe("role ceilings", () => {
-	const WRITING = ["task", "repair", "verifier", "merge-verify"] as const;
+	const WRITING = [
+		"task",
+		"repair",
+		"verifier",
+		"merge-verify",
+		"env-build",
+		"env-install",
+	] as const;
 	const READ_ONLY = ["reviewer", "plan", "import", "brain", "trigger"] as const;
 
 	const roFs = {
