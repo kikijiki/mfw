@@ -7,8 +7,11 @@
 # path. Nothing is fetched at build time except `nodeModules`, a fixed-output
 # derivation of `bun install --frozen-lockfile --ignore-scripts`.
 #
-# `nodeModulesHash` changes whenever bun.lock does. To refresh it, build once
-# with `lib.fakeHash` and copy the hash Nix reports.
+# `nodeModulesHash` changes whenever bun.lock does. While it is `lib.fakeHash`
+# the build cannot succeed (a fixed-output derivation must match its hash), and
+# evaluation warns with the one-time command that prints the real one:
+#   nix build .#mfw.nodeModules 2>&1 | grep 'got:'
+# then put that `sha256-...` in flake.nix in place of `pkgs.lib.fakeHash`.
 {
   lib,
   stdenvNoCC,
@@ -19,6 +22,17 @@
   sourceDateEpoch ? 0,
   nodeModulesHash,
 }: let
+  placeholder = nodeModulesHash == lib.fakeHash;
+  checkedHash =
+    if placeholder
+    then
+      lib.warn ''
+        mfw: nodeModulesHash is still lib.fakeHash, so this build will fail with a
+        hash mismatch. Get the real hash once (it needs the network):
+          nix build .#mfw.nodeModules 2>&1 | grep 'got:'
+        and put it in flake.nix in place of pkgs.lib.fakeHash.''
+      nodeModulesHash
+    else nodeModulesHash;
   nodeModules = stdenvNoCC.mkDerivation {
     pname = "mfw-node-modules";
     inherit version src;
@@ -41,7 +55,7 @@
     dontFixup = true;
     outputHashMode = "recursive";
     outputHashAlgo = "sha256";
-    outputHash = nodeModulesHash;
+    outputHash = checkedHash;
   };
 in
   stdenvNoCC.mkDerivation {
@@ -65,6 +79,8 @@ in
         --runtime-in-place --skip-build
       runHook postInstall
     '';
+    # `nix build .#mfw.nodeModules` computes the hash above.
+    passthru = {inherit nodeModules;};
     # A compiled bun executable carries its program after the ELF image:
     # stripping or patching it would cut that off.
     dontStrip = true;

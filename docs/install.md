@@ -84,9 +84,17 @@ runtime:
 nix build .#mfw          # result/bin/mfw, result/bin/mfw-board, result/lib/mfw
 ```
 
-The `node_modules` step is a fixed-output derivation. Its hash in `flake.nix`
-must be refreshed whenever `bun.lock` changes: build once, and copy the hash Nix
-reports in place of `pkgs.lib.fakeHash`.
+The `node_modules` step is a fixed-output derivation, and its hash in
+`flake.nix` is not set yet (`pkgs.lib.fakeHash`). Until it is, `nix build .#mfw`
+fails with a hash mismatch, and evaluating the flake warns with this one-time
+command (it needs the network):
+
+```sh
+nix build .#mfw.nodeModules 2>&1 | grep 'got:'
+```
+
+Put the `sha256-...` it prints in place of `pkgs.lib.fakeHash`, and refresh it
+the same way whenever `bun.lock` changes.
 
 For the service, import the flake's module. It runs `mfw server` from the store
 and keeps the scheduler off until you enable it:

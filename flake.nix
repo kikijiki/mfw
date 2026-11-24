@@ -18,8 +18,10 @@
           src = self;
           gitRev = self.rev or self.dirtyRev or "unknown";
           sourceDateEpoch = self.lastModified or 0;
-          # Refresh when bun.lock changes: build with pkgs.lib.fakeHash and copy
-          # the hash Nix reports.
+          # Not set yet: the build fails, and evaluation warns, until this is the
+          # real hash. One-time, with the network:
+          #   nix build .#mfw.nodeModules 2>&1 | grep 'got:'
+          # Refresh it the same way whenever bun.lock changes.
           nodeModulesHash = pkgs.lib.fakeHash;
         };
       in

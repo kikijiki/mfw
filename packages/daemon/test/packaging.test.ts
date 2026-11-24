@@ -77,6 +77,21 @@ describe("the compiled install in packaging", () => {
 		expect(pkg).toContain("--frozen-lockfile --ignore-scripts");
 	});
 
+	// Security review REL-1 M4: the placeholder hash must fail loudly, never quietly.
+	test("a placeholder node_modules hash warns with the command that computes the real one", async () => {
+		const [pkg, flake, doc] = await Promise.all([
+			readFile(resolve(root, "packaging/nix/mfw.nix"), "utf8"),
+			readFile(resolve(root, "flake.nix"), "utf8"),
+			readFile(resolve(root, "docs/install.md"), "utf8"),
+		]);
+		expect(pkg).toContain("nodeModulesHash == lib.fakeHash");
+		expect(pkg).toContain("lib.warn");
+		expect(pkg).toContain("outputHash = checkedHash;");
+		expect(pkg).toContain("passthru = {inherit nodeModules;};");
+		const command = "nix build .#mfw.nodeModules 2>&1 | grep 'got:'";
+		for (const text of [pkg, flake, doc]) expect(text).toContain(command);
+	});
+
 	test("the plain unit documents the compiled ExecStart", async () => {
 		const unit = await readFile(
 			resolve(root, "packaging/mfw-server.service"),
