@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+	copyFileSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Client, createClient } from "@libsql/client";
@@ -40,9 +47,31 @@ async function fromGolden(): Promise<Client> {
 	return client;
 }
 
+/** The journal cut to its first entry, so later migrations never change what this proves. */
+function baselineOnly(): string {
+	const dir = mkdtempSync(join(tmpdir(), "mfw-baseline-migrations-"));
+	dirs.push(dir);
+	const source = migrationsDir();
+	const journal = JSON.parse(
+		readFileSync(join(source, "meta/_journal.json"), "utf8"),
+	) as { entries: { tag: string }[] };
+	const [first] = journal.entries;
+	expect(first?.tag).toBe("0000_baseline");
+	mkdirSync(join(dir, "meta"));
+	writeFileSync(
+		join(dir, "meta/_journal.json"),
+		JSON.stringify({ ...journal, entries: [first] }),
+	);
+	copyFileSync(
+		join(source, "0000_baseline.sql"),
+		join(dir, "0000_baseline.sql"),
+	);
+	return dir;
+}
+
 async function fromBaseline(): Promise<Client> {
 	const client = fresh("after");
-	await migrate(drizzle(client), { migrationsFolder: migrationsDir() });
+	await migrate(drizzle(client), { migrationsFolder: baselineOnly() });
 	return client;
 }
 
