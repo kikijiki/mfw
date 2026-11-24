@@ -7,6 +7,18 @@ import {
 import { renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { isCommonPassword } from "./common-passwords.ts";
+import {
+	type CeremonyKind,
+	CeremonyStore,
+	type CredentialDescriptor,
+	creationOptions,
+	isCeremonyFull,
+	MAX_PASSKEYS,
+	normalizePasskeyName,
+	parseAssertionJSON,
+	parseRegistrationJSON,
+	requestOptions,
+} from "./passkeys.ts";
 import { type AuthDb, openAuthDb } from "./store.ts";
 import {
 	isTokenScope,
@@ -17,6 +29,15 @@ import {
 	TokenRateLimiter,
 	type TokenScope,
 } from "./tokens.ts";
+import {
+	fromBase64url,
+	isWebAuthnError,
+	type RelyingParty,
+	relyingPartyError,
+	toBase64url,
+	verifyAssertion,
+	verifyRegistration,
+} from "./webauthn.ts";
 
 /**
  * Auth v1: one owner, a first-run setup token, a password, and revocable
@@ -86,6 +107,30 @@ export interface TokenAuditCounter {
 	dropped: number;
 }
 
+/** What the owner sees of a registered passkey. Never its key. */
+export interface PasskeyInfo {
+	id: string;
+	name: string;
+	rpId: string;
+	createdAt: number;
+	lastUsedAt: number | null;
+	/** The authenticator reported the credential as synced (backed up). */
+	backedUp: boolean;
+	/** `credProps.rk`, when the browser reported it. */
+	discoverable: boolean | null;
+}
+
+/** What re-verifies the owner before a passkey is added. */
+export type PasskeyProof =
+	| { password: string }
+	| { ceremonyId: unknown; credential: unknown };
+
+/** Options for `navigator.credentials.create()` / `get()`, plus the ceremony to finish. */
+export interface PasskeyCeremony<T> {
+	ceremonyId: string;
+	publicKey: T;
+}
+
 export interface AuthenticatedSession {
 	principal: Extract<Principal, { kind: "owner" }>;
 	sessionId: string;
@@ -115,7 +160,12 @@ export type AuthRefusalCode =
 	| "locked"
 	| "busy"
 	| "invalid_token_request"
-	| "too_many_tokens";
+	| "too_many_tokens"
+	| "invalid_request"
+	| "session_ended"
+	| "passkey_refused"
+	| "passkey_unavailable"
+	| "too_many_passkeys";
 
 export class AuthRefused extends Error {
 	override readonly name = "AuthRefused";
@@ -365,6 +415,8 @@ export class AuthService {
 	private readonly proxiedInFlight = { setup: 0, login: 0 };
 	/** Throttle scopes with an attempt in flight: one per source at a time. */
 	private readonly inFlight = new Set<string>();
+	/** Pending passkey challenges: this process only, single use, short-lived. */
+	private readonly ceremonies: CeremonyStore;
 
 	constructor(
 		private readonly db: AuthDb,
@@ -380,6 +432,7 @@ export class AuthService {
 			opts.tokenRate?.perSecond,
 			opts.tokenRate?.burst,
 		);
+		this.ceremonies = new CeremonyStore(this.now);
 		this.setupTokenFile = opts.setupTokenFile ?? null;
 		this.afterPasswordCheck = opts.afterPasswordCheck;
 		this.passwordChecks = new PasswordCheckQueue(
@@ -475,6 +528,7 @@ export class AuthService {
 		await this.db.client.batch(
 			[
 				"DELETE FROM api_tokens",
+				"DELETE FROM passkeys",
 				"DELETE FROM auth_sessions",
 				"DELETE FROM principals",
 				"DELETE FROM setup_tokens",
@@ -483,6 +537,7 @@ export class AuthService {
 			"write",
 		);
 		this.removeSetupTokenFile();
+		this.ceremonies.clear();
 		for (const row of live.rows) this.notifyEnded(String(row.id));
 	}
 
@@ -694,6 +749,445 @@ export class AuthService {
 		);
 		for (const row of revoked?.rows ?? []) this.notifyEnded(String(row.id));
 		for (const row of revokedTokens?.rows ?? []) this.endToken(String(row.id));
+	}
+
+	// ------------------------------------------------------------ passkeys
+
+	private async ownerRow(): Promise<{ id: string; epoch: number } | null> {
+		const r = await this.db.client.execute(
+			"SELECT id, credential_epoch FROM principals WHERE kind = 'owner' LIMIT 1",
+		);
+		const row = r.rows[0];
+		return row
+			? { id: String(row.id), epoch: Number(row.credential_epoch) }
+			: null;
+	}
+
+	private beginCeremony(
+		kind: CeremonyKind,
+		rp: RelyingParty,
+		owner: { scope: string; proxied: boolean } | { sessionId: string },
+	) {
+		const why = relyingPartyError(rp);
+		if (why) throw new AuthRefused("passkey_unavailable", why);
+		try {
+			return this.ceremonies.begin(kind, rp, owner);
+		} catch (e) {
+			if (isCeremonyFull(e))
+				throw new AuthRefused("busy", e.message, e.retryAfterMs);
+			throw e;
+		}
+	}
+
+	/** Descriptors of the owner's credentials for this RP ID. */
+	private async descriptors(rpId: string): Promise<{
+		all: CredentialDescriptor[];
+		allDiscoverable: boolean;
+	}> {
+		const r = await this.db.client.execute({
+			sql: "SELECT credential_id, transports, discoverable FROM passkeys WHERE rp_id = ? ORDER BY created_at, rowid",
+			args: [rpId],
+		});
+		return {
+			all: r.rows.map((row) => ({
+				type: "public-key",
+				id: String(row.credential_id),
+				transports: parseTransports(row.transports),
+			})),
+			allDiscoverable: r.rows.every((row) => Number(row.discoverable) === 1),
+		};
+	}
+
+	/**
+	 * Verify a passkey assertion against a ceremony taken by the caller, and
+	 * advance its counter. Null when anything about it is wrong: the caller
+	 * charges the throttle. The counter update is compare-and-set, so two
+	 * uses of one counter value cannot both succeed.
+	 */
+	private async verifyPasskeyUse(
+		ceremony: ReturnType<CeremonyStore["take"]>,
+		kind: CeremonyKind,
+		credential: unknown,
+		rp: RelyingParty,
+		ownerId: string,
+		sessionId: string | null,
+	): Promise<{ passkeyId: string } | null> {
+		if (
+			!ceremony ||
+			ceremony.kind !== kind ||
+			ceremony.sessionId !== sessionId ||
+			ceremony.rp.rpId !== rp.rpId ||
+			ceremony.rp.origin !== rp.origin
+		)
+			return null;
+		const parsed = parseAssertionJSON(credential);
+		if (!parsed) return null;
+		const r = await this.db.client.execute({
+			sql: `SELECT id, name, public_key, alg, rp_id, sign_count FROM passkeys
+				WHERE credential_id = ? AND principal_id = ?`,
+			args: [toBase64url(parsed.rawId), ownerId],
+		});
+		const row = r.rows[0];
+		if (!row || String(row.rp_id) !== ceremony.rp.rpId) return null;
+		if (
+			parsed.userHandle &&
+			toBase64url(parsed.userHandle) !== ownerUserHandle(ownerId)
+		)
+			return null;
+		const stored = {
+			alg: Number(row.alg),
+			publicKeySpki: fromBase64url(String(row.public_key)) ?? new Uint8Array(),
+			signCount: Number(row.sign_count),
+		};
+		let verified: ReturnType<typeof verifyAssertion>;
+		try {
+			verified = verifyAssertion(parsed, stored, {
+				challenge: ceremony.challenge,
+				rp: ceremony.rp,
+			});
+		} catch (e) {
+			if (!isWebAuthnError(e)) throw e;
+			// The one refusal the owner must hear about. Names only, no key material.
+			if (e.reason === "counter")
+				console.warn(
+					`[mfw] passkey '${String(row.name)}' (${String(row.id)}) was refused: its signature counter went backwards, so another authenticator may hold a copy of it. Revoke it if this was not you.`,
+				);
+			return null;
+		}
+		const updated = await this.db.client.execute({
+			sql: `UPDATE passkeys SET sign_count = ?, backed_up = ?, last_used_at = ?
+				WHERE id = ? AND sign_count = ?`,
+			args: [
+				verified.signCount,
+				verified.backedUp ? 1 : 0,
+				this.now(),
+				String(row.id),
+				stored.signCount,
+			],
+		});
+		return updated.rowsAffected === 1 ? { passkeyId: String(row.id) } : null;
+	}
+
+	/**
+	 * Start a passkey sign-in. Public, so it is charged like a password
+	 * attempt: a locked source gets no challenge, and each source holds only a
+	 * few at a time.
+	 */
+	async beginPasskeyLogin(
+		rp: RelyingParty,
+		source?: AuthSource,
+	): Promise<PasskeyCeremony<ReturnType<typeof requestOptions>>> {
+		if (!(await this.hasOwner()))
+			throw new AuthRefused("setup_required", "finish first-run setup");
+		const scope = `login:${throttleSource(sourceAddress(source))}`;
+		await this.assertNotLocked(scope);
+		const ceremony = this.beginCeremony("login", rp, {
+			scope,
+			proxied: isProxied(source),
+		});
+		// Discoverable credentials need no list, and an empty one reveals nothing.
+		const { all, allDiscoverable } = await this.descriptors(rp.rpId);
+		return {
+			ceremonyId: ceremony.id,
+			publicKey: requestOptions(ceremony, allDiscoverable ? [] : all),
+		};
+	}
+
+	/**
+	 * Finish a passkey sign-in: the SAME session and request key as a password
+	 * login. It shares the password's throttle scope, one-at-a-time rule and
+	 * proxied budget, but not the password hashing queue, so a passkey flood
+	 * cannot hold up a password sign-in there.
+	 */
+	async passkeyLogin(
+		ceremonyId: unknown,
+		credential: unknown,
+		rp: RelyingParty,
+		presented?: string,
+		source?: AuthSource,
+	): Promise<IssuedSession> {
+		if (!(await this.hasOwner()))
+			throw new AuthRefused("setup_required", "finish first-run setup");
+		const scope = `login:${throttleSource(sourceAddress(source))}`;
+		return this.oneAtATime("login", scope, source, async () => {
+			// Taken first: a ceremony is spent by any attempt, good or bad.
+			const ceremony = this.ceremonies.take(ceremonyId);
+			const owner = await this.ownerRow();
+			const ok =
+				owner &&
+				(await this.verifyPasskeyUse(
+					ceremony,
+					"login",
+					credential,
+					rp,
+					owner.id,
+					null,
+				));
+			if (!owner || !ok) {
+				await this.recordFailure(scope);
+				if (isProxied(source)) await this.recordFailure(PROXIED_LOGIN_SCOPE);
+				throw new AuthRefused(
+					"passkey_refused",
+					"that passkey was not accepted; try again",
+				);
+			}
+			await this.afterPasswordCheck?.();
+			// The epoch read BEFORE verifying: a change since then refuses this.
+			const issued = await this.issue(owner.id, owner.epoch, ok.passkeyId);
+			await this.clearThrottle(scope);
+			if (presented) await this.logout(presented);
+			return issued;
+		});
+	}
+
+	/** A re-verification challenge for a signed-in session, over its own passkeys. */
+	async beginPasskeyReauth(
+		sessionId: string,
+		rp: RelyingParty,
+	): Promise<PasskeyCeremony<ReturnType<typeof requestOptions>>> {
+		if (!(await this.isSessionLive(sessionId)))
+			throw new AuthRefused(
+				"session_ended",
+				"this session has ended; sign in again",
+			);
+		const { all } = await this.descriptors(rp.rpId);
+		if (all.length === 0)
+			throw new AuthRefused(
+				"passkey_refused",
+				"no passkey is registered for this address; confirm with the password",
+			);
+		const ceremony = this.beginCeremony("reauth", rp, { sessionId });
+		return {
+			ceremonyId: ceremony.id,
+			publicKey: requestOptions(ceremony, all),
+		};
+	}
+
+	/**
+	 * Start adding a passkey. The session alone is not enough: the owner proves
+	 * the password or an existing passkey again, so a stolen session cannot
+	 * plant a lasting way back in. Failed proofs are charged like sign-ins.
+	 */
+	async beginPasskeyRegistration(
+		sessionId: string,
+		rp: RelyingParty,
+		proof: PasskeyProof,
+		source?: AuthSource,
+	): Promise<PasskeyCeremony<ReturnType<typeof creationOptions>>> {
+		const why = relyingPartyError(rp);
+		if (why) throw new AuthRefused("passkey_unavailable", why);
+		const scope = `login:${throttleSource(sourceAddress(source))}`;
+		return this.oneAtATime("login", scope, source, async () => {
+			const charge = async () => {
+				await this.recordFailure(scope);
+				if (isProxied(source)) await this.recordFailure(PROXIED_LOGIN_SCOPE);
+			};
+			let owner: { id: string } | null;
+			if ("password" in proof) {
+				owner = await this.checkOwnerPassword(proof.password);
+				if (!owner) {
+					await charge();
+					throw new AuthRefused("invalid_password", "wrong password");
+				}
+			} else {
+				owner = await this.ownerRow();
+				const ceremony = this.ceremonies.take(proof.ceremonyId);
+				const ok =
+					owner &&
+					(await this.verifyPasskeyUse(
+						ceremony,
+						"reauth",
+						proof.credential,
+						rp,
+						owner.id,
+						sessionId,
+					));
+				if (!ok) {
+					await charge();
+					throw new AuthRefused(
+						"passkey_refused",
+						"that passkey was not accepted; try again",
+					);
+				}
+			}
+			await this.clearThrottle(scope);
+			if (!owner || !(await this.isSessionLive(sessionId)))
+				throw new AuthRefused(
+					"session_ended",
+					"this session has ended; sign in again",
+				);
+			const count = await this.db.client.execute(
+				"SELECT COUNT(*) AS n FROM passkeys",
+			);
+			if (Number(count.rows[0]?.n) >= MAX_PASSKEYS)
+				throw new AuthRefused(
+					"too_many_passkeys",
+					`at most ${MAX_PASSKEYS} passkeys; revoke one first`,
+				);
+			const ceremony = this.beginCeremony("register", rp, { sessionId });
+			const { all } = await this.descriptors(rp.rpId);
+			return {
+				ceremonyId: ceremony.id,
+				publicKey: creationOptions(
+					ceremony,
+					{ id: ownerUserHandle(owner.id) },
+					all,
+				),
+			};
+		});
+	}
+
+	/** Store a new passkey from a registration ceremony of this session. */
+	async finishPasskeyRegistration(
+		sessionId: string,
+		rp: RelyingParty,
+		ceremonyId: unknown,
+		credential: unknown,
+		rawName: unknown,
+	): Promise<PasskeyInfo> {
+		const ceremony = this.ceremonies.take(ceremonyId);
+		if (
+			!ceremony ||
+			ceremony.kind !== "register" ||
+			ceremony.sessionId !== sessionId ||
+			ceremony.rp.rpId !== rp.rpId ||
+			ceremony.rp.origin !== rp.origin
+		)
+			throw new AuthRefused(
+				"passkey_refused",
+				"that registration expired or belongs to another session; start again",
+			);
+		const name = normalizePasskeyName(rawName);
+		if (name === null)
+			throw new AuthRefused(
+				"invalid_request",
+				"name the passkey in 1 to 64 printable characters",
+			);
+		const parsed = parseRegistrationJSON(credential);
+		if (!parsed)
+			throw new AuthRefused(
+				"invalid_request",
+				"malformed passkey registration",
+			);
+		let verified: ReturnType<typeof verifyRegistration>;
+		try {
+			verified = verifyRegistration(parsed, {
+				challenge: ceremony.challenge,
+				rp: ceremony.rp,
+			});
+		} catch (e) {
+			if (!isWebAuthnError(e)) throw e;
+			throw new AuthRefused(
+				"passkey_refused",
+				"the authenticator's response was not accepted; user verification (PIN or biometric) is required",
+			);
+		}
+		const owner = await this.ownerRow();
+		if (!owner)
+			throw new AuthRefused("setup_required", "finish first-run setup");
+		const now = this.now();
+		const id = `pk_${randomUUID()}`;
+		const credentialId = toBase64url(verified.credentialId);
+		// One statement: only while this session is live, under the cap, and
+		// never a second row for one credential.
+		const inserted = await this.db.client.execute({
+			sql: `INSERT INTO passkeys (id, principal_id, credential_id, public_key, alg, rp_id, name,
+					sign_count, discoverable, backup_eligible, backed_up, transports, created_at)
+				SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+				WHERE EXISTS (SELECT 1 FROM auth_sessions WHERE id = ? AND revoked_at IS NULL AND expires_at > ?)
+				AND (SELECT COUNT(*) FROM passkeys) < ?
+				AND NOT EXISTS (SELECT 1 FROM passkeys WHERE credential_id = ?)`,
+			args: [
+				id,
+				owner.id,
+				credentialId,
+				toBase64url(verified.publicKeySpki),
+				verified.alg,
+				ceremony.rp.rpId,
+				name,
+				verified.signCount,
+				parsed.discoverable === null ? null : parsed.discoverable ? 1 : 0,
+				verified.backupEligible ? 1 : 0,
+				verified.backedUp ? 1 : 0,
+				JSON.stringify(parsed.transports),
+				now,
+				sessionId,
+				now,
+				MAX_PASSKEYS,
+				credentialId,
+			],
+		});
+		if (inserted.rowsAffected !== 1) {
+			if (!(await this.isSessionLive(sessionId)))
+				throw new AuthRefused(
+					"session_ended",
+					"this session has ended; sign in again",
+				);
+			const dup = await this.db.client.execute({
+				sql: "SELECT 1 FROM passkeys WHERE credential_id = ?",
+				args: [credentialId],
+			});
+			throw dup.rows.length
+				? new AuthRefused(
+						"passkey_refused",
+						"that passkey is already registered",
+					)
+				: new AuthRefused(
+						"too_many_passkeys",
+						`at most ${MAX_PASSKEYS} passkeys; revoke one first`,
+					);
+		}
+		return {
+			id,
+			name,
+			rpId: ceremony.rp.rpId,
+			createdAt: now,
+			lastUsedAt: null,
+			backedUp: verified.backedUp,
+			discoverable: parsed.discoverable,
+		};
+	}
+
+	/** Registered passkeys, oldest first. Never key material or credential ids. */
+	async listPasskeys(): Promise<PasskeyInfo[]> {
+		const r = await this.db.client.execute(
+			`SELECT id, name, rp_id, created_at, last_used_at, backed_up, discoverable
+				FROM passkeys ORDER BY created_at, rowid`,
+		);
+		return r.rows.map((row) => ({
+			id: String(row.id),
+			name: String(row.name),
+			rpId: String(row.rp_id),
+			createdAt: Number(row.created_at),
+			lastUsedAt: row.last_used_at === null ? null : Number(row.last_used_at),
+			backedUp: Number(row.backed_up) === 1,
+			discoverable:
+				row.discoverable === null ? null : Number(row.discoverable) === 1,
+		}));
+	}
+
+	/**
+	 * Remove a passkey and end every session it signed in. Other sessions and
+	 * API tokens stay; sign out everywhere for those. False if it did not exist.
+	 */
+	async revokePasskey(id: string): Promise<boolean> {
+		const [deleted, revoked] = await this.db.client.batch(
+			[
+				{ sql: "DELETE FROM passkeys WHERE id = ? RETURNING id", args: [id] },
+				{
+					sql: "UPDATE auth_sessions SET revoked_at = ? WHERE passkey_id = ? AND revoked_at IS NULL RETURNING id",
+					args: [this.now(), id],
+				},
+			],
+			"write",
+		);
+		for (const row of revoked?.rows ?? []) this.notifyEnded(String(row.id));
+		return (deleted?.rows.length ?? 0) > 0;
+	}
+
+	/** Pending passkey ceremonies (tests). */
+	get pendingPasskeyCeremonies(): number {
+		return this.ceremonies.size;
 	}
 
 	/**
@@ -1119,6 +1613,7 @@ export class AuthService {
 	}
 
 	private notifyEnded(sessionId: string): void {
+		this.ceremonies.dropSession(sessionId);
 		for (const end of [...(this.listeners.get(sessionId) ?? [])]) end();
 	}
 
@@ -1130,6 +1625,8 @@ export class AuthService {
 	private async issue(
 		principalId: string,
 		epoch: number,
+		/** The passkey that signed in: revoking it ends this session. */
+		passkeyId: string | null = null,
 	): Promise<IssuedSession> {
 		const token = randomBytes(32).toString("base64url");
 		const requestKey = randomBytes(32).toString("base64url");
@@ -1138,9 +1635,10 @@ export class AuthService {
 		const now = this.now();
 		const expiresAt = now + SESSION_ABSOLUTE_MS;
 		const inserted = await this.db.client.execute({
-			sql: `INSERT INTO auth_sessions (id, token_hash, principal_id, created_at, last_seen_at, expires_at, request_key_hash)
-				SELECT ?, ?, ?, ?, ?, ?, ?
-				WHERE EXISTS (SELECT 1 FROM principals WHERE id = ? AND credential_epoch = ?)`,
+			sql: `INSERT INTO auth_sessions (id, token_hash, principal_id, created_at, last_seen_at, expires_at, request_key_hash, passkey_id)
+				SELECT ?, ?, ?, ?, ?, ?, ?, ?
+				WHERE EXISTS (SELECT 1 FROM principals WHERE id = ? AND credential_epoch = ?)
+				${passkeyId ? "AND EXISTS (SELECT 1 FROM passkeys WHERE id = ? AND principal_id = ?)" : ""}`,
 			args: [
 				sessionId,
 				sha(token),
@@ -1149,8 +1647,10 @@ export class AuthService {
 				now,
 				expiresAt,
 				requestKeyHash,
+				passkeyId,
 				principalId,
 				epoch,
+				...(passkeyId ? [passkeyId, principalId] : []),
 			],
 		});
 		if (inserted.rowsAffected !== 1)
@@ -1286,6 +1786,21 @@ function isLive(row: Record<string, unknown>, now: number): boolean {
 		Number(row.expires_at) > now &&
 		now - Number(row.last_seen_at) < SESSION_IDLE_MS
 	);
+}
+
+/** The WebAuthn user handle: the owner's id, which carries nothing personal. */
+const ownerUserHandle = (principalId: string) =>
+	Buffer.from(principalId, "utf8").toString("base64url");
+
+function parseTransports(raw: unknown): string[] {
+	try {
+		const parsed: unknown = JSON.parse(String(raw));
+		return Array.isArray(parsed)
+			? parsed.filter((t): t is string => typeof t === "string")
+			: [];
+	} catch {
+		return [];
+	}
 }
 
 /** Stored scopes, or null if anything is outside the closed set. */

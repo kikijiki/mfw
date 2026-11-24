@@ -107,6 +107,8 @@ export interface CeremonyKnobs {
 	userHandle?: Uint8Array | null;
 	/** The `credProps.rk` client extension result. */
 	rk?: boolean;
+	/** Create a credential with this id (a second registration of one key). */
+	credentialId?: Uint8Array;
 }
 
 export const UP = 0x01;
@@ -204,7 +206,7 @@ export class SoftAuthenticator {
 			alg === "ES256"
 				? generateKeyPairSync("ec", { namedCurve: "P-256" })
 				: generateKeyPairSync("ed25519");
-		const id = new Uint8Array(randomBytes(32));
+		const id = knobs.credentialId ?? new Uint8Array(randomBytes(32));
 		const credential: SoftCredential = {
 			id,
 			alg,

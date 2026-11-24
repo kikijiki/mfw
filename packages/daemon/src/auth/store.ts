@@ -105,6 +105,30 @@ const MIGRATIONS: readonly (readonly string[])[] = [
 			FROM token_audit WHERE outcome = 'refused' GROUP BY token_id`,
 		"DELETE FROM token_audit WHERE outcome = 'refused'",
 	],
+	[
+		// WebAuthn credentials: a public key only (SPKI DER, base64url), see
+		// `auth/webauthn.ts`. Kept across password changes; revoked one by one.
+		`CREATE TABLE passkeys (
+			id TEXT PRIMARY KEY,
+			principal_id TEXT NOT NULL REFERENCES principals (id) ON DELETE CASCADE,
+			credential_id TEXT NOT NULL UNIQUE,
+			public_key TEXT NOT NULL,
+			alg INTEGER NOT NULL,
+			rp_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			sign_count INTEGER NOT NULL DEFAULT 0,
+			discoverable INTEGER,
+			backup_eligible INTEGER NOT NULL DEFAULT 0,
+			backed_up INTEGER NOT NULL DEFAULT 0,
+			transports TEXT NOT NULL DEFAULT '[]',
+			created_at INTEGER NOT NULL,
+			last_used_at INTEGER
+		)`,
+		"CREATE INDEX ix_passkeys_rp ON passkeys (rp_id)",
+		// The passkey a session signed in with, so revoking it ends that session.
+		"ALTER TABLE auth_sessions ADD COLUMN passkey_id TEXT",
+		"CREATE INDEX ix_auth_sessions_passkey ON auth_sessions (passkey_id) WHERE passkey_id IS NOT NULL",
+	],
 ];
 
 export const AUTH_SCHEMA_VERSION = MIGRATIONS.length;
@@ -118,8 +142,15 @@ export interface AuthDb {
 	close: () => void;
 }
 
-/** Open (creating 0600 in a private directory if needed) and migrate. */
-export async function openAuthDb(path: string): Promise<AuthDb> {
+/**
+ * Open (creating 0600 in a private directory if needed) and migrate. Tests pass
+ * `version` to build an older schema and prove the upgrade from it.
+ */
+export async function openAuthDb(
+	path: string,
+	opts: { version?: number } = {},
+): Promise<AuthDb> {
+	const target = opts.version ?? MIGRATIONS.length;
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 	// Create with the final mode first: SQLite's -wal and -shm copy this file's.
 	closeSync(openSync(path, "a", 0o600));
@@ -139,7 +170,7 @@ export async function openAuthDb(path: string): Promise<AuthDb> {
 			throw new Error(
 				`auth.db is at schema ${current}, newer than this build (${MIGRATIONS.length}); upgrade mfw`,
 			);
-		for (let v = current; v < MIGRATIONS.length; v++) {
+		for (let v = current; v < target; v++) {
 			await client.batch(
 				[
 					...(MIGRATIONS[v] as readonly string[]),
