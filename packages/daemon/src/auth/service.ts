@@ -885,13 +885,13 @@ export class AuthService {
 	 */
 	private async verifyPasskeyUse(
 		ceremony: ReturnType<CeremonyStore["take"]>,
-		kind: CeremonyKind,
 		credential: unknown,
 		rp: RelyingParty,
 		ownerId: string,
-		sessionId: string | null,
+		/** The finishing request's throttle scope: it must be the one that began. */
+		scope: string,
 	): Promise<{ passkeyId: string } | null> {
-		if (!ceremonyFits(ceremony, kind, sessionId, rp)) return null;
+		if (!ceremonyFits(ceremony, "login", { scope }, rp)) return null;
 		const parsed = parseAssertionJSON(credential);
 		if (!parsed) return null;
 		const r = await this.db.client.execute({
@@ -989,11 +989,10 @@ export class AuthService {
 				owner &&
 				(await this.verifyPasskeyUse(
 					ceremony,
-					"login",
 					credential,
 					rp,
 					owner.id,
-					null,
+					scope,
 				));
 			if (!owner || !ok) {
 				await this.recordFailure(scope);
@@ -1076,7 +1075,7 @@ export class AuthService {
 		source?: AuthSource,
 	): Promise<PasskeyInfo> {
 		const ceremony = this.ceremonies.take(ceremonyId);
-		if (!ceremonyFits(ceremony, "register", sessionId, rp))
+		if (!ceremonyFits(ceremony, "register", { sessionId }, rp))
 			throw new AuthRefused(
 				"passkey_refused",
 				"that registration expired or belongs to another session; start again",

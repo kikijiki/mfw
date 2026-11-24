@@ -53,18 +53,23 @@ export class CeremonyFull extends Error {
 }
 
 /**
- * The ceremony is of this kind, belongs to this session (null for a sign-in)
- * and was started on the same RP ID and origin it is being finished on.
+ * The ceremony is of this kind, belongs to this owner (the session for a
+ * registration, the throttle source for a sign-in), and was started on the
+ * same RP ID and origin it is being finished on.
  */
 export function ceremonyFits(
 	c: Ceremony | null,
 	kind: CeremonyKind,
-	sessionId: string | null,
+	owner: { sessionId: string } | { scope: string },
 	rp: RelyingParty,
 ): c is Ceremony {
+	const ownerFits =
+		"sessionId" in owner
+			? c?.sessionId === owner.sessionId
+			: c?.sessionId === null && c.scope === owner.scope;
 	return (
+		ownerFits &&
 		c?.kind === kind &&
-		c.sessionId === sessionId &&
 		c.rp.rpId === rp.rpId &&
 		c.rp.origin === rp.origin
 	);

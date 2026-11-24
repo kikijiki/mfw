@@ -911,3 +911,18 @@ describe("M1: tokens minted under a passkey", () => {
 		);
 	});
 });
+
+describe("L2: a sign-in ceremony belongs to its source", () => {
+	test("finishing from another source is refused", async () => {
+		const cred = await addPasskey();
+		const begun = await auth.beginPasskeyLogin(RP, "10.0.0.1");
+		const json = soft.get(begun.publicKey, { use: cred });
+		expect(
+			await code(
+				auth.passkeyLogin(begun.ceremonyId, json, RP, undefined, "10.0.0.2"),
+			),
+		).toBe("passkey_refused");
+		// Same source, fresh ceremony: fine.
+		expect(await code(passkeyLogin({ use: cred }, "10.0.0.1"))).toBe("ok");
+	});
+});
