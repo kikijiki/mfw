@@ -43,22 +43,6 @@ types:
       title: {}
 `;
 
-const LEGACY_BOARD_YAML = `mfw: 1
-
-types:
-  task:
-    layout: directory
-    dir: tasks
-    primary: task.md
-    id: { strategy: own-sequence, key: TSK }
-    slugFrom: title
-    fields:
-      title: {}
-      status:
-        values: [open, closed]
-        default: open
-`;
-
 async function writeDoc(
 	path: string,
 	id: string,

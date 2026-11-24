@@ -6,8 +6,6 @@ import { loadBoardConfig } from "@mfw/board-core";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
 import { EventBus } from "@mfw/db/eventlog";
 import { ulid } from "@mfw/db/ids";
-import { engineKv } from "@mfw/db/schema";
-import { eq } from "drizzle-orm";
 import pino from "pino";
 import { boot } from "../src/boot.ts";
 import {

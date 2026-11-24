@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { buildKind } from "../../../core/src/build-info.ts";
 // Embedded, so a compiled mfw-board carries the skill it installs.
@@ -13,12 +13,7 @@ import {
 	type Scope,
 	type ToolId,
 } from "./skill-targets.ts";
-import {
-	CliError,
-	type Command,
-	type CommandContext,
-	UsageError,
-} from "./types.ts";
+import { CliError, type Command, UsageError } from "./types.ts";
 
 /**
  * Copies the packaged SKILL.md (Agent Skills format) into each selected agent

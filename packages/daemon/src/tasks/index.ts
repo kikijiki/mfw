@@ -25,7 +25,6 @@ import {
 	overlappingPatterns,
 	parentRuleProblem,
 	parseIdNum,
-	RuleViolationError,
 } from "@mfw/board-core";
 import type { TaskStatus } from "@mfw/core/types";
 import { parseStatusMap, type StatusMap } from "../board-status-map.ts";

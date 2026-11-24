@@ -3,7 +3,6 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import pino from "pino";
 import {
 	buildBoardLayoutRecord,
 	DEFAULT_PROTECTED_BOARD_PATHS,
@@ -12,7 +11,6 @@ import {
 	recordBoardLocation,
 } from "../src/board-layout.ts";
 import { boot } from "../src/boot.ts";
-import { defaultBoardYaml } from "../src/default-board-config.ts";
 import { git } from "../src/git.ts";
 import { silentLogger } from "../src/log.ts";
 
@@ -58,10 +56,6 @@ async function attach(root: string, boardRoot?: string) {
 		autostart: false,
 		mfwHome: home,
 	});
-}
-
-function taskDoc(id: string, title: string): string {
-	return `---\nmfw: 1\nid: ${id}\nrev: 1\ntitle: ${title}\ntype: implementation\nstatus: done\npriority: medium\n---\n`;
 }
 
 /** A board as the `.mfw/` era left it: board.yaml and tasks under `<folder>/.mfw`. */

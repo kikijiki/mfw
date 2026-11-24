@@ -1,9 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentHost, type LaunchSpec } from "../src/agent-host.ts";
-import { loadConfig } from "../src/config.ts";
 import { SandboxUnavailableError } from "../src/sandbox.ts";
 import { runShTmux } from "./support/run-sh-tmux.ts";
 

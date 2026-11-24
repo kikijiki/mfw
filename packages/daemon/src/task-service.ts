@@ -24,14 +24,7 @@ import type {
 } from "@mfw/core/types";
 import type { ProjectDbHandle } from "@mfw/db/client";
 import { appendEvent, type EventBus, type StoredEvent } from "@mfw/db/eventlog";
-import {
-	clarifications,
-	engineKv,
-	groupIdOf,
-	runGroups,
-	runSteps,
-	runs,
-} from "@mfw/db/schema";
+import { clarifications, groupIdOf, runSteps, runs } from "@mfw/db/schema";
 import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import { type LifecycleService, TaskUnmergedError } from "./lifecycle.ts";
 import type { Logger } from "./log.ts";
