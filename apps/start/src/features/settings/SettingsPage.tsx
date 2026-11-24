@@ -3,6 +3,7 @@ import { useTheme } from "../../lib/theme";
 import { Segmented, Setting } from "./controls";
 import { HealthPanel } from "./HealthPanel";
 import { OpenRouterSettingsPanel } from "./OpenRouterSettingsPanel";
+import { PasskeysPanel } from "./PasskeysPanel";
 import { ProvidersPanel } from "./ProvidersPanel";
 import { RunPodSettingsPanel } from "./RunPodSettingsPanel";
 import { SessionPanel } from "./SessionPanel";
@@ -83,6 +84,9 @@ export function SettingsPage({ tab, onTabChange }: SettingsPageProps) {
 				</section>
 				<Panel title="Session">
 					<SessionPanel />
+				</Panel>
+				<Panel title="Passkeys">
+					<PasskeysPanel />
 				</Panel>
 				<Panel title="API tokens">
 					<TokensPanel />

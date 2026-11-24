@@ -151,6 +151,7 @@ See [verifier-sandbox.md](verifier-sandbox.md).
 | Control | Mechanism | Code |
 | --- | --- | --- |
 | Owner auth | setup token, argon2id password, revocable server-side sessions, throttling | `packages/daemon/src/auth/service.ts` |
+| Passkeys | The library `@simplewebauthn/server` 14.1.0 parses every response and verifies every signature. With mfw's options it checks the challenge, the exact origin and RP ID, user presence and verification, and that the key's `alg` label is ES256 or EdDSA (the label only). mfw's own checks, in `webauthn.ts`: the whole key shape at registration and every sign-in (ES256 must be EC2 P-256 with 32-byte coordinates, EdDSA must be OKP Ed25519 with a canonical key not of small order, since the library picks its verifier by key type and verifies signatures anyone can forge for small-order keys); attestation only `none` or `packed` without `x5c`, never trusted; no cross-origin frames on either ceremony; the reported credential id must match the authenticator data; no private key component; and a counter-regression refusal applied after the signature verifies. In `service.ts` and `passkeys.ts`: discoverable credentials only (`credProps.rk` must be reported and true, the browser's unsigned word), sign-in options that never list credentials, the RP ID and origin from the trusted external origin, single-use short-lived challenges capped per source and per IPv6 /48, and the password's throttle | `packages/daemon/src/auth/webauthn.ts`, `packages/daemon/src/auth/passkeys.ts`, `packages/daemon/src/auth/service.ts`, `apps/start/src/server/passkey-origin.ts` |
 | Request guard | exact Host and Origin checks | `apps/start/src/server/request-guard.ts` |
 | Session guard | cookie plus a per-session request key, because cookies are shared across ports | `apps/start/src/server/auth-guard.ts` |
 | Bind policy | non-loopback needs TLS or a trusted proxy, and wildcard binds are refused | `apps/start/src/server/exposure.ts` |
@@ -216,6 +217,14 @@ This group is any other process of any local user, an unsandboxed
 - **Owner session:** treat this as code execution on the host. An owner can set
   notify commands, check prefixes and merge checks, arm triggers, and approve
   cards. Revoke with `mfw auth sign-out-everywhere`, or change the password.
+  A stolen session cannot add a passkey: that needs the password again. If the
+  password is stolen too and a passkey is added, the log and a banner in every
+  other session say so, Settings shows the address it came from, and both
+  sign-out-everywhere and a password change delete it. A stolen session can
+  revoke passkeys; each revocation is announced the same way.
+- **Passkey:** a synced passkey is as safe as the account that syncs it. Revoke
+  it with `mfw auth passkey revoke`, which also ends the sessions it opened and
+  revokes the API tokens those sessions created.
 - **Scoped token:** limited to its scopes and project until it expires. A
   `board:write` token cannot cause work to start, and its text is permanently
   marked untrusted. A `runs:act` token can start and stop task runs. Revoke with
@@ -265,6 +274,7 @@ is acceptable for your setup.
 | R17 | **Token rate limits live in memory** and reset on restart | A short extra burst after a restart | Scopes, expiry, audit log |
 | R18 | **A compiled bun executable cannot refuse its runtime variables.** `BUN_OPTIONS` preloads code before `mfw`'s own code runs, `BUN_BE_BUN` turns `mfw` into a plain bun, and `LD_PRELOAD` loads a library into it. Bun offers no build option to turn them off | Code runs with the rights of whoever started `mfw` with them set | Every host spawn gets the allowlisted environment, so the daemon never passes them. The one exposure left is a process the daemon does not start, such as your own shell or a unit you wrote running `mfw` with one set: that code runs with your own rights |
 | R19 | **The install manifest is unsigned, and checked then used by path.** It proves the parts belong together, not who made them, and a file renamed between its hash and its start is not caught. Server code loaded lazily is trusted once the server has started | Someone who can write the install can replace any part of it | The location check: root-owned or Nix-store installs only, or the owner's explicit acceptance of the prefix |
+| R20 | **Passkey challenges live in memory, in one bounded pool.** A trusted loopback proxy lets a local process forge clients and keep the proxied share full. Without a proxy, a directly exposed listener can be filled by an attacker with many addresses: IPv4 addresses, or IPv6 prefixes beyond one /48 | Passkey sign-in is delayed (`busy`) while the flood lasts; password sign-in is not, and stays the fallback | 4 challenges per source, 16 per IPv6 /48, 128 for proxied clients, 1024 in all, a 2.5-minute expiry, and the private unix socket (R1) |
 
 ## Not yet verified
 
@@ -275,6 +285,8 @@ These protections exist in code but have not been exercised end to end:
 - real Claude Code and Codex CLIs through the probe, launch, resume and import
   path under the full profile, including token refresh;
 - a real `tailscale serve`, on two devices and over IPv6;
+- passkeys on real authenticators and browsers other than Chrome (tested with
+  Chrome's virtual authenticator and a software authenticator only);
 - Ubuntu with its AppArmor user-namespace restriction, and distributions other
   than NixOS;
 - the egress allowlist against what authenticated CLIs actually contact;
