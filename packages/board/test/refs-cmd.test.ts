@@ -96,7 +96,7 @@ describe("refs", () => {
 		);
 	});
 
-	test("a missing root is exit 3 (not an issue); --root and MFWB_ROOT_CODE repoint it", async () => {
+	test("a missing root is exit 3 (not an issue); --root and MFW_BOARD_ROOT_CODE repoint it", async () => {
 		const d = await setup({ "src/a.rs": "held for TK-1\n" });
 		await rm(join(d, "code"), { recursive: true });
 		const gone = await mfwBoard(d, ["check"]);

@@ -118,7 +118,7 @@ a `refs` rule scans files in one for a pattern that must name a board document:
 
 ```yaml
 roots:
-  code: ../../app                 # also: --root code=<path>, or MFWB_ROOT_CODE
+  code: ../../app                 # also: --root code=<path>, or MFW_BOARD_ROOT_CODE
 refs:
   - id: held-markers
     root: code

@@ -420,7 +420,7 @@ Everything project-specific lives in the board's `board.yaml` (`mfw: 1` plus
   `refs: [{id, root, paths: [globs], pattern: 'held for (?<id>TK-\d+)', to: task, status?: [values],
   severity?, flags?, max_bytes?}]` makes every match in those files name an existing `to` document
   in an allowed status (issue at `file:line`). `check --board-only` skips them; `--root code=<path>`
-  or `MFWB_ROOT_CODE` repoints a root (worktrees); a missing root exits 3.
+  or `MFW_BOARD_ROOT_CODE` repoints a root (worktrees); a missing root exits 3.
 - **coverage (top level):** `coverage: [{id, source: table.tsv, id_column, open_when?: {column, equals},
   alias_column?, alias_none?, waivers?: {file, id_column}, closed_by: {type, field, status?, exactly?},
   referenced_by?: {type, field, status?}, root?, severity?}]`: every open row of the TSV must be named by
