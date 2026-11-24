@@ -6,7 +6,7 @@ import { silentLogger } from "../../src/log.ts";
 import type { AdmissionTransition } from "../../src/project-dispatch-admission.ts";
 import { acquireDaemonLock } from "../../src/resources/daemon-lock.ts";
 import type { ProjectServices } from "../../src/services.ts";
-import { openHostResourceStore } from "./legacy-host.ts";
+import { openHostResourceStore } from "./host-contract.ts";
 
 type Common = {
 	readyPath: string;

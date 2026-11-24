@@ -7,8 +7,8 @@ import {
 	DaemonLockError,
 } from "../src/resources/daemon-lock.ts";
 import type { HostResourceDefinition } from "../src/resources/host-types.ts";
+import { openHostResourceStore } from "./support/host-contract.ts";
 import { HostProcessHarness } from "./support/host-resource-process-harness.ts";
-import { openHostResourceStore } from "./support/legacy-host.ts";
 
 let harness: HostProcessHarness;
 

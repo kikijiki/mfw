@@ -13,7 +13,7 @@ import {
 import {
 	HostResourceCoordinator,
 	openHostResourceStore,
-} from "./support/legacy-host.ts";
+} from "./support/host-contract.ts";
 
 /** The core accounts RAM in whole MiB, rounding only against admission. */
 const MiB = 1n << 20n;

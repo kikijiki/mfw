@@ -61,8 +61,9 @@ const REBUILD = "Fix: rebuild with `bun run build` and restart the server";
  * unknown layout is refused rather than treated as source.
  */
 function bundleOutputOf(moduleFile: string): string | null {
-	const legacy = moduleFile.lastIndexOf(BUNDLE_DIR);
-	if (legacy >= 0) return moduleFile.slice(0, legacy + BUNDLE_DIR.length);
+	const inCheckout = moduleFile.lastIndexOf(BUNDLE_DIR);
+	if (inCheckout >= 0)
+		return moduleFile.slice(0, inCheckout + BUNDLE_DIR.length);
 	if (buildKind() !== "bundle") return null;
 	const at = moduleFile.lastIndexOf(SERVER_DIR);
 	const rest =

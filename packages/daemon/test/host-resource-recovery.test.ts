@@ -7,11 +7,11 @@ import { SystemLeaseLiveness } from "../src/resources/liveness.ts";
 import { ResourceError, type ResourceLease } from "../src/resources/types.ts";
 import {
 	HostResourceCoordinator,
-	type LegacyTransition as HostTransition,
-	type LegacyLiveness as LeaseLivenessInspector,
-	type LegacyEvidence as LivenessEvidence,
+	type ContractTransition as HostTransition,
+	type ContractLiveness as LeaseLivenessInspector,
+	type ContractEvidence as LivenessEvidence,
 	openHostResourceStore,
-} from "./support/legacy-host.ts";
+} from "./support/host-contract.ts";
 
 type Grant = HostLease;
 

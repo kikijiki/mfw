@@ -27,25 +27,25 @@ import {
 } from "../../src/resources/types.ts";
 
 /**
- * The operator-facing host contract the old coordinator suites assert, spoken
+ * The operator-facing host contract the host-resource suites assert, spoken
  * over the real ledger, core and store. It translates shapes only: every grant,
  * hold and transition below is decided by production code.
  */
-export type LegacyStatus = "live" | "absent" | "unavailable" | "unknown";
+export type ContractStatus = "live" | "absent" | "unavailable" | "unknown";
 
-export interface LegacyEvidence {
-	status: LegacyStatus;
+export interface ContractEvidence {
+	status: ContractStatus;
 	checkedAt: number;
 	kernelBootId: string | null;
 	processBootId?: string | null;
 	detail?: string;
 }
 
-export interface LegacyLiveness {
-	inspect(lease?: unknown): Promise<LegacyEvidence>;
+export interface ContractLiveness {
+	inspect(lease?: unknown): Promise<ContractEvidence>;
 }
 
-export type LegacyTransition =
+export type ContractTransition =
 	| "provisional"
 	| "active"
 	| "renewed"
@@ -54,16 +54,16 @@ export type LegacyTransition =
 	| "reclaimed"
 	| "force_released";
 
-export interface LegacyOptions {
-	liveness?: LegacyLiveness;
+export interface ContractOptions {
+	liveness?: ContractLiveness;
 	now?: () => number;
 	leaseMs?: number;
 	livenessMaxAgeMs?: number;
 	clockSkewMs?: number;
-	afterTransition?: (transition: LegacyTransition, lease: HostLease) => void;
+	afterTransition?: (transition: ContractTransition, lease: HostLease) => void;
 }
 
-interface LegacyRequest {
+interface ContractRequest {
 	requestKey: string;
 	projectId: string;
 	requirements: {
@@ -74,7 +74,7 @@ interface LegacyRequest {
 	metadata?: Record<string, unknown>;
 }
 
-const unknownLiveness: LegacyLiveness = {
+const unknownLiveness: ContractLiveness = {
 	inspect: async () => ({
 		status: "unavailable",
 		checkedAt: Date.now(),
@@ -113,9 +113,9 @@ function heldReasonOf(
 	return "capacity";
 }
 
-export class LegacyHost {
+export class ContractHost {
 	ledger!: HostLedger;
-	private options: LegacyOptions = {};
+	private options: ContractOptions = {};
 
 	constructor(
 		readonly core: ResourceStore,
@@ -144,7 +144,7 @@ export class LegacyHost {
 		};
 	}
 
-	async configure(options: LegacyOptions): Promise<this> {
+	async configure(options: ContractOptions): Promise<this> {
 		this.options = options;
 		const now = options.now ?? this.clock;
 		const liveness = options.liveness ?? unknownLiveness;
@@ -180,7 +180,7 @@ export class LegacyHost {
 		return this.ledger.coordinator;
 	}
 
-	private after(transition: LegacyTransition, lease: HostLease): void {
+	private after(transition: ContractTransition, lease: HostLease): void {
 		this.options.afterTransition?.(transition, lease);
 	}
 
@@ -273,7 +273,7 @@ export class LegacyHost {
 		return this.ledger.readModel().leases.find((l) => l.id === id) ?? null;
 	}
 
-	async putWaiter(request: LegacyRequest): Promise<Waiter> {
+	async putWaiter(request: ContractRequest): Promise<Waiter> {
 		await this.current();
 		const definitions = this.ledger.readModel().definitions;
 		const claims = request.requirements.map((item) => {
@@ -455,7 +455,7 @@ export async function openHostResourceStore(
 		now?: () => number;
 		busyTimeoutMs?: number;
 	} = {},
-): Promise<LegacyHost> {
+): Promise<ContractHost> {
 	const now = options.now ?? Date.now;
 	const core = await openResourceStore(home, {
 		now,
@@ -464,7 +464,7 @@ export async function openHostResourceStore(
 		...(options.busyTimeoutMs ? { busyTimeoutMs: options.busyTimeoutMs } : {}),
 	});
 	try {
-		return await new LegacyHost(core, now).configure({ now });
+		return await new ContractHost(core, now).configure({ now });
 	} catch (error) {
 		core.close();
 		throw error;
@@ -472,7 +472,7 @@ export async function openHostResourceStore(
 }
 
 export const HostResourceCoordinator = {
-	create: (store: LegacyHost, options: LegacyOptions) =>
+	create: (store: ContractHost, options: ContractOptions) =>
 		store.configure(options),
 };
-export type HostResourceCoordinator = LegacyHost;
+export type HostResourceCoordinator = ContractHost;
