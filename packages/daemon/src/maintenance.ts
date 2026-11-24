@@ -30,9 +30,9 @@ import {
  * Periodic housekeeping, driven by the scheduler's maintenance hook.
  *
  * The regression sweep is the only thing that sets and clears `main_red`, the
- * breaker the merge queue respects. It runs in an ephemeral worktree off the
- * integration branch, never the primary checkout or the merge worker's
- * integration worktree.
+ * breaker the merge queue respects. Its checks run in a disposable clone of
+ * the integration tip, in the `merge-verify` sandbox role, never in the primary
+ * checkout or on the host.
  */
 
 /** Input to the brain's second opinion on a sweep failure the deterministic classifiers could not place (see `Maintenance.diagnoseVerdict`). */
@@ -225,8 +225,8 @@ export class Maintenance {
 	 *   regression. Signal deaths are classified earlier (`VerificationResult.crashed`).
 	 * - Attribution is coarse: tasks sharing a check are all reopened when it
 	 *   breaks, with no bisection.
-	 * - `diff_against_base` is stripped from re-run checks: in the shared tip
-	 *   worktree it is structurally false.
+	 * - `diff_against_base` is stripped from re-run checks: on the shared tip
+	 *   it is structurally false.
 	 */
 	private regressionCheckableDod(dod: DefinitionOfDone): DefinitionOfDone {
 		return {
@@ -640,16 +640,13 @@ export class Maintenance {
 						: "the brain was not consulted (disabled); no second opinion beyond the deterministic checks above",
 				],
 				environment:
-					"The sweep runs in an EPHEMERAL worktree off the integration branch " +
-					"(`.mfw/sweep`), torn down after every pass; it will be gone by the " +
-					"time you read this. Its installed dependencies are a hard-linked " +
-					"SNAPSHOT (`.mfw/sweep-deps`), not the live checkout, refreshed only " +
-					"when the lockfile changes; a project whose workspace packages or " +
-					"dependency layout are unusual can fail here in ways that do not " +
-					"reproduce in your own shell (this exact gap once hid a real bug " +
-					"for hours: see `Maintenance.shadowLink`'s doc comment). Reproduce " +
-					"in a fresh worktree off the integration branch to rule that out " +
-					"before trusting this as a genuine regression.",
+					"The sweep runs each check in a disposable clone of the integration " +
+					"tip, inside the no-network merge-verify sandbox, torn down after " +
+					"every pass. The clone holds only tracked files: no installed " +
+					"dependencies and no ambient environment, so a check that needs " +
+					"either fails here in ways that do not reproduce in your own shell. " +
+					"Reproduce in a fresh clone of the integration branch to rule that " +
+					"out before trusting this as a genuine regression.",
 				hypothesis:
 					(causeTaskId
 						? `The merge attributed to ${causeTaskId} is the only candidate since the last green tip. `
@@ -1128,7 +1125,7 @@ export class Maintenance {
 
 	/**
 	 * Bounded history: prune old terminal run directories, and remove only
-	 * positively owned, clean, integrated worktrees no live run or preserved-work
+	 * positively owned, clean, integrated workspaces no live run or preserved-work
 	 * pointer still references. A historical row never authorizes deleting an
 	 * unmerged branch; a finished run's `mfw/` branch whose tip the integration
 	 * branch already contains is deleted, since that loses nothing.
@@ -1205,7 +1202,7 @@ export class Maintenance {
 			"ended",
 			"finalizing",
 			"merging",
-			// An import parked for human approval keeps its branch and worktree: they are the work being judged.
+			// An import parked for human approval keeps its workspace: it is the work being judged.
 			"needs_review",
 		]);
 		const liveRuns = allRuns.filter(
@@ -1215,7 +1212,7 @@ export class Maintenance {
 		const preserved = new Set(
 			allTasks.map((t) => t.preservedWorkspace).filter((p): p is string => !!p),
 		);
-		// Tasks in review or blocked keep their worktree even without a preserved pointer (T14/T15 release without a gc step).
+		// Tasks in review or blocked keep their workspace even without a preserved pointer (T14/T15 release without a gc step).
 		const awaitingHuman = new Set(
 			allTasks
 				.filter((t) => t.status === "review" || t.status === "blocked")
