@@ -21,7 +21,7 @@
           # Fixed-output hash of node_modules (bun install --frozen-lockfile
           # --ignore-scripts). Refresh it whenever bun.lock changes, with the network:
           #   nix build .#mfw.nodeModules 2>&1 | grep 'got:'
-          nodeModulesHash = "sha256-N30M3A9KxVGtBkq3RhW/2Njv0s3ZRGgyh22hQ0RTzHY=";
+          nodeModulesHash = "sha256-11JGbPjFskyZGVDRmOorA/amdJopD/5slXekzvfa2ZQ=";
         };
       in
       {
