@@ -20,6 +20,7 @@ import {
 	type HostScriptManifest,
 	sha256Hex,
 } from "../packages/daemon/src/containment/host-script.ts";
+import { buildStampFor, stampDefine } from "./build-stamp.ts";
 
 const EXTERNAL = ["@libsql/*", "libsql"];
 
@@ -34,6 +35,8 @@ export async function buildHostScripts(
 	mkdirSync(stagingDir, { recursive: true });
 	try {
 		const scripts: Record<string, string> = {};
+		// The same stamp as the server bundle: a copied build knows it is one.
+		const define = stampDefine(buildStampFor(repoRoot, "bundle"));
 		for (const script of BUILT_HOST_SCRIPTS) {
 			const built = await Bun.build({
 				entrypoints: [join(repoRoot, script.fromRoot)],
@@ -42,6 +45,7 @@ export async function buildHostScripts(
 				minify: false,
 				sourcemap: "none",
 				external: EXTERNAL,
+				define,
 			});
 			const output = built.outputs[0];
 			if (!built.success || built.outputs.length !== 1 || !output) {
