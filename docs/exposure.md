@@ -95,6 +95,26 @@ refused. `X-Forwarded-For` and `X-Forwarded-Proto` are required together, the
 scheme must be `https`, and `Forwarded` and `X-Forwarded-*` may not be mixed. The
 client is the rightmost address that is not a trusted proxy.
 
+## Passkeys behind a proxy
+
+A passkey is bound to the exact name it was added on, which mfw takes from the
+external origin: the trusted proxy's forwarded host and HTTPS, or this server's
+own TLS, and always one of the names in `MFW_ALLOWED_HOSTS`. It never comes from
+a header a client could choose. So add passkeys through the URL you will use,
+for example `https://<machine>.<tailnet>.ts.net:8443/mfw/`. Passkeys added on
+`localhost` keep working there. A bare IP address cannot use passkeys at all.
+
+Changing the external name strands the passkeys added on the old one: they stay
+listed under that name in Settings > Passkeys until you revoke them, and the
+password still works.
+
+The signatures are verified by `@simplewebauthn/server`, which is given exactly
+that origin and RP ID; mfw never passes it a list or a pattern. Passkeys are
+discoverable only, so the public sign-in options carry no credential list, and
+an unauthenticated visitor cannot tell whether any exist. Adding one needs the
+password, and is announced in every other session with the address it came
+from: through a proxy, that is the forwarded client.
+
 ## Why mfw needs its own origin
 
 The browser keeps the per-session request key in `localStorage`, which belongs to
@@ -151,4 +171,7 @@ not change your Serve configuration itself. Then, in a browser:
       over both IPv4 and IPv6. Tailnet addresses (`fd7a:115c:a1e0::/48`) are
       limited per address. Other IPv6 clients are limited per /64, so devices
       sharing a /64 outside that range share a limit.
+- [ ] Settings > Passkeys adds a passkey on the HTTPS name, and **Sign in with a
+      passkey** works from a second device that holds it (a synced passkey or a
+      security key). The list shows the tailnet name, not `localhost`.
 - [ ] `tailscale serve --https=<spare-port> off` removes the mapping afterwards.

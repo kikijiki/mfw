@@ -13,6 +13,7 @@ import {
 	REQUEST_KEY_HEADER,
 	setServerAuth,
 } from "./auth-guard";
+import { AUTH_ACTIONS } from "./auth-routes";
 import { serveTrpc } from "./trpc-handler";
 
 /**
@@ -185,6 +186,44 @@ describe("every route", () => {
 			);
 			expect(r.ok).toBe(false);
 		});
+});
+
+describe("every /api/auth action", () => {
+	test("its public ones are exactly the guard's", () => {
+		for (const [action, spec] of Object.entries(AUTH_ACTIONS))
+			for (const method of ["GET", "HEAD", "POST"])
+				expect(isPublicPath(`api/auth/${action}`, method)).toBe(
+					spec.access === "public" && spec.methods.includes(method),
+				);
+	});
+
+	for (const [action, spec] of Object.entries(AUTH_ACTIONS))
+		for (const method of spec.methods) {
+			const url = `${ORIGIN}/api/auth/${action}`;
+			if (spec.access === "session")
+				test(`${method} ${action}: unauthenticated gets 401`, async () => {
+					const r = await guardOnly(
+						new Request(url, { method, headers: { host: "localhost:7777" } }),
+					);
+					expect(r.ok).toBe(false);
+					if (!r.ok) expect(r.response.status).toBe(401);
+				});
+			test(`${method} ${action}: cross-origin gets 403`, async () => {
+				const r = await guardOnly(
+					new Request(url, {
+						method,
+						headers: {
+							host: "localhost:7777",
+							origin: EVIL,
+							cookie: `mfw_session=${session.token}`,
+							[REQUEST_KEY_HEADER]: session.requestKey,
+						},
+					}),
+				);
+				expect(r.ok).toBe(false);
+				if (!r.ok) expect(r.response.status).toBe(403);
+			});
+		}
 });
 
 describe("every tRPC procedure and SSE stream", () => {

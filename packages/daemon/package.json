@@ -21,6 +21,7 @@
 		"@mfw/core": "workspace:*",
 		"@mfw/db": "workspace:*",
 		"@mfw/plugin-api": "workspace:*",
+		"@simplewebauthn/server": "14.1.0",
 		"pino": "^10.3.1",
 		"yaml": "^2.9.0",
 		"zod": "^4.4.3"

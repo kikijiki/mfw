@@ -14,6 +14,8 @@ import {
 	type AuthState,
 	afterLogin,
 	fetchAuthState,
+	passkeysSupported,
+	signInWithPasskey,
 	submitLogin,
 	submitSetup,
 } from "~/lib/auth-client";
@@ -24,6 +26,8 @@ function describe(error: unknown): string {
 	if (error instanceof AuthRequestError) {
 		if (error.code === "locked" && error.retryAfterSeconds > 0)
 			return `Too many failed attempts. Try again in ${error.retryAfterSeconds} s.`;
+		if (error.code === "passkey_copied")
+			return "This passkey looks copied, so it was refused. Sign in with your password and check Settings > Passkeys.";
 		if (error.code === "busy" && error.retryAfterSeconds > 0)
 			return `The server is busy. Try again in ${error.retryAfterSeconds} s.`;
 		return error.message;
@@ -50,6 +54,20 @@ export function LoginPage() {
 	}, []);
 
 	const isSetup = state === "setup";
+	const [canUsePasskey, setCanUsePasskey] = useState(false);
+	useEffect(() => setCanUsePasskey(passkeysSupported()), []);
+
+	async function onPasskey() {
+		setError(null);
+		setBusy(true);
+		try {
+			await signInWithPasskey();
+			afterLogin(window.location.search);
+		} catch (e) {
+			setError(describe(e));
+			setBusy(false);
+		}
+	}
 
 	async function onSubmit(event: FormEvent) {
 		event.preventDefault();
@@ -139,6 +157,16 @@ export function LoginPage() {
 							<Button type="submit" disabled={busy}>
 								{isSetup ? "Create owner" : "Sign in"}
 							</Button>
+							{!isSetup && canUsePasskey && (
+								<Button
+									type="button"
+									variant="outline"
+									disabled={busy}
+									onClick={() => void onPasskey()}
+								>
+									Sign in with a passkey
+								</Button>
+							)}
 						</form>
 					)}
 				</CardContent>

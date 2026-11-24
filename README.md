@@ -310,9 +310,11 @@ Run these on the host, outside any agent sandbox:
 | Command | What it does |
 | --- | --- |
 | `mfw auth unlock` | clear failed sign-in attempts, if you are locked out |
-| `mfw auth sign-out-everywhere` | revoke every session, including a stolen one |
+| `mfw auth sign-out-everywhere` | revoke every session and API token, including stolen ones, and delete every passkey (`--keep-passkeys` keeps them) |
 | `mfw auth setup-token` | issue a new first-run token (before an owner exists) |
 | `mfw auth token ...` | create, list and revoke API tokens (see below) |
+| `mfw auth passkey list` | show registered passkeys: name, created, last used, and the address that added it |
+| `mfw auth passkey revoke <id>` | remove a passkey, sign out the sessions it opened and revoke the API tokens they created |
 | `mfw auth reset --yes` | forget the password and all sessions, then repeat setup |
 
 Failed sign-ins are limited per address (behind a trusted proxy, per forwarded
@@ -323,7 +325,43 @@ your limit. An unsandboxed run
 `mfw auth unlock` clears it.
 
 To change the password, use Settings > Session. It asks for the current password
-and signs out every other session.
+and signs out every other session. It also deletes every passkey unless you
+untick **Revoke all passkeys** and keep the ones you choose.
+
+#### Passkeys
+
+**[Experimental](docs/experimental.md#passkeys)** until reviewed. A passkey is an
+extra way for the owner to sign in; the password stays, and `mfw auth reset` is
+still the recovery. Add one under Settings > Passkeys: it asks for the password
+again first, and nothing else will do, so a stolen session cannot add one. The
+login page then offers **Sign in with a passkey**, which opens the same kind of
+session as the password.
+
+- Passkeys work on `http://localhost:<port>` and on an HTTPS name listed in
+  `MFW_ALLOWED_HOSTS` (directly or through a trusted proxy). They are refused on a
+  bare IP address such as `127.0.0.1`, and on plain HTTP anywhere else. A passkey
+  belongs to the name it was added on, so one added on `localhost` does not work
+  on your tailnet name, and the other way round.
+- The device must verify you (PIN, fingerprint or face); a key that only checks
+  presence is refused. Attestation is not requested, so any authenticator that
+  stores the passkey on the device works. A security key that cannot store one
+  (a non-discoverable credential) is refused, and so is a browser that does not
+  say whether it stored one (see [experimental.md](docs/experimental.md#passkeys)). Only ES256 and EdDSA keys are
+  accepted, not RSA.
+- Each passkey records the session and address that added it. Adding or
+  revoking one is logged, and every other signed-in session shows a banner
+  until you dismiss it there.
+- A passkey whose signature counter goes backwards is refused as a possible copy,
+  the login page says so, and the server log names it. Revoke it if that was not
+  you.
+- Signing out everywhere deletes every passkey, and so does a password change
+  unless you keep some. Revoking a passkey ends the sessions it signed in and
+  revokes the API tokens those sessions created.
+- Failed passkey sign-ins count against the same per-address limit as passwords.
+- The WebAuthn checks themselves are done by
+  [`@simplewebauthn/server`](https://github.com/MasterKale/SimpleWebAuthn); mfw
+  sets what it requires and adds the checks listed in
+  [the threat model](docs/threat-model.md#9-network-clients-to-the-control-plane).
 
 `mfw auth reset` refuses while the server or any agent session is running (it finds
 tmux sockets itself, whatever your shell's environment says, and refuses if unsure), because
