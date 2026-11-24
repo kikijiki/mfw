@@ -9,6 +9,8 @@ import {
 	readMemAvailable,
 } from "../src/dispatch-preflight.ts";
 import { git } from "../src/git.ts";
+import { workspaceRootOf } from "../src/run-workspace/factory.ts";
+import { useCheckClones } from "./support/check-clones.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -92,29 +94,24 @@ describe("dispatch preflight", () => {
 		expect(e.fix.text).toContain("integrationBranch");
 	});
 
-	test("a leftover run branch is refused with the command that keeps its commits", async () => {
+	test("a leftover run clone is refused with the removal step", async () => {
 		const root = await repo();
-		await git(["branch", "mfw/r1", "main"], root);
-		const e = await refusal(
-			preflightDispatch({ projectRoot: root, integrationBranch: "main" }, "r1"),
-		);
-		expect(e.code).toBe("branch_exists");
-		expect(e.fix).toEqual({
-			kind: "command",
-			text: expect.stringContaining("git branch -m mfw/r1 wip/r1-leftover"),
-		});
-	});
-
-	test("a leftover worktree path is refused with the removal command", async () => {
-		const root = await repo();
-		await mkdir(join(root, "worktrees", "r2"), { recursive: true });
-		const e = await refusal(
-			preflightDispatch({ projectRoot: root, integrationBranch: "main" }, "r2"),
-		);
-		expect(e.code).toBe("worktree_exists");
-		expect(e.fix.text).toContain(
-			`git worktree remove --force ${join(root, "worktrees", "r2")}`,
-		);
+		const drop = useCheckClones(root);
+		try {
+			const path = join(workspaceRootOf(root) as string, "r2");
+			await mkdir(path, { recursive: true });
+			const e = await refusal(
+				preflightDispatch(
+					{ projectRoot: root, integrationBranch: "main" },
+					"r2",
+				),
+			);
+			expect(e.code).toBe("workspace_exists");
+			expect(e.fix.text).toContain(`delete that directory`);
+			expect(e.fix.text).toContain(path);
+		} finally {
+			await drop();
+		}
 	});
 
 	test("memory below the floor is refused; unknown memory or a zero floor passes", async () => {

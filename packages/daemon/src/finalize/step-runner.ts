@@ -24,10 +24,8 @@ import {
 	AUTH_HOLD_REASON,
 	isAuthFailure,
 } from "../auth-failure.ts";
-import { readProtectedBoardPaths } from "../board-layout.ts";
 import { runDirLayout } from "../containment/run-dir.ts";
 import { readRegularFile } from "../containment/safe-file.ts";
-import { git } from "../git.ts";
 import {
 	type CleanupResult,
 	findLeftoverProcesses,
@@ -56,13 +54,11 @@ import {
 import type { BeginStepResult, RunRegistry, RunRow } from "../run-registry.ts";
 import {
 	createCheckClones,
-	createVerifierClones,
-	workspaceForRun,
+	createRunWorkspace,
 } from "../run-workspace/factory.ts";
-import type { WorktreeReportIdentity } from "../run-workspace/run-workspace.ts";
+import type { ReportIdentity } from "../run-workspace/run-workspace.ts";
 import {
 	asScopeSample,
-	changedFiles,
 	changedFilesInRef,
 	finishScope,
 	SCOPE_KILL_REASONS,
@@ -75,13 +71,7 @@ import {
 	type ModelTier,
 } from "../tasks/types.ts";
 import type { RateLimitObserver } from "../usage/claude-weekly.ts";
-import {
-	type EnvPolicy,
-	type VerificationResult,
-	verify,
-	verifyInClone,
-	worktreeHostExecution,
-} from "../verifier.ts";
+import { type VerificationResult, verifyInClone } from "../verifier.ts";
 import {
 	type Directive,
 	type FinalizeCtx,
@@ -164,7 +154,7 @@ const RUN_HELD_STATUSES: ReadonlySet<TaskStatus> = new Set([
 export interface BrainCallCtx {
 	runId: string;
 	taskId: string | null;
-	worktreePath: string | null;
+	workspacePath: string | null;
 	branch: string | null;
 	baseSha: string | null;
 	verify: VerificationResult | null;
@@ -250,9 +240,6 @@ export interface StepRunnerDeps {
 	/** Wrapper command for DoD checks (e.g. a sandbox entrypoint, or the
 	 *  project's own dev-environment entrypoint). */
 	checkPrefix?: string;
-	/** What a DoD check may read from the ambient environment. See
-	 *  `verifier.ts`'s `EnvPolicy`. */
-	envPolicy?: EnvPolicy;
 	verification?: {
 		foreground<T>(work: () => Promise<T>): Promise<T>;
 	};
@@ -613,11 +600,9 @@ function auditDetail(step: StepName, result: unknown): string | undefined {
 	return undefined;
 }
 
-function foldReportIdentity(
-	result: unknown,
-): WorktreeReportIdentity | undefined {
-	const identity = (result as { worktreeReport?: unknown } | undefined)
-		?.worktreeReport;
+function foldReportIdentity(result: unknown): ReportIdentity | undefined {
+	const identity = (result as { workspaceReport?: unknown } | undefined)
+		?.workspaceReport;
 	if (
 		typeof identity === "object" &&
 		identity !== null &&
@@ -824,8 +809,8 @@ export class StepRunner {
 		const scopeRes = results.get("scope_check") as ScopeCheckResult | undefined;
 
 		const task = run.taskId ? await this.deps.tasks.get(run.taskId) : null;
-		const worktreeDirty =
-			run.kind === "task" && run.worktreePath
+		const workspaceDirty =
+			run.kind === "task" && run.workspacePath
 				? await this.isDirty(
 						run,
 						foldReportIdentity(results.get("ingest_report")),
@@ -855,7 +840,7 @@ export class StepRunner {
 								) != null,
 							escalation: report?.escalation ?? null,
 							attempt: run.attempt,
-							worktreeDirty,
+							workspaceDirty,
 							exitCode: classify?.exitCode ?? run.exitCode ?? null,
 						}
 					: null,
@@ -893,10 +878,10 @@ export class StepRunner {
 				: null,
 			planParsed: planRes ? planRes.parsed === true : null,
 			reportHasFollowUps: (report?.followUps.length ?? 0) > 0,
-			localWorktree:
+			localWorkspace:
 				run.kind !== "brain" &&
 				run.executionTarget === "local" &&
-				run.worktreePath !== null,
+				run.workspacePath !== null,
 			leftBackground: (reapRes?.processes?.length ?? 0) > 0,
 			backgroundOutstanding: (classify?.background?.length ?? 0) > 0,
 		};
@@ -915,36 +900,32 @@ export class StepRunner {
 	/** Dirty = uncommitted changes OR commits beyond the run's base. */
 	private async isDirty(
 		run: RunRow,
-		reportIdentity?: WorktreeReportIdentity,
+		reportIdentity?: ReportIdentity,
 	): Promise<boolean> {
-		const wt = run.worktreePath;
+		const wt = run.workspacePath;
 		if (!wt) return false;
 		try {
 			await access(wt);
 		} catch {
 			return false;
 		}
-		const workspace = workspaceForRun(this.deps.projectRoot, run);
-		// Same ownership-aware policy as maintenance. MFW_REPORT.json is exempt
-		// only while it matches the identity recorded by ingest_report.
+		const workspace = createRunWorkspace(this.deps.projectRoot);
+		// The first read performs the end-of-run import. The clone's own HEAD is
+		// agent-written, so only the imported ref is read.
+		const imported = run.baseSha
+			? await workspace.fetchResult({
+					path: wt,
+					branch: run.branch ?? "",
+					baseSha: run.baseSha,
+				})
+			: null;
+		// Same ownership-aware policy as maintenance: a result never imported
+		// would be lost.
 		if (await workspace.hasLocalChanges({ path: wt }, { reportIdentity }))
 			return true;
-		if (!run.baseSha) return false;
-		if (workspace.kind === "clone") {
-			// A clone's own HEAD is agent-written: read the imported ref instead.
-			const imported = await workspace.fetchResult({
-				path: wt,
-				branch: run.branch ?? "",
-				baseSha: run.baseSha,
-			});
-			return imported.sha !== null && imported.sha !== run.baseSha;
-		}
-		const head = await git(["rev-parse", "HEAD"], wt);
-		if (head.exitCode !== 0)
-			throw new Error(
-				`could not inspect worktree HEAD: ${head.stderr || head.stdout}`,
-			);
-		return head.stdout !== run.baseSha;
+		return (
+			imported !== null && imported.sha !== null && imported.sha !== run.baseSha
+		);
 	}
 
 	/** The Terminal this row is heading toward, its note becomes the release
@@ -1047,8 +1028,8 @@ export class StepRunner {
 				return this.releaseTask(built, d);
 			case "clear_stall":
 				return this.clearStall(built);
-			case "gc_worktree":
-				return this.gcWorktree(built, d.args?.force === true);
+			case "gc_workspace":
+				return this.gcWorkspace(built, d.args?.force === true);
 			case "archive_wip":
 				return this.archiveWip(built);
 			case "scope_check":
@@ -1327,13 +1308,13 @@ export class StepRunner {
 	/** Read MFW_REPORT.json from the run dir; absent/corrupt = no report. The
 	 *  report lives in the journal, nothing else is mutated here. */
 	private async ingestReport(built: Built): Promise<unknown> {
-		// The agent writes MFW_REPORT_PATH = <worktree>/MFW_REPORT.json; the run
-		// dir is only a fallback for runs without a worktree.
-		const worktreeReportPath = built.run.worktreePath
-			? join(built.run.worktreePath, "MFW_REPORT.json")
+		// The agent writes MFW_REPORT_PATH = <workspace>/MFW_REPORT.json; the run
+		// dir is only a fallback for runs without a workspace.
+		const workspaceReportPath = built.run.workspacePath
+			? join(built.run.workspacePath, "MFW_REPORT.json")
 			: null;
 		const candidates = [
-			worktreeReportPath,
+			workspaceReportPath,
 			join(
 				runDirLayout(this.deps.registry.runDir(built.run.id)).outbox,
 				"MFW_REPORT.json",
@@ -1342,14 +1323,14 @@ export class StepRunner {
 		].filter((p): p is string => p !== null);
 
 		let report: Record<string, unknown> | null = null;
-		let worktreeReport: WorktreeReportIdentity = { state: "absent" };
+		let workspaceReport: ReportIdentity = { state: "absent" };
 		for (const path of candidates) {
 			// A transient/permission failure throws: it is not "no report", and
 			// cleanup must never erase bytes we could not read.
 			const content = await readAgentReport(path);
 			if (content === null) continue;
-			if (path === worktreeReportPath) {
-				worktreeReport = {
+			if (path === workspaceReportPath) {
+				workspaceReport = {
 					state: "present",
 					sha256: createHash("sha256").update(content).digest("hex"),
 				};
@@ -1367,121 +1348,85 @@ export class StepRunner {
 		if (report) await this.deps.registry.recordReportFact(built.run.id, report);
 		const question = foldReport({ report })?.question ?? null;
 		if (question) await this.labelActivity(built.run, question);
-		return { report, worktreeReport };
+		return { report, workspaceReport };
 	}
 
-	/** Run project merge checks plus focused task checks in the worktree. */
+	/** Run project merge checks plus focused task checks on the run's imported result. */
 	private async verifyStep(built: Built): Promise<unknown> {
 		const { run, task } = built;
 		const dod = this.deps.tasks.effectiveVerification(
 			task?.verification ?? task?.dod ?? null,
 		);
-		if (!run.worktreePath || !dod) {
+		if (!run.workspacePath || !dod) {
 			return {
 				passed: false,
 				checks: [
 					{
 						check: "precondition",
 						ok: false,
-						detail: "run has no worktree or no verification checks apply",
+						detail: "run has no workspace or no verification checks apply",
 					},
 				],
 			};
 		}
-		// Hardened verifier: scrubbed env, per-check timeouts, declared
-		// checkPrefix/envPolicy, no guessing at the project (see verifier.ts).
+		// Hardened verifier: per-check timeouts, the declared checkPrefix, no
+		// guessing at the project (see verifier.ts).
 		const verifyOpts = {
 			checkPrefix: this.deps.checkPrefix,
-			envPolicy: this.deps.envPolicy,
 			gate: {
 				primaryRoot: this.deps.projectRoot,
 				baseRev: run.baseSha || "HEAD",
 			},
 		};
-		// A clone's tree is agent-writable: the checks run in a disposable
-		// host-owned clone of the imported tip, never in the run's workspace.
-		// An autonomous worktree run is verified the same way, from its committed
-		// branch tip, because only an interactive run may execute on the host.
-		// The run's own mode: the project's may have changed since it launched,
-		// and a run with none recorded counts as autonomous.
-		const hostExecution = worktreeHostExecution(run.approvalMode ?? undefined);
-		const clones =
-			createVerifierClones(this.deps.projectRoot, run) ??
-			(hostExecution.hostExecution
-				? null
-				: createCheckClones(this.deps.projectRoot));
-		let candidate: string | null = null;
-		if (clones) {
-			const imported = await workspaceForRun(
-				this.deps.projectRoot,
-				run,
-			).fetchResult({
-				path: run.worktreePath,
-				branch: run.branch ?? "",
-				baseSha: run.baseSha ?? "",
-			});
-			if (!imported.sha) {
-				return {
-					passed: false,
-					checks: [
-						{
-							check: "precondition",
-							ok: false,
-							detail: "the run left no imported result to verify",
-						},
-					],
-				};
-			}
-			candidate = imported.sha;
+		// The run's tree is agent-writable: the checks run in a disposable
+		// host-owned clone of the imported tip, never in the run's workspace
+		// and never on the host.
+		const clones = createCheckClones(this.deps.projectRoot);
+		if (!clones) {
+			return {
+				passed: false,
+				checks: [
+					{
+						check: "precondition",
+						ok: false,
+						detail: "this project has no verifier clones to check the run in",
+					},
+				],
+			};
 		}
-		// An interactive run is checked in its worktree, so what passed is a
-		// commit only if HEAD held still and nothing was left uncommitted.
-		const headBefore = candidate
-			? null
-			: await git(["rev-parse", "HEAD"], run.worktreePath);
+		const imported = await createRunWorkspace(
+			this.deps.projectRoot,
+		).fetchResult({
+			path: run.workspacePath,
+			branch: run.branch ?? "",
+			baseSha: run.baseSha ?? "",
+		});
+		const candidate = imported.sha;
+		if (!candidate) {
+			return {
+				passed: false,
+				checks: [
+					{
+						check: "precondition",
+						ok: false,
+						detail: "the run left no imported result to verify",
+					},
+				],
+			};
+		}
 		const runVerification = () =>
-			clones && candidate
-				? verifyInClone(
-						clones,
-						candidate,
-						run.id,
-						dod,
-						run.baseSha ?? "",
-						verifyOpts,
-					)
-				: // Only a worktree run launched interactive may execute on the host.
-					verify(run.worktreePath as string, dod, run.baseSha ?? "", {
-						...verifyOpts,
-						...hostExecution,
-					});
-		const checked = this.deps.verification
+			verifyInClone(
+				clones,
+				candidate,
+				run.id,
+				dod,
+				run.baseSha ?? "",
+				verifyOpts,
+			);
+		const result = this.deps.verification
 			? await this.deps.verification.foreground(runVerification)
 			: await runVerification();
-		let verifiedSha: string | null = null;
-		let result = checked;
-		if (checked.passed) {
-			verifiedSha =
-				candidate ??
-				(await this.committedWorktreeTip(
-					run,
-					headBefore?.exitCode === 0 ? headBefore.stdout.trim() : null,
-				));
-			if (!verifiedSha) {
-				result = {
-					...checked,
-					passed: false,
-					checks: [
-						...checked.checks,
-						{
-							check: "precondition",
-							ok: false,
-							detail:
-								"the checks passed on a worktree that differs from its commit: commit the changes and verify again",
-						},
-					],
-				};
-			}
-		}
+		const verifiedSha = result.passed ? candidate : null;
 		await this.deps.registry.recordVerifiedSha(run.id, verifiedSha);
 		if (run.taskId) {
 			const taskId = run.taskId;
@@ -1530,47 +1475,13 @@ export class StepRunner {
 		return result;
 	}
 
-	/**
-	 * The worktree's HEAD, when it is what the checks just saw. Ignored files
-	 * (dependencies, build output) are not part of any commit and do not count.
-	 * Neither do the agent's report, which finalize has already read, or stray
-	 * files under the board and `.mfw/`, which a merge discards.
-	 */
-	private async committedWorktreeTip(
-		run: RunRow,
-		before: string | null,
-	): Promise<string | null> {
-		const wt = run.worktreePath;
-		if (!wt || !before) return null;
-		const after = await git(["rev-parse", "HEAD"], wt);
-		if (after.exitCode !== 0 || after.stdout.trim() !== before) return null;
-		const status = await git(["status", "--porcelain", "-z"], wt);
-		if (status.exitCode !== 0) return null;
-		const owned = [
-			".mfw",
-			...(await readProtectedBoardPaths(this.deps.projectRoot)),
-		];
-		const differs = status.stdout
-			.split("\0")
-			.filter(Boolean)
-			.some((entry) => {
-				const path = /^.{1,2} (.*)$/s.exec(entry)?.[1]?.replace(/\/$/, "");
-				if (!path) return true;
-				return !(
-					path === "MFW_REPORT.json" ||
-					owned.some((p) => path === p || path.startsWith(`${p}/`))
-				);
-			});
-		return differs ? null : before;
-	}
-
 	/** Judge steps never throw; failure is a journaled `failed` status the machine turns into a settle (T14) or a human gate (I5). */
 	private async brainCall(built: Built, point: "critic"): Promise<unknown> {
 		const { run } = built;
 		const ctx: BrainCallCtx = {
 			runId: run.id,
 			taskId: run.taskId,
-			worktreePath: run.worktreePath,
+			workspacePath: run.workspacePath,
 			branch: run.branch,
 			baseSha: run.baseSha,
 			verify:
@@ -1770,7 +1681,7 @@ export class StepRunner {
 
 	/**
 	 * T10Q: the agent's question becomes a clarification on its run (answering
-	 * it resumes a child in the same worktree), and the worktree pointer is kept
+	 * it resumes a child in the same workspace), and the workspace pointer is kept
 	 * so housekeeping never collects the work the answer continues. Idempotent
 	 * by runId.
 	 */
@@ -1787,10 +1698,10 @@ export class StepRunner {
 			goal: null,
 			questions: [text],
 		});
-		if (run.taskId && run.worktreePath && run.branch) {
-			await this.deps.tasks.recordPreservedWorktree(
+		if (run.taskId && run.workspacePath && run.branch) {
+			await this.deps.tasks.recordPreservedWorkspace(
 				run.taskId,
-				run.worktreePath,
+				run.workspacePath,
 				run.branch,
 			);
 		}
@@ -1801,7 +1712,7 @@ export class StepRunner {
 	 * The terminal that replaces every policy row (design §6.2): the run's
 	 * finalize ends here with a CLASS and the facts the brain decides from.
 	 *
-	 *  - the task's claim is released to `ready` (a dirty worktree keeps its
+	 *  - the task's claim is released to `ready` (a dirty workspace keeps its
 	 *    pointer so a `continue:` spawn can reuse it); a competing attempt
 	 *    leaves the group's claim alone;
 	 *  - the task is parked `awaiting_brain` (a hold, not a board status);
@@ -1934,7 +1845,7 @@ export class StepRunner {
 			exitCode: classify?.exitCode ?? run.exitCode ?? null,
 			...(classify?.killReason ? { killReason: classify.killReason } : {}),
 			branch: run.branch,
-			worktree: run.worktreePath,
+			workspace: run.workspacePath,
 			...(ctx.task && !verifyRes && ctx.task.exitCode !== 0
 				? { noChecks: true }
 				: {}),
@@ -2002,21 +1913,19 @@ export class StepRunner {
 		const { run } = built;
 		if (!run.branch) throw new Error("enqueue_merge: run has no branch");
 		const targetBranch = run.integrationBranch ?? "main";
-		// A clone's work reaches the primary only through the host's verified
+		// A run's work reaches the primary only through the host's verified
 		// import; the merge queue reads that quarantine ref. Nothing to merge
 		// is a failed step, not an empty merge.
-		const workspace = workspaceForRun(this.deps.projectRoot, run);
-		if (workspace.kind === "clone") {
-			const imported = await workspace.fetchResult({
-				path: run.worktreePath ?? workspace.paths(run.id).workPath,
-				branch: run.branch,
-				baseSha: run.baseSha ?? "",
-			});
-			if (!imported.sha) {
-				throw new Error(
-					`enqueue_merge: the run's result was not imported${imported.failure ? ` (${imported.failure})` : ""}`,
-				);
-			}
+		const workspace = createRunWorkspace(this.deps.projectRoot);
+		const imported = await workspace.fetchResult({
+			path: run.workspacePath ?? workspace.paths(run.id).workPath,
+			branch: run.branch,
+			baseSha: run.baseSha ?? "",
+		});
+		if (!imported.sha) {
+			throw new Error(
+				`enqueue_merge: the run's result was not imported${imported.failure ? ` (${imported.failure})` : ""}`,
+			);
 		}
 		// Mark `merging` BEFORE the job is visible: otherwise the worker could
 		// finish the run first and this would drag a terminal run back to
@@ -2057,20 +1966,20 @@ export class StepRunner {
 		}
 		const terminal = this.simulateTerminal(built.ctx);
 		const reason = terminal?.note ?? terminal?.state ?? `finalize ${d.row}`;
-		// Resume-not-restart: a dirty worktree going back to ready keeps its
+		// Resume-not-restart: a dirty workspace going back to ready keeps its
 		// pointer so the next attempt reuses the work.
 		if (
 			to === "ready" &&
-			run.worktreePath &&
+			run.workspacePath &&
 			run.branch &&
 			(await this.isDirty(
 				run,
 				foldReportIdentity(built.results.get("ingest_report")),
 			))
 		) {
-			await this.deps.tasks.recordPreservedWorktree(
+			await this.deps.tasks.recordPreservedWorkspace(
 				run.taskId,
-				run.worktreePath,
+				run.workspacePath,
 				run.branch,
 			);
 		}
@@ -2080,16 +1989,17 @@ export class StepRunner {
 
 	/**
 	 * Save a scope-killed run's work to `wip/<task>-<run>` before T4s
-	 * force-removes the worktree. A throw fails the step, so nothing removes
-	 * the worktree until the snapshot is journaled.
+	 * force-removes the workspace. A throw fails the step, so nothing removes
+	 * the workspace until the snapshot is journaled.
 	 */
 	private async archiveWip(built: Built): Promise<ArchiveWipResult> {
 		const { run } = built;
 		if (!run.branch || !run.baseSha) return { ref: null, sha: null };
-		const archive = await workspaceForRun(this.deps.projectRoot, run).archive(
+		const workspace = createRunWorkspace(this.deps.projectRoot);
+		const archive = await workspace.archive(
 			{
-				// No worktree: archiveWip saves the branch tip instead.
-				path: run.worktreePath ?? join(this.deps.projectRoot, ".mfw", "none"),
+				// The archive reads the imported refs, so a gone clone is fine.
+				path: run.workspacePath ?? workspace.paths(run.id).workPath,
 				branch: run.branch,
 				baseSha: run.baseSha,
 			},
@@ -2114,8 +2024,8 @@ export class StepRunner {
 
 	/**
 	 * Finish-time scope fact (T12s): what the run changed since its base,
-	 * against its task's own `owns`. Reads the worktree when it is still here,
-	 * else the branch.
+	 * against its task's own `owns`. Diffs the imported result in the primary:
+	 * the host never runs git in the run's clone.
 	 */
 	private async scopeCheck(built: Built): Promise<ScopeCheckResult> {
 		const { run, task } = built;
@@ -2124,18 +2034,10 @@ export class StepRunner {
 			files: [],
 			truncated: false,
 		};
-		const wt = run.worktreePath;
-		const workspace = workspaceForRun(this.deps.projectRoot, run);
-		const present =
-			wt !== null &&
-			(await access(wt).then(
-				() => true,
-				() => false,
-			));
-		if (workspace.kind === "clone" && run.baseSha) {
-			// No host git in a clone: diff the imported ref in the primary.
+		const workspace = createRunWorkspace(this.deps.projectRoot);
+		if (run.baseSha) {
 			const imported = await workspace.fetchResult({
-				path: wt ?? workspace.paths(run.id).workPath,
+				path: run.workspacePath ?? workspace.paths(run.id).workPath,
 				branch: run.branch ?? "",
 				baseSha: run.baseSha,
 			});
@@ -2146,14 +2048,6 @@ export class StepRunner {
 					imported.ref,
 				);
 			}
-		} else if (present && wt && run.baseSha) {
-			listed = await changedFiles(wt, run.baseSha);
-		} else if (run.branch && run.baseSha) {
-			listed = await changedFilesInRef(
-				this.deps.projectRoot,
-				run.baseSha,
-				run.branch,
-			);
 		}
 		return finishScope(owns, listed, {
 			unsampled: asScopeSample(run.scopeSample)?.unsampled === true,
@@ -2166,23 +2060,23 @@ export class StepRunner {
 		return {};
 	}
 
-	/** Remove the worktree + branch when clean (or forced); preserve dirty
-	 *  work with a task pointer otherwise. Absent worktree = already done. */
-	private async gcWorktree(built: Built, force: boolean): Promise<unknown> {
+	/** Remove the workspace + branch when clean (or forced); preserve dirty
+	 *  work with a task pointer otherwise. Absent workspace = already done. */
+	private async gcWorkspace(built: Built, force: boolean): Promise<unknown> {
 		const { run } = built;
 		if (!force && !built.ctx.done.has("ingest_report")) {
 			throw new Error(
-				"refusing non-forced worktree cleanup before report ingestion is journaled",
+				"refusing non-forced workspace cleanup before report ingestion is journaled",
 			);
 		}
-		const wt = run.worktreePath;
+		const wt = run.workspacePath;
 		if (!wt) return { removed: false, missing: true };
 		const exists = await access(wt).then(
 			() => true,
 			() => false,
 		);
 		if (!exists) {
-			if (run.taskId) await this.deps.tasks.clearPreservedWorktree(run.taskId);
+			if (run.taskId) await this.deps.tasks.clearPreservedWorkspace(run.taskId);
 			return { removed: false, missing: true };
 		}
 		const reportIdentity = foldReportIdentity(
@@ -2190,12 +2084,12 @@ export class StepRunner {
 		);
 		if (!force && !reportIdentity) {
 			throw new Error(
-				"refusing non-forced worktree cleanup without journaled report identity",
+				"refusing non-forced workspace cleanup without journaled report identity",
 			);
 		}
 		if (!force && (await this.isDirty(run, reportIdentity))) {
 			if (run.taskId && run.branch) {
-				await this.deps.tasks.recordPreservedWorktree(
+				await this.deps.tasks.recordPreservedWorkspace(
 					run.taskId,
 					wt,
 					run.branch,
@@ -2205,7 +2099,7 @@ export class StepRunner {
 		}
 		if (!run.branch || !run.baseSha) {
 			if (run.taskId && run.branch) {
-				await this.deps.tasks.recordPreservedWorktree(
+				await this.deps.tasks.recordPreservedWorkspace(
 					run.taskId,
 					wt,
 					run.branch,
@@ -2214,14 +2108,14 @@ export class StepRunner {
 			return {
 				removed: false,
 				preserved: true,
-				reason: "durable worktree ownership is incomplete",
+				reason: "durable workspace ownership is incomplete",
 			};
 		}
-		await workspaceForRun(this.deps.projectRoot, run).remove(
+		await createRunWorkspace(this.deps.projectRoot).remove(
 			{ path: wt, branch: run.branch, baseSha: run.baseSha },
 			{ force, reportIdentity },
 		);
-		if (run.taskId) await this.deps.tasks.clearPreservedWorktree(run.taskId);
+		if (run.taskId) await this.deps.tasks.clearPreservedWorkspace(run.taskId);
 		return { removed: true };
 	}
 

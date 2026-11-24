@@ -14,7 +14,12 @@ import { AgentReviewInference } from "./agent-review.ts";
 import { AdapterRegistry } from "./agents/adapter.ts";
 import { DEFAULT_PROVIDER_ID, providerConfigFor } from "./agents/catalogue.ts";
 import { AUTH_HOLD_REASON } from "./auth-failure.ts";
-import { buildBoardLayoutRecord, recordBoardLocation } from "./board-layout.ts";
+import {
+	buildBoardLayoutRecord,
+	firewalledPath,
+	readProtectedBoardPaths,
+	recordBoardLocation,
+} from "./board-layout.ts";
 import {
 	assertNoForeignTasksDir,
 	relocateLegacyBoard,
@@ -36,8 +41,6 @@ import {
 	effectiveAssistance,
 	effectiveReview,
 	FALLBACK_MERGE_CHECKS,
-	isolationConfigProblem,
-	isolationDispatchProblem,
 	loadConfig,
 	mutateConfig,
 	normalizeRoot,
@@ -155,7 +158,6 @@ import { RunRegistry } from "./run-registry.ts";
 import {
 	configureRunWorkspace,
 	createCheckClones,
-	createVerifierClones,
 	rebaseCloneOptions,
 } from "./run-workspace/factory.ts";
 import { rebaseQuarantineInScratch } from "./run-workspace/rebase-clone.ts";
@@ -206,11 +208,7 @@ import {
 } from "./usage/default-probes.ts";
 import { UsageMonitor, type UsageSubscription } from "./usage-monitor.ts";
 import { VerificationCoordinator } from "./verification-coordinator.ts";
-import {
-	type EnvPolicy,
-	type VerificationResult,
-	verifyInClone,
-} from "./verifier.ts";
+import { type VerificationResult, verifyInClone } from "./verifier.ts";
 import { WorkspaceService } from "./workspace.ts";
 
 /**
@@ -268,8 +266,6 @@ export interface ProjectConfig {
 	checkPrefix?: string;
 	/** The project's development environment (`containment/dev-env-config.ts`). */
 	env?: EnvConfig;
-	/** Ambient environment a verification check may read. */
-	envPolicy?: EnvPolicy;
 	/** Repository-wide checks applied to every candidate before merge. */
 	mergeChecks?: VerificationPlan | null;
 	/** Exempt the task that broke main from the red-main dispatch gate so it can repair itself. */
@@ -280,8 +276,6 @@ export interface ProjectConfig {
 	pushAllowLocalUrl?: boolean;
 	/** Remote to push to. Defaults to `origin`. */
 	pushRemote?: string;
-	/** Filesystem-isolate agent runs via `bwrap`. Defaults and fallback: see `config.ts`. */
-	agentIsolation?: "none" | "bwrap";
 	/** Let sandboxed runs reach their CLI's telemetry hosts; see `config.ts`. */
 	agentEgressTelemetry?: boolean;
 	/** Per-run upload limits through the egress proxy; see `config.ts`. */
@@ -289,8 +283,6 @@ export interface ProjectConfig {
 		perDestinationBytes?: number;
 		totalBytes?: number;
 	};
-	/** Where run files live; see `config.ts`. Defaults to `worktree`. */
-	runWorkspace?: "worktree" | "clone";
 	/** Failed expansion runs a draft tolerates before the bounded retry releases
 	 * it as its captured intent. Project merge checks remain inherited policy. */
 	draftExpandMaxAttempts?: number;
@@ -320,6 +312,11 @@ export interface BootOptions {
 	dispatchPaused?: boolean;
 	/** Explicit coordination domain; production defaults to configured MFW_HOME. */
 	mfwHome?: string;
+	/**
+	 * Test seam: the dispatch-time sandbox probe (`agentSandboxRefusal`).
+	 * Production never sets it; the real launch still probes and attests.
+	 */
+	sandboxPreflight?: typeof agentSandboxRefusal;
 	/** Recovery seams for deterministic boot/reboot tests. */
 	hostLiveness?: LeaseLiveness;
 	kernelBootId?: string | null;
@@ -391,7 +388,6 @@ async function ensureGitExclude(root: string, log: Logger): Promise<void> {
 	const path = join(root, ".git", "info", "exclude");
 	const block = [
 		EXCLUDE_BEGIN,
-		"worktrees/",
 		"MFW_REPORT.json",
 		"/.mfw/*",
 		"!/.mfw/config.yaml",
@@ -433,7 +429,7 @@ async function ensureGitExclude(root: string, log: Logger): Promise<void> {
 		await writeFile(path, next);
 		log.info("git exclude block rewritten");
 	} catch (e) {
-		// Not a standard repo layout (bare, worktree, permissions), worth
+		// Not a standard repo layout (bare, workspace, permissions), worth
 		// knowing about, since the DB is then visible to `git add`.
 		log.warn({ err: e, path }, "could not update .git/info/exclude");
 	}
@@ -455,6 +451,7 @@ export async function attachProject(
 		/** RunPod capacity and cleanup records in the core. */
 		runpodCore?: RunPodCoreBridge;
 		mfwHome: string;
+		sandboxPreflight?: BootOptions["sandboxPreflight"];
 		afterAdmissionTransition?: BootOptions["afterAdmissionTransition"];
 		/** The one process-global RunPod control plane. */
 		runpod?: RunPodAccountService;
@@ -488,14 +485,14 @@ export async function attachProject(
 	if (sourceRefusal) throw new Error(sourceRefusal);
 	// A typo in `boardRoot` must not be "fixed" by mkdir(recursive) below.
 	if (cfg.boardRoot) await assertBoardRoot(cfg.boardRoot, cfg.root);
-	// Canonical root: git cwd, worktree base and path-escape prefix all compare
+	// Canonical root: git cwd, workspace base and path-escape prefix all compare
 	// as strings, and boot() can be called without loadConfig's normalization.
 	const root = normalizeRoot(cfg.root);
 	const mfwDir = join(root, ".mfw");
 	// The board (task.md/spec.md/adrs/board.yaml/templates) can live in a
 	// completely separate checkout from the code being orchestrated — e.g. the
 	// repo is `~/dev/app` but its board is tracked in `~/docs/projects/app`.
-	// Everything orchestration-only (worktrees, runs, mfw.db, the daemon lock,
+	// Everything orchestration-only (workspaces, runs, mfw.db, the daemon lock,
 	// triggers, per-task sidecars) lives in `mfwDir`, the repository's `.mfw/`.
 	// The board itself sits at the ROOT of `boardDir` (board.yaml, tasks/,
 	// adrs/, templates/): the repository root unless `boardRoot` is set.
@@ -549,7 +546,7 @@ export async function attachProject(
 			)
 		).upgraded;
 		boardConfig = await loadBoardConfig(join(boardDir, "board.yaml"));
-		// The worktree sparse rules and the merge firewall read this.
+		// The merge firewall reads this.
 		await recordBoardLocation(
 			root,
 			buildBoardLayoutRecord({
@@ -639,49 +636,45 @@ export async function attachProject(
 			rev: integrationBranch,
 			build,
 		});
+	// Every run works in a private clone under `$MFW_HOME/workspaces`.
 	configureRunWorkspace(root, {
-		kind: cfg.runWorkspace ?? DEFAULTS.runWorkspace,
-		// Kept for a worktree project too: a clone run that outlives a change of
-		// this setting must still be handled as the clone it is.
-		clone: {
-			workspaceRoot: join(opts.mfwHome, "workspaces"),
-			// A candidate's checks run only in the attested verifier role.
-			checkRunner: createCheckSandbox({
-				db: handle.db,
-				mfwHome: opts.mfwHome,
-				projectRoot: root,
-				stateDir: mfwDir,
-				...(cfg.checkMaxTreeMb
-					? { maxTreeBytes: cfg.checkMaxTreeMb * 1024 * 1024 }
-					: {}),
-				devEnv: () => devEnvAt(false),
-			}),
-			// Every clone gets the approved environment's installed dependencies.
-			prepareTree: async (tree) => {
-				const env = await devEnvAt(false);
-				if (env.kind === "ready" && env.deps) await seedDeps(tree, env.deps);
-			},
-			runDirOf: (runId) => registry.runDir(runId),
-			controlPath: (runId) =>
-				join(runDirLayout(registry.runDir(runId)).control, "control.jsonl"),
-			finalSnapshot: sandboxFinalSnapshot({
-				runDirOf: (runId) => registry.runDir(runId),
-			}),
-			onResultImport: async (runId, event) => {
-				try {
-					await registry.recordResultImport(runId, event);
-				} catch (err) {
-					plog.warn({ err, runId }, "could not record the result import");
-				}
-			},
-			// The session must be gone and the launcher and sandbox have exited.
-			assertProcessesDead: (runId) =>
-				assertRunDead({
-					runId,
-					runDir: registry.runDir(runId),
-					sessionLiveness: () => host.sessionLiveness(runId),
-				}),
+		workspaceRoot: join(opts.mfwHome, "workspaces"),
+		// A candidate's checks run only in the attested verifier role.
+		checkRunner: createCheckSandbox({
+			db: handle.db,
+			mfwHome: opts.mfwHome,
+			projectRoot: root,
+			stateDir: mfwDir,
+			...(cfg.checkMaxTreeMb
+				? { maxTreeBytes: cfg.checkMaxTreeMb * 1024 * 1024 }
+				: {}),
+			devEnv: () => devEnvAt(false),
+		}),
+		// Every clone gets the approved environment's installed dependencies.
+		prepareTree: async (tree) => {
+			const env = await devEnvAt(false);
+			if (env.kind === "ready" && env.deps) await seedDeps(tree, env.deps);
 		},
+		runDirOf: (runId) => registry.runDir(runId),
+		controlPath: (runId) =>
+			join(runDirLayout(registry.runDir(runId)).control, "control.jsonl"),
+		finalSnapshot: sandboxFinalSnapshot({
+			runDirOf: (runId) => registry.runDir(runId),
+		}),
+		onResultImport: async (runId, event) => {
+			try {
+				await registry.recordResultImport(runId, event);
+			} catch (err) {
+				plog.warn({ err, runId }, "could not record the result import");
+			}
+		},
+		// The session must be gone and the launcher and sandbox have exited.
+		assertProcessesDead: (runId) =>
+			assertRunDead({
+				runId,
+				runDir: registry.runDir(runId),
+				sessionLiveness: () => host.sessionLiveness(runId),
+			}),
 	});
 	// Nothing imports yet: whatever is under `incoming` was left by a crash.
 	await sweepIncomingRefs(root).catch((err) => {
@@ -700,7 +693,7 @@ export async function attachProject(
 		registry,
 	});
 	// A planner's answers re-plan; a task run's answer wakes the brain, which
-	// continues the run with `spawn worktree: continue:<runId>` (no autonomous
+	// continues the run with `spawn workspace: continue:<runId>` (no autonomous
 	// resume path).
 	const clarify: ClarifyService = new ClarifyService({
 		handle,
@@ -814,13 +807,22 @@ export async function attachProject(
 		enabled: true,
 		projectRoot: root,
 	});
+	/** The run's imported result in the primary, or null before an import. */
+	const importedRef = async (runId: string): Promise<string | null> => {
+		const ref = quarantineRef(runId);
+		const found = await git(
+			["rev-parse", "--verify", "-q", `${ref}^{commit}`],
+			root,
+		);
+		return found.exitCode === 0 ? ref : null;
+	};
 	const verification = new VerificationCoordinator();
 	// MergeQueue is built before Scheduler; the breaker exemption follows the live setting.
 	let scheduler!: Scheduler;
 	let maintenance!: Maintenance;
 	let supervisor!: Supervisor;
 
-	const verifierClones = createVerifierClones(root, { workspaceKind: "clone" });
+	const verifierClones = createCheckClones(root);
 	// A crashed daemon may have left verification clones and their pins behind.
 	await verifierClones?.sweep().catch((e) => {
 		plog.warn({ err: e }, "verifier clone sweep failed");
@@ -857,13 +859,12 @@ export async function attachProject(
 			const dod = tasks.effectiveDod(task?.dod ?? null);
 			if (!dod) return { passed: true }; // nothing to re-check
 			const run = await registry.get(job.runId);
-			if (!run?.worktreePath || !run.baseSha)
-				return { passed: false, detail: "run worktree is gone" };
+			if (!run?.workspacePath || !run.baseSha)
+				return { passed: false, detail: "run workspace is gone" };
 			// After a rebase the candidate sits on the current target, so that is
 			// the baseline its check entry points must match.
 			const opts = {
 				checkPrefix: cfg.checkPrefix,
-				envPolicy: cfg.envPolicy,
 				gate: { primaryRoot: root, baseRev: baseSha },
 			};
 			// The merge queue never executes a check on the host. It checks the
@@ -883,19 +884,20 @@ export async function attachProject(
 			);
 			return verdictOf(result);
 		},
-		// A clone run's conflict rebases in a host-owned scratch clone.
+		// A conflict rebases in a host-owned scratch clone.
 		...(rebaseOpts
 			? {
-					rebaseClone: (job: MergeJobView, onto: string) =>
+					rebaseClone: async (job: MergeJobView, onto: string) =>
 						rebaseQuarantineInScratch(rebaseOpts, {
 							runId: job.runId,
 							targetBranch: job.targetBranch,
 							onto,
+							isFirewalled: firewalledPath(await readProtectedBoardPaths(root)),
 						}),
 				}
 			: {}),
-		// Clone projects verify the merge commit itself, in a disposable clone,
-		// before the ref moves. Worktree projects keep today's behaviour.
+		// The merge commit itself is verified in a disposable clone before the
+		// ref moves.
 		verifyMerge: async (
 			job: MergeJobView,
 			mergeSha: string,
@@ -911,9 +913,13 @@ export async function attachProject(
 					detail: "the run has no recorded base commit to verify against",
 				};
 			}
-			// Follows the run: a worktree run keeps today's behaviour.
-			const runClones = createVerifierClones(root, run);
-			if (!runClones) return { passed: true };
+			const runClones = createCheckClones(root);
+			if (!runClones) {
+				return {
+					passed: false,
+					detail: "no verifier sandbox to check this merge in",
+				};
+			}
 			const result = await verification.foreground(() =>
 				verifyInClone(
 					runClones,
@@ -923,7 +929,6 @@ export async function attachProject(
 					run.baseSha as string,
 					{
 						checkPrefix: cfg.checkPrefix,
-						envPolicy: cfg.envPolicy,
 						// The target as it was before this merge commit.
 						gate: { primaryRoot: root, baseRev: `${mergeSha}^1` },
 						role: "merge-verify",
@@ -1177,17 +1182,13 @@ export async function attachProject(
 			memAvailableBytes: readMemAvailable,
 			// Autonomy is refused without the sandbox a real launch would get.
 			sandbox: () =>
-				agentSandboxRefusal({
+				(opts.sandboxPreflight ?? agentSandboxRefusal)({
 					approvalMode: cfg.approvalMode ?? DEFAULTS.approvalMode,
-					isolation:
-						(cfg.agentIsolation ?? DEFAULTS.agentIsolation) === "bwrap"
-							? {
-									mode: "bwrap",
-									hidePaths: [opts.mfwHome],
-									mfwHome: opts.mfwHome,
-								}
-							: undefined,
-					runWorkspace: cfg.runWorkspace ?? DEFAULTS.runWorkspace,
+					isolation: {
+						mode: "bwrap",
+						hidePaths: [opts.mfwHome],
+						mfwHome: opts.mfwHome,
+					},
 					projectRoot: root,
 					mfwHome: opts.mfwHome,
 					// The one place the approved environment is evaluated and
@@ -1219,21 +1220,16 @@ export async function attachProject(
 			{ hint: async () => (await docsRef.current?.promptHint()) ?? null },
 		),
 		// Hide the daemon's home (trigger arming store, credentials.json).
-		isolation:
-			(cfg.agentIsolation ?? DEFAULTS.agentIsolation) === "bwrap"
-				? {
-						mode: "bwrap",
-						hidePaths: [opts.mfwHome],
-						mfwHome: opts.mfwHome,
-						devEnv: () => devEnvAt(false),
-						...(cfg.agentEgressTelemetry === true
-							? { egressTelemetry: true }
-							: {}),
-						...(cfg.agentEgressUploadBudget
-							? { egressUploadBudget: cfg.agentEgressUploadBudget }
-							: {}),
-					}
-				: undefined,
+		isolation: {
+			mode: "bwrap",
+			hidePaths: [opts.mfwHome],
+			mfwHome: opts.mfwHome,
+			devEnv: () => devEnvAt(false),
+			...(cfg.agentEgressTelemetry === true ? { egressTelemetry: true } : {}),
+			...(cfg.agentEgressUploadBudget
+				? { egressUploadBudget: cfg.agentEgressUploadBudget }
+				: {}),
+		},
 	});
 	const admission = new ProjectDispatchAdmission(
 		{
@@ -1290,7 +1286,6 @@ export async function attachProject(
 		},
 		projectRoot: root,
 		checkPrefix: cfg.checkPrefix,
-		envPolicy: cfg.envPolicy,
 		verification,
 		providerHolds,
 		projectName: cfg.name,
@@ -1366,7 +1361,6 @@ export async function attachProject(
 		mfwHome: opts.mfwHome,
 		integrationBranch,
 		checkPrefix: cfg.checkPrefix,
-		envPolicy: cfg.envPolicy,
 		leaseMs: cfg.leaseMs ?? DEFAULTS.leaseMs,
 		// `scheduler` is built later; safe because this is only called from the maintenance loop.
 		dispatching: () => scheduler.status().then((s) => s.playing),
@@ -1400,7 +1394,12 @@ export async function attachProject(
 		bootId,
 		config: () => resolveBrainConfig(liveBrainConfig),
 		chat: {
-			inference: chatInferenceFor,
+			inference: (route) =>
+				chatInferenceFor(route, {
+					projectRoot: root,
+					mfwHome: opts.mfwHome,
+					stateDir: mfwDir,
+				}),
 			refusesTransport: chatTransportRefused,
 			budget: new ChatBudget(chatBudgetPath(opts.mfwHome)),
 			inbox: () => inbox.list(),
@@ -1481,7 +1480,7 @@ export async function attachProject(
 				const result = await brain.critic({
 					runId,
 					taskId: run.taskId,
-					worktreePath: run.worktreePath,
+					workspacePath: run.workspacePath,
 					branch: run.branch,
 					baseSha: run.baseSha,
 					verify: (verify as never) ?? null,
@@ -1507,10 +1506,12 @@ export async function attachProject(
 			checkBudget: (input): ReturnType<BudgetService["checkBrainLimit"]> =>
 				budgets.checkBrainLimit(input),
 			// The same listing as the finalize scope check: from the host's repo,
-			// never from the run's agent-writable worktree.
+			// never from the run's agent-writable workspace.
+			// A run's work is in the primary only as its imported quarantine ref.
 			changedFiles: async (run) => {
-				if (!run.branch || !run.baseSha) return null;
-				return branchChangedFiles(root, run.baseSha, run.branch);
+				if (!run.baseSha) return null;
+				const ref = await importedRef(run.id);
+				return ref ? branchChangedFiles(root, run.baseSha, ref) : null;
 			},
 			envDecision: (args, approved) =>
 				applyEnvCard(
@@ -1519,16 +1520,12 @@ export async function attachProject(
 					approved,
 				),
 			hostExecutedChange: async (run) => {
-				if (!run.branch || !run.baseSha) return null;
-				const quarantine = quarantineRef(run.id);
-				const found = await git(
-					["rev-parse", "--verify", "-q", `${quarantine}^{commit}`],
-					root,
-				);
+				if (!run.baseSha) return null;
+				// No imported ref makes the diff throw: unknown is never "unprotected".
 				return hostExecutedChange(
 					root,
 					run.baseSha,
-					found.exitCode === 0 ? quarantine : run.branch,
+					quarantineRef(run.id),
 					envProtected(),
 				);
 			},
@@ -1657,12 +1654,6 @@ export async function attachProject(
 		admission,
 	});
 
-	const dispatchIssue = () =>
-		isolationDispatchProblem({
-			agentIsolation: cfg.agentIsolation,
-			approvalMode: cfg.approvalMode,
-			runWorkspace: cfg.runWorkspace,
-		});
 	const inbox = new InboxService({
 		handle,
 		project: cfg.name,
@@ -1682,40 +1673,9 @@ export async function attachProject(
 							key.endsWith(`#project:${cfg.name}`)),
 				)
 				.map(([key, h]) => ({ key, since: h.since ?? 0, until: h.until })),
-		isolationIssue: () => {
-			const detail = isolationConfigProblem({
-				agentIsolation: cfg.agentIsolation,
-				approvalMode: cfg.approvalMode,
-			});
-			return detail
-				? {
-						detail,
-						fix: 'Set agentIsolation to "bwrap" (the default) in this project\'s entry in $MFW_HOME/config.json, or set approvalMode to "interactive".',
-					}
-				: null;
-		},
-		dispatchIssue,
 	});
 	// Agents write in the project, so a host tool is never taken from it.
 	addAgentWritableRoots([root]);
-	const startupDispatchIssue = dispatchIssue();
-	if (startupDispatchIssue) {
-		plog.warn(
-			{ project: cfg.name },
-			`doctor: project '${cfg.name}' cannot dispatch. ${startupDispatchIssue.detail} Fix: ${startupDispatchIssue.fix}`,
-		);
-	}
-	if (
-		isolationConfigProblem({
-			agentIsolation: cfg.agentIsolation,
-			approvalMode: cfg.approvalMode,
-		})
-	) {
-		plog.warn(
-			{ project: cfg.name },
-			'agentIsolation "none" without interactive approvals: autonomous dispatch is refused for this project',
-		);
-	}
 	sessions.dismissInboxItem = (itemId) => inbox.dismiss(itemId);
 	const review = new ReviewService({
 		handle,
@@ -1749,7 +1709,6 @@ export async function attachProject(
 		ledger: opts.hostResources,
 	});
 	const settings = new SettingsService({
-		dispatchProblem: dispatchIssue,
 		mfwHome: opts.mfwHome,
 		project: cfg.name,
 		root: root,
@@ -1980,7 +1939,7 @@ const RUN_RULES = [
 	"If you cannot continue without a decision only the operator can make, write",
 	'MFW_REPORT.json (at `$MFW_REPORT_PATH`) as `{"status": "question",',
 	'"question": "...", "options": ["...", "..."]}` and end your turn. The',
-	"answer resumes your work in this same worktree. A question asked only in",
+	"answer resumes your work in this same workspace. A question asked only in",
 	"your final message is not seen as one.",
 ].join("\n");
 
@@ -2067,7 +2026,7 @@ export function reviewFixOf(
 			: []),
 		...(r.reason ? ["", "### Reviewer notes", r.reason] : []),
 		"",
-		"The work so far is in this worktree. Address every blocker and major finding,",
+		"The work so far is in this workspace. Address every blocker and major finding,",
 		"and show each criterion is met. Verification and review run again afterwards.",
 	].join("\n");
 }
@@ -2117,7 +2076,7 @@ export function buildPrompts(
 			[
 				await describeTask(taskId),
 				"",
-				"Implement this task in the current worktree. Commit your work.",
+				"Implement this task in the current workspace. Commit your work.",
 				"Project and task verification checks run independently after you finish.",
 				"Semantic acceptance is also reviewed against the goal and every criterion;",
 				"claiming success is evidence, not the acceptance decision.",
@@ -2163,7 +2122,7 @@ export function buildPrompts(
 						a.answer,
 					]),
 					"",
-					"Its work is already in this worktree: inspect `git status` and `git log`",
+					"Its work is already in this workspace: inspect `git status` and `git log`",
 					"before continuing, and do not redo what is done. Continue the task with",
 					"this answer.",
 				].join("\n");
@@ -2180,7 +2139,7 @@ export function buildPrompts(
 					"```",
 					parent?.note ?? "(no reason recorded)",
 					"```",
-					"Resolve it in this worktree: rebase onto the target branch and fix",
+					"Resolve it in this workspace: rebase onto the target branch and fix",
 					"the conflict (or otherwise make the branch mergeable), keeping the",
 					"task's actual work intact. Verification and acceptance run again",
 					"afterwards, and a passing result re-enters the merge queue like any",
@@ -2200,8 +2159,8 @@ export function buildPrompts(
 					leftovers.length > 0 || background.length > 0
 						? `A previous run (${parentRunId}) ended its session while commands it started were still running.`
 						: `A previous run (${parentRunId}) was ${cls === "watchdog_killed" ? "stopped by a watchdog" : "interrupted"} before finishing.`,
-					parent?.worktreePath
-						? "Its work is already in this worktree: inspect `git status` and `git log` before continuing, and do not redo what is done."
+					parent?.workspacePath
+						? "Its work is already in this workspace: inspect `git status` and `git log` before continuing, and do not redo what is done."
 						: "",
 					...(leftovers.length > 0
 						? [
@@ -2248,7 +2207,7 @@ export function buildPrompts(
 				"",
 				"## Continuing earlier work",
 				`A previous run (${parentRunId}) worked on this task${cls ? ` and settled as ${cls}` : ""}.`,
-				"Its work is already in this worktree: inspect `git status` and `git log`",
+				"Its work is already in this workspace: inspect `git status` and `git log`",
 				"before continuing, and do not redo what is done.",
 			].join("\n");
 		},
@@ -2671,6 +2630,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 				budgetWindows,
 				runpodCore,
 				mfwHome: home,
+				sandboxPreflight: opts.sandboxPreflight,
 				afterAdmissionTransition: opts.afterAdmissionTransition,
 				runpod,
 				hosts,
@@ -2865,8 +2825,6 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 					}
 				};
 				assertConfigAvailable(await loadConfig(home));
-				const isolationProblem = isolationConfigProblem(cfg);
-				if (isolationProblem) throw new Error(isolationProblem);
 				// `template` only shapes a new board.yaml; it is not project config.
 				const { template, ...stored } = cfg;
 				if (template && !getBoardTemplate(template)) {
@@ -2885,6 +2843,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 						budgetWindows,
 						runpodCore,
 						mfwHome: home,
+						sandboxPreflight: opts.sandboxPreflight,
 						afterAdmissionTransition: opts.afterAdmissionTransition,
 						runpod,
 						hosts,
@@ -3069,7 +3028,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 	};
 }
 
-/** A project must be a git repository (worktrees, merge queue, tracked board). Checked before anything is written. */
+/** A project must be a git repository (workspaces, merge queue, tracked board). Checked before anything is written. */
 /** The board folder must already exist; it is not required to be a git repository. */
 async function assertBoardRoot(
 	rawBoardRoot: string,

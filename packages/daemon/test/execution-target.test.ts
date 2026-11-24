@@ -12,7 +12,7 @@ import {
 import {
 	type LocalExecutionHost,
 	LocalExecutionTarget,
-	type LocalWorktreePort,
+	type LocalWorkspacePort,
 } from "../src/local-execution-target.ts";
 
 describe("execution target resolution", () => {
@@ -145,14 +145,14 @@ class FakeHost implements LocalExecutionHost {
 }
 
 describe("LocalExecutionTarget", () => {
-	test("preserves canonical worktree behavior and makes launch/control/dispose retry-safe", async () => {
+	test("preserves canonical workspace behavior and makes launch/control/dispose retry-safe", async () => {
 		const host = new FakeHost();
-		let worktreeCreates = 0;
-		const worktrees: LocalWorktreePort = {
+		let workspaceCreates = 0;
+		const workspaces: LocalWorkspacePort = {
 			async create(runId) {
-				worktreeCreates++;
+				workspaceCreates++;
 				return {
-					path: `/project/worktrees/${runId}`,
+					path: `/project/workspaces/${runId}`,
 					branch: `mfw/${runId}`,
 					baseSha: "abc123",
 				};
@@ -163,7 +163,7 @@ describe("LocalExecutionTarget", () => {
 			projectRoot: "/project",
 			integrationBranch: "main",
 			host,
-			worktrees,
+			workspaces,
 		});
 		const owner: ExecutionOwnership = {
 			projectId: "project-1",
@@ -180,11 +180,11 @@ describe("LocalExecutionTarget", () => {
 			integrationBranch: "main",
 			requestedShape: {},
 		});
-		expect(worktreeCreates).toBe(1);
+		expect(workspaceCreates).toBe(1);
 		expect(host.launches).toBe(0);
 		expect(prepared.workspace).toEqual({
-			canonicalPath: "/project/worktrees/run-1",
-			executionPath: "/project/worktrees/run-1",
+			canonicalPath: "/project/workspaces/run-1",
+			executionPath: "/project/workspaces/run-1",
 			branch: "mfw/run-1",
 			baseSha: "abc123",
 		});
@@ -204,8 +204,19 @@ describe("LocalExecutionTarget", () => {
 				initialMessage: "go",
 				steer: true,
 				approvalMode: "autonomous" as const,
+				isolation: {
+					mode: "bwrap" as const,
+					hidePaths: ["/home"],
+					mfwHome: "/home",
+				},
 			},
 		};
+		await expect(
+			target.launch({
+				...launch,
+				driver: { ...launch.driver, isolation: undefined },
+			}),
+		).rejects.toThrow("launches only in its sandbox");
 		await target.launch(launch);
 		await target.launch(launch);
 		expect(host.launches).toBe(1);

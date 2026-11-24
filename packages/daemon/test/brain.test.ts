@@ -17,15 +17,12 @@ import { eq } from "drizzle-orm";
 import {
 	BrainService,
 	type BrainServiceDeps,
-	ClaudeCliInference,
-	CodexCliInference,
 	type DecisionPoint,
 	type DiffFacts,
 	type DiffSource,
 	type InferenceClient,
 	type InferenceOpts,
 	type InferenceReply,
-	inferenceForProvider,
 } from "../src/brain.ts";
 import type { BrainCallCtx } from "../src/finalize/step-runner.ts";
 import { silentLogger } from "../src/log.ts";
@@ -162,7 +159,7 @@ async function makeEnv(
 	const ctx: BrainCallCtx = {
 		runId: subject.id,
 		taskId: "MFW-1",
-		worktreePath: dir,
+		workspacePath: dir,
 		branch: "mfw/task/MFW-1/x",
 		baseSha: "deadbeef",
 		verify: {
@@ -221,142 +218,6 @@ const CRITIC_OK = JSON.stringify({
 });
 const CRITIC_FLAGGED =
 	'```json\n{"accepted":false,"criteria":[{"criterion":"Deliver the task goal described above (legacy implicit criterion).","verdict":"unmet","evidenceClass":"source-confirmed","evidence":"Tests were removed instead of implementing the goal."}],"fakeDone":true,"scopeCreep":false,"concerns":["tests were gutted"]}\n```';
-
-describe("brain CLI inference transports", () => {
-	test("Codex uses ephemeral read-only exec with the selected model and effort", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "mfw-codex-infer-"));
-		const bin = join(dir, "fake-codex");
-		await writeFile(
-			bin,
-			`#!/bin/sh
-: > "$0.args"
-for arg in "$@"; do printf '%s\\n' "$arg" >> "$0.args"; done
-printf '{"approved":true,"reason":"safe"}'
-`,
-		);
-		await chmod(bin, 0o755);
-		const inference = new CodexCliInference({ cwd: dir, bin });
-		const output = await inference.complete("return json", {
-			model: "gpt-5.6-sol",
-			reasoningEffort: "high",
-			timeoutMs: 5_000,
-		});
-		expect(output).toBe('{"approved":true,"reason":"safe"}');
-		expect((await readFile(`${bin}.args`, "utf8")).trim().split("\n")).toEqual([
-			"exec",
-			"--ephemeral",
-			"--sandbox",
-			"read-only",
-			"--color",
-			"never",
-			"-m",
-			"gpt-5.6-sol",
-			"-c",
-			'model_reasoning_effort="high"',
-			"return json",
-		]);
-		await rm(dir, { recursive: true, force: true });
-	});
-
-	test("Claude runs tool-less, without a permission bypass, in a fresh temp dir it removes", async () => {
-		const dir = await mkdtemp(join(tmpdir(), "mfw-claude-infer-"));
-		const bin = join(dir, "fake-claude");
-		await writeFile(
-			bin,
-			`#!/bin/sh
-: > "$0.args"
-for arg in "$@"; do printf '%s\\n' "$arg" >> "$0.args"; done
-pwd > "$0.cwd"
-ls -A > "$0.ls"
-printf '{"type":"result","result":"{\\\\"ok\\\\":true}","total_cost_usd":0.03,"num_turns":1,"usage":{"input_tokens":40,"output_tokens":7,"cache_read_input_tokens":12,"cache_creation_input_tokens":5}}'
-`,
-		);
-		await chmod(bin, 0o755);
-		const tmpRoot = join(dir, "tmp");
-		await mkdir(tmpRoot);
-		// Even when the composition root hands it the project root, Claude ignores it.
-		const viaProvider = inferenceForProvider(
-			{ id: "claude-cli", type: "claude-cli" },
-			{ cwd: dir },
-		);
-		expect(viaProvider).toBeInstanceOf(ClaudeCliInference);
-		const inference = new ClaudeCliInference({ bin, tmpRoot });
-		const output = await inference.complete("return json", {
-			model: "sonnet",
-			timeoutMs: 5_000,
-		});
-		expect(output).toEqual({
-			text: '{"ok":true}',
-			usage: {
-				inputTokens: 40,
-				outputTokens: 7,
-				cachedInputTokens: 12,
-				cacheCreationInputTokens: 5,
-				costUsd: 0.03,
-				turns: 1,
-			},
-		});
-		const args = (await readFile(`${bin}.args`, "utf8")).split("\n");
-		args.pop(); // trailing newline
-		expect(args).toEqual([
-			"-p",
-			"return json",
-			"--model",
-			"sonnet",
-			"--output-format",
-			"json",
-			"--tools",
-			"",
-			"--strict-mcp-config",
-			"--no-session-persistence",
-		]);
-		expect(args).not.toContain("--dangerously-skip-permissions");
-		const cwd = (await readFile(`${bin}.cwd`, "utf8")).trim();
-		expect(cwd.startsWith(`${tmpRoot}/mfw-brain-`)).toBe(true);
-		expect(cwd).not.toBe(dir);
-		expect(await readFile(`${bin}.ls`, "utf8")).toBe(""); // fresh: empty
-		expect(await readdir(tmpRoot)).toEqual([]); // removed afterwards
-		await rm(dir, { recursive: true, force: true });
-	});
-
-	test("provider selection retains Claude, chooses Codex, and defers unsupported errors", async () => {
-		expect(
-			inferenceForProvider({ id: "claude-cli", type: "claude-cli" }),
-		).toBeInstanceOf(ClaudeCliInference);
-		expect(
-			inferenceForProvider({ id: "codex-cli", type: "codex-cli" }),
-		).toBeInstanceOf(CodexCliInference);
-		const unsupported = inferenceForProvider({ id: "custom", type: "custom" });
-		await expect(
-			unsupported.complete("unused", {
-				model: "custom-model",
-				timeoutMs: 1_000,
-			}),
-		).rejects.toThrow(/no non-interactive brain transport/);
-	});
-
-	test("an unsupported transport is harmless while the brain is disabled", async () => {
-		const env = await makeEnv({ enabled: false });
-		const unsupported = inferenceForProvider({ id: "custom", type: "custom" });
-		const brain = new BrainService({
-			registry: env.registry,
-			handle: env.handle,
-			bus: env.bus,
-			inference: unsupported,
-			log: silentLogger(),
-			model: "custom-model",
-			providerId: "custom",
-			reasoningEffort: "medium",
-			enabled: false,
-			projectRoot: env.dir,
-		});
-		expect(await brain.critic(env.ctx)).toMatchObject({ status: "failed" });
-		expect(await brainRuns(env)).toEqual([]);
-		await env.cleanup();
-	});
-});
-
-// --- Happy paths ---
 
 describe("BrainService: happy path per decision point", () => {
 	test("critic: validated JSON becomes an ok decision with a full audit trail", async () => {
@@ -650,7 +511,7 @@ describe("BrainService: diagnose (MFW-58)", () => {
 		check: "run: bun test",
 		outputTail: "1 failing, timing assertion off by 4ms",
 		exitCode: 1,
-		environment: "regression sweep, ephemeral worktree off main",
+		environment: "regression sweep, ephemeral workspace off main",
 		passesAtGreenSha: true,
 	};
 

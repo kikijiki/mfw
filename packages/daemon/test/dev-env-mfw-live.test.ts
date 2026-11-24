@@ -126,7 +126,6 @@ describe.skipIf(skip !== null)("mfw on mfw", () => {
 						name: "mfw",
 						root,
 						integrationBranch: "main",
-						runWorkspace: "clone",
 						env: { setup: ["bun install --frozen-lockfile"] },
 					},
 				],

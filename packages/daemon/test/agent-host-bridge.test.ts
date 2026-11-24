@@ -376,16 +376,4 @@ describe("a host-bridged launch", () => {
 			.catch(() => {});
 		expect(asked).toBe(0);
 	});
-
-	test("an unsandboxed interactive run no longer evaluates .envrc on the host", async () => {
-		const s = spec({
-			approvalMode: "interactive",
-			isolation: undefined,
-			runKind: "task",
-		});
-		await new AgentHost(undefined, { tmuxRunner: runner }).launch(s);
-		expect(script()).not.toMatch(
-			/\bdirenv (?:exec|export|allow)\b|\buse flake\b/,
-		);
-	});
 });

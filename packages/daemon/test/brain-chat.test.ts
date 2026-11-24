@@ -30,7 +30,11 @@ import {
 	ChatToolRegistry,
 	validateChatStep,
 } from "../src/brain-runtime/chat-tools.ts";
+import { SandboxedCriticInference } from "../src/critic-inference.ts";
 import { type BrainUnit, brainUnit } from "./support/brain-unit.ts";
+
+/** Where a sandboxed one-shot would launch; nothing here launches. */
+const CHAT_HOST = { projectRoot: "/p", mfwHome: "/h", stateDir: "/p/.mfw" };
 
 let u: BrainUnit;
 afterEach(async () => {
@@ -206,13 +210,17 @@ describe("read-only enforcement", () => {
 		}
 	});
 
-	test("only tool-less transports may carry a chat turn", () => {
+	test("only the sandboxed no-tools launch may carry a chat turn", () => {
 		const route = (provider: string, endpoint: unknown = null) =>
 			({ provider, endpoint }) as never;
-		expect(chatInferenceFor(route("claude-cli"))).not.toBeNull();
-		expect(chatInferenceFor(route("codex-cli"))).toBeNull();
-		expect(chatInferenceFor(route("claude-cli", { id: "e" }))).toBeNull();
-		expect(chatInferenceFor(route("no-such-provider"))).toBeNull();
+		expect(chatInferenceFor(route("claude-cli"), CHAT_HOST)).toBeInstanceOf(
+			SandboxedCriticInference,
+		);
+		expect(chatInferenceFor(route("codex-cli"), CHAT_HOST)).toBeNull();
+		expect(
+			chatInferenceFor(route("claude-cli", { id: "e" }), CHAT_HOST),
+		).toBeNull();
+		expect(chatInferenceFor(route("no-such-provider"), CHAT_HOST)).toBeNull();
 	});
 });
 
@@ -223,7 +231,7 @@ describe("chat over a transport that would run outside the sandbox", () => {
 	test("every ACP provider and Codex are refused", () => {
 		expect(acp.length).toBeGreaterThan(0);
 		for (const provider of acp) {
-			expect(chatInferenceFor(route(provider.id))).toBeNull();
+			expect(chatInferenceFor(route(provider.id), CHAT_HOST)).toBeNull();
 			expect(chatTransportRefused(route(provider.id))).toBe(true);
 		}
 		expect(chatTransportRefused(route("codex-cli"))).toBe(true);

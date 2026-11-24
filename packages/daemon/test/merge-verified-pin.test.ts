@@ -68,7 +68,7 @@ async function pin(): Promise<Pin> {
 		onParked: async () => {},
 		landingRoot: join(root, ".git", "mfw-landing"),
 	});
-	const wt = (name: string) => join(root, "worktrees", name);
+	const wt = (name: string) => join(root, "workspaces", name);
 	const commit = async (name: string, file: string, content: string) => {
 		await writeFile(join(wt(name), file), content);
 		await git(["add", "-A"], wt(name));
@@ -98,7 +98,7 @@ async function pin(): Promise<Pin> {
 				label: name,
 				model: "sonnet",
 				cwd: wt(name),
-				worktreePath: wt(name),
+				workspacePath: wt(name),
 				branch: name,
 				integrationBranch: "main",
 				startedAt: new Date(),
@@ -193,7 +193,7 @@ describe("the merge queue lands only the verified commit", () => {
 		await git(["add", "other.txt"], p.root);
 		await git(["commit", "-q", "-m", "target moves"], p.root);
 		const target = await p.main();
-		await gitOk(["rebase", "main"], join(p.root, "worktrees", "mfw/a"));
+		await gitOk(["rebase", "main"], join(p.root, "workspaces", "mfw/a"));
 
 		expect(await p.queue.tick()).toBe("parked");
 		expect(await p.main()).toBe(target);

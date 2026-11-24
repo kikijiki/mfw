@@ -607,7 +607,7 @@ export function stepTree(
 export interface Lineage {
 	/** Root first, the node last. */
 	crumbs: FlowNodeIn[];
-	/** The worktree chain the run belongs to, oldest first (includes the run). Empty unless it has siblings. */
+	/** The workspace chain the run belongs to, oldest first (includes the run). Empty unless it has siblings. */
 	family: FlowNodeIn[];
 	/** The run it continues, when it is a chain link. */
 	continues: FlowNodeIn | null;

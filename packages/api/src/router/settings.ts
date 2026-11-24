@@ -23,7 +23,7 @@ import {
  * `SettingsService` owns persistence (`~/.local/share/mfw/config.json`) and
  * live-apply rules; this file owns the shape of the safe subset. Identity
  * fields (name, root, integrationBranch, taskKey) are excluded from the patch:
- * changing a root at runtime would orphan worktrees, runs and the database.
+ * changing a root at runtime would orphan workspaces, runs and the database.
  *
  * `provider`, `model`, `modelTiers`, `reasoningEffort` and `routing` apply
  * live: each run is routed at prepare and launches with the route persisted
@@ -97,13 +97,6 @@ export const settingsRouter = createTRPCRouter({
 					approvalMode: z.enum(["autonomous", "interactive"]).optional(),
 					leaseMs: z.number().int().min(1000).optional(),
 					checkPrefix: z.string().nullish(),
-					/** What a verification check may read from the ambient environment (`EnvPolicy` in `verifier.ts`). */
-					envPolicy: z
-						.object({
-							allow: z.array(z.string()).optional(),
-							inherit: z.boolean().optional(),
-						})
-						.nullish(),
 					/** Repository-wide checks applied to every merge candidate. */
 					mergeChecks: VerificationPlanSchema.nullish(),
 					notify: notifyInput.nullish(),

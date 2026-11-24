@@ -13,6 +13,7 @@ import {
 	HostResourceCoordinator,
 	openHostResourceStore,
 } from "./support/legacy-host.ts";
+import { onRunTree } from "./support/scripted-driver.ts";
 
 const FORWARD_TRANSITIONS = [
 	"resolving",
@@ -62,8 +63,6 @@ function projectConfig(name: string, root: string): ProjectConfig {
 		name,
 		root,
 		integrationBranch: "main",
-		// Scripted agents, no sandbox: autonomy needs bwrap, so these fixtures run interactive.
-		agentIsolation: "none",
 		approvalMode: "interactive",
 		maxConcurrent: 4,
 		assistance: {
@@ -91,10 +90,12 @@ async function initializeAdmissionFixture(label: string) {
 	const root = await createProject(label);
 	const config = projectConfig(label, root);
 	const driverPath = harness.path(`${label}-driver.ts`);
-	await writeFile(driverPath, DRIVER);
+	await writeFile(driverPath, onRunTree(DRIVER, join(home, "workspaces")));
 	const orchestrator = await boot({
 		projects: [config],
 		mfwHome: home,
+		// The real probe needs a systemd user scope; the launch path is real.
+		sandboxPreflight: async () => null,
 		autostart: false,
 		kernelBootId: "kernel-a",
 		log: silentLogger(),
@@ -457,6 +458,8 @@ describe("restart recovery evidence and guarded overrides", () => {
 			const unavailableBoot = await boot({
 				projects: [fixture.config],
 				mfwHome: fixture.home,
+				// The real probe needs a systemd user scope; the launch path is real.
+				sandboxPreflight: async () => null,
 				autostart: false,
 				kernelBootId: "kernel-a",
 				log: silentLogger(),

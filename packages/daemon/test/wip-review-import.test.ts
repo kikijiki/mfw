@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { worktreeState } from "../src/agent-review.ts";
+import { workspaceState } from "../src/agent-review.ts";
 import { gitComplete, gitOk } from "../src/git.ts";
 import {
 	fetchRunResult,
@@ -19,7 +19,7 @@ import { HostGit, HostGitError } from "../src/host-git/runner.ts";
 import {
 	listWorkspacePaths,
 	RemoteWorkspaceError,
-} from "../src/remote-worktree.ts";
+} from "../src/remote-workspace.ts";
 import { validateRunResult } from "../src/run-workspace/clone-impl.ts";
 import {
 	assessScope,
@@ -517,8 +517,8 @@ describe("B1 audit: other capped reads behind a decision", () => {
 
 	test("the agent-review tamper check never matches on a cut status", async () => {
 		const repo = await longStatus();
-		const before = await worktreeState(repo);
-		const after = await worktreeState(repo);
+		const before = await workspaceState(repo);
+		const after = await workspaceState(repo);
 		expect(before).not.toBeNull();
 		expect(after).not.toBe(before);
 	}, 60_000);

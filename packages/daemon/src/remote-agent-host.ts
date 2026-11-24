@@ -98,14 +98,14 @@ export interface RunPodSshTransportOptions {
 	/** Fresh provider inventory check used to distinguish loss from absence. */
 	isPodPresent?: (podId: string) => Promise<boolean>;
 	runner?: SshProcessRunner;
-	/** Outside every worktree. Tests can inject an isolated carrier parent. */
+	/** Outside every workspace. Tests can inject an isolated carrier parent. */
 	carrierRoot?: string;
 }
 
 export interface GenerateRunPodSshKeyOptions {
 	/** Stable account-owned lease identity; it deliberately exists before a Pod id. */
 	identifier: string;
-	/** Account-service-owned directory outside project worktrees. */
+	/** Account-service-owned directory outside project workspaces. */
 	directory: string;
 	/** Explicit image/host tool path; defaults to conventional Linux. */
 	keygenPath?: string;

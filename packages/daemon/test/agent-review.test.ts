@@ -64,10 +64,7 @@ async function repo(): Promise<{
 	await writeFile(join(runWt, "a.txt"), "changed\n");
 	await git(["commit", "-qam", "work"], runWt);
 	const workspaces = await mkdtemp(join(tmpdir(), "mfw-agent-review-ws-"));
-	configureRunWorkspace(root, {
-		kind: "worktree",
-		clone: { workspaceRoot: workspaces },
-	});
+	configureRunWorkspace(root, { workspaceRoot: workspaces });
 	return {
 		root,
 		runWt,
@@ -113,7 +110,7 @@ describe("AgentReviewInference", () => {
 		const r = await repo();
 		const agent = fakeAgent();
 		const t = new AgentReviewInference({
-			subject: { projectRoot: r.root, branch: BRANCH, runWorktree: r.runWt },
+			subject: { projectRoot: r.root, branch: BRANCH, runWorkspace: r.runWt },
 			harness: "claude-cli",
 			host: HOST,
 			launch: agent.run,
@@ -138,7 +135,7 @@ describe("AgentReviewInference", () => {
 			await writeFile(join(cwd, "a.txt"), "reviewer was here\n");
 		});
 		const t = new AgentReviewInference({
-			subject: { projectRoot: r.root, branch: BRANCH, runWorktree: r.runWt },
+			subject: { projectRoot: r.root, branch: BRANCH, runWorkspace: r.runWt },
 			harness: "claude-cli",
 			host: HOST,
 			launch: agent.run,
@@ -149,10 +146,10 @@ describe("AgentReviewInference", () => {
 		await r.cleanup();
 	});
 
-	test("a reviewer that touches the run worktree or moves the branch is caught", async () => {
+	test("a reviewer that touches the run workspace or moves the branch is caught", async () => {
 		const r = await repo();
 		const touchRun = new AgentReviewInference({
-			subject: { projectRoot: r.root, branch: BRANCH, runWorktree: r.runWt },
+			subject: { projectRoot: r.root, branch: BRANCH, runWorkspace: r.runWt },
 			harness: "claude-cli",
 			host: HOST,
 			launch: fakeAgent(async () => {
@@ -160,11 +157,11 @@ describe("AgentReviewInference", () => {
 			}).run,
 		});
 		await expect(touchRun.complete("x", OPTS)).rejects.toThrow(
-			"the run worktree changed",
+			"the run workspace changed",
 		);
 		await rm(join(r.runWt, "new.txt"));
 		const moveBranch = new AgentReviewInference({
-			subject: { projectRoot: r.root, branch: BRANCH, runWorktree: null },
+			subject: { projectRoot: r.root, branch: BRANCH, runWorkspace: null },
 			harness: "claude-cli",
 			host: HOST,
 			launch: fakeAgent(async () => {
@@ -235,7 +232,7 @@ describe("BrainService: agent review mode", () => {
 		const ctx: BrainCallCtx = {
 			runId: subject.id,
 			taskId: "T-1",
-			worktreePath: r.runWt,
+			workspacePath: r.runWt,
 			branch: BRANCH,
 			baseSha: r.base,
 			verify: { passed: true, crashed: false, checks: [] },

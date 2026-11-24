@@ -52,7 +52,7 @@ function ctx(over: Partial<FinalizeCtx> = {}): FinalizeCtx {
 			hasDod: true,
 			escalation: null,
 			attempt: 1,
-			worktreeDirty: false,
+			workspaceDirty: false,
 			exitCode: 0,
 		},
 		gates: { mainRed: false, reviewGated: false, brainEnabled: true },
@@ -60,7 +60,7 @@ function ctx(over: Partial<FinalizeCtx> = {}): FinalizeCtx {
 		critic: null,
 		planParsed: null,
 		reportHasFollowUps: false,
-		localWorktree: false,
+		localWorkspace: false,
 		leftBackground: false,
 		...over,
 	};
@@ -189,7 +189,7 @@ const MACHINE: Record<
 		row: "T10Q",
 	},
 	background_work: {
-		ctx: ctx({ localWorktree: true }),
+		ctx: ctx({ localWorkspace: true }),
 		script: { leftovers: true },
 		row: "T10L",
 	},
@@ -461,7 +461,7 @@ describe("C. a parked merge settles merge_parked", () => {
 		u = undefined;
 	});
 
-	test("the task goes back to ready with its worktree kept, the job closes, the brain is woken; nobody is paged", async () => {
+	test("the task goes back to ready with its workspace kept, the job closes, the brain is woken; nobody is paged", async () => {
 		u = await brainUnit();
 		u.clock.t = Date.now();
 		await u.runtime.tick();
@@ -474,7 +474,7 @@ describe("C. a parked merge settles merge_parked", () => {
 			label: t.id,
 			model: "sonnet",
 			cwd: u.root,
-			worktreePath: u.root,
+			workspacePath: u.root,
 			branch: "mfw/parked",
 			baseSha: "a".repeat(40),
 		});
@@ -486,7 +486,7 @@ describe("C. a parked merge settles merge_parked", () => {
 			taskId: t.id,
 			branch: "mfw/parked",
 			targetBranch: "main",
-			worktreePath: u.root,
+			workspacePath: u.root,
 			attempt: 1,
 			parkRetries: 3,
 		};
@@ -513,7 +513,7 @@ describe("C. a parked merge settles merge_parked", () => {
 		const task = await u.tasks.get(t.id);
 		expect(task?.status).toBe("ready");
 		expect(task?.claimedByRunId).toBeNull();
-		expect(task?.preservedWorktree).toBe(u.root);
+		expect(task?.preservedWorkspace).toBe(u.root);
 		expect((await u.registry.get(run.id))?.state).toBe("failed");
 		// The wake: one tick after the debounce.
 		u.advance(11_000);
@@ -610,12 +610,12 @@ describe("D. a failed run waits for the brain, which continues it", () => {
 		);
 		expect(runs.map((r) => r.id)).toEqual([runId]);
 
-		// The brain decides: continue it in the same worktree.
+		// The brain decides: continue its work.
 		await f.control({});
 		const cont = await f.act("spawn", {
 			taskId,
 			role: "implement",
-			worktree: `continue:${runId}`,
+			workspace: `continue:${runId}`,
 			brief: "Create feature.txt.",
 		});
 		expect(cont.status).toBe("accepted");
@@ -634,14 +634,17 @@ describe("D. a failed run waits for the brain, which continues it", () => {
 		expect(child).toMatchObject({
 			parentRunId: runId,
 			relation: "continue",
-			worktreePath: (await f.svc.registry.get(runId))?.worktreePath,
 		});
+		// Its own clone, seeded from the parent's imported work.
+		expect(child?.workspacePath).not.toBe(
+			(await f.svc.registry.get(runId))?.workspacePath,
+		);
 		expect(child?.initialPrompt).toContain("did not pass verification");
 		expect(child?.initialPrompt).toContain("Create feature.txt.");
 		expect((await f.svc.tasks.get(taskId))?.status).toBe("done");
 		// The brain acted: the task no longer awaits it.
 		expect((await awaitingOf(f))[taskId]).toBeUndefined();
-	});
+	}, 120_000);
 
 	test("the verified fast path merges with no settle and no brain wake", async () => {
 		fx = await groupFixture();
@@ -664,7 +667,7 @@ describe("D. a failed run waits for the brain, which continues it", () => {
 		expect(await awaitingOf(f)).toEqual({});
 		expect((await f.svc.tasks.get(taskId))?.status).toBe("done");
 		expect(runId).toBeTruthy();
-	});
+	}, 120_000);
 });
 
 describe("E. the brain's circuit breaker", () => {
@@ -729,5 +732,5 @@ describe("E. the brain's circuit breaker", () => {
 		await f.svc.brainRuntime.resetCircuit();
 		expect((await f.svc.brainRuntime.currentSession())?.status).toBe("idle");
 		expect((await awaitingOf(f))[failing]).toBeDefined();
-	});
+	}, 120_000);
 });

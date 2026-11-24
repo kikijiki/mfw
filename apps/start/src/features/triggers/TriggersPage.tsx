@@ -53,7 +53,7 @@ import {
  *
  * The definition lives in the repo (`.mfw/triggers/<id>.md`), the arming record
  * in the daemon's home (§4). This screen only writes the arming record;
- * definitions change through the normal worktree/branch/merge path.
+ * definitions change through the normal workspace/branch/merge path.
  */
 
 type TriggerView = RouterOutputs["triggers"]["list"][number];

@@ -37,9 +37,9 @@ function source(procs: Record<number, FakeProc>): ProcSource {
 }
 
 describe("findLeftoverProcesses", () => {
-	const run = { id: "RUN1", worktreePath: "/wt/run1" };
+	const run = { id: "RUN1", workspacePath: "/wt/run1" };
 
-	test("requires inherited run ownership and excludes human and other-run worktree occupants", async () => {
+	test("requires inherited run ownership and excludes human and other-run workspace occupants", async () => {
 		const found = await findLeftoverProcesses(
 			run,
 			source({
@@ -59,7 +59,7 @@ describe("findLeftoverProcesses", () => {
 		expect(found[0]?.command).toBe("cargo test");
 	});
 
-	test("unreadable ownership in the worktree blocks cleanup without authorizing a signal", async () => {
+	test("unreadable ownership in the workspace blocks cleanup without authorizing a signal", async () => {
 		await expect(
 			findLeftoverProcesses(
 				run,
@@ -101,9 +101,9 @@ describe("findLeftoverProcesses", () => {
 		expect(found).toEqual([]);
 	});
 
-	test("a run with no worktree is matched by run id only", async () => {
+	test("a run with no workspace is matched by run id only", async () => {
 		const found = await findLeftoverProcesses(
-			{ id: "RUN1", worktreePath: null },
+			{ id: "RUN1", workspacePath: null },
 			source({
 				40: { env: [], cwd: "/wt/run1", cmd: "x" },
 				41: { env: ["MFW_RUN_ID=RUN1"], cmd: "y" },
@@ -119,7 +119,7 @@ describe("findLeftoverProcesses", () => {
 			env: { ...process.env, MFW_RUN_ID: id },
 		});
 		try {
-			const found = await findLeftoverProcesses({ id, worktreePath: null });
+			const found = await findLeftoverProcesses({ id, workspacePath: null });
 			expect(found.map((p) => p.pid)).toEqual([child.pid]);
 			const result = await stopProcesses(found, { graceMs: 2_000 });
 			expect(result.stopped).toEqual([child.pid]);

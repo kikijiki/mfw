@@ -22,11 +22,7 @@ import {
 	configureRunWorkspace,
 } from "../src/run-workspace/factory.ts";
 import type { TaskService } from "../src/task-service.ts";
-import {
-	verify,
-	verifyInClone,
-	worktreeHostExecution,
-} from "../src/verifier.ts";
+import { verify, verifyInClone } from "../src/verifier.ts";
 import { MFW_EXCLUDE, makeTasks } from "./fixtures/board.ts";
 import { cagedSteps } from "./support/caged-launch.ts";
 import { liveGate } from "./support/live-gate.ts";
@@ -68,15 +64,7 @@ const dod = {
 };
 
 describe("host execution of a check", () => {
-	test("only an interactive worktree run may ask for it", () => {
-		expect(worktreeHostExecution("interactive")).toEqual({
-			hostExecution: "interactive-worktree",
-		});
-		expect(worktreeHostExecution("autonomous")).toEqual({});
-		expect(worktreeHostExecution(undefined)).toEqual({});
-	});
-
-	test("a clone is never host-executed, even if a caller asks", async () => {
+	test("a clone with no verifier sandbox runs nothing on the host", async () => {
 		let hostRan = false;
 		const r = await verifyInClone(
 			{
@@ -97,7 +85,6 @@ describe("host execution of a check", () => {
 				checks: [{ run: "exit 0", expect_exit: 0 }],
 			},
 			"b",
-			{ hostExecution: "interactive-worktree" },
 		);
 		hostRan = r.passed;
 		expect(hostRan).toBe(false);
@@ -156,21 +143,18 @@ describe.skipIf(skip !== null)("X1b: merged candidate code", () => {
 		);
 		chmodSync(shim, 0o755);
 		configureRunWorkspace(root, {
-			kind: "worktree",
-			clone: {
-				workspaceRoot: join(mfwHome, "workspaces"),
-				checkRunner: createCheckSandbox({
-					db: handle.db,
-					mfwHome,
-					projectRoot: root,
-					stateDir: mfwDir,
-					steps: cagedSteps({
-						home: join(base, "home"),
-						path: process.env.PATH ?? "",
-						shim,
-					}),
+			workspaceRoot: join(mfwHome, "workspaces"),
+			checkRunner: createCheckSandbox({
+				db: handle.db,
+				mfwHome,
+				projectRoot: root,
+				stateDir: mfwDir,
+				steps: cagedSteps({
+					home: join(base, "home"),
+					path: process.env.PATH ?? "",
+					shim,
 				}),
-			},
+			}),
 		});
 		maint = new Maintenance({
 			handle,
@@ -259,12 +243,12 @@ describe.skipIf(skip !== null)("X1b: merged candidate code", () => {
 		expect(existsSync(marker)).toBe(false);
 	}, 30_000);
 
-	test("verify() refuses host execution unless explicitly asked", async () => {
+	test("verify() with no sandbox refuses: there is no host execution", async () => {
 		await commitCheck(hostile());
 		const r = await verify(root, dod, "x");
 		expect(r.passed).toBe(false);
 		expect(r.crashed).toBe(true);
-		expect(r.checks[0]?.detail).toContain("host_execution_refused");
+		expect(r.checks[0]?.detail).toContain("no_verifier_sandbox");
 		expect(existsSync(marker)).toBe(false);
 	});
 });

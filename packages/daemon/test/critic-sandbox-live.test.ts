@@ -89,8 +89,7 @@ describe.skipIf(skip !== null)("the critic under a real sandbox", () => {
 		writeFileSync(join(project, "secret.txt"), "project file\n");
 		handle = await openProjectDb(stateDir);
 		configureRunWorkspace(project, {
-			kind: "clone",
-			clone: { workspaceRoot: join(mfwHome, "workspaces") },
+			workspaceRoot: join(mfwHome, "workspaces"),
 		});
 		writeFileSync(
 			join(bin, "claude"),

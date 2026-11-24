@@ -69,7 +69,7 @@ const LIVE = new Set(["starting", "running"]);
 
 /**
  * One model for every project: the machine-wide `projects.summary` (task
- * counts, worktrees, spend, last activity; refetched every 45 s and whenever
+ * counts, workspaces, spend, last activity; refetched every 45 s and whenever
  * the live runs or inbox change) mixed with the live-fresh caches the shell
  * already holds (runs, inbox, dispatch fleet, brain states), so the badge
  * never lags the rest of the UI.
@@ -372,7 +372,7 @@ const CHIP_ICON: Record<ChipKey, LucideIcon | null> = {
 	blocked: Ban,
 	review: Eye,
 	sessions: Bot,
-	worktrees: GitBranch,
+	workspaces: GitBranch,
 	brain: Brain,
 	// The text already carries the currency sign; an icon beside it would double it.
 	spend: null,

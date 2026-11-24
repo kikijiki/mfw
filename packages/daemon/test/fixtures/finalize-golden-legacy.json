@@ -18,7 +18,7 @@
 				"maxResumes": 2,
 				"reviewRound": 0,
 				"maxReviewRounds": 2,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -36,7 +36,7 @@
 			"planParsed": null,
 			"reportHasSubtasks": false,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false,
 			"resumeDecision": null,
 			"planHasSpecs": false,
@@ -92,7 +92,7 @@
 				"maxResumes": 2,
 				"reviewRound": 0,
 				"maxReviewRounds": 2,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -110,7 +110,7 @@
 			"planParsed": null,
 			"reportHasSubtasks": false,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false,
 			"resumeDecision": null,
 			"planHasSpecs": false,
@@ -171,7 +171,7 @@
 				"maxResumes": 2,
 				"reviewRound": 0,
 				"maxReviewRounds": 2,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -189,7 +189,7 @@
 			"planParsed": null,
 			"reportHasSubtasks": false,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false,
 			"resumeDecision": null,
 			"planHasSpecs": false,
@@ -262,7 +262,7 @@
 				"maxResumes": 2,
 				"reviewRound": 0,
 				"maxReviewRounds": 2,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -280,7 +280,7 @@
 			"planParsed": null,
 			"reportHasSubtasks": false,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false,
 			"resumeDecision": null,
 			"planHasSpecs": false,
@@ -357,7 +357,7 @@
 				"maxResumes": 2,
 				"reviewRound": 0,
 				"maxReviewRounds": 2,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -375,7 +375,7 @@
 			"planParsed": null,
 			"reportHasSubtasks": false,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false,
 			"resumeDecision": null,
 			"planHasSpecs": false,
@@ -456,7 +456,7 @@
 				"maxResumes": 2,
 				"reviewRound": 0,
 				"maxReviewRounds": 2,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -474,7 +474,7 @@
 			"planParsed": null,
 			"reportHasSubtasks": false,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false,
 			"resumeDecision": null,
 			"planHasSpecs": false,
@@ -552,7 +552,7 @@
 				"maxResumes": 2,
 				"reviewRound": 2,
 				"maxReviewRounds": 2,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -570,7 +570,7 @@
 			"planParsed": null,
 			"reportHasSubtasks": false,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false,
 			"resumeDecision": null,
 			"planHasSpecs": false,
@@ -652,7 +652,7 @@
 				"maxResumes": 2,
 				"reviewRound": 0,
 				"maxReviewRounds": 2,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -670,7 +670,7 @@
 			"planParsed": null,
 			"reportHasSubtasks": false,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false,
 			"resumeDecision": null,
 			"planHasSpecs": false,
@@ -753,7 +753,7 @@
 				"maxResumes": 2,
 				"reviewRound": 0,
 				"maxReviewRounds": 2,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -771,7 +771,7 @@
 			"planParsed": null,
 			"reportHasSubtasks": false,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false,
 			"resumeDecision": null,
 			"planHasSpecs": false,
@@ -850,7 +850,7 @@
 				"maxResumes": 2,
 				"reviewRound": 0,
 				"maxReviewRounds": 2,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -868,7 +868,7 @@
 			"planParsed": null,
 			"reportHasSubtasks": false,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false,
 			"resumeDecision": null,
 			"planHasSpecs": false,
@@ -938,7 +938,7 @@
 				"maxResumes": 2,
 				"reviewRound": 0,
 				"maxReviewRounds": 2,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -956,7 +956,7 @@
 			"planParsed": null,
 			"reportHasSubtasks": false,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false,
 			"resumeDecision": null,
 			"planHasSpecs": false,
@@ -1001,7 +1001,7 @@
 		}
 	},
 	{
-		"name": "12 scope watchdog kill in a local worktree: reap, archive wip, block",
+		"name": "12 scope watchdog kill in a local workspace: reap, archive wip, block",
 		"ctx": {
 			"kind": "task",
 			"outcome": null,
@@ -1019,7 +1019,7 @@
 				"maxResumes": 2,
 				"reviewRound": 0,
 				"maxReviewRounds": 2,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -1037,7 +1037,7 @@
 			"planParsed": null,
 			"reportHasSubtasks": false,
 			"reportHasFollowUps": false,
-			"localWorktree": true,
+			"localWorkspace": true,
 			"leftBackground": false,
 			"resumeDecision": null,
 			"planHasSpecs": false,
@@ -1091,7 +1091,7 @@
 				},
 				{
 					"row": "T4s",
-					"step": "gc_worktree",
+					"step": "gc_workspace",
 					"args": {
 						"force": true
 					}

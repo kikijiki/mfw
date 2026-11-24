@@ -158,7 +158,7 @@ function VerdictChip({
 }
 
 /**
- * A run and, nested under it, the runs that continue its worktree (repair,
+ * A run and, nested under it, the runs that continue its workspace (repair,
  * resume, answer, unblock). A live run embeds `RunConsole` collapsed: the
  * block shows the last line plus answer/stop, and the tail (and its
  * `live.runOutput` stream) exists only once expanded.

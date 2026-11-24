@@ -28,7 +28,7 @@ function ctx(
 			hasDod: true,
 			escalation: null,
 			attempt: 1,
-			worktreeDirty: false,
+			workspaceDirty: false,
 			exitCode: 0,
 		},
 		gates: {
@@ -42,7 +42,7 @@ function ctx(
 		critic: null,
 		planParsed: null,
 		reportHasFollowUps: false,
-		localWorktree: false,
+		localWorkspace: false,
 		leftBackground: false,
 		...over,
 	};
@@ -179,7 +179,7 @@ describe("attempt finalize rows", () => {
 		const r = run(
 			ctx({ outcome: "killed_watchdog", killReason: "watchdog-scope" }),
 		);
-		expect(r.steps).toEqual(["archive_wip", "settle", "gc_worktree"]);
+		expect(r.steps).toEqual(["archive_wip", "settle", "gc_workspace"]);
 		expect(r.settled).toBe("scope_violation");
 		expect(r.end).toMatchObject({ state: "killed", row: "TA4s" });
 	});

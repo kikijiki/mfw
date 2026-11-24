@@ -16,7 +16,7 @@
  *  - from inside another host entry, except along the edges below, so a child
  *    never re-execs through the launcher again. This is the recursion rule of
  *    `run-child.ts` (`MFW_CHILD_DEPTH`) for self re-exec; it rides on its own
- *    variable because a driver hands its environment to an unsandboxed agent,
+ *    variable because a remote driver hands its environment to its agent,
  *    whose `mfw board` must keep working.
  *
  * It does not refuse bun's runtime variables (`BUN_OPTIONS`, `BUN_BE_BUN`):

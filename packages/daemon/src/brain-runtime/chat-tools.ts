@@ -10,7 +10,7 @@ import { READ_TOOLS, type ReadTool } from "./reads.ts";
  * on the model's output, and `ChatToolRegistry.call` on the way to the service.
  *
  * `diff` and `run_report` are left out on purpose: both run git inside a run's
- * agent-writable worktree, which is not a side-effect-free read.
+ * agent-writable workspace, which is not a side-effect-free read.
  */
 export const CHAT_READ_TOOLS = [
 	"board",

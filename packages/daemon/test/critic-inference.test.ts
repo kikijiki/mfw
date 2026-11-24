@@ -70,40 +70,6 @@ ${body}`,
 	expect(code).toBe(0);
 }
 
-describe("an inference child gets a minimal environment", () => {
-	test("the canary does reach a plain child (the control)", async () => {
-		const bin = await stub("control", "ok");
-		await inDaemonEnv(
-			`await Bun.spawn([${JSON.stringify(bin)}], { stdout: "ignore" }).exited;`,
-		);
-		expect(await readFile(`${bin}.env`, "utf8")).toContain(CANARY);
-	});
-
-	test("claude", async () => {
-		const bin = await stub("claude", '{"result":"ok"}');
-		await inDaemonEnv(
-			`await new b.ClaudeCliInference({ bin: ${JSON.stringify(bin)} }).complete("p", opts);`,
-		);
-		expect(await readFile(`${bin}.env`, "utf8")).not.toContain(CANARY);
-	}, 30_000);
-
-	test("codex", async () => {
-		const bin = await stub("codex", "ok");
-		await inDaemonEnv(
-			`await new b.CodexCliInference({ bin: ${JSON.stringify(bin)}, cwd: ${JSON.stringify(dir)} }).complete("p", opts);`,
-		);
-		expect(await readFile(`${bin}.env`, "utf8")).not.toContain(CANARY);
-	}, 30_000);
-
-	test("acp", async () => {
-		const bin = await stub("acp-agent", "");
-		await inDaemonEnv(
-			`await new b.AcpInference("opencode", { providerArgv: [${JSON.stringify(bin)}] }).complete("p", opts).catch(() => undefined);`,
-		);
-		expect(await readFile(`${bin}.env`, "utf8")).not.toContain(CANARY);
-	}, 40_000);
-});
-
 describe("the critic runs through the sandboxed reviewer launch", () => {
 	const claude = { id: "claude-cli", type: "claude-cli" } as const;
 	const request = { model: "m", timeoutMs: 5_000 };
@@ -116,10 +82,7 @@ describe("the critic runs through the sandboxed reviewer launch", () => {
 		await mkdir(project);
 		await mkdir(home);
 		await writeFile(join(project, "secret.txt"), "project file\n");
-		configureRunWorkspace(project, {
-			kind: "worktree",
-			clone: { workspaceRoot: join(home, "workspaces") },
-		});
+		configureRunWorkspace(project, { workspaceRoot: join(home, "workspaces") });
 	});
 	afterEach(() => clearRunWorkspace(project));
 

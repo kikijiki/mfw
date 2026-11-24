@@ -101,7 +101,7 @@ async function install() {
 	writeFileSync(
 		join(home, "config.json"),
 		JSON.stringify({
-			projects: [{ name: "demo", root: repo, runWorkspace: "clone" }],
+			projects: [{ name: "demo", root: repo }],
 		}),
 	);
 	const auth = await AuthService.open(authDbPath(home));
@@ -424,7 +424,8 @@ describe("mfw init", () => {
 		const text = c.out.join("\n");
 		expect(text).toContain(join(i.home, "setup-token"));
 		expect(text).not.toContain(token);
-		expect(text).toContain('"runWorkspace": "clone"');
+		expect(text).toContain('"integrationBranch"');
+		expect(text).not.toContain("runWorkspace");
 		expect(text).toContain("not written");
 		expect(snapshot(i.base)).toEqual(before);
 	});
@@ -446,7 +447,6 @@ describe("mfw init", () => {
 		const cfg = await loadConfig(i.home);
 		const added = cfg.projects.find((p) => p.root === second);
 		expect(added?.integrationBranch).toBe("trunk");
-		expect(added?.runWorkspace).toBe("clone");
 
 		const again = cli(i.home, { PATH: i.bin });
 		expect(

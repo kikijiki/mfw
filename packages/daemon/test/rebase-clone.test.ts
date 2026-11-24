@@ -138,6 +138,55 @@ describe("rebaseQuarantineInScratch", () => {
 		).toBe(0);
 	});
 
+	test("a conflict only in firewalled paths takes the target's side and rebases", async () => {
+		const t = await setup();
+		// The run deletes a board file and does its real work.
+		await git(["checkout", "-q", "--detach", t.base], t.primary);
+		await rm(join(t.primary, "b.txt"));
+		await writeFile(join(t.primary, "feature.txt"), "work\n");
+		await git(["add", "-A"], t.primary);
+		await git(["commit", "-q", "-m", "run r9"], t.primary);
+		const tip = await gitOk(["rev-parse", "HEAD"], t.primary);
+		await gitOk(["update-ref", "refs/mfw/quarantine/r9", tip], t.primary);
+		await git(["checkout", "-q", "main"], t.primary);
+		// Meanwhile the board moved on main.
+		const onto = await t.advance("b.txt", "board moved\n");
+		const res = await rebaseQuarantineInScratch(t.opts, {
+			runId: "r9",
+			targetBranch: "main",
+			onto,
+			isFirewalled: (path) => path === "b.txt",
+		});
+		expect(res.ok).toBe(true);
+		const rebased = await gitOk(
+			["rev-parse", "refs/mfw/quarantine/r9"],
+			t.primary,
+		);
+		expect(await gitOk(["show", `${rebased}:b.txt`], t.primary)).toBe(
+			"board moved",
+		);
+		expect(await gitOk(["show", `${rebased}:feature.txt`], t.primary)).toBe(
+			"work",
+		);
+	});
+
+	test("a conflict that also touches an unprotected path still stops", async () => {
+		const t = await setup();
+		await t.quarantine("r10", "b.txt", "base\nfrom run\n");
+		const onto = await t.advance("b.txt", "from main\n");
+		const res = await rebaseQuarantineInScratch(t.opts, {
+			runId: "r10",
+			targetBranch: "main",
+			onto,
+			isFirewalled: (path) => path === "tasks/x.md",
+		});
+		expect(res).toMatchObject({
+			ok: false,
+			kind: "conflict",
+			paths: ["b.txt"],
+		});
+	});
+
 	test("a target that moved since `onto` was read is an error, not a rebase", async () => {
 		const t = await setup();
 		await t.quarantine("r3", "c.txt", "mine\n");

@@ -82,7 +82,7 @@ export interface SshTransportOptions {
 	isAbsent?: () => Promise<boolean>;
 	absentMessage?: string;
 	runner?: SshProcessRunner;
-	/** Outside every worktree. Tests can inject an isolated carrier parent. */
+	/** Outside every workspace. Tests can inject an isolated carrier parent. */
 	carrierRoot?: string;
 }
 

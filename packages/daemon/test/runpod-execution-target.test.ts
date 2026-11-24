@@ -302,7 +302,7 @@ describe("RunPod ExecutionTarget integration", () => {
 			projectRoot: f.root,
 			integrationBranch: "main",
 			requestedShape: f.account.requestedShape,
-			reuse: { worktreePath: f.root, branch: "main", baseSha: f.baseSha },
+			reuse: { workspacePath: f.root, branch: "main", baseSha: f.baseSha },
 		});
 		await f.target.launch({
 			owner,
@@ -334,7 +334,7 @@ describe("RunPod ExecutionTarget integration", () => {
 				projectRoot: f.root,
 				integrationBranch: "main",
 				requestedShape: { computeType: "CPU" },
-				reuse: { worktreePath: f.root, branch: "main", baseSha: f.baseSha },
+				reuse: { workspacePath: f.root, branch: "main", baseSha: f.baseSha },
 			});
 			const localTransport = f.transport;
 			localTransport.launchResponseFailure = failure;
@@ -368,7 +368,7 @@ describe("RunPod ExecutionTarget integration", () => {
 						f.root,
 						"remote-machine",
 						f.account.ref,
-						"worktree",
+						"workspace",
 						"driver-start-count.txt",
 					),
 					"utf8",
@@ -397,7 +397,7 @@ describe("RunPod ExecutionTarget integration", () => {
 			projectRoot: f.root,
 			integrationBranch: "main",
 			requestedShape: { computeType: "CPU" },
-			reuse: { worktreePath: f.root, branch: "main", baseSha: f.baseSha },
+			reuse: { workspacePath: f.root, branch: "main", baseSha: f.baseSha },
 		});
 		expect(f.account.commands).toEqual([]);
 
@@ -449,7 +449,7 @@ describe("RunPod ExecutionTarget integration", () => {
 		);
 		expect(
 			await Bun.file(
-				join(f.runDir, "remote-worktree", "collection-receipt.json"),
+				join(f.runDir, "remote-workspace", "collection-receipt.json"),
 			).exists(),
 		).toBe(true);
 		expect((await f.target.dispose(ref)).absenceConfirmed).toBe(true);
@@ -487,7 +487,7 @@ await Bun.sleep(750);
 			projectRoot: f.root,
 			integrationBranch: "main",
 			requestedShape: { computeType: "CPU" },
-			reuse: { worktreePath: f.root, branch: "main", baseSha: f.baseSha },
+			reuse: { workspacePath: f.root, branch: "main", baseSha: f.baseSha },
 		});
 		await f.target.launch({
 			owner,
@@ -559,7 +559,9 @@ await Bun.sleep(750);
 			false,
 		);
 		expect(
-			await Bun.file(join(f.runDir, "remote-worktree", "collections")).exists(),
+			await Bun.file(
+				join(f.runDir, "remote-workspace", "collections"),
+			).exists(),
 		).toBe(false);
 		expect((await f.target.dispose(ref)).absenceConfirmed).toBe(true);
 		expect(`${raw}${events}`).not.toContain(canary);
@@ -575,7 +577,7 @@ await Bun.sleep(750);
 			projectRoot: f.root,
 			integrationBranch: "main",
 			requestedShape: { computeType: "CPU" },
-			reuse: { worktreePath: f.root, branch: "main", baseSha: f.baseSha },
+			reuse: { workspacePath: f.root, branch: "main", baseSha: f.baseSha },
 		});
 		await f.target.launch({
 			owner,

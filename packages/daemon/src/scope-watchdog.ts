@@ -5,8 +5,8 @@ import { runProcRecords } from "./proc.ts";
 
 /**
  * Diff-scope watchdog. While a local run works, the supervisor samples what
- * its worktree changed against the run's base and compares it with the task's
- * `owns` and with the `owns` of every other claimed task:
+ * it changed against the run's base and compares it with the task's `owns`
+ * and with the `owns` of every other claimed task:
  *
  *   files    every path changed since `baseSha` (committed, staged, unstaged
  *            and untracked, ignored files excluded)
@@ -18,9 +18,10 @@ import { runProcRecords } from "./proc.ts";
  * benign mid-run (a new helper next to the owned code), so they are only shown
  * live and enforced at finish (`onFinish: review`).
  *
- * Sampling is read-only (`GIT_OPTIONAL_LOCKS=0`, no index refresh write) and
- * runs in a worktree the agent is writing: any git failure yields no sample,
- * and no sample never kills.
+ * A sample is the run's WIP snapshot, fetched from its clone by the
+ * in-sandbox helper and diffed in the trusted primary
+ * (`run-workspace/scope-files.ts`): the host never runs git in the clone. Any
+ * failure yields no sample, and no sample never kills.
  */
 
 export type ScopeMode = "off" | "warn" | "kill";
@@ -89,7 +90,7 @@ export interface ScopeOwners {
 /**
  * The claimed tasks whose `owns` count as foreign to `run`. The sibling rule:
  * a claim held by the run's own attempt group is never foreign, so competing
- * attempts of one task (and a continuation of the same worktree chain) cannot
+ * attempts of one task (and a continuation of the same workspace chain) cannot
  * kill each other over the files their shared task owns.
  */
 export function foreignClaims(
@@ -111,7 +112,7 @@ export function foreignClaims(
 		.map((t) => ({ taskId: t.id, owns: t.owns }));
 }
 
-/** Paths that are mfw's own bookkeeping inside a worktree, never agent scope. */
+/** Paths that are mfw's own bookkeeping inside a run's tree, never agent scope. */
 export function isBookkeeping(path: string): boolean {
 	return path === "MFW_REPORT.json" || path.startsWith(".mfw/");
 }
@@ -151,33 +152,8 @@ async function gitList(
 }
 
 /**
- * Every path the worktree changed since `baseSha`: tracked differences
- * (committed or not) plus untracked, non-ignored files. Throws on any git
- * failure; the caller treats that as "no sample".
- */
-export async function changedFiles(
-	worktreePath: string,
-	baseSha: string,
-): Promise<{ files: string[]; truncated: boolean }> {
-	const tracked = await gitList(
-		["diff", "--name-only", "--no-renames", "-z", baseSha, "--"],
-		worktreePath,
-	);
-	const untracked = await gitList(
-		["ls-files", "--others", "--exclude-standard", "-z"],
-		worktreePath,
-	);
-	const files = [
-		...new Set([...tracked.paths, ...untracked.paths].filter(Boolean)),
-	]
-		.filter((p) => !isBookkeeping(p))
-		.sort();
-	return { files, truncated: tracked.truncated || untracked.truncated };
-}
-
-/**
  * Every path a fetched ref changed since `baseSha`, read in the trusted
- * primary (clone runs, where the host never runs git in the workspace). `ref`
+ * primary: the host never runs git in a run's workspace. `ref`
  * is the quarantine ref of the run's branch or of its newest WIP snapshot, so
  * it already holds staged, unstaged and untracked work. Throws on any git
  * failure; the caller treats that as "no sample".

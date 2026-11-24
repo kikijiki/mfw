@@ -16,14 +16,13 @@ import { join, resolve } from "node:path";
 import { git, gitOk } from "../src/git.ts";
 import { registerRunWorkspaceRoot } from "../src/host-git/legacy-guard.ts";
 import { runProc } from "../src/proc.ts";
+import { CloneRunWorkspace } from "../src/run-workspace/clone-impl.ts";
 import {
 	clearRunWorkspace,
 	configureRunWorkspace,
+	createCheckClones,
 	createRunWorkspace,
-	createVerifierClones,
-	workspaceForRun,
 } from "../src/run-workspace/factory.ts";
-import { changedFiles } from "../src/scope-watchdog.ts";
 
 /**
  * Security review P5b, B1: a clone's tree is agent-writable, so a planted
@@ -73,60 +72,26 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(base, { recursive: true, force: true }));
 
-describe("B1: a run is routed on what it was launched as", () => {
+describe("every run workspace is a clone", () => {
 	const project = () => join(base, "project");
 
-	test("a clone stays a clone after the project flips back to worktree", () => {
+	test("an attached project's runs get private clones and check clones", () => {
 		mkdirSync(project());
-		configureRunWorkspace(project(), {
-			kind: "worktree",
-			clone: { workspaceRoot: workspaces },
-		});
+		configureRunWorkspace(project(), { workspaceRoot: workspaces });
 		try {
-			expect(createRunWorkspace(project()).kind).toBe("worktree");
-			expect(
-				workspaceForRun(project(), {
-					workspaceKind: "clone",
-					worktreePath: tree,
-				}).kind,
-			).toBe("clone");
-			// An older row with no recorded kind is judged by where it lives.
-			expect(workspaceForRun(project(), { worktreePath: tree }).kind).toBe(
-				"clone",
-			);
-			expect(
-				createVerifierClones(project(), { worktreePath: tree }),
-			).not.toBeNull();
+			expect(createRunWorkspace(project())).toBeInstanceOf(CloneRunWorkspace);
+			expect(createRunWorkspace(project()).paths("r1").workPath).toBe(tree);
+			expect(createCheckClones(project())).not.toBeNull();
 		} finally {
 			clearRunWorkspace(project());
 		}
 	});
 
-	test("a worktree run stays a worktree after the project flips to clone", () => {
-		mkdirSync(project());
-		configureRunWorkspace(project(), {
-			kind: "clone",
-			clone: { workspaceRoot: workspaces },
-		});
-		try {
-			expect(
-				workspaceForRun(project(), {
-					workspaceKind: "worktree",
-					worktreePath: join(project(), "worktrees/r2"),
-				}).kind,
-			).toBe("worktree");
-		} finally {
-			clearRunWorkspace(project());
-		}
-	});
-
-	test("a clone with no clone settings is refused, not treated as a worktree", () => {
-		expect(() =>
-			workspaceForRun(join(base, "unconfigured"), {
-				workspaceKind: "clone",
-				worktreePath: tree,
-			}),
-		).toThrow("no clone settings");
+	test("a project that never attached has no workspace, rather than a fallback", () => {
+		expect(() => createRunWorkspace(join(base, "unconfigured"))).toThrow(
+			"no run workspace settings",
+		);
+		expect(createCheckClones(join(base, "unconfigured"))).toBeNull();
 	});
 });
 
@@ -140,14 +105,8 @@ describe("B1: legacy host git refuses a run workspace", () => {
 
 	test("the hardened runner does not fire it, even outside the root", async () => {
 		const outside = join(base, "outside");
-		const sha = await plant(outside, canary);
-		await changedFiles(outside, sha);
-		expect(existsSync(canary)).toBe(false);
-	});
-
-	test("the reviewer's exploit: changedFiles runs nothing from a clone", async () => {
-		const sha = await plant(tree, canary);
-		await expect(changedFiles(tree, sha)).rejects.toThrow("run workspace");
+		await plant(outside, canary);
+		await git(["status"], outside);
 		expect(existsSync(canary)).toBe(false);
 	});
 

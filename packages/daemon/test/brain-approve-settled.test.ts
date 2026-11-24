@@ -50,7 +50,7 @@ async function settledRun(
 		label: `${task.id}#implement`,
 		model: "sonnet",
 		cwd: u.root,
-		worktreePath: u.root,
+		workspacePath: u.root,
 		branch: "mfw/reviewed",
 		baseSha: "a".repeat(40),
 		integrationBranch: "main",

@@ -286,7 +286,7 @@ export class ReviewService {
 	}
 
 	/** Both sides of every changed file, read straight from git objects so the
-	 *  worktree's current state can't skew what the human is judging. */
+	 *  workspace's current state can't skew what the human is judging. */
 	private async diffFiles(
 		baseSha: string,
 		branch: string,

@@ -1,9 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-	AdapterRegistry,
-	acpInferenceLaunch,
-	PI_ACP_VERSION,
-} from "../src/agents/adapter.ts";
+import { AdapterRegistry, PI_ACP_VERSION } from "../src/agents/adapter.ts";
 import type { BrainTurnLaunch } from "../src/brain-runtime/turn-run.ts";
 
 const registry = new AdapterRegistry();
@@ -134,29 +130,5 @@ describe("ACP adapters", () => {
 			expect(JSON.parse(inv.env.MFW_ACP_ENDPOINT as string)).toEqual(lab);
 			expect(inv.env.MFW_ACP_MODEL).toBe("qwen3-coder");
 		}
-	});
-
-	test("the critic launch is policy none with read-only flags and no MCP", () => {
-		const cursor = acpInferenceLaunch("cursor-agent", "default");
-		expect(cursor.providerArgv).toEqual(["agent", "--mode", "plan", "acp"]);
-		expect(cursor.env).toEqual({
-			MFW_ACP_AGENT: "cursor-agent",
-			MFW_ACP_POLICY: "none",
-		});
-		expect(cursor.bridgeArgv[2]?.endsWith("acp-bridge.ts")).toBe(true);
-		expect(acpInferenceLaunch("gemini-cli", "default").providerArgv).toEqual([
-			"gemini",
-			"--acp",
-			"--approval-mode",
-			"plan",
-		]);
-		expect(acpInferenceLaunch("opencode", "m").providerArgv).toEqual([
-			"opencode",
-			"acp",
-		]);
-		const pi = acpInferenceLaunch("pi", "default");
-		expect(pi.providerArgv).toEqual(["bunx", "pi-acp@0.0.34"]);
-		expect(pi.env).toEqual({ MFW_ACP_AGENT: "pi", MFW_ACP_POLICY: "none" });
-		expect(() => acpInferenceLaunch("claude-cli", "m")).toThrow(/not an ACP/);
 	});
 });

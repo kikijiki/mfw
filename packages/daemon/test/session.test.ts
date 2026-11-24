@@ -67,7 +67,7 @@ describe("SessionService.raise: composing the brief", () => {
 			title: "main is red: MFW-1 has not cleared",
 			summary: "the sweep keeps failing on MFW-1",
 			whatWasTried: ["re-verified 3 times", "corroborated against green"],
-			environment: "an ephemeral worktree, not your shell",
+			environment: "an ephemeral workspace, not your shell",
 			hypothesis: "mfw believes this is a real regression",
 		});
 
@@ -78,7 +78,9 @@ describe("SessionService.raise: composing the brief", () => {
 		expect(session?.context).toContain("the sweep keeps failing on MFW-1");
 		expect(session?.context).toContain("re-verified 3 times");
 		expect(session?.context).toContain("corroborated against green");
-		expect(session?.context).toContain("an ephemeral worktree, not your shell");
+		expect(session?.context).toContain(
+			"an ephemeral workspace, not your shell",
+		);
 		expect(session?.context).toContain(
 			"mfw believes this is a real regression",
 		);
@@ -101,7 +103,7 @@ describe("SessionService.raise: composing the brief", () => {
 			title: "blocked: MFW-2",
 			summary: "repairs exhausted",
 			whatWasTried: [],
-			environment: "an isolated worktree",
+			environment: "an isolated workspace",
 		});
 		expect(started).toBe(0);
 	});
@@ -115,7 +117,7 @@ describe("SessionService.raise: composing the brief", () => {
 			title: "blocked: MFW-3",
 			summary: "repairs exhausted",
 			whatWasTried: [],
-			environment: "an isolated worktree",
+			environment: "an isolated workspace",
 		};
 		const first = await env.sessions.raise(input);
 		const second = await env.sessions.raise(input);
@@ -137,7 +139,7 @@ describe("SessionService.raise: composing the brief", () => {
 			title: "merge parked: mfw/task-7",
 			summary: "rebase conflict",
 			whatWasTried: [],
-			environment: "the run's own worktree",
+			environment: "the run's own workspace",
 		};
 		const first = await env.sessions.raise(input);
 		await env.sessions.resolve(first?.id as string, "retried");
@@ -164,7 +166,7 @@ describe("SessionService.raise: composing the brief", () => {
 			title: `blocked: ${task.id}`,
 			summary: "repairs exhausted",
 			whatWasTried: [],
-			environment: "an isolated worktree",
+			environment: "an isolated workspace",
 		});
 		const session = await env.sessions.get(raised?.id as string);
 		expect(session?.context).toContain("add the widget");
@@ -172,7 +174,7 @@ describe("SessionService.raise: composing the brief", () => {
 		expect(session?.context).toContain("spins on click");
 	});
 
-	test("a runId pulls the run's worktree/branch and the verify step's tail", async () => {
+	test("a runId pulls the run's workspace/branch and the verify step's tail", async () => {
 		const env = await freshEnv();
 		const run = await env.registry.create({
 			kind: "task",
@@ -180,7 +182,7 @@ describe("SessionService.raise: composing the brief", () => {
 			label: "MFW-5",
 			model: "sonnet",
 			cwd: "/tmp/wt",
-			worktreePath: "/tmp/wt",
+			workspacePath: "/tmp/wt",
 			branch: "mfw/MFW-5",
 		});
 		await env.registry.beginStep(run.id, "verify");
@@ -204,7 +206,7 @@ describe("SessionService.raise: composing the brief", () => {
 			title: "blocked: MFW-5",
 			summary: "repairs exhausted",
 			whatWasTried: [],
-			environment: "an isolated worktree",
+			environment: "an isolated workspace",
 		});
 		const session = await env.sessions.get(raised?.id as string);
 		expect(session?.context).toContain("/tmp/wt");
@@ -234,7 +236,7 @@ describe("SessionService.raise: composing the brief", () => {
 			title: "blocked: MFW-6",
 			summary: "repairs exhausted",
 			whatWasTried: [],
-			environment: "an isolated worktree",
+			environment: "an isolated workspace",
 		});
 		const session = await env.sessions.get(raised?.id as string);
 		expect(session?.context).toContain("The brain's recent involvement");
@@ -254,14 +256,14 @@ describe("SessionService.open: the run that actually costs something", () => {
 			title: "blocked: MFW-7",
 			summary: "repairs exhausted",
 			whatWasTried: [],
-			environment: "an isolated worktree",
+			environment: "an isolated workspace",
 		});
 		expect(env.sessions.open(raised?.id as string)).rejects.toThrow(
 			"no run engine wired",
 		);
 	});
 
-	test("reuses the linked run's worktree and branch", async () => {
+	test("reuses the linked run's workspace and branch", async () => {
 		const env = await freshEnv();
 		const run = await env.registry.create({
 			kind: "task",
@@ -269,7 +271,7 @@ describe("SessionService.open: the run that actually costs something", () => {
 			label: "MFW-8",
 			model: "sonnet",
 			cwd: "/tmp/wt8",
-			worktreePath: "/tmp/wt8",
+			workspacePath: "/tmp/wt8",
 			branch: "mfw/MFW-8",
 			baseSha: "deadbeef",
 		});
@@ -286,7 +288,7 @@ describe("SessionService.open: the run that actually costs something", () => {
 			title: "blocked: MFW-8",
 			summary: "repairs exhausted",
 			whatWasTried: [],
-			environment: "an isolated worktree",
+			environment: "an isolated workspace",
 		});
 
 		const { runId } = await env.sessions.open(raised?.id as string);
@@ -296,7 +298,7 @@ describe("SessionService.open: the run that actually costs something", () => {
 				prompt: (await env.sessions.get(raised?.id as string))?.context,
 				opts: {
 					reuse: {
-						worktreePath: "/tmp/wt8",
+						workspacePath: "/tmp/wt8",
 						branch: "mfw/MFW-8",
 						baseSha: "deadbeef",
 					},
@@ -311,7 +313,7 @@ describe("SessionService.open: the run that actually costs something", () => {
 		expect(await eventTypes(env)).toContain("session.opened");
 	});
 
-	test("no worktree to reuse (e.g. main_red) starts fresh", async () => {
+	test("no workspace to reuse (e.g. main_red) starts fresh", async () => {
 		const env = await freshEnv();
 		const seen: unknown[] = [];
 		env.sessions.startSession = async (_prompt, opts) => {
@@ -325,7 +327,7 @@ describe("SessionService.open: the run that actually costs something", () => {
 			title: "main is red",
 			summary: "still failing",
 			whatWasTried: [],
-			environment: "an ephemeral sweep worktree",
+			environment: "an ephemeral sweep workspace",
 		});
 		await env.sessions.open(raised?.id as string);
 		expect(seen).toEqual([{ reuse: undefined, sessionId: raised?.id }]);
@@ -345,7 +347,7 @@ describe("SessionService.open: the run that actually costs something", () => {
 			title: "blocked: MFW-10",
 			summary: "repairs exhausted",
 			whatWasTried: [],
-			environment: "an isolated worktree",
+			environment: "an isolated workspace",
 		});
 		const first = await env.sessions.open(raised?.id as string);
 		const second = await env.sessions.open(raised?.id as string);
@@ -370,7 +372,7 @@ describe("SessionService.resolve: closing must resolve something", () => {
 			title: "blocked: MFW-11",
 			summary: "repairs exhausted",
 			whatWasTried: [],
-			environment: "an isolated worktree",
+			environment: "an isolated workspace",
 		});
 		expect(
 			env.sessions.resolve(raised?.id as string, "dismissed"),
@@ -393,7 +395,7 @@ describe("SessionService.resolve: closing must resolve something", () => {
 			title: "merge parked",
 			summary: "rebase conflict",
 			whatWasTried: [],
-			environment: "the run's own worktree",
+			environment: "the run's own workspace",
 		});
 		await env.sessions.resolve(
 			raised?.id as string,
@@ -424,7 +426,7 @@ describe("SessionService.resolve: closing must resolve something", () => {
 			title: "blocked: MFW-12",
 			summary: "repairs exhausted",
 			whatWasTried: [],
-			environment: "an isolated worktree",
+			environment: "an isolated workspace",
 		});
 		await env.sessions.resolve(raised?.id as string, "fixed");
 		expect((await env.sessions.get(raised?.id as string))?.resolution).toBe(
@@ -442,7 +444,7 @@ describe("SessionService.resolve: closing must resolve something", () => {
 			title: "blocked: MFW-13",
 			summary: "repairs exhausted",
 			whatWasTried: [],
-			environment: "an isolated worktree",
+			environment: "an isolated workspace",
 		});
 		await env.sessions.resolve(raised?.id as string, "fixed");
 		await env.sessions.resolve(

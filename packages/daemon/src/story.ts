@@ -17,7 +17,7 @@ import { guardDecisionRows } from "./claims-evidence.ts";
 /**
  * A task's Story (v0): everything that happened to one task, folded from the
  * tables that already exist, in time order. Runs are the spine; a repair,
- * resume, answer or unblock run nests under the first run of its worktree
+ * resume, answer or unblock run nests under the first run of its workspace
  * chain; decisions, verdicts, status moves, merges, questions and holds are
  * siblings on the same timeline.
  *
@@ -102,7 +102,7 @@ export interface StoryRunEntry {
 	verdicts: StoryVerdict[];
 	lastLine?: string;
 	transcriptAvailable: boolean;
-	/** Repair/resume/answer/unblock runs continuing this one's worktree. */
+	/** Repair/resume/answer/unblock runs continuing this one's workspace. */
 	children: StoryRunEntry[];
 	/** Set when the run is an attempt of a competing group (it then nests under the group entry). */
 	attempt?: { groupRef: StoryRef; role: string | null; winner: boolean };
@@ -398,7 +398,7 @@ export async function taskStory(
 	};
 
 	// Nest continuations under the chain root: the parent must be one of this
-	// task's runs AND the label must say it continues the worktree (`parent_run_id`
+	// task's runs AND the label must say it continues the workspace (`parent_run_id`
 	// is also "source plan" or "subject run" on other kinds of run).
 	const rootOf = (id: string): string => {
 		const seen = new Set<string>();

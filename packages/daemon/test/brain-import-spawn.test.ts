@@ -78,9 +78,9 @@ describe("spawn role import", () => {
 		expect(live.rejection?.code).toBe("already_importing");
 	});
 
-	test("an import has no worktree to continue", async () => {
+	test("an import has no workspace to continue", async () => {
 		const anchor = await u.tasks.create({ title: "Import the repo" });
-		const r = await spawn(anchor.id, { worktree: "continue:abc" });
-		expect(r.rejection?.code).toBe("worktree_unavailable");
+		const r = await spawn(anchor.id, { workspace: "continue:abc" });
+		expect(r.rejection?.code).toBe("workspace_unavailable");
 	});
 });

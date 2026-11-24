@@ -15,7 +15,7 @@ import type { TaskService } from "./task-service.ts";
 /**
  * MFW-59: when mfw cannot proceed, `raise()` composes what the daemon already
  * knows (the check's real output, what was tried, the environment, the
- * worktree) into one brief and stores it. It is called when recovery is
+ * workspace) into one brief and stores it. It is called when recovery is
  * exhausted: `MergeQueue.park()`, `Maintenance.regressionSweep()`'s
  * escalation, `StepRunner.releaseTask()`'s `to: "blocked"`. It costs only a
  * row; no run starts until a human calls `open()`. Closing a session must
@@ -44,7 +44,7 @@ export interface RaiseInput {
 	/** Dedup key within `source`; see `sessions.sourceKey` in schema.ts. */
 	sourceKey: string;
 	taskId?: string | null;
-	/** A run whose worktree is worth reusing when this session opens. Absent
+	/** A run whose workspace is worth reusing when this session opens. Absent
 	 *  for `main_red`, which is not tied to one run. */
 	runId?: string | null;
 	mergeJobId?: number | null;
@@ -54,7 +54,7 @@ export interface RaiseInput {
 	summary: string;
 	/** Bullets: what mfw already tried before giving up. */
 	whatWasTried: string[];
-	/** How this ran differently from a human's shell (ephemeral worktree,
+	/** How this ran differently from a human's shell (ephemeral workspace,
 	 *  hard-linked dependency snapshot, sandbox). */
 	environment: string;
 	/** mfw's own belief about the cause, phrased as a hypothesis. */
@@ -80,7 +80,7 @@ export class SessionService {
 	startSession?: (
 		prompt: string,
 		opts: {
-			reuse?: { worktreePath: string; branch: string; baseSha?: string };
+			reuse?: { workspacePath: string; branch: string; baseSha?: string };
 			sessionId?: string;
 		},
 	) => Promise<{ runId: string }>;
@@ -143,7 +143,7 @@ export class SessionService {
 
 	/**
 	 * Start the run: a steerable agent session seeded with the composed brief,
-	 * reusing the relevant worktree when there is one. Idempotent: an
+	 * reusing the relevant workspace when there is one. Idempotent: an
 	 * already-opened session returns its existing run.
 	 */
 	async open(id: string): Promise<{ runId: string }> {
@@ -154,13 +154,13 @@ export class SessionService {
 			throw new Error("sessions cannot be opened: no run engine wired");
 		}
 		let reuse:
-			| { worktreePath: string; branch: string; baseSha?: string }
+			| { workspacePath: string; branch: string; baseSha?: string }
 			| undefined;
 		if (session.runId) {
 			const run = await this.deps.registry.get(session.runId);
-			if (run?.worktreePath && run.branch) {
+			if (run?.workspacePath && run.branch) {
 				reuse = {
-					worktreePath: run.worktreePath,
+					workspacePath: run.workspacePath,
 					branch: run.branch,
 					baseSha: run.baseSha ?? undefined,
 				};
@@ -289,7 +289,7 @@ export class SessionService {
 					"",
 					"## Where this ran",
 					`- run: ${run.id} (${run.kind}, attempt ${run.attempt})`,
-					`- worktree: ${run.worktreePath ?? "(none, no worktree to reuse)"}`,
+					`- workspace: ${run.workspacePath ?? "(none, no workspace to reuse)"}`,
 					...(run.branch ? [`- branch: ${run.branch}`] : []),
 					...(run.exitCode !== null ? [`- exit code: ${run.exitCode}`] : []),
 					...(run.killReason ? [`- killed: ${run.killReason}`] : []),
@@ -334,7 +334,7 @@ export class SessionService {
 			"",
 			"## You",
 			"This is a steerable session with this project's own tools. Ask it " +
-				"questions, or tell it what to do: inspect the worktree above, " +
+				"questions, or tell it what to do: inspect the workspace above, " +
 				"reproduce the failure, fix it, or decide it is not worth fixing. " +
 				"It cannot act on its own; everything it does is at your request. " +
 				"When you are done, resolve this session (fixed, retried, or " +

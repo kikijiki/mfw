@@ -216,7 +216,6 @@ describe("fixes that were harmful if followed blindly", () => {
 						{
 							name: "x $(touch pwned)",
 							root: "/srv/x $(touch pwned)",
-							runWorkspace: "clone",
 						},
 					],
 				},

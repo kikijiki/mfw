@@ -20,7 +20,7 @@ function taskCtx(over: Partial<FinalizeCtx> = {}): FinalizeCtx {
 			hasDod: true,
 			escalation: null,
 			attempt: 1,
-			worktreeDirty: false,
+			workspaceDirty: false,
 			exitCode: 0,
 		},
 		gates: { mainRed: false, reviewGated: false, brainEnabled: true },
@@ -28,7 +28,7 @@ function taskCtx(over: Partial<FinalizeCtx> = {}): FinalizeCtx {
 		critic: null,
 		planParsed: null,
 		reportHasFollowUps: false,
-		localWorktree: false,
+		localWorkspace: false,
 		leftBackground: false,
 		...over,
 	};
@@ -105,7 +105,7 @@ function drive(
 }
 
 describe("finalize machine: task rows", () => {
-	test("T1 rate-limited: hold, task ready, no attempt consumed, worktree kept", () => {
+	test("T1 rate-limited: hold, task ready, no attempt consumed, workspace kept", () => {
 		const { steps, terminal } = drive(taskCtx(), { outcome: "rate_limited" });
 		expect(steps).toEqual([
 			"classify",
@@ -123,7 +123,7 @@ describe("finalize machine: task rows", () => {
 			"classify",
 			"ingest_report",
 			"release_task(ready)",
-			"gc_worktree",
+			"gc_workspace",
 		]);
 		expect(terminal.state).toBe("failed");
 	});
@@ -134,7 +134,7 @@ describe("finalize machine: task rows", () => {
 			"classify",
 			"ingest_report",
 			"release_task(ready)",
-			"gc_worktree",
+			"gc_workspace",
 		]);
 		expect(terminal.state).toBe("killed");
 	});
@@ -147,7 +147,7 @@ describe("finalize machine: task rows", () => {
 			"classify",
 			"ingest_report",
 			"settle(watchdog_killed)",
-			"gc_worktree",
+			"gc_workspace",
 		]);
 		expect(terminal).toMatchObject({ row: "T4", state: "killed" });
 		expect(steps.join()).not.toContain("release_task(blocked)");
@@ -165,13 +165,13 @@ describe("finalize machine: task rows", () => {
 				"ingest_report",
 				"archive_wip",
 				"settle(scope_violation)",
-				"gc_worktree",
+				"gc_workspace",
 			]);
 			expect(terminal).toMatchObject({ row: "T4s", state: "killed" });
-			// The order is the safety property: the worktree is forced away only
+			// The order is the safety property: the workspace is forced away only
 			// once its snapshot is journaled.
 			expect(steps.indexOf("archive_wip")).toBeLessThan(
-				steps.indexOf("gc_worktree"),
+				steps.indexOf("gc_workspace"),
 			);
 			expect(steps).not.toContain("notify");
 		});
@@ -190,7 +190,7 @@ describe("finalize machine: task rows", () => {
 			done,
 		});
 		expect(next(ctx)).toMatchObject({
-			step: "gc_worktree",
+			step: "gc_workspace",
 			args: { force: true },
 		});
 		// Without the archive journaled, nothing past it is reachable.
@@ -272,15 +272,15 @@ describe("finalize machine: task rows", () => {
 		expect(steps).not.toContain("scope_check");
 	});
 
-	test("T5 interrupted settles interrupted and keeps a dirty worktree; no resume is decided here", () => {
+	test("T5 interrupted settles interrupted and keeps a dirty workspace; no resume is decided here", () => {
 		const ctx = taskCtx();
-		if (ctx.task) ctx.task.worktreeDirty = true;
+		if (ctx.task) ctx.task.workspaceDirty = true;
 		const { steps, terminal } = drive(ctx, { outcome: "interrupted" });
 		expect(steps).toEqual([
 			"classify",
 			"ingest_report",
 			"settle(interrupted)",
-			"gc_worktree",
+			"gc_workspace",
 		]);
 		expect(terminal).toMatchObject({ row: "T5", state: "interrupted" });
 	});
@@ -488,7 +488,7 @@ describe("finalize machine: task rows", () => {
 					{ status: "ok", flagged: true, verdict: "fix", round: 1 },
 					{ status: "ok", flagged: true, verdict: "reject", round: 1 },
 				] as const) {
-					const r = drive(taskCtx({ localWorktree: true }), {
+					const r = drive(taskCtx({ localWorkspace: true }), {
 						outcome,
 						verify,
 						...(critic ? { critic } : {}),
@@ -514,7 +514,7 @@ describe("finalize machine: task rows", () => {
 		const ctx = taskCtx();
 		if (ctx.task) ctx.task.exists = false;
 		const { steps } = drive(ctx);
-		expect(steps).toEqual(["classify", "ingest_report", "gc_worktree"]);
+		expect(steps).toEqual(["classify", "ingest_report", "gc_workspace"]);
 	});
 
 	test("crash-resume: a mid-sequence resume executes only the remaining steps", () => {
@@ -524,7 +524,7 @@ describe("finalize machine: task rows", () => {
 			done: new Set<StepName>(["classify", "ingest_report", "settle"]),
 		});
 		const { steps, terminal } = drive(ctx, { outcome: "killed_watchdog" });
-		expect(steps).toEqual(["gc_worktree"]);
+		expect(steps).toEqual(["gc_workspace"]);
 		expect(terminal.state).toBe("killed");
 	});
 
@@ -574,8 +574,8 @@ describe("finalize machine: follow-ups and leftover processes", () => {
 
 	test.each(
 		outcomes,
-	)("T0-reap: a local worktree run reaps right after classify (%s)", (outcome) => {
-		const { steps } = drive(taskCtx({ localWorktree: true }), { outcome });
+	)("T0-reap: a local workspace run reaps right after classify (%s)", (outcome) => {
+		const { steps } = drive(taskCtx({ localWorkspace: true }), { outcome });
 		expect(steps.slice(0, 3)).toEqual([
 			"classify",
 			"reap_leftovers",
@@ -583,15 +583,15 @@ describe("finalize machine: follow-ups and leftover processes", () => {
 		]);
 	});
 
-	test("T0-reap: a run without a local worktree is not reaped", () => {
-		const { steps } = drive(taskCtx({ localWorktree: false }), {
+	test("T0-reap: a run without a local workspace is not reaped", () => {
+		const { steps } = drive(taskCtx({ localWorkspace: false }), {
 			leftovers: true,
 		});
 		expect(steps).not.toContain("reap_leftovers");
 	});
 
 	test("T10L: completed but left processes running: settles background_work instead of being verified", () => {
-		const { steps, terminal } = drive(taskCtx({ localWorktree: true }), {
+		const { steps, terminal } = drive(taskCtx({ localWorkspace: true }), {
 			leftovers: true,
 		});
 		expect(steps).toEqual([
@@ -604,7 +604,7 @@ describe("finalize machine: follow-ups and leftover processes", () => {
 	});
 
 	test("T10L: an agent-declared escalation wins over the leftover processes", () => {
-		const ctx = taskCtx({ localWorktree: true });
+		const ctx = taskCtx({ localWorkspace: true });
 		if (ctx.task) ctx.task.escalation = "blocked";
 		const { steps, terminal } = drive(ctx, { leftovers: true });
 		expect(steps).not.toContain("settle(background_work)");
@@ -612,7 +612,7 @@ describe("finalize machine: follow-ups and leftover processes", () => {
 	});
 
 	test("T10L: a killed run with leftovers settles by its kill row, not as background work", () => {
-		const { steps } = drive(taskCtx({ localWorktree: true }), {
+		const { steps } = drive(taskCtx({ localWorkspace: true }), {
 			outcome: "killed_manual",
 			leftovers: true,
 		});
@@ -620,13 +620,13 @@ describe("finalize machine: follow-ups and leftover processes", () => {
 	});
 
 	test("T0-reap: clean reap goes on to verify", () => {
-		const { steps } = drive(taskCtx({ localWorktree: true }));
+		const { steps } = drive(taskCtx({ localWorkspace: true }));
 		expect(steps).toContain("verify");
 		expect(steps.some((s) => s.startsWith("settle"))).toBe(false);
 	});
 
 	test("T10L: a turn that ended on background jobs settles background_work without verify", () => {
-		const { steps, terminal } = drive(taskCtx({ localWorktree: true }), {
+		const { steps, terminal } = drive(taskCtx({ localWorkspace: true }), {
 			background: true,
 		});
 		expect(steps).toEqual([
@@ -639,7 +639,7 @@ describe("finalize machine: follow-ups and leftover processes", () => {
 	});
 
 	test("T10L: background jobs on a remote run (no reap) settle too", () => {
-		const { steps } = drive(taskCtx({ localWorktree: false }), {
+		const { steps } = drive(taskCtx({ localWorkspace: false }), {
 			background: true,
 		});
 		expect(steps).toContain("settle(background_work)");
@@ -649,12 +649,12 @@ describe("finalize machine: follow-ups and leftover processes", () => {
 
 describe("finalize machine: a task run that asked a question", () => {
 	const asked = () => {
-		const ctx = taskCtx({ localWorktree: true });
+		const ctx = taskCtx({ localWorkspace: true });
 		if (ctx.task) ctx.task.escalation = "question";
 		return ctx;
 	};
 
-	test("T10Q: question recorded, then settled: no verify, no release to blocked, no ping, worktree kept", () => {
+	test("T10Q: question recorded, then settled: no verify, no release to blocked, no ping, workspace kept", () => {
 		const { steps, terminal } = drive(asked());
 		expect(steps).toEqual([
 			"classify",
@@ -667,7 +667,7 @@ describe("finalize machine: a task run that asked a question", () => {
 			"verify",
 			"notify",
 			"release_task(blocked)",
-			"gc_worktree",
+			"gc_workspace",
 		])
 			expect(steps).not.toContain(burned);
 		expect(terminal).toMatchObject({ row: "T10Q", state: "completed" });
@@ -723,7 +723,7 @@ describe("finalize machine: import rows", () => {
 			"classify",
 			"parse_plan",
 			"settle(plan_output)",
-			"gc_worktree",
+			"gc_workspace",
 		]);
 		for (const gone of [
 			"import_review",
@@ -768,7 +768,7 @@ describe("finalize machine: plan / action / brain rows", () => {
 			"classify",
 			"parse_plan",
 			"settle(plan_output)",
-			"gc_worktree",
+			"gc_workspace",
 		]);
 		for (const gone of ["create_tasks", "create_specs", "record_questions"]) {
 			expect(steps).not.toContain(gone);
@@ -793,7 +793,7 @@ describe("finalize machine: plan / action / brain rows", () => {
 			"classify",
 			"draft_expand_failed",
 			"settle(stopped)",
-			"gc_worktree",
+			"gc_workspace",
 		]);
 		expect(terminal.state).toBe("killed");
 	});
@@ -806,7 +806,7 @@ describe("finalize machine: plan / action / brain rows", () => {
 			"parse_plan",
 			"draft_expand_failed",
 			"settle(plan_output)",
-			"gc_worktree",
+			"gc_workspace",
 		]);
 		expect(terminal.note).toContain("no valid plan");
 	});
@@ -818,7 +818,7 @@ describe("finalize machine: plan / action / brain rows", () => {
 			"classify",
 			"parse_plan",
 			"settle(plan_output)",
-			"gc_worktree",
+			"gc_workspace",
 		]);
 	});
 
@@ -833,7 +833,7 @@ describe("finalize machine: plan / action / brain rows", () => {
 	test("A0 action: gc (dirty preserved) and per-outcome terminal", () => {
 		const ctx = taskCtx({ kind: "action", task: null });
 		const { steps, terminal } = drive(ctx, { outcome: "completed" });
-		expect(steps).toEqual(["classify", "ingest_report", "gc_worktree"]);
+		expect(steps).toEqual(["classify", "ingest_report", "gc_workspace"]);
 		expect(terminal.state).toBe("completed");
 	});
 

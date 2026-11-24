@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import "./support/tmux-test-socket.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mergeJobs, runGroups } from "@mfw/db/schema";
@@ -7,7 +8,7 @@ import { type GroupFixture, groupFixture } from "./support/group-fixture.ts";
 
 /**
  * Competing attempts of one task: siblings share the task's claim, each has
- * its own worktree, and one winner (chosen by the brain, or the first verified
+ * its own workspace, and one winner (chosen by the brain, or the first verified
  * one) goes through the merge queue. Real git, tmux and finalize; the brain is
  * the test, acting through the action service.
  */
@@ -78,11 +79,11 @@ describe("attempt groups", () => {
 			owns: ["feature.txt"],
 		});
 
-		// Both are live at once, in separate worktrees, holding one claim.
+		// Both are live at once, in separate workspaces, holding one claim.
 		const rows = await Promise.all(runIds.map((id) => f.svc.registry.get(id)));
 		expect(rows.map((r) => r?.role)).toEqual(["attempt", "attempt"]);
 		expect(rows.every((r) => r?.groupId === groupId)).toBe(true);
-		expect(new Set(rows.map((r) => r?.worktreePath)).size).toBe(2);
+		expect(new Set(rows.map((r) => r?.workspacePath)).size).toBe(2);
 		const task = await f.svc.tasks.get(taskId);
 		expect(task?.claimedByGroupId).toBe(groupId);
 		expect(task?.claimedByRunId).toBe(runIds[0]);
@@ -123,14 +124,13 @@ describe("attempt groups", () => {
 		expect(accepted.status).toBe("applied");
 	}, 120_000);
 
-	test("the winner alone gets a merge job; losers are archived to wip/ and their branches kept", async () => {
+	test("the winner alone gets a merge job; losers are archived to wip/ and their imported refs kept", async () => {
 		fx = await groupFixture();
 		const f = fx;
 		const { taskId, runIds, groupId } = await twoAttempts(f);
 		await settled(f, runIds);
 		const [winnerId, loserId] = runIds as [string, string];
 		const loser = await f.svc.registry.get(loserId);
-		const loserBranch = loser?.branch as string;
 
 		const picked = await f.act("select_winner", { runId: winnerId });
 		expect(picked.status).toBe("applied");
@@ -156,7 +156,7 @@ describe("attempt groups", () => {
 			winnerId,
 		);
 
-		// loser: archived under wip/, run branch still there, worktree gone
+		// loser: archived under wip/, its imported ref kept, its clone gone
 		await f.until(
 			async () => {
 				const out = await git(["branch", "--list", "wip/*"], f.root);
@@ -165,13 +165,12 @@ describe("attempt groups", () => {
 			{ what: "the loser to be archived" },
 		);
 		const kept = await git(
-			["rev-parse", "--verify", `refs/heads/${loserBranch}`],
+			["rev-parse", "--verify", `refs/mfw/quarantine/${loserId}`],
 			f.root,
 		);
 		expect(kept.exitCode).toBe(0);
-		expect(loser?.worktreePath).toBeTruthy();
-		const wt = await git(["worktree", "list", "--porcelain"], f.root);
-		expect(wt.stdout).not.toContain(loser?.worktreePath as string);
+		expect(loser?.workspacePath).toBeTruthy();
+		expect(existsSync(loser?.workspacePath as string)).toBe(false);
 	}, 180_000);
 
 	test("first_verified: the first verified attempt is selected and merged without the brain", async () => {

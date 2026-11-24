@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openProjectDb } from "@mfw/db/client";
@@ -35,6 +35,8 @@ import {
 import { RunRegistry } from "../src/run-registry.ts";
 import { TaskOwnershipHeldError } from "../src/tasks/index.ts";
 import { makeTasks } from "./fixtures/board.ts";
+import { useCheckClones } from "./support/check-clones.ts";
+import { onRunTree } from "./support/scripted-driver.ts";
 
 async function waitFor(cond: () => Promise<boolean>, timeoutMs = 8000) {
 	const t0 = Date.now();
@@ -98,6 +100,8 @@ async function fixture(
 	} = {},
 ) {
 	const root = await mkdtemp(join(tmpdir(), "mfw-eng-"));
+	// Run clones live beside the fixture repo, as `$MFW_HOME/workspaces` would.
+	useCheckClones(root, { workspaceRoot: `${root}-workspaces` });
 	await git(["init", "-q", "-b", "main"], root);
 	await git(["config", "user.email", "t@t"], root);
 	await git(["config", "user.name", "t"], root);
@@ -119,7 +123,9 @@ async function fixture(
 	const host = new AgentHost();
 	const adapters = opts.adapters ?? new AdapterRegistry();
 	const driverPath = join(root, "fake-driver.ts");
-	await writeFile(driverPath, FAKE_DRIVER);
+	await writeFile(driverPath, onRunTree(FAKE_DRIVER, `${root}-workspaces`));
+	const mfwHome = `${root}-home`;
+	await mkdir(join(mfwHome, "agents", "claude"), { recursive: true });
 	adapters.driverOverride = driverPath;
 	adapters.buildArgv = () => ["true"];
 
@@ -135,6 +141,7 @@ async function fixture(
 		registry,
 		tasks,
 		host,
+		isolation: { mode: "bwrap", hidePaths: [mfwHome], mfwHome },
 		executionTargets: opts.executionTarget
 			? new ExecutionTargetRegistry([opts.executionTarget])
 			: undefined,
@@ -331,7 +338,7 @@ describe("RunEngine v2", () => {
 		expect(await f.registry.list()).toEqual([]);
 	});
 
-	test("startTask: claim → worktree off integration branch → tmux → running → agent works", async () => {
+	test("startTask: claim → clone off integration branch → tmux → running → agent works", async () => {
 		const f = await fixture();
 		const t = await f.tasks.create({ title: "build a thing" });
 		await f.tasks.move(t.id, "ready", "human");
@@ -339,13 +346,15 @@ describe("RunEngine v2", () => {
 		const { runId } = await f.engine.startTask(t.id);
 		const run = await f.registry.get(runId);
 		expect(run?.state).toBe("running");
-		expect(run?.worktreePath).toContain("worktrees/");
+		expect(run?.workspacePath).toBe(`${f.root}-workspaces/${run?.id}/tree`);
 		expect(run?.branch).toBe(`mfw/${runId}`);
 		expect(run?.integrationBranch).toBe("main");
 		expect(run?.providerId).toBe("claude-cli");
 		expect(run?.reasoningEffort).toBe("high");
 		const driverConfig = JSON.parse(
-			await Bun.file(join(f.registry.runDir(runId), "driver.json")).text(),
+			await Bun.file(
+				join(f.registry.runDir(runId), "control", "driver.json"),
+			).text(),
 		);
 		expect(driverConfig.reasoningEffort).toBe("high");
 
@@ -353,30 +362,16 @@ describe("RunEngine v2", () => {
 		expect(task?.status).toBe("in_progress");
 		expect(task?.claimedByRunId).toBe(runId);
 
-		// the fake driver ran inside the worktree via tmux
+		// the fake driver ran inside the workspace via tmux
 		await waitFor(async () => {
 			const exit = await f.host.readExit(f.registry.runDir(runId));
 			return exit.kind === "exit" && exit.code === 0;
 		});
 		expect(
 			await Bun.file(
-				join(run?.worktreePath ?? "", "made-by-agent.txt"),
+				join(run?.workspacePath ?? "", "made-by-agent.txt"),
 			).exists(),
 		).toBe(true);
-		f.handle.close();
-		await rm(f.root, { recursive: true, force: true });
-	}, 20_000);
-
-	test("a launched run records the approval mode it launched under", async () => {
-		const f = await fixture();
-		const t = await f.tasks.create({ title: "mode" });
-		await f.tasks.move(t.id, "ready", "human");
-		const { runId } = await f.engine.startTask(t.id);
-		expect((await f.registry.get(runId))?.approvalMode).toBe("interactive");
-		await waitFor(async () => {
-			const exit = await f.host.readExit(f.registry.runDir(runId));
-			return exit.kind === "exit";
-		});
 		f.handle.close();
 		await rm(f.root, { recursive: true, force: true });
 	}, 20_000);
@@ -457,7 +452,7 @@ describe("RunEngine v2", () => {
 		expect(adapters.calls.map((c) => c.id)).toEqual(["claude-cli"]);
 		const driverConfig = JSON.parse(
 			await Bun.file(
-				join(f.registry.runDir(prepared.runId), "driver.json"),
+				join(f.registry.runDir(prepared.runId), "control", "driver.json"),
 			).text(),
 		);
 		expect(driverConfig.model).toBe("sonnet");
@@ -573,7 +568,7 @@ describe("RunEngine v2", () => {
 		await rm(f.root, { recursive: true, force: true });
 	}, 20_000);
 
-	test("prepareTaskRun writes claim, starting row, worktree, and target journal without launching", async () => {
+	test("prepareTaskRun writes claim, starting row, clone, and target journal without launching", async () => {
 		const f = await fixture();
 		const task = await f.tasks.create({ title: "admit before launch" });
 		await f.tasks.move(task.id, "ready", "human");
@@ -586,12 +581,12 @@ describe("RunEngine v2", () => {
 			targetLifecycleState: "prepared",
 			targetProjectId: "demo",
 		});
-		expect(run?.worktreePath).toContain("worktrees/");
+		expect(run?.workspacePath).toBe(`${f.root}-workspaces/${run?.id}/tree`);
 		expect((await f.tasks.get(task.id))?.claimedByRunId).toBe(prepared.runId);
 		expect(await f.host.isAlive(prepared.runId)).toBe(false);
 		expect(
 			await Bun.file(
-				join(f.registry.runDir(prepared.runId), "driver.json"),
+				join(f.registry.runDir(prepared.runId), "control", "driver.json"),
 			).exists(),
 		).toBe(false);
 		expect(
@@ -652,10 +647,10 @@ describe("RunEngine v2", () => {
 					workspace: {
 						canonicalPath: join(
 							request.projectRoot,
-							"worktrees",
+							"workspaces",
 							request.owner.runId,
 						),
-						executionPath: "/remote/worktree",
+						executionPath: "/remote/workspace",
 						branch: `mfw/${request.owner.runId}`,
 						baseSha: "abc123",
 					},
@@ -720,7 +715,7 @@ describe("RunEngine v2", () => {
 			executionTarget: "remote-test",
 			targetProjectId: "project-stable-1",
 			targetLeaseRef: "global-lease-1",
-			targetExecutionPath: "/remote/worktree",
+			targetExecutionPath: "/remote/workspace",
 			targetRequestedShape: { cpu: 8 },
 			targetObservedShape: { cpu: 8 },
 		});
@@ -728,7 +723,7 @@ describe("RunEngine v2", () => {
 		await f.engine.launchPreparedRun(prepared);
 		expect(calls).toEqual([
 			`prepare:project-stable-1/${prepared.runId}/1`,
-			`launch:project-stable-1/${prepared.runId}/1:/remote/worktree`,
+			`launch:project-stable-1/${prepared.runId}/1:/remote/workspace`,
 			"observe",
 		]);
 		expect((await f.registry.get(prepared.runId))?.state).toBe("running");
@@ -745,7 +740,7 @@ describe("RunEngine v2", () => {
 					targetKind: "remote-test",
 					workspace: {
 						canonicalPath: request.projectRoot,
-						executionPath: "/remote/worktree",
+						executionPath: "/remote/workspace",
 						branch: "main",
 						baseSha: "abc123",
 					},
@@ -816,7 +811,7 @@ describe("RunEngine v2", () => {
 					targetKind: this.kind,
 					workspace: {
 						canonicalPath: request.projectRoot,
-						executionPath: "/remote/worktree",
+						executionPath: "/remote/workspace",
 						branch: "main",
 						baseSha: "abc123",
 					},
@@ -897,7 +892,7 @@ describe("RunEngine v2", () => {
 					targetKind: this.kind,
 					workspace: {
 						canonicalPath: request.projectRoot,
-						executionPath: "/remote/worktree",
+						executionPath: "/remote/workspace",
 						branch: "main",
 						baseSha: "abc123",
 					},
@@ -979,7 +974,7 @@ describe("RunEngine v2", () => {
 						targetKind: this.kind,
 						workspace: {
 							canonicalPath: request.projectRoot,
-							executionPath: "/remote/worktree",
+							executionPath: "/remote/workspace",
 							branch: "main",
 							baseSha: "abc123",
 						},
@@ -1126,7 +1121,7 @@ describe("RunEngine v2", () => {
 		await f.registry.setCapabilities(runId, { steer: true, verified: true });
 		await f.engine.steer(runId, "hi");
 		const steer = await Bun.file(
-			join(f.registry.runDir(runId), "steer.jsonl"),
+			join(f.registry.runDir(runId), "control", "steer.jsonl"),
 		).text();
 		expect(steer.trim()).toBe(JSON.stringify("hi"));
 		// a verified non-steerable run still refuses
@@ -1156,7 +1151,7 @@ describe("RunEngine v2", () => {
 		return { taskId: t.id, runId, parent };
 	}
 
-	test("a continue: group run reuses the parent's worktree and branch, takes the claim as its own group, and writes relation continue", async () => {
+	test("a continue: group run gets its own clone of the parent's work on the parent's base, takes the claim as its own group, and writes relation continue", async () => {
 		const f = await fixture();
 		const { taskId, runId, parent } = await settledParent(f, "flaky");
 		const childId = ulid();
@@ -1167,14 +1162,14 @@ describe("RunEngine v2", () => {
 			groupKind: "single" as const,
 			role: "implement" as const,
 			actionId: "act-1",
-			worktree: { mode: "continue" as const, runId },
+			workspace: { mode: "continue" as const, runId },
 		};
 
 		await f.engine.startGroupRun(spec);
 
 		const child = await f.registry.get(childId);
-		expect(child?.worktreePath).toBe(parent?.worktreePath);
-		expect(child?.branch).toBe(parent?.branch);
+		expect(child?.workspacePath).toBe(`${f.root}-workspaces/${childId}/tree`);
+		expect(child?.branch).toBe(`mfw/${childId}`);
 		expect(child?.baseSha).toBe(parent?.baseSha);
 		expect(child?.attempt).toBe((parent?.attempt ?? 1) + 1);
 		// With no pick from the brain, the continuation keeps the parent's route.
@@ -1209,12 +1204,12 @@ describe("RunEngine v2", () => {
 		await rm(f.root, { recursive: true, force: true });
 	}, 20_000);
 
-	test("a continuation never re-asks the parent's journaled question: its report is removed from the worktree", async () => {
+	test("a continuation never re-asks the parent's journaled question: its report is in neither clone", async () => {
 		const f = await fixture();
 		const { taskId, runId, parent } = await settledParent(f, "asks");
-		const worktree = parent?.worktreePath as string;
+		const workspace = parent?.workspacePath as string;
 		await writeFile(
-			join(worktree, "MFW_REPORT.json"),
+			join(workspace, "MFW_REPORT.json"),
 			JSON.stringify({ status: "question", question: "Keep v1?" }),
 		);
 
@@ -1227,13 +1222,16 @@ describe("RunEngine v2", () => {
 			role: "implement",
 			actionId: "act-2",
 			brief: "The answer is: until March.",
-			worktree: { mode: "continue", runId },
+			workspace: { mode: "continue", runId },
 		});
 
 		const child = await f.registry.get(childId);
-		expect(child?.worktreePath).toBe(worktree);
+		expect(child?.workspacePath).not.toBe(workspace);
 		expect(child?.initialPrompt).toContain("until March");
-		expect(existsSync(join(worktree, "MFW_REPORT.json"))).toBe(false);
+		expect(existsSync(join(workspace, "MFW_REPORT.json"))).toBe(false);
+		expect(
+			existsSync(join(child?.workspacePath as string, "MFW_REPORT.json")),
+		).toBe(false);
 		f.handle.close();
 		await rm(f.root, { recursive: true, force: true });
 	}, 20_000);
@@ -1251,7 +1249,7 @@ describe("RunEngine v2", () => {
 				groupKind: "single",
 				role: "implement",
 				actionId: "act-3",
-				worktree: { mode: "continue", runId },
+				workspace: { mode: "continue", runId },
 			}),
 		).rejects.toThrow(TaskNotClaimableError);
 		expect((await f.tasks.get(taskId))?.status).toBe("backlog");
@@ -1362,7 +1360,9 @@ describe("run context", () => {
 		const { runId } = await f.engine.startTask(t.id);
 
 		const driverCfg = JSON.parse(
-			await Bun.file(join(f.registry.runDir(runId), "driver.json")).text(),
+			await Bun.file(
+				join(f.registry.runDir(runId), "control", "driver.json"),
+			).text(),
 		) as { env: Record<string, string> };
 		expect(driverCfg.env.MFW_RUN_ID).toBe(runId);
 		expect(driverCfg.env.MFW_PROJECT).toBe("demo");

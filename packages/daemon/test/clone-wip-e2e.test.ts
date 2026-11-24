@@ -232,7 +232,7 @@ async function makeFixture(): Promise<Fixture> {
 		label: "e2e",
 		model: "sonnet",
 		cwd: seeded.path,
-		worktreePath: seeded.path,
+		workspacePath: seeded.path,
 		branch: seeded.branch,
 		integrationBranch: "main",
 		startedAt: new Date(),

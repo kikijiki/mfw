@@ -367,30 +367,6 @@ describe("the check gate", () => {
 		expect(existsSync(canary)).toBe(false);
 	});
 
-	test("without a gate the verifier behaves as before", async () => {
-		await writeFile(
-			join(candidate, "scripts/check.sh"),
-			"#!/bin/sh\nexit 0\n# x\n",
-		);
-		const r = await verify(candidate, dod("./scripts/check.sh"), baseSha, {
-			hostExecution: "interactive-worktree",
-		});
-		expect(r.passed).toBe(true);
-	});
-
-	test("the gate refuses before an interactive host run", async () => {
-		await writeFile(
-			join(candidate, "scripts/check.sh"),
-			`#!/bin/sh\ntouch "${canary}"\n`,
-		);
-		const r = await verify(candidate, dod("./scripts/check.sh"), baseSha, {
-			gate: gate(),
-			hostExecution: "interactive-worktree",
-		});
-		expect(r.checks[0]?.classification).toBe("refused");
-		expect(existsSync(canary)).toBe(false);
-	});
-
 	test("the gate refuses before the verifier sandbox is entered", async () => {
 		await writeFile(join(candidate, "scripts/check.sh"), "#!/bin/sh\nevil\n");
 		let entered = false;

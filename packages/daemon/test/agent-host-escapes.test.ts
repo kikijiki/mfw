@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentHost } from "../src/agent-host.ts";
 import { runProc } from "../src/proc.ts";
+import { sandboxedSpec } from "./support/sandboxed-launch.ts";
 import { TEST_TMUX_SOCKET } from "./support/tmux-test-socket.ts";
 
 /**
@@ -48,8 +49,9 @@ describe("G3: agent-writable startup files do not run on the host", () => {
 		if (!Bun.which("tmux")) return console.log("skip: no tmux");
 		const { base, mk } = await work("mfw-g3-");
 		const home = await mk("home");
-		const runDir = await mk("run");
 		const cwd = await mk("wt");
+		const spec = await sandboxedSpec(base, "g3a", cwd);
+		const runDir = spec.runDir;
 		const marker = join(base, "tmux-conf-ran");
 		await writeFile(
 			join(home, ".tmux.conf"),
@@ -65,17 +67,7 @@ describe("G3: agent-writable startup files do not run on the host", () => {
 			await runProc(["tmux", "-L", TEST_TMUX_SOCKET, "kill-server"], {
 				timeoutMs: 5000,
 			});
-			await host.launch({
-				runId: "g3a",
-				runDir,
-				cwd,
-				projectRoot: base,
-				driverScript,
-				agentArgv: ["true"],
-				env: {},
-				steer: false,
-				approvalMode: "interactive",
-			});
+			await host.launch({ ...spec, driverScript });
 			await waitFor(async () => (await host.readExit(runDir)).kind === "exit");
 			await Bun.sleep(300);
 			expect(await exists(marker)).toBe(false);

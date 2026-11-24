@@ -27,7 +27,7 @@ import {
 
 /**
  * A card expanded in place (design §6.3): the task's runs nested by lineage
- * (a repair/resume/answer run sits under the run whose worktree it
+ * (a repair/resume/answer run sits under the run whose workspace it
  * continues), each live one with steer and stop through `useRunControls`.
  *
  * Data is `node.story` for ONE task, read only while the card is expanded, so

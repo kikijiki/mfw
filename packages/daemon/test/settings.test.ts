@@ -120,29 +120,17 @@ afterEach(async () => {
 	else process.env.MFW_HOME = savedHome;
 });
 
-describe("approvalMode on an agentIsolation none project (X5)", () => {
-	test("switching to autonomous is refused and nothing is written", async () => {
+describe("a config that still names agentIsolation", () => {
+	test("settings refuse to load it, naming the change, and nothing is written", async () => {
 		const env = await freshEnv();
-		await writeFile(
-			configPath(),
-			JSON.stringify({
-				projects: [
-					{
-						name: "demo",
-						root: "/tmp/demo",
-						agentIsolation: "none",
-						approvalMode: "interactive",
-					},
-				],
-			}),
+		const before = JSON.stringify({
+			projects: [{ name: "demo", root: "/tmp/demo", agentIsolation: "none" }],
+		});
+		await writeFile(configPath(), before);
+		await expect(env.settings.update({ leaseMs: 70_000 })).rejects.toThrow(
+			"agentIsolation was removed: runs are always sandboxed",
 		);
-		await expect(
-			env.settings.update({ approvalMode: "autonomous" }),
-		).rejects.toThrow(/interactive/);
-		const [stored] = (await loadConfig()).projects;
-		expect(stored?.approvalMode).toBe("interactive");
-		// An unrelated edit never trips the rule.
-		await env.settings.update({ leaseMs: 70_000 });
+		expect(await Bun.file(configPath()).text()).toBe(before);
 	});
 });
 
@@ -179,7 +167,6 @@ describe("get", () => {
 			},
 			leaseMs: 900_000,
 			checkPrefix: null,
-			envPolicy: null,
 			mergeChecks: FALLBACK_MERGE_CHECKS,
 			notify: null,
 			runpod: null,

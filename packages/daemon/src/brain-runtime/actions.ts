@@ -303,7 +303,7 @@ const ARGS: Record<ActTool, z.ZodType<Record<string, unknown>>> = {
 			model: z.string().optional(),
 			effort: z.string().optional(),
 			target: z.string().optional(),
-			worktree: z
+			workspace: z
 				.string()
 				.regex(/^(new|continue:.+|fork:.+)$/)
 				.default("new"),
@@ -358,7 +358,7 @@ const ARGS: Record<ActTool, z.ZodType<Record<string, unknown>>> = {
 			...Memo,
 			runId: z.string().min(1),
 			reason: z.string().min(1),
-			keep_worktree: z.boolean().optional(),
+			keep_workspace: z.boolean().optional(),
 		})
 		.strict(),
 	pause: z
@@ -1260,7 +1260,7 @@ export class BrainActionService {
 			taskId: group.taskId,
 			role: "attempt",
 			groupId: group.id,
-			worktree: "new",
+			workspace: "new",
 			rationale: reason,
 			...(input.harness ? { harness: input.harness } : {}),
 			...(input.model ? { model: input.model } : {}),
@@ -1304,7 +1304,7 @@ export class BrainActionService {
 					overrideHumanPin: true,
 				},
 				...(input.target ? { target: input.target } : {}),
-				worktree: { mode: "new" },
+				workspace: { mode: "new" },
 			});
 		} catch (e) {
 			await finishHumanOverride(this.deps.handle, decisionId, {
@@ -2514,10 +2514,10 @@ export class BrainActionService {
 		t: TaskWithRefs,
 		a: Record<string, unknown>,
 	): Promise<Verdict> {
-		if (a.worktree !== undefined && a.worktree !== "new") {
-			return reject("worktree_unavailable", "an import run has no worktree", {
+		if (a.workspace !== undefined && a.workspace !== "new") {
+			return reject("workspace_unavailable", "an import run has no workspace", {
 				kind: "ui",
-				text: "Omit worktree.",
+				text: "Omit workspace.",
 			});
 		}
 		const paused = await this.deps.world.dispatchPaused?.();
@@ -2788,26 +2788,28 @@ export class BrainActionService {
 				},
 			);
 		}
-		const worktree = String(a.worktree ?? "new");
-		if (worktree.startsWith("fork:")) {
+		const workspace = String(a.workspace ?? "new");
+		if (workspace.startsWith("fork:")) {
 			return reject(
 				"fork_unsupported",
-				"worktree: fork:<runId> is not available yet",
+				"workspace: fork:<runId> is not available yet",
 				{
 					kind: "ui",
-					text: "Use worktree: new, or continue:<runId> on a settled run of this task.",
+					text: "Use workspace: new, or continue:<runId> on a settled run of this task.",
 				},
 			);
 		}
-		if (worktree.startsWith("continue:")) {
-			const parent = await this.deps.registry.get(worktree.split(":")[1] ?? "");
-			if (!parent || parent.taskId !== taskId || !parent.worktreePath) {
+		if (workspace.startsWith("continue:")) {
+			const parent = await this.deps.registry.get(
+				workspace.split(":")[1] ?? "",
+			);
+			if (!parent || parent.taskId !== taskId || !parent.workspacePath) {
 				return reject(
-					"worktree_unavailable",
-					`${worktree} is not a finished run of ${taskId} with a worktree`,
+					"workspace_unavailable",
+					`${workspace} is not a finished run of ${taskId} with a workspace`,
 					{
 						kind: "ui",
-						text: "Use worktree: new, or name a run of this task whose worktree still exists.",
+						text: "Use workspace: new, or name a run of this task whose workspace still exists.",
 					},
 				);
 			}
@@ -2816,22 +2818,22 @@ export class BrainActionService {
 					parent.state,
 				)
 			) {
-				return reject("worktree_live", `${parent.id} is still live`, {
+				return reject("workspace_live", `${parent.id} is still live`, {
 					kind: "ui",
 					text: "continue: works only on a settled run; stop it first.",
 				});
 			}
-			const present = await access(parent.worktreePath).then(
+			const present = await access(parent.workspacePath).then(
 				() => true,
 				() => false,
 			);
 			if (!present) {
 				return reject(
-					"worktree_gone",
-					`${parent.id}'s worktree no longer exists (it was clean, or archived)`,
+					"workspace_gone",
+					`${parent.id}'s workspace no longer exists (it was clean, or archived)`,
 					{
 						kind: "ui",
-						text: "Use worktree: new; a scope-killed run's work is on its wip/ branch (named in the settle).",
+						text: "Use workspace: new; a scope-killed run's work is on its wip/ branch (named in the settle).",
 					},
 				);
 			}
@@ -2839,7 +2841,7 @@ export class BrainActionService {
 		return accept({
 			taskId,
 			role,
-			worktree,
+			workspace,
 			harness: a.harness ?? null,
 			model: a.model ?? null,
 		});
@@ -2917,7 +2919,7 @@ export class BrainActionService {
 			const verdict = await this.vSpawn({
 				taskId: a.taskId,
 				role: "attempt",
-				worktree: "new",
+				workspace: "new",
 				...(v.harness ? { harness: v.harness } : {}),
 				...(v.model ? { model: v.model } : {}),
 				...(v.effort ? { effort: v.effort } : {}),
@@ -3015,7 +3017,7 @@ export class BrainActionService {
 				`the review floor did not allow ${runId} to merge (${f.review.verdict ?? f.review.status})`,
 				{
 					kind: "ui",
-					text: "Choose another verified attempt, or spawn a repair on this run's worktree.",
+					text: "Choose another verified attempt, or spawn a repair on this run's workspace.",
 				},
 			);
 		}

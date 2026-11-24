@@ -20,7 +20,7 @@ export const TASK_QUESTION_KIND = "task";
 
 /**
  * How a question set is answered here: a task run's single question inline
- * (answering resumes the agent in its worktree), anything else through the
+ * (answering resumes the agent in its workspace), anything else through the
  * full dialog (planner sets, several questions, a re-plan to confirm).
  */
 export function answerMode(set: {
@@ -169,7 +169,7 @@ function InlineAnswer({ project, set }: { project: string; set: OpenSet }) {
 					rows={2}
 					value={text}
 					disabled={answer.pending}
-					placeholder="Your answer. The agent resumes in its worktree with it."
+					placeholder="Your answer. The agent resumes in its workspace with it."
 					onChange={(e) => setText(e.target.value)}
 				/>
 				<Button

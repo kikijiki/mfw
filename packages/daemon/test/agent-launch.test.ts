@@ -308,13 +308,13 @@ describe("the single launch path", () => {
 		});
 	});
 
-	test("a linked worktree is refused with the clone fix", async () => {
-		const tree = join(base, "project/worktrees/r1");
+	test("a tree that is not a private run clone is refused, and nothing launches", async () => {
+		const tree = join(base, "project/workspaces/r1");
 		mkdirSync(tree, { recursive: true });
 		const d = deps();
 		const r = await launchAgentSandbox({ ...req, tree }, ARGV, d.value);
 		expect(r).toMatchObject({ ok: false, code: "workspace_not_clone" });
-		if (!r.ok) expect(r.fix).toContain("runWorkspace");
+		if (!r.ok) expect(r.fix).toContain("discard the run");
 		expect(d.calls).toEqual([]);
 	});
 

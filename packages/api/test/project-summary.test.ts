@@ -26,7 +26,7 @@ const source = (over: Partial<SummarySource> = {}): SummarySource => ({
 		],
 	},
 	workspace: {
-		worktrees: async () => [
+		workspaces: async () => [
 			{ runId: "r1", state: "running" },
 			{ runId: "r2", state: "running" },
 			{ runId: "r3", state: "ended" },
@@ -40,7 +40,7 @@ const source = (over: Partial<SummarySource> = {}): SummarySource => ({
 });
 
 describe("projects.summary", () => {
-	test("counts tasks by role, live sessions, worktrees, needs-you, brain, spend", async () => {
+	test("counts tasks by role, live sessions, workspaces, needs-you, brain, spend", async () => {
 		const s = await collectProjectSummary(source());
 		expect(s.project).toBe("demo");
 		expect(s.tasks).toMatchObject({
@@ -53,7 +53,7 @@ describe("projects.summary", () => {
 		});
 		// The brain turn is not a session.
 		expect(s.sessions).toEqual({ live: 2, waiting: 1 });
-		expect(s.worktrees).toEqual({ active: 2, parked: 1 });
+		expect(s.workspaces).toEqual({ active: 2, parked: 1 });
 		expect(s.needsYou).toBe(2);
 		expect(s.brain).toEqual({ enabled: true, state: "idle" });
 		expect(s.spendTodayUsd).toBe(1.25);
@@ -64,7 +64,7 @@ describe("projects.summary", () => {
 		const s = await collectProjectSummary(
 			source({
 				workspace: {
-					worktrees: async () => {
+					workspaces: async () => {
 						throw new Error("boom");
 					},
 				},
@@ -73,7 +73,7 @@ describe("projects.summary", () => {
 				},
 			}),
 		);
-		expect(s.worktrees).toEqual({ active: 0, parked: 0 });
+		expect(s.workspaces).toEqual({ active: 0, parked: 0 });
 		expect(s.lastActivityAt).toBeNull();
 	});
 
@@ -82,7 +82,7 @@ describe("projects.summary", () => {
 			project: "p",
 			taskStatuses: [],
 			runs: [],
-			worktrees: [],
+			workspaces: [],
 			inboxItems: [],
 			brain: { enabled: false, state: "off" },
 			spendTodayUsd: 0,

@@ -38,7 +38,7 @@ export function RunMoves({
 					size={size}
 					variant="outline"
 					disabled={controls.pause.pending}
-					title="Stop the run and keep its worktree; Resume continues it"
+					title="Stop the run and keep its workspace; Resume continues it"
 					onClick={controls.pause.send}
 				>
 					<Pause aria-hidden />
@@ -50,7 +50,7 @@ export function RunMoves({
 					size={size}
 					variant="outline"
 					disabled={controls.resume.pending}
-					title="Continue in this run's worktree on its own route"
+					title="Continue in this run's workspace on its own route"
 					onClick={controls.resume.send}
 				>
 					<Play aria-hidden />

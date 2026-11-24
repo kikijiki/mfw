@@ -238,7 +238,7 @@ export const BRAIN_TOOLS: ToolDef[] = [
 				model: str,
 				effort: str,
 				target: str,
-				worktree: str,
+				workspace: str,
 				brief: str,
 				maxUsd: { type: "number" },
 				key: str,
@@ -289,7 +289,7 @@ export const BRAIN_TOOLS: ToolDef[] = [
 		name: "stop",
 		description: "Stop a live run.",
 		inputSchema: act(
-			{ runId: str, reason: str, keep_worktree: { type: "boolean" } },
+			{ runId: str, reason: str, keep_workspace: { type: "boolean" } },
 			["runId", "reason"],
 		),
 	},

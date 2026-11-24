@@ -252,7 +252,7 @@ const projectSchema = z.object({
 	 * tracked in a separate docs checkout like `~/docs/projects/app`.
 	 * Defaults to `root`. Irrelevant to the standalone `board` CLI, which only
 	 * ever cares about wherever its `board.yaml` is; this only matters for the
-	 * service, which also needs to know the code repo for worktrees/git. */
+	 * service, which also needs to know the code repo for runs and git. */
 	boardRoot: z.string().min(1).optional(),
 	integrationBranch: z.string().optional(),
 	/** Display options: a curated icon key or a 1-2 character mark, and a swatch key (`project-appearance.ts`). Absent = derived from the name. */
@@ -307,13 +307,6 @@ const projectSchema = z.object({
 	 * measures the tree and stops the check at this size. Default 20480 (20 GiB).
 	 */
 	checkMaxTreeMb: z.number().int().positive().optional(),
-	/** Env vars a check may read. Absent = `DEFAULT_ENV_ALLOWLIST` in `verifier.ts`. */
-	envPolicy: z
-		.object({
-			allow: z.array(z.string()).optional(),
-			inherit: z.boolean().optional(),
-		})
-		.optional(),
 	/** Repository-wide gates for every candidate; task verification adds to them, never replaces them. */
 	mergeChecks: VerificationPlanSchema.nullable().optional(),
 	notify: notifySchema.optional(),
@@ -335,14 +328,6 @@ const projectSchema = z.object({
 	/** Allow `pushUrl` to be a local path, whose receive hooks run on this host. */
 	pushAllowLocalUrl: z.boolean().optional(),
 	/**
-	 * Isolate agent runs from the daemon's home (trigger arming store,
-	 * `credentials.json`), its environment and the tmux sockets via `bwrap`.
-	 * Defaults to `bwrap`. `none` is allowed only with `approvalMode:
-	 * "interactive"`; an autonomous run without a working sandbox is refused
-	 * at preflight (`sandbox_unavailable`), never silently unsandboxed.
-	 */
-	agentIsolation: z.enum(["none", "bwrap"]).optional(),
-	/**
 	 * Let sandboxed runs reach their CLI's telemetry and error-report hosts.
 	 * Off by default: those hosts are refused and the CLI is told not to send.
 	 */
@@ -358,13 +343,6 @@ const projectSchema = z.object({
 			totalBytes: z.number().int().positive().optional(),
 		})
 		.optional(),
-	/**
-	 * Where a run's files live: a git `worktree` under the project (default),
-	 * or a private `clone` under `$MFW_HOME/workspaces` whose result the host
-	 * imports as a verified bundle (`run-workspace/clone-impl.ts`). Experimental
-	 * until the clone paths of the WIP, verifier and conflict-rebase work land.
-	 */
-	runWorkspace: z.enum(["worktree", "clone"]).optional(),
 	/** Failed expansion runs before a `draft` is marked failed (see `TaskService.recordDraftExpandFailure`). */
 	draftExpandMaxAttempts: z.number().int().positive().optional(),
 	/** Budget for draft expansion runs, separate from `maxConcurrent` like `maxConcurrentTriggers`. */
@@ -389,49 +367,6 @@ const projectSchema = z.object({
 	/** The development environment (`containment/dev-env-config.ts`). */
 	env: EnvConfigSchema.optional(),
 });
-
-/**
- * Why a project entry may not run autonomously without a sandbox, or null.
- * Not part of the schema: an existing entry that violates it must not stop the
- * daemon at boot (security review X5). It loads, its autonomous dispatch is
- * refused with `sandbox_unavailable`, and it shows in the inbox. New and edited
- * entries are checked with this before they are written.
- */
-export function isolationConfigProblem(p: {
-	agentIsolation?: "none" | "bwrap";
-	approvalMode?: "autonomous" | "interactive";
-}): string | null {
-	if (p.agentIsolation === "none" && p.approvalMode !== "interactive") {
-		return 'agentIsolation "none" requires approvalMode "interactive": autonomous runs need a bwrap sandbox';
-	}
-	return null;
-}
-
-/**
- * Why the preflight will refuse every sandboxed launch of this project, with
- * the exact fix, or null. Separate from `isolationConfigProblem`, which vets
- * what may be written: the default config lands here, and it must stay
- * attachable so the owner can see this and change it. Reported, never fixed
- * for them: the default workspace is the owner's decision.
- */
-export function isolationDispatchProblem(p: {
-	agentIsolation?: "none" | "bwrap";
-	approvalMode?: "autonomous" | "interactive";
-	runWorkspace?: "worktree" | "clone";
-}): { detail: string; fix: string } | null {
-	// `none` is the other rule's case: refused if autonomous, allowed if not.
-	if (p.agentIsolation === "none") return null;
-	if ((p.runWorkspace ?? "worktree") !== "clone") {
-		return {
-			detail:
-				'agentIsolation "bwrap" with runWorkspace "worktree": sandboxed runs need a private clone, so no run of this project can start.',
-			fix: 'Add "runWorkspace": "clone" to this project\'s entry in $MFW_HOME/config.json and restart the daemon.',
-		};
-	}
-	// A dev environment is not a problem of the config: the dispatch preflight
-	// refuses only an unapproved or failed one (containment/dev-env-resolve.ts).
-	return null;
-}
 
 /**
  * The machine-level `act` budget (`act-budget.ts`). Every key is optional; an
@@ -503,8 +438,6 @@ export const PROJECT_DEFAULTS = {
 	// remote already configured. No remote means nothing is pushed.
 	pushOnMerge: true,
 	pushRemote: "origin",
-	agentIsolation: "bwrap",
-	runWorkspace: "worktree" as const,
 	// Enough to rule out a blip without leaving a draft unusable through an outage.
 	draftExpandMaxAttempts: 3,
 	// Read-only planning; should not serialize a capture burst.
@@ -544,6 +477,22 @@ export const FALLBACK_MERGE_CHECKS: VerificationPlan = {
 const EMPTY: DaemonConfig = { projects: [] };
 
 /** Load the config. A malformed file throws rather than reverting to defaults (which looks like a fresh install). */
+/** Keys a config may no longer carry: loading one fails rather than ignore it. */
+export const REMOVED_PROJECT_KEYS: Record<string, string> = {
+	agentIsolation: "agentIsolation was removed: runs are always sandboxed",
+};
+
+export function assertNoRemovedKeys(raw: unknown): void {
+	const projects = (raw as { projects?: unknown } | null)?.projects;
+	if (!Array.isArray(projects)) return;
+	for (const project of projects) {
+		if (!project || typeof project !== "object") continue;
+		for (const [key, message] of Object.entries(REMOVED_PROJECT_KEYS)) {
+			if (Object.hasOwn(project, key)) throw new Error(message);
+		}
+	}
+}
+
 export async function loadConfig(home = mfwHome()): Promise<DaemonConfig> {
 	let raw: string;
 	try {
@@ -555,7 +504,9 @@ export async function loadConfig(home = mfwHome()): Promise<DaemonConfig> {
 		// Not absence: mutateConfig must never overwrite an unreadable file with an empty config.
 		throw error;
 	}
-	const parsed = configSchema.parse(JSON.parse(raw));
+	const json: unknown = JSON.parse(raw);
+	assertNoRemovedKeys(json);
+	const parsed = configSchema.parse(json);
 	return {
 		...parsed,
 		projects: parsed.projects.map((p) => ({

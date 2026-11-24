@@ -1,8 +1,8 @@
 /**
- * The seam between a run and the place its files live. Every caller that creates, inspects,
- * archives or removes a run's workspace goes through `RunWorkspace`, so the
- * storage strategy (a git worktree today, a private clone later) can change
- * without touching them.
+ * The seam between a run and the place its files live. Every caller that
+ * creates, inspects, archives or removes a run's workspace goes through
+ * `RunWorkspace`: seed in, fetch out. The one implementation is a private
+ * clone per run (`clone-impl.ts`); a remote worker would use the same contract.
  */
 
 /** A run's workspace on disk: where it is, its branch and the commit it was cut from. */
@@ -26,13 +26,13 @@ export interface WipArchive {
 	created: boolean;
 }
 
-export type WorktreeReportIdentity =
+export type ReportIdentity =
 	| { state: "absent" }
 	| { state: "present"; sha256: string };
 
 export interface WorkspaceContentOptions {
 	/** Exact report state committed by ingest_report. */
-	reportIdentity?: WorktreeReportIdentity;
+	reportIdentity?: ReportIdentity;
 }
 
 export interface WorkspaceName {
@@ -58,8 +58,6 @@ export interface RunWorkspaceResult {
 }
 
 export interface RunWorkspace {
-	readonly kind: "worktree" | "clone";
-
 	/** Create the workspace for `runId` from `base` (default: current HEAD). */
 	seed(runId: string, base?: string): Promise<RunWorkspaceHandle>;
 
@@ -68,9 +66,9 @@ export interface RunWorkspace {
 
 	/**
 	 * Read what the run left behind: the ref the primary holds it under and its
-	 * tip. A worktree shares the primary's refs, so this is a read. A clone's
-	 * result arrives by a verified import (the first call after the run ends
-	 * performs it), and `ref` is the primary's quarantine ref, not `branch`.
+	 * tip. The result arrives by a verified import (the first call after the
+	 * run ends performs it), and `ref` is the primary's quarantine ref, not
+	 * `branch`.
 	 */
 	fetchResult(handle: RunWorkspaceHandle): Promise<RunWorkspaceResult>;
 
@@ -90,7 +88,7 @@ export interface RunWorkspace {
 		opts?: {
 			force?: boolean;
 			deleteBranch?: boolean;
-			reportIdentity?: WorktreeReportIdentity;
+			reportIdentity?: ReportIdentity;
 		},
 	): Promise<void>;
 

@@ -22,7 +22,7 @@ export function fileKind(path: string): FileKind {
 
 export const isSvg = (path: string) => /\.svg$/i.test(path);
 
-/** Where a file's bytes are served from: the working tree, a run's worktree, or a ref. */
+/** Where a file's bytes are served from: the working tree, a run's workspace, or a ref. */
 export interface FileSource {
 	project: string;
 	ref?: string;

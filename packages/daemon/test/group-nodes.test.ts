@@ -235,7 +235,7 @@ describe("groups.get and a person's select_winner", () => {
 });
 
 describe("reroute", () => {
-	test("stops the run keeping its worktree, then continues it on another model as a human decision", async () => {
+	test("stops the run keeping its work, then continues it on another model as a human decision", async () => {
 		fx = await groupFixture();
 		const f = fx;
 		await f.control({ slowMs: 30_000 });
@@ -245,7 +245,7 @@ describe("reroute", () => {
 		await f.svc.scheduler.tick();
 		const live = await f.svc.registry.get(oldId);
 		expect(live?.state).toBe("running");
-		const worktree = live?.worktreePath;
+		const workspace = live?.workspacePath;
 		// The driver reads the control file when it starts, which can be after
 		// the registry already says "running": clearing slow mode here let the
 		// agent finish on its own. Slow mode stays on, so only the stop ends it.
@@ -276,11 +276,12 @@ describe("reroute", () => {
 			taskId,
 			relation: "continue",
 			parentRunId: oldId,
-			worktreePath: worktree,
 			model: "opus",
 			originRef: "human:ui",
 			spawnedByDecisionId: out.decisionId,
 		});
+		// A clone of its own, seeded from what the stopped run left.
+		expect(next?.workspacePath).not.toBe(workspace);
 		const [d] = await f.svc.handle.db
 			.select()
 			.from(decisions)
@@ -340,7 +341,7 @@ describe("reroute", () => {
 			id: "r1",
 			kind: "task",
 			taskId: "t1",
-			worktreePath: "/w",
+			workspacePath: "/w",
 			branch: "b",
 			state: "running" as string,
 			groupId: null,

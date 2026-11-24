@@ -403,7 +403,7 @@ describe("moves of a run", () => {
 });
 
 describe("useNodeActions: run moves", () => {
-	test("pause is the one stop mutation (worktree kept), with the same optimistic patch", async () => {
+	test("pause is the one stop mutation (workspace kept), with the same optimistic patch", async () => {
 		const h = harness();
 		h.queryClient.setQueryData(h.trpc.runs.active.queryKey(), [
 			activeRow("alpha", "01RUN"),

@@ -15,7 +15,7 @@ import { type ExecPin, ExecPinSchema } from "../containment/exec-pin.ts";
  *
  * Limit: an agent with host RCE runs as the daemon's uid and can write this
  * file too. This raises the cost from "edit a merged file" to "escape the
- * worktree and forge a pin", and makes the latter visible.
+ * workspace and forge a pin", and makes the latter visible.
  *
  * An auto-disarmed record is kept, not deleted; otherwise hash drift would read
  * as "present, not armed" on the next refresh and the inbox item would vanish

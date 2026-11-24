@@ -42,8 +42,7 @@ export interface AgentPreflightRefusal {
 
 export interface AgentPreflightInput {
 	approvalMode: "autonomous" | "interactive";
-	isolation: BwrapIsolation | undefined;
-	runWorkspace: "worktree" | "clone";
+	isolation: BwrapIsolation;
 	projectRoot: string;
 	mfwHome: string;
 	/**
@@ -203,20 +202,6 @@ export async function agentSandboxRefusal(
 		now: Date.now,
 	},
 ): Promise<AgentPreflightRefusal | null> {
-	// Unsandboxed interactive runs ask a human for every action. A sandboxed
-	// run of either mode takes the same launch path, so it is refused here too.
-	if (!input.isolation) {
-		return input.approvalMode === "autonomous"
-			? { code: "sandbox_unavailable", detail: "agentIsolation is none" }
-			: null;
-	}
-	if (input.runWorkspace !== "clone") {
-		return {
-			code: "sandbox_unavailable",
-			detail:
-				'runWorkspace is "worktree": sandboxed runs need a private clone, so set "runWorkspace": "clone" for this project',
-		};
-	}
 	// Projects with an environment are refused only when it is not approved or
 	// cannot be prepared; then with the exact command or the evaluation's log.
 	if (input.devEnv) {

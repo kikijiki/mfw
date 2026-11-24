@@ -106,7 +106,7 @@ export async function brainUnit(
 				model: o.route.model,
 				providerId: o.route.provider,
 				cwd: o.scratchDir,
-				worktreePath: o.scratchDir,
+				workspacePath: o.scratchDir,
 				branch: "mfw-brain",
 				baseSha: "0".repeat(40),
 			});

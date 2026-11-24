@@ -447,7 +447,7 @@ for (const size of SIZES) {
 			}
 		}
 		if (want("repo")) {
-			// The repository view: every section, then the first branch, worktree
+			// The repository view: every section, then the first branch, workspace
 			// and commit it links to (so the detail pages are captured too).
 			const firstHref = (re: string) =>
 				evalJs<string | null>(`(() => {
@@ -466,14 +466,14 @@ for (const size of SIZES) {
 				await Bun.sleep(800);
 				await shot(size, `${project}-repo-branch`, { full: true });
 			}
-			await goto(`${p}/repo/worktrees`);
+			await goto(`${p}/repo/workspaces`);
 			await Bun.sleep(600);
-			await shot(size, `${project}-repo-worktrees`);
-			const wt = strip(await firstHref("/repo/worktree/(?!root)"));
+			await shot(size, `${project}-repo-workspaces`);
+			const wt = strip(await firstHref("/repo/workspace/(?!root)"));
 			if (wt) {
 				await goto(wt);
 				await Bun.sleep(800);
-				await shot(size, `${project}-repo-worktree`);
+				await shot(size, `${project}-repo-workspace`);
 			}
 			await goto(`${p}/repo/commits`);
 			await Bun.sleep(600);

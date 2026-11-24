@@ -12,7 +12,7 @@ import {
 
 /**
  * Shared scaffolding for the security-review regression tests (wave 1, C):
- * a temporary HOME and worktree tree, planted binaries, and an environment that
+ * a temporary HOME and workspace tree, planted binaries, and an environment that
  * is put back after every test. Nothing here touches the real home.
  */
 
@@ -102,19 +102,3 @@ export async function waitFor(
 	}
 	return false;
 }
-
-export const baseSpec = (
-	base: string,
-	runId: string,
-	runDir: string,
-	cwd: string,
-) => ({
-	runId,
-	runDir,
-	cwd,
-	projectRoot: base,
-	agentArgv: ["true"],
-	env: {},
-	steer: false,
-	approvalMode: "interactive" as const,
-});

@@ -11,7 +11,7 @@ import { createTRPCRouter, publicProcedure } from "../trpc.ts";
  * attached project (the sidebar must not fan out per project).
  */
 export const projectsRouter = createTRPCRouter({
-	/** Task counts by status role, live sessions, worktrees, needs-you, brain, today's spend, last activity. */
+	/** Task counts by status role, live sessions, workspaces, needs-you, brain, today's spend, last activity. */
 	summary: publicProcedure.query(async ({ ctx }) =>
 		Promise.all(
 			ctx.orchestrator.list().map((svc) => {

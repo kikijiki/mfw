@@ -15,7 +15,7 @@ import { makeTasks } from "./fixtures/board.ts";
 /**
  * `buildPrompts` is what `describeTask` runs through for `.task` and
  * `.continuation` alike. A task's `spec.md` lives in the board, which agent
- * worktrees do not check out, so the prompt is the ONLY way an agent sees the
+ * workspaces do not check out, so the prompt is the ONLY way an agent sees the
  * spec it is meant to be implementing against. Drives `buildPrompts` directly
  * against fixture services rather than booting a whole project.
  */

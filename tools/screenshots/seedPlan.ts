@@ -753,7 +753,7 @@ const harbor: SeedProject = {
 						rationale:
 							"Verification failed on one redaction test only; a repair in the same worktree is cheaper than a restart.",
 						confidence: "high",
-						args: { role: "implement", worktree: "continue:logRun1" },
+						args: { role: "implement", workspace: "continue:logRun1" },
 					},
 				],
 			},

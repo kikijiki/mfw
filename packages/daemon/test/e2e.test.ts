@@ -9,18 +9,21 @@ import { git } from "../src/git.ts";
 import { acquireKernelLock } from "../src/kernel-lock.ts";
 import { silentLogger } from "../src/log.ts";
 import { BudgetWindows } from "../src/resources/budget-windows.ts";
+import { runWorkspaceOptions } from "../src/run-workspace/factory.ts";
 import type { ProjectServices } from "../src/services.ts";
 import { brainSpawn, openTurn, STUB_BRAIN } from "./support/brain-spawn.ts";
 import { openTestLedger } from "./support/host-ledger.ts";
+import { useHostSnapshots } from "./support/host-snapshot.ts";
+import { pointDriverAtRunTree } from "./support/scripted-driver.ts";
 
 /**
  * End-to-end through the REAL composition root: a task goes ready → claimed →
- * agent run in a worktree (tmux, fake driver) → verified against its DoD →
+ * agent run in a private clone (tmux, fake driver) → verified against its DoD →
  * merged to the integration branch → done, with the primary checkout never
  * checked out or reset by the daemon.
  *
  * The agent is faked at the driver boundary only; git, tmux, SQLite, the
- * worktree lifecycle, the finalize journal and the merge queue are all real.
+ * clone seed and import, the finalize journal and the merge queue are all real.
  */
 
 /** A driver that writes the file the DoD requires, commits it, and exits. */
@@ -124,7 +127,7 @@ async function makeRepo(): Promise<string> {
 	await git(["config", "user.email", "t@t"], root);
 	await git(["config", "user.name", "t"], root);
 	await writeFile(join(root, "README.md"), "# e2e\n");
-	// Real projects track this, and run worktrees must keep it: it is how an
+	// Real projects track this, and run workspaces must keep it: it is how an
 	// agent learns the rules it is about to be judged against.
 	await mkdir(join(root, ".mfw"), { recursive: true });
 	await writeFile(join(root, ".mfw/AGENTS.md"), "the rules\n");
@@ -134,6 +137,10 @@ async function makeRepo(): Promise<string> {
 }
 
 function useDriver(svc: ProjectServices, path: string) {
+	pointDriverAtRunTree(
+		path,
+		runWorkspaceOptions(svc.root)?.workspaceRoot ?? "/nonexistent",
+	);
 	// The adapter layer's test seams: swap the driver script and neutralize the
 	// agent argv (the driver is what actually runs).
 	const adapters = (
@@ -154,8 +161,7 @@ const cfg = (root: string): ProjectConfig => ({
 	name: "demo",
 	root,
 	integrationBranch: "main",
-	// Scripted agents, no sandbox: autonomy needs bwrap, so this fixture runs interactive.
-	agentIsolation: "none",
+	// Scripted host drivers stand in for the bridge, so no agent CLI starts.
 	approvalMode: "interactive",
 	maxConcurrent: 2,
 	assistance: {
@@ -179,11 +185,22 @@ const directAttach = async (
 	const home = await mkdtemp(join(tmpdir(), "mfw-e2e-ledger-"));
 	ledgerHomes.push(home);
 	const { ledger } = await openTestLedger(home, { processBootId: "boot-e2e" });
-	return attachProject({ ...cfg(root), ...extra }, silentLogger(), "boot-e2e", {
-		hostResources: ledger,
-		budgetWindows: new BudgetWindows(ledger.coordinator.store),
-		mfwHome: home,
-	});
+	const svc = await attachProject(
+		{ ...cfg(root), ...extra },
+		silentLogger(),
+		"boot-e2e",
+		{
+			hostResources: ledger,
+			budgetWindows: new BudgetWindows(ledger.coordinator.store),
+			mfwHome: home,
+			// The real probe needs a systemd user scope; the launch path is real.
+			sandboxPreflight: async () => null,
+		},
+	);
+	// The scripted agents run unsandboxed: the end-of-run snapshot is the real
+	// WIP helper on the host instead of in its sandbox.
+	useHostSnapshots(root);
+	return svc;
 };
 
 describe("v2 end-to-end: goal → verified → merged", () => {
@@ -265,9 +282,8 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 	}, 60_000);
 
 	test("a hostile agent cannot touch the board, and its real work still lands", async () => {
-		// Two defences in one path: the run worktree is sparse-checked-out so
-		// `tasks` is not there to damage, and the merge queue restores the
-		// board from the merge base for anything that gets past that.
+		// The clone holds the board like any tracked file, and the merge queue
+		// restores the board from the merge base whatever the run did to it.
 		const root = await makeRepo();
 		const driver = join(
 			await mkdtemp(join(tmpdir(), "mfw-drv-")),
@@ -321,9 +337,10 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 		expect((await git(["show", "main:feature.txt"], root)).stdout).toContain(
 			"implemented",
 		);
-		// It could not even see the board, the strongest available result.
+		// Its clone held the whole tracked tree, board included: the merge
+		// firewall, not the checkout, is what keeps the board intact.
 		expect((await git(["show", "main:saw-board.txt"], root)).stdout).toBe(
-			"false true",
+			"true true",
 		);
 		// The board holds what mfw put there and nothing the agent invented (not
 		// identical to `boardBefore`: mfw's own ready → done transition is in it).
@@ -470,7 +487,6 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 			".mfw/quarantine/x",
 			".mfw/backups/x",
 			".mfw/brand-new-thing/deep/x",
-			"worktrees/x",
 		]) {
 			await mkdir(join(root, p, ".."), { recursive: true });
 			await writeFile(join(root, p), "junk\n");
@@ -529,7 +545,7 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 /**
  * An import is the only run kind that may file work as already finished. Full
  * path against the real composition root: proposal JSON, statuses, specs linked
- * to minted ids, worktree destroyed, board committed.
+ * to minted ids, workspace destroyed, board committed.
  */
 const IMPORT_PROPOSAL = {
 	tasks: [
@@ -581,7 +597,7 @@ process.exit(0);
 `;
 
 describe("v2 end-to-end: import a repository", () => {
-	test("the proposal settles plan_output with normalized statuses and specs, nothing is written, the worktree is destroyed, and the brain applies it with create_tasks", async () => {
+	test("the proposal settles plan_output with normalized statuses and specs, nothing is written, the clone is destroyed, and the brain applies it with create_tasks", async () => {
 		const root = await makeRepo();
 		const driver = join(
 			await mkdtemp(join(tmpdir(), "mfw-drv-")),
@@ -592,9 +608,9 @@ describe("v2 end-to-end: import a repository", () => {
 		useDriver(svc, driver);
 
 		const { runId } = await svc.engine.startImport();
-		const worktreePath = (await svc.registry.get(runId))
-			?.worktreePath as string;
-		expect(worktreePath).toBeTruthy();
+		const workspacePath = (await svc.registry.get(runId))
+			?.workspacePath as string;
+		expect(workspacePath).toBeTruthy();
 
 		await waitFor(async () => {
 			await svc.supervisor.pass();
@@ -637,11 +653,8 @@ describe("v2 end-to-end: import a repository", () => {
 			"Unattached design note",
 		]);
 
-		// --- an import writes no code, so its worktree is thrown away
-		expect(existsSync(worktreePath)).toBe(false);
-		expect(
-			(await git(["worktree", "list"], root)).stdout.trim().split("\n"),
-		).toHaveLength(1);
+		// --- an import writes no code, so its clone is thrown away
+		expect(existsSync(workspacePath)).toBe(false);
 		expect((await git(["status", "--porcelain"], root)).stdout.trim()).toBe("");
 
 		// --- the brain applies what it chooses, with the board tools

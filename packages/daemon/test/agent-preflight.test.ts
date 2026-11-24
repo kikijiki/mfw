@@ -28,7 +28,6 @@ afterEach(() => rmSync(base, { recursive: true, force: true }));
 const input = (over = {}) => ({
 	approvalMode: "autonomous" as const,
 	isolation,
-	runWorkspace: "clone" as const,
 	projectRoot: base,
 	mfwHome: join(base, "mfw"),
 	...over,
@@ -55,37 +54,6 @@ function deps(outcome: "pass" | "fail" = "pass") {
 }
 
 describe("agentSandboxRefusal", () => {
-	test("an unsandboxed interactive run needs no probe", async () => {
-		const d = deps();
-		expect(
-			await agentSandboxRefusal(
-				input({ approvalMode: "interactive", isolation: undefined }),
-				d.value,
-			),
-		).toBeNull();
-		expect(d.seen.calls).toBe(0);
-	});
-
-	test("autonomy without isolation is refused", async () => {
-		const r = await agentSandboxRefusal(
-			input({ isolation: undefined }),
-			deps().value,
-		);
-		expect(r?.code).toBe("sandbox_unavailable");
-	});
-
-	test.each([
-		"autonomous",
-		"interactive",
-	] as const)("a %s sandboxed run on a worktree is refused with the fix", async (approvalMode) => {
-		const r = await agentSandboxRefusal(
-			input({ approvalMode, runWorkspace: "worktree" }),
-			deps().value,
-		);
-		expect(r?.code).toBe("sandbox_unavailable");
-		expect(r?.detail).toContain('"runWorkspace": "clone"');
-	});
-
 	test("an .envrc alone is no longer a refusal: the environment's status decides", async () => {
 		writeFileSync(join(base, ".envrc"), "not evaluated\n", { mode: 0o000 });
 		const d = deps();

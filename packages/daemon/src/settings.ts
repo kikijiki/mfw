@@ -25,7 +25,6 @@ import {
 	effectiveAssistance,
 	effectiveReview,
 	FALLBACK_MERGE_CHECKS,
-	isolationConfigProblem,
 	loadConfig,
 	mutateConfig,
 	type NotifyConfigInput,
@@ -56,7 +55,6 @@ import type {
 } from "./runpod-policy.ts";
 import type { WatchdogLimits } from "./supervisor.ts";
 import type { ModelTier, VerificationPlan } from "./tasks/types.ts";
-import type { EnvPolicy } from "./verifier.ts";
 
 /**
  * Per-project operating settings.
@@ -85,7 +83,7 @@ import type { EnvPolicy } from "./verifier.ts";
  *
  * The write surface is a subset: `name`, `root` and `integrationBranch`
  * identify the project and are read-only (changing a root mid-flight would
- * orphan worktrees, runs and the DB itself).
+ * orphan workspaces, runs and the DB itself).
  */
 
 export interface ProjectSettingsValues {
@@ -111,8 +109,6 @@ export interface ProjectSettingsValues {
 	approvalMode: "autonomous" | "interactive";
 	leaseMs: number;
 	checkPrefix: string | null;
-	/** What a verification check may read from the ambient environment. */
-	envPolicy: EnvPolicy | null;
 	/** Repository-wide mechanical policy applied to every candidate. */
 	mergeChecks: VerificationPlan | null;
 	notify: NotifyConfigInput | null;
@@ -183,8 +179,6 @@ export interface ProjectSettingsView {
 	needsRestart: readonly (keyof ProjectSettingsValues)[];
 	/** Where the values were persisted (shown in the Daemon section). */
 	configPath: string;
-	/** Why no run of this project can start, with the fix; null when it can. */
-	dispatchProblem: { detail: string; fix: string } | null;
 }
 
 export const LIVE_KEYS = [
@@ -222,7 +216,6 @@ export const RESTART_KEYS = [
 	"approvalMode",
 	"leaseMs",
 	"checkPrefix",
-	"envPolicy",
 	"mergeChecks",
 	"notify",
 	"runpod",
@@ -279,8 +272,6 @@ export interface SettingsLifecycle {
 export class SettingsService {
 	constructor(
 		private readonly deps: {
-			/** Why the preflight refuses every launch of this project; shown in Settings. */
-			dispatchProblem?: () => { detail: string; fix: string } | null;
 			mfwHome: string;
 			project: string;
 			root: string;
@@ -326,10 +317,6 @@ export class SettingsService {
 					};
 				}
 				applyPatch(stored, effectivePatch);
-				if (patch.approvalMode !== undefined) {
-					const problem = isolationConfigProblem(stored);
-					if (problem) throw new Error(problem);
-				}
 				this.assertIndependentReview(stored, patch);
 				return structuredClone(stored);
 			});
@@ -481,7 +468,6 @@ export class SettingsService {
 			approvalMode: entry.approvalMode ?? PROJECT_DEFAULTS.approvalMode,
 			leaseMs: entry.leaseMs ?? PROJECT_DEFAULTS.leaseMs,
 			checkPrefix: entry.checkPrefix ?? null,
-			envPolicy: entry.envPolicy ?? null,
 			mergeChecks:
 				entry.mergeChecks !== undefined
 					? entry.mergeChecks
@@ -512,7 +498,6 @@ export class SettingsService {
 				...(this.deps.brainConfig ? [] : (["brain"] as const)),
 			],
 			configPath: configPath(this.deps.mfwHome),
-			dispatchProblem: this.deps.dispatchProblem?.() ?? null,
 		};
 	}
 }
@@ -612,9 +597,6 @@ function applyPatch(
 	}
 	if (patch.checkPrefix !== undefined) {
 		entry.checkPrefix = patch.checkPrefix ?? undefined;
-	}
-	if (patch.envPolicy !== undefined) {
-		entry.envPolicy = patch.envPolicy ?? undefined;
 	}
 	if (patch.mergeChecks !== undefined) {
 		entry.mergeChecks = patch.mergeChecks;

@@ -139,7 +139,8 @@ export const runs = sqliteTable(
 		providerId: text("provider_id"),
 		reasoningEffort: text("reasoning_effort").$type<RunReasoningEffort>(),
 		cwd: text("cwd").notNull(),
-		worktreePath: text("worktree_path"),
+		/** The run's private clone work tree (`$MFW_HOME/workspaces/<runId>/tree`). */
+		workspacePath: text("workspace_path"),
 		branch: text("branch"),
 		integrationBranch: text("integration_branch"),
 		baseSha: text("base_sha"),
@@ -274,11 +275,11 @@ export const runs = sqliteTable(
 		 */
 		nativeSessionId: text("native_session_id"),
 
-		// Typed lineage (0012). `parent_run_id` alone is overloaded (worktree
+		// Typed lineage (0012). `parent_run_id` alone is overloaded (workspace
 		// continuation, source plan, subject run); `relation` says which.
 		/** Why this run exists relative to `parent_run_id` (or `fresh`). NULL only before backfill. */
 		relation: text("relation").$type<RunRelation>(),
-		/** First run of this worktree chain; equals `id` for a root. */
+		/** First run of this workspace chain; equals `id` for a root. */
 		chainRootId: text("chain_root_id"),
 		/** The `decisions.id` whose action created this run. */
 		spawnedByDecisionId: integer("spawned_by_decision_id"),
@@ -306,15 +307,6 @@ export const runs = sqliteTable(
 		 * agent-writable: only this column can say a `control/exit` is the host's.
 		 */
 		runDirLayout: text("run_dir_layout").$type<"split" | null>(),
-		/** What the workspace really was at launch. Never re-derived from config. */
-		workspaceKind: text("workspace_kind").$type<"worktree" | "clone" | null>(),
-		/**
-		 * The approval mode the agent was launched under (0026). Finalization reads
-		 * this, never the project's current mode; null counts as autonomous.
-		 */
-		approvalMode: text("approval_mode").$type<
-			"autonomous" | "interactive" | null
-		>(),
 		// The commit the verifier passed, read by the host. Cleared when a later
 		// verification fails; the merge queue lands only this commit.
 		verifiedSha: text("verified_sha"),
@@ -344,7 +336,7 @@ export type RunGroupStatus = "open" | "selecting" | "merged" | "abandoned";
 /**
  * The unit that holds a task's claim (design §3.5). A `single` group is named
  * after its only run; a `competing` group has N sibling `attempt` runs, each
- * in its own worktree, of which one may win and be merged.
+ * in its own workspace, of which one may win and be merged.
  */
 export const runGroups = sqliteTable(
 	"run_groups",
@@ -920,7 +912,7 @@ export const sessions = sqliteTable(
 		/** Dedup key within `source` (task id, merge job id, ...): `raise()` is a no-op while an unresolved session exists for it. */
 		sourceKey: text("source_key").notNull(),
 		taskId: text("task_id"),
-		/** Run whose worktree/branch `open()` reuses; absent for `main_red`. */
+		/** Run whose workspace/branch `open()` reuses; absent for `main_red`. */
 		runId: text("run_id"),
 		mergeJobId: integer("merge_job_id"),
 		title: text("title").notNull(),
@@ -1199,7 +1191,7 @@ export type AttemptFinal =
 
 /**
  * One row per task attempt chain: a root `task` run plus the repair, resume
- * and unblock children that continue it in the same worktree (`parent_run_id`
+ * and unblock children that continue it in the same workspace (`parent_run_id`
  * lineage). A derived cache: `rollupAttemptChain` recomputes a row from
  * `runs` / `run_steps` / `merge_jobs` / `review_verdicts` from scratch, so
  * writes are idempotent and the table is safe to drop and backfill.

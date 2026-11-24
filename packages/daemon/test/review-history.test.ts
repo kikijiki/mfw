@@ -34,7 +34,7 @@ async function fixture(): Promise<F> {
 	await git(["commit", "-q", "-m", "init"], root);
 	// Production writes these into .git/info/exclude at attach; without them a
 	// test's `git add -A` commits the live database into the branch.
-	await writeFile(join(root, ".git/info/exclude"), ".mfw/\nworktrees/\n");
+	await writeFile(join(root, ".git/info/exclude"), ".mfw/\nworkspaces/\n");
 
 	const mfwDir = join(root, ".mfw");
 	const handle = await openProjectDb(mfwDir);
@@ -89,7 +89,7 @@ describe("ReviewService bundle", () => {
 			await git(["add", "-A"], f.root);
 			await git(["commit", "-q", "-m", "scope paths"], f.root);
 			const facts = await new GitDiffSource().collect({
-				worktreePath: f.root,
+				workspacePath: f.root,
 				baseSha,
 			} as Parameters<GitDiffSource["collect"]>[0]);
 			expect(facts.files).toContain("keep.txt");

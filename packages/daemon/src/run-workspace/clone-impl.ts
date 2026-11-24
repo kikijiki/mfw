@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
 	appendFile,
 	lstat,
@@ -11,7 +11,10 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import type { CheckRunner } from "../containment/check-runner.ts";
-import { readSmallRegularFile } from "../containment/safe-file.ts";
+import {
+	readRegularFile,
+	readSmallRegularFile,
+} from "../containment/safe-file.ts";
 import { git } from "../git.ts";
 import {
 	assertRunId,
@@ -26,6 +29,7 @@ import type { CacheDeclaration } from "./caches.ts";
 import { preRebasePrefix } from "./rebase-clone.ts";
 import type {
 	OwnedRunWorkspace,
+	ReportIdentity,
 	RunWorkspace,
 	RunWorkspaceHandle,
 	RunWorkspacePaths,
@@ -33,7 +37,6 @@ import type {
 	WipArchive,
 	WorkspaceContentOptions,
 	WorkspaceName,
-	WorktreeReportIdentity,
 } from "./run-workspace.ts";
 import { cloneConfig, seedWorkspace } from "./seed.ts";
 import { type WipAck, wipAckFile, wipControlLine } from "./wip-helper.ts";
@@ -148,6 +151,8 @@ export interface CloneWorkspaceOptions {
 	log?: (msg: string) => void;
 }
 
+/** Past this a report is not one finalize journaled. */
+const MAX_REPORT_IDENTITY_BYTES = 4 * 1024 * 1024;
 const MODE_GITLINK = "160000";
 const MODE_SYMLINK = "120000";
 const PROTECTED_NAMES = new Set([
@@ -385,7 +390,6 @@ function serialized<T>(key: string, fn: () => Promise<T>): Promise<T> {
 }
 
 export class CloneRunWorkspace implements RunWorkspace {
-	readonly kind = "clone";
 	private readonly root: string;
 	private readonly host: HostGit;
 	private readonly scratch: string;
@@ -674,7 +678,7 @@ export class CloneRunWorkspace implements RunWorkspace {
 	 *
 	 * A run proven quiescent imports into the quarantine refs. A running one
 	 * with a host-anchored outbox (`runDirOf`) is only read in a throwaway repo
-	 * and never enters the primary. Replaces `snapshotWorktree` for clones.
+	 * and never enters the primary.
 	 */
 	async requestWip(
 		handle: Pick<RunWorkspaceHandle, "path">,
@@ -820,16 +824,33 @@ export class CloneRunWorkspace implements RunWorkspace {
 
 	/**
 	 * True while the run's work has not been imported: a removal would lose it.
-	 * The host cannot look inside the clone, so it does not guess at local
-	 * files: only what the primary holds counts as saved.
+	 * The host runs no git in the clone, so only what the primary holds counts
+	 * as saved. `MFW_REPORT.json` is never imported: with `reportIdentity`, a
+	 * report that differs from what finalize journaled (a plain file read)
+	 * keeps the clone too.
 	 */
 	async hasLocalChanges(
 		handle: Pick<RunWorkspaceHandle, "path">,
-		_opts?: WorkspaceContentOptions,
+		opts?: WorkspaceContentOptions,
 	): Promise<boolean> {
 		const runId = this.runIdOf(handle.path);
 		const marker = await this.readMarker(runId);
-		return !marker?.importedTip;
+		if (!marker?.importedTip) return true;
+		const want = opts?.reportIdentity;
+		if (!want) return false;
+		const path = join(handle.path, "MFW_REPORT.json");
+		const present = await lstat(path).then(
+			() => true,
+			(e: NodeJS.ErrnoException) => e.code !== "ENOENT",
+		);
+		if (!present) return want.state !== "absent";
+		if (want.state !== "present") return true;
+		const read = await readRegularFile(path, MAX_REPORT_IDENTITY_BYTES);
+		// A link, a special file or one past the cap cannot match a journaled report.
+		if (!read || read.size > MAX_REPORT_IDENTITY_BYTES) return true;
+		return (
+			createHash("sha256").update(read.buffer).digest("hex") !== want.sha256
+		);
 	}
 
 	async remove(
@@ -837,7 +858,7 @@ export class CloneRunWorkspace implements RunWorkspace {
 		opts?: {
 			force?: boolean;
 			deleteBranch?: boolean;
-			reportIdentity?: WorktreeReportIdentity;
+			reportIdentity?: ReportIdentity;
 		},
 	): Promise<void> {
 		const owned = await this.ownership(handle.path);
@@ -918,6 +939,9 @@ export class CloneRunWorkspace implements RunWorkspace {
 		name: WorkspaceName,
 	): Promise<WipArchive | null> {
 		const runId = this.runIdOf(handle.path);
+		// A run that ended without a finalize read (killed, discarded) is
+		// imported here first, so its work is what gets saved.
+		await serialized(this.dirOf(runId), () => this.importFinal(runId));
 		const sha = await this.newestWork(runId);
 		if (!sha || sha === handle.baseSha) return null;
 		const base = `refs/heads/wip/${name.taskId ? `${name.taskId}-` : ""}${name.runId}`;

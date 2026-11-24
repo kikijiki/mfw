@@ -284,7 +284,7 @@ export interface PrepareExecutionRequest {
 	integrationBranch: string;
 	requestedShape: TargetShape;
 	reuse?: {
-		worktreePath: string;
+		workspacePath: string;
 		branch: string;
 		baseSha?: string;
 	};
@@ -312,6 +312,7 @@ export interface ExecutionDriverSpec {
 	initialMessage: string;
 	steer: boolean;
 	approvalMode: "autonomous" | "interactive";
+	/** The local launch's sandbox, required there. Remote targets have none of their own yet. */
 	isolation?: BwrapIsolation;
 	/** Which sandbox profile applies. Task and repair runs use the host bridge. */
 	runKind?: string;

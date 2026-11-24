@@ -124,7 +124,7 @@ beforeAll(async () => {
 		label: "MFW-8",
 		model: "sonnet",
 		cwd: wtPath,
-		worktreePath: wtPath,
+		workspacePath: wtPath,
 		branch: `mfw/${runId}`,
 	});
 	await registry.create({
@@ -292,7 +292,7 @@ describe("branches", () => {
 			mfw: "run",
 			ahead: 1,
 			merged: false,
-			worktreeId: runId,
+			worktreeId: expect.stringMatching(/^wt-/),
 		});
 		expect(run?.run).toMatchObject({ runId, taskId: "MFW-8", live: true });
 		expect(run?.mergeJob).toMatchObject({ state: "parked", error: "conflict" });
@@ -318,8 +318,12 @@ describe("branches", () => {
 	});
 });
 
+/** The non-primary git worktree's id: a hash of its path, never a run id. */
+const otherId = async () =>
+	(await svc.worktrees()).worktrees.find((w) => !w.primary)?.id ?? "";
+
 describe("worktrees", () => {
-	test("primary plus the run worktree, joined to the run, dirty and ahead", async () => {
+	test("primary plus the other git worktree, dirty and ahead, tied to no run", async () => {
 		const { worktrees } = await svc.worktrees();
 		expect(worktrees).toHaveLength(2);
 		const primary = worktrees.find((w) => w.primary);
@@ -332,39 +336,47 @@ describe("worktrees", () => {
 		// worktrees/ is ignored, so the primary checkout is clean.
 		expect(primary?.dirty?.changed).toBe(0);
 
-		const wt = worktrees.find((w) => w.id === runId);
+		const wt = worktrees.find((w) => !w.primary);
+		expect(wt?.id).toMatch(/^wt-[0-9a-f]{8}$/);
 		expect(wt).toMatchObject({
 			branch: `mfw/${runId}`,
 			displayPath: `worktrees/${runId}`,
 			ahead: 1,
 			behind: 0,
 		});
-		expect(wt?.run).toMatchObject({ taskId: "MFW-8", live: true });
-		expect(wt?.mergeJob?.state).toBe("parked");
 		expect(wt?.dirty?.changed).toBe(2); // README edit + untracked.txt
 	});
 
 	test("uncommitted changes: modified file, untracked listing, line counts", async () => {
-		const r = await svc.worktreeChanges({ id: runId });
+		const r = await svc.worktreeChanges({ id: await otherId() });
 		expect(r.branch).toBe(`mfw/${runId}`);
 		const readme = r.files.find((f) => f.path === "README.md");
 		expect(readme).toMatchObject({ worktree: "M", added: 1, deleted: 1 });
 		const un = r.files.find((f) => f.path === "untracked.txt");
 		expect(un).toMatchObject({ untracked: true, added: null });
 
-		const d = await svc.worktreeFileDiff({ id: runId, path: "README.md" });
+		const d = await svc.worktreeFileDiff({
+			id: await otherId(),
+			path: "README.md",
+		});
 		expect(d).toMatchObject({ status: "modified", binary: false });
 		expect(d.newText).toContain("edited in worktree");
 		expect(d.oldText).toBe("# hello\nmore\n");
 
-		const u = await svc.worktreeFileDiff({ id: runId, path: "untracked.txt" });
+		const u = await svc.worktreeFileDiff({
+			id: await otherId(),
+			path: "untracked.txt",
+		});
 		expect(u).toMatchObject({ status: "added", newText: "u\n" });
 	});
 
 	test("oversize files are summarised, not shipped", async () => {
 		const big = join(wtPath, "big.txt");
 		await writeFile(big, "x\n".repeat(400_000));
-		const d = await svc.worktreeFileDiff({ id: runId, path: "big.txt" });
+		const d = await svc.worktreeFileDiff({
+			id: await otherId(),
+			path: "big.txt",
+		});
 		expect(d).toMatchObject({ binary: true, reason: "oversize", newText: "" });
 		await rm(big);
 	});
@@ -376,7 +388,7 @@ describe("worktrees", () => {
 		await symlink(join(parent, "outside.txt"), join(wtPath, "leak.txt"));
 		expect(
 			await svc
-				.worktreeFileDiff({ id: runId, path: "leak.txt" })
+				.worktreeFileDiff({ id: await otherId(), path: "leak.txt" })
 				.catch((e: Error) => e),
 		).toBeInstanceOf(PathEscapeError);
 		await rm(join(wtPath, "leak.txt"));

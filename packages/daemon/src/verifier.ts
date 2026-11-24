@@ -11,30 +11,22 @@ import {
 	classifyCheckFailure,
 } from "./failure-class.ts";
 import { git } from "./git.ts";
-import { type ProcResult, runProc } from "./proc.ts";
+import type { ProcResult } from "./proc.ts";
 import type { VerifierClones } from "./run-workspace/verifier-clone.ts";
-import { requireHostTool } from "./sandbox.ts";
 import type { DefinitionOfDone, DoDCheck } from "./tasks/types.ts";
 
 /**
  * Runs a task's DoD checks and never trusts the agent's transcript.
  *
- * A candidate's checks run in the attested verifier sandbox, through
- * {@link verifyInClone}, which has no host fallback. The plain {@link verify}
- * path runs on the host and is only for trees that are not a candidate from an
- * autonomous run: an interactive worktree, or the merged integration tip.
+ * Every `run` check executes in the attested, no-network verifier sandbox,
+ * in a disposable host-owned clone of the commit ({@link verifyInClone}). There
+ * is no host fallback: without a sandbox a `run` check is refused, never run.
  *
  * Entering the project's dev environment is the operator's declared
  * `checkPrefix` (`"direnv exec ."`, `"nix develop -c"`, ...), composed with the
  * sandbox prefix; mfw does not detect it (MFW-57). An agent cannot author a
- * prefix in the operator's config, unlike an `.envrc` it could write.
- *
- *  1. Scrubbed environment: DoD commands come verbatim from task files that
- *     planners and importers write, so they inherit only what the project's
- *     `envPolicy` allows.
- *  2. Bounded and quoted: every check has a timeout (default 10 min) and an
- *     output cap, and `checkPrefix` is quoted rather than interpolated raw
- *     into `sh -c`.
+ * prefix in the operator's config, unlike an `.envrc` it could write. Every
+ * check has a timeout (default 10 min) and an output cap.
  */
 
 /**
@@ -81,22 +73,6 @@ export interface VerificationResult {
 	failureClass?: ActionableFailureClass | null;
 }
 
-/**
- * A project's declared policy for what a DoD check may read from the
- * environment (MFW-57). Without a way to say "this project also needs
- * `GIT_EDITOR`", a rebase wedged only under the daemon and never in a
- * developer's shell.
- */
-export interface EnvPolicy {
-	/**
-	 * Replace `DEFAULT_ENV_ALLOWLIST` entirely (not merged), so a project that
-	 * still wants `PATH`/`HOME`/etc. must include them.
-	 */
-	allow?: string[];
-	/** Pass the full ambient environment through, unfiltered. */
-	inherit?: boolean;
-}
-
 export interface VerifyOptions {
 	/** Wrapper command for every check (a sandbox/container entrypoint or a
 	 *  dev-environment entrypoint like `direnv exec .` / `nix develop -c`).
@@ -105,11 +81,6 @@ export interface VerifyOptions {
 	checkPrefix?: string;
 	/** Default per-check timeout when the DoD does not set one. */
 	defaultTimeoutMs?: number;
-	/** Extra variables the checks need, applied on top of `envPolicy`. */
-	env?: Record<string, string>;
-	/** What the checks may read from the ambient environment. Defaults to
-	 *  `DEFAULT_ENV_ALLOWLIST`. */
-	envPolicy?: EnvPolicy;
 	/** Cancels the currently running check (preemptible background sweeps). */
 	signal?: AbortSignal;
 	/**
@@ -126,16 +97,10 @@ export interface VerifyOptions {
 	 */
 	gate?: CheckGate;
 	/**
-	 * Run each check in the verifier sandbox. `run: null` means none is
-	 * available, and every check is then refused rather than run on the host.
+	 * Run each check in the verifier sandbox. Absent, or `run: null`, means
+	 * none is available, and every `run` check is refused, never run on the host.
 	 */
 	sandbox?: { run: CheckRunner | null; role: VerifyRole };
-	/**
-	 * The only way a check runs on the host: an interactive worktree run, where
-	 * a person approved what the agent did. Maintenance and the merge queue never
-	 * pass it, and without it (or `sandbox`) every `run` check is refused.
-	 */
-	hostExecution?: "interactive-worktree";
 	/**
 	 * The tree has a dependency manifest but no installed dependencies, which P8
 	 * will supply. A failing check then says nothing about the code.
@@ -145,79 +110,8 @@ export interface VerifyOptions {
 	fileInCommit?: (path: string) => Promise<boolean>;
 }
 
-/** The host-execution option for a run, from the mode recorded on that run. */
-export function worktreeHostExecution(
-	approvalMode: "autonomous" | "interactive" | undefined,
-): Pick<VerifyOptions, "hostExecution"> {
-	return approvalMode === "interactive"
-		? { hostExecution: "interactive-worktree" }
-		: {};
-}
-
 const DEFAULT_CHECK_TIMEOUT_MS = 10 * 60_000;
 const MAX_CHECK_OUTPUT = 1 * 1024 * 1024;
-
-/**
- * Default when a project declares no `envPolicy`. API keys, tokens and
- * anything else exported stay out of a DoD command's reach.
- */
-export const DEFAULT_ENV_ALLOWLIST = [
-	"PATH",
-	"HOME",
-	"LANG",
-	"LC_ALL",
-	"TZ",
-	"TERM",
-	"SHELL",
-	"USER",
-	"LOGNAME",
-	"TMPDIR",
-	"XDG_CACHE_HOME",
-	"XDG_DATA_HOME",
-	"XDG_CONFIG_HOME",
-	"NIX_PATH",
-	"NIX_PROFILES",
-	"NIX_SSL_CERT_FILE",
-	"SSL_CERT_FILE",
-	"CI",
-];
-
-export function scrubEnv(
-	source: NodeJS.ProcessEnv = process.env,
-	extra: Record<string, string> = {},
-	policy: EnvPolicy = {},
-): Record<string, string> {
-	const out: Record<string, string> = {};
-	if (policy.inherit) {
-		for (const [key, v] of Object.entries(source)) {
-			if (typeof v === "string") out[key] = v;
-		}
-	} else {
-		for (const key of policy.allow ?? DEFAULT_ENV_ALLOWLIST) {
-			const v = source[key];
-			if (typeof v === "string") out[key] = v;
-		}
-	}
-	// Mark the context so a check can behave differently under verification.
-	out.MFW_VERIFY = "1";
-
-	// A check has no TTY and nobody to answer a prompt, so these are set rather
-	// than inherited (an inherited operator `EDITOR` would hang until timeout).
-	//
-	// Motivating case: a test ran `git rebase --continue`, which opens an
-	// editor. With no `EDITOR` and no TTY the rebase stayed in progress and a
-	// later assertion failed. It passed in developer shells and failed in every
-	// sweep, reddening main and reopening eleven tasks.
-	//
-	// `true` is a no-op editor: git accepts the message as-is.
-	out.EDITOR = "true";
-	out.GIT_EDITOR = "true";
-	out.VISUAL = "true";
-	// Fail a credential prompt immediately instead of hanging until timeout.
-	out.GIT_TERMINAL_PROMPT = "0";
-
-	return { ...out, ...extra };
-}
 
 /** Human/model-readable account of the verifier context. Values are omitted:
  * diagnosis needs to know what was available, not receive credentials. */
@@ -225,29 +119,14 @@ export function describeVerificationEnvironment(opts: VerifyOptions): string {
 	const shell = opts.checkPrefix?.trim()
 		? `declared check prefix: ${opts.checkPrefix.trim()}`
 		: "direct non-interactive shell (no check prefix)";
-	const runner = opts.sandbox
-		? `attested verifier sandbox with no network; ${shell}`
-		: shell;
-	const ambient = opts.sandbox
-		? "no ambient environment"
-		: opts.envPolicy?.inherit
-			? "ambient environment inherited by project policy"
-			: `scrubbed environment; allowed ambient names: ${(
-					opts.envPolicy?.allow ?? DEFAULT_ENV_ALLOWLIST
-				).join(", ")}`;
-	const extras = Object.keys(opts.env ?? {});
+	if (!opts.sandbox?.run) {
+		return "no verifier sandbox: run checks are refused, never run on the host";
+	}
 	return [
-		runner,
-		ambient,
-		...(extras.length > 0
-			? [`explicit verifier variables: ${extras.join(", ")}`]
-			: []),
-		"forced non-interactive variables: MFW_VERIFY, EDITOR, GIT_EDITOR, VISUAL, GIT_TERMINAL_PROMPT",
+		"attested verifier sandbox with no network",
+		shell,
+		"no ambient environment",
 	].join("; ");
-}
-
-function q(s: string): string {
-	return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
 function describe(check: DoDCheck): string {
@@ -265,8 +144,8 @@ function lastLines(s: string, n: number): string {
 /**
  * Did the check's command die from a signal?
  *
- * `runProc` reports `exitCode === null` only when the process it spawned was
- * signalled, but every check runs as `sh -c <command>` (see `buildRunner`), so
+ * A runner reports `exitCode === null` only when the process it spawned was
+ * signalled, but every check runs as `sh -c <command>`, so
  * when the command inside crashes the shell survives and exits with
  * 128+signal (`sh -c 'sh -c "kill -11 $$"'` exits 139, SIGILL 132). Without
  * this a crashing `bun test` (SIGILL six times in fourteen hours under memory
@@ -301,21 +180,6 @@ export function signalOf(exitCode: number | null): string | null {
 		15: "SIGTERM",
 	};
 	return known[n] ?? `signal ${n}`;
-}
-
-/**
- * Build the command wrapper for checks. `checkPrefix` is the only thing that
- * enters a dev environment or a sandbox (MFW-57). The check is quoted rather
- * than spliced, so it cannot break out of the prefix.
- */
-export function buildRunner(
-	opts: VerifyOptions,
-): (checkCmd: string) => string[] {
-	const prefix = opts.checkPrefix?.trim();
-	// An absolute pinned `sh`, never a `PATH` lookup an agent can steer (security review X8).
-	const sh = requireHostTool("sh");
-	if (prefix) return (c) => [sh, "-c", `${prefix} sh -c ${q(c)}`];
-	return (c) => [sh, "-c", c];
 }
 
 /** A declared path as a clean path inside the tree, or null if it leaves it. */
@@ -358,12 +222,6 @@ export async function verify(
 	opts: VerifyOptions = {},
 ): Promise<VerificationResult> {
 	const checks: CheckOutcome[] = [];
-	const hostAllowed =
-		!opts.sandbox && opts.hostExecution === "interactive-worktree";
-	const runner = hostAllowed ? buildRunner(opts) : null;
-	const env = hostAllowed
-		? scrubEnv(process.env, opts.env, opts.envPolicy)
-		: {};
 	const refused = (label: string, err: CheckSandboxRefusal): CheckOutcome => ({
 		check: label,
 		ok: false,
@@ -400,25 +258,14 @@ export async function verify(
 				: (opts.defaultTimeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS);
 			const expected = check.expect_exit ?? 0;
 			const sandbox = opts.sandbox;
-			const runOnce = async (): Promise<ProcResult> => {
-				if (sandbox) {
-					return runSandboxed(sandbox, cwd, check.run, timeoutMs, opts);
-				}
-				if (!runner) {
-					throw new CheckSandboxRefusal(
-						"host_execution_refused",
-						"this check has no verifier sandbox, and only an interactive worktree run may execute on the host",
-						"verify the commit through a verifier clone",
-					);
-				}
-				return runProc(runner(check.run), {
+			const runOnce = (): Promise<ProcResult> =>
+				runSandboxed(
+					sandbox ?? { run: null, role: "verifier" },
 					cwd,
-					env,
+					check.run,
 					timeoutMs,
-					maxOutputBytes: MAX_CHECK_OUTPUT,
-					signal: opts.signal,
-				});
-			};
+					opts,
+				);
 
 			let r: ProcResult;
 			try {
@@ -580,7 +427,7 @@ export async function verify(
 /**
  * Verify a commit in a fresh, host-owned clone that is thrown away afterwards.
  * `rev` is the run's quarantine tip, or the merge commit about to land; the
- * checks never run in the run's workspace or the integration worktree.
+ * checks never run in the run's workspace or the integration workspace.
  */
 export async function verifyInClone(
 	clones: Pick<VerifierClones, "with" | "checkRunner" | "fileInCommit">,
@@ -590,8 +437,7 @@ export async function verifyInClone(
 	baseSha: string,
 	opts: VerifyOptions & { role?: VerifyRole } = {},
 ): Promise<VerificationResult> {
-	// A clone is never host-executed, whatever the caller passed.
-	const { role = "verifier", hostExecution: _never, ...rest } = opts;
+	const { role = "verifier", ...rest } = opts;
 	return clones.with(rev, label, async (clone) =>
 		verify(clone.path, dod, baseSha, {
 			...rest,

@@ -193,7 +193,7 @@ function parseInit(args: readonly string[]): InitArgs | string {
 	return out;
 }
 
-/** The smallest entry whose runs can start: a private clone in the sandbox. */
+/** The smallest entry whose runs can start: the defaults are a private clone in the sandbox. */
 export function minimalProjectEntry(input: {
 	name: string;
 	root: string;
@@ -203,8 +203,6 @@ export function minimalProjectEntry(input: {
 		name: input.name,
 		root: input.root,
 		integrationBranch: input.branch,
-		agentIsolation: "bwrap",
-		runWorkspace: "clone",
 	};
 }
 

@@ -419,7 +419,7 @@ export const tasksRouter = createTRPCRouter({
 			ctx.svc.review.reject(input.id, input.reason),
 		),
 
-	/** Archive every finished run of the task to `wip/` and remove its worktrees and branches. PRECONDITION_FAILED (`RunLiveError`) while one is live. */
+	/** Archive every finished run of the task to `wip/` and remove its workspaces and branches. PRECONDITION_FAILED (`RunLiveError`) while one is live. */
 	discard: projectProcedure
 		.input(z.object({ id: z.string() }))
 		.mutation(({ ctx, input }) => ctx.svc.lifecycle.discardTask(input.id)),

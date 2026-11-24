@@ -20,7 +20,6 @@ import {
 const PROJECT = {
 	name: "demo",
 	root: "/srv/demo",
-	runWorkspace: "clone" as const,
 };
 
 const withProject = (
@@ -99,8 +98,6 @@ describe("a healthy host", () => {
 			"egress.allowlist",
 			"project.root",
 			"project.git-config",
-			"project.isolation",
-			"project.dispatch",
 			"project.env",
 			"project.push",
 			"project.triggers",
@@ -598,16 +595,6 @@ describe("exposure", () => {
 });
 
 describe("project checks", () => {
-	test("the default worktree with bwrap cannot dispatch", async () => {
-		const c = await check(
-			withProject({}, { runWorkspace: undefined }),
-			"project.dispatch",
-		);
-		expect([c.status, c.severity]).toEqual(["problem", "blocker"]);
-		expect(c.fix).toContain('"runWorkspace": "clone"');
-		expect(c.project).toBe("demo");
-	});
-
 	test("an unapproved dev environment blocks, with the allow command", async () => {
 		const c = await check(
 			withProject({
@@ -623,10 +610,6 @@ describe("project checks", () => {
 		);
 		expect([c.status, c.severity]).toEqual(["problem", "blocker"]);
 		expect(c.fix).toContain("mfw env allow demo");
-		// The dispatch check no longer refuses a project for having an .envrc.
-		expect((await check(withProject({}), "project.dispatch")).status).toBe(
-			"ok",
-		);
 	});
 
 	test("an approved environment not yet evaluated only warns: the dispatch builds it", async () => {
@@ -643,14 +626,6 @@ describe("project checks", () => {
 		);
 		expect([c.status, c.severity]).toEqual(["problem", "warn"]);
 		expect((await check(withProject({}), "project.env")).status).toBe("ok");
-	});
-
-	test("autonomous without a sandbox is a blocker", async () => {
-		const c = await check(
-			withProject({}, { agentIsolation: "none" }),
-			"project.isolation",
-		);
-		expect([c.status, c.severity]).toEqual(["problem", "blocker"]);
 	});
 
 	test("a remote without pushUrl warns and hides URL credentials", async () => {

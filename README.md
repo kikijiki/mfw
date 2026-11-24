@@ -67,17 +67,19 @@ The daemon is the engine that does the work. For each project you attach, it:
   overwrite each other or touch your checkout.
 - **Runs a coding agent** on the task, in a sandbox: Claude Code or OpenAI Codex
   CLI. Agents that speak the [Agent Client Protocol](https://agentclientprotocol.com)
-  (ACP), such as Cursor, Gemini CLI, opencode and pi, have no sandbox profile yet
-  and run only unsandboxed with interactive approval
-  ([experimental](docs/experimental.md#acp-agents)). Each agent runs in its own
+  (ACP), such as Cursor, Gemini CLI, opencode and pi, have no sandbox profile yet,
+  so they cannot run locally ([experimental](docs/experimental.md#acp-agents)).
+  Every run is sandboxed; there is no setting to turn that off. Each agent runs in its own
   session that survives restarts of the daemon, and you can steer or stop it while
   it works.
+- **Works in a private clone per run** under `$MFW_HOME/workspaces`, never inside
+  your checkout. The host never runs git in it: the run's commits come back as a
+  verified bundle into a quarantine ref.
 - **Checks the result** against the task's goal, then runs the task's `run`
-  checks without trusting the agent's word. An autonomous run's checks run on its
+  checks without trusting the agent's word. Every run's checks run on its
   committed tip inside the no-network verifier sandbox. A check that cannot run
-  there is reported as an infrastructure result, never retried on the host. Only
-  an interactive worktree run's checks run on the host, because a person
-  approved the run (see [docs/verifier-sandbox.md](docs/verifier-sandbox.md)).
+  there is reported as an infrastructure result, never run on the host (see
+  [docs/verifier-sandbox.md](docs/verifier-sandbox.md)).
 - **Merges automatically** when everything passes, into a branch you choose, and
   pushes it unless you set `pushOnMerge: false`. A change to files the host later
   executes (agent config, CI, git behaviour, build entry points) waits for your
@@ -94,13 +96,13 @@ The daemon is the engine that does the work. For each project you attach, it:
 ### Safety summary
 
 The scheduler is **off** until you turn it on, so starting mfw never starts
-spending. With the default `agentIsolation: "bwrap"`:
+spending. Every run is sandboxed:
 
 - **An agent runs in a sandbox.** It sees its private clone, a read-only system
   and a synthetic home. It cannot see your home directory, mfw's state or your
   checkout.
 - **An autonomous launch needs proof.** A probe inside the sandbox must pass for
-  that exact launch. If it cannot, the run is refused rather than run unsandboxed.
+  that exact launch. If it cannot, the run is refused; there is no unsandboxed run.
 - **Network access is an allowlist.** Each run has its own network namespace and
   reaches only its vendor's hosts, through a per-run proxy
   ([docs/egress.md](docs/egress.md)).
@@ -120,8 +122,7 @@ What this does **not** stop:
   allowed vendor host, up to an upload budget.
 - Code that passes its checks merges and pushes, and runs with your rights when
   you build or run it.
-- `agentIsolation: "none"`, ACP agents, armed host triggers and remote targets do
-  not have this protection.
+- Armed host triggers and remote targets do not have this protection.
 - An approved environment's evaluation and dependency install run project code
   with network to their allowed hosts, and the nix daemon builds what the
   evaluation asks for, with its own network.
@@ -225,20 +226,12 @@ CLAUDE_CONFIG_DIR="$MFW_HOME/agents/claude" claude   # then sign in
 CODEX_HOME="$MFW_HOME/agents/codex" codex login
 ```
 
-**4. Add a project, then switch it to a private clone.** Add the project in the UI.
-Until the default changes, a sandboxed project **starts no runs** without this
-setting, and the inbox tells you so. Add it to the project's entry in
-`$MFW_HOME/config.json`, then restart the server:
-
-```json
-{ "projects": [{ "name": "my-project", "runWorkspace": "clone" }] }
-```
-
-Keep the entry's other fields. A project with a dev environment (`.envrc`,
-`mise.toml`, a flake devShell, devenv) needs one more step: read what
-`mfw env allow my-project` prints, then approve that commit with
-`mfw env allow my-project --rev <commit>`. It is then evaluated inside a sandbox, only at the
-commit you approved, and given to every run. See
+**4. Add a project.** Add it in the UI. The defaults run each task in a private
+clone inside the sandbox; there is nothing to switch on. A project with a dev
+environment (`.envrc`, `mise.toml`, a flake devShell, devenv) needs one more
+step: read what `mfw env allow my-project` prints, then approve that commit with
+`mfw env allow my-project --rev <commit>`. It is then evaluated inside a sandbox,
+only at the commit you approved, and given to every run. See
 [docs/environments.md](docs/environments.md).
 
 **5. Direct the work.** The project opens on **Lead**. Give it a direction or create
@@ -302,9 +295,7 @@ The main per-project keys in `$MFW_HOME/config.json`:
 
 | Key | Default | What it does |
 | --- | --- | --- |
-| `agentIsolation` | `bwrap` | the sandbox. `none` needs `approvalMode: "interactive"` and runs agents as your user |
 | `approvalMode` | `autonomous` | `interactive` asks a person for agent actions |
-| `runWorkspace` | `worktree` | set it to `clone`: sandboxed runs refuse a worktree ([why](docs/experimental.md#clone-workspaces)) |
 | `pushOnMerge` | `true` | push the integration branch after each merge |
 
 Agent network access, its per-project settings and its limits are described
@@ -333,9 +324,8 @@ Run these on the host, outside any agent sandbox:
 Failed sign-ins are limited per address (behind a trusted proxy, per forwarded
 client), and all of loopback counts as one address. A sandboxed agent has its own
 network namespace and cannot reach the daemon on loopback, so it cannot use up
-your limit. An unsandboxed run
-(`agentIsolation: "none"`) shares loopback with you and can slow your sign-in;
-`mfw auth unlock` clears it.
+your limit. Another local process sharing loopback with you can slow your
+sign-in; `mfw auth unlock` clears it.
 
 To change the password, use Settings > Session. It asks for the current password
 and signs out every other session. It also deletes every passkey unless you

@@ -82,7 +82,7 @@ describe("rendered markdown", () => {
 		expect(html).toContain("#part");
 	});
 
-	test("a run's worktree is addressed by run", () => {
+	test("a run's workspace is addressed by run", () => {
 		const html = renderToString(
 			<MarkdownView
 				source={{ project: "demo", run: "R9" }}

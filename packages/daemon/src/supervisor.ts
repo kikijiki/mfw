@@ -26,13 +26,11 @@ import {
 	type RunRegistry,
 	type RunRow,
 } from "./run-registry.ts";
-import { CloneRunWorkspace } from "./run-workspace/clone-impl.ts";
-import { runWorkspaceKind, workspaceForRun } from "./run-workspace/factory.ts";
+import { createRunWorkspace } from "./run-workspace/factory.ts";
 import { cloneScopeFiles } from "./run-workspace/scope-files.ts";
 import {
 	asScopeSample,
 	assessScope,
-	changedFiles,
 	DEFAULT_SCOPE_POLICY,
 	foreignClaims,
 	type ScopeOwners,
@@ -63,7 +61,7 @@ export interface WatchdogLimits {
 	wallMs: number;
 	/** Kill after this many assistant turns (0 = off). */
 	maxTurns: number;
-	/** Diff-scope watchdog over a local run's worktree (`scope-watchdog.ts`). */
+	/** Diff-scope watchdog over a local run's workspace (`scope-watchdog.ts`). */
 	scope: ScopePolicy;
 }
 
@@ -112,7 +110,7 @@ export interface SupervisorDeps {
 	limits?: WatchdogLimitsInput;
 	/** Changed-file listing for the scope watchdog; tests inject failures. */
 	scopeFiles?: (
-		worktreePath: string,
+		workspacePath: string,
 		baseSha: string,
 	) => Promise<{ files: string[]; truncated: boolean }>;
 	/**
@@ -643,7 +641,7 @@ export class Supervisor {
 	 * Diff-scope watchdog for one live local run. Throttled to one sample per
 	 * `sampleMs`, and only once events.jsonl moved since the last one (an agent
 	 * that wrote nothing changed nothing). A sample that fails (git error,
-	 * timeout, worktree mid-rewrite) is skipped and retried next time: a
+	 * timeout, workspace mid-rewrite) is skipped and retried next time: a
 	 * failed sample never kills.
 	 */
 	private async watchScope(
@@ -654,9 +652,9 @@ export class Supervisor {
 	): Promise<void> {
 		if (policy.mode === "off") return;
 		if (run.kind !== "task" && run.kind !== "repair") return;
-		// Remote targets have no local worktree to sample (deferred).
+		// Remote targets have no local workspace to sample (deferred).
 		if (run.executionTarget !== "local") return;
-		if (!run.worktreePath || !run.baseSha) return;
+		if (!run.workspacePath || !run.baseSha) return;
 		const now = this.now();
 		const seen = this.scopeSeen.get(run.id);
 		if (seen && (now - seen.at < policy.sampleMs || seen.mtime === mtime))
@@ -665,16 +663,15 @@ export class Supervisor {
 		try {
 			const sampler =
 				this.deps.scopeFiles ??
-				(() => {
-					const workspace = workspaceForRun(this.deps.projectRoot, run);
-					return workspace instanceof CloneRunWorkspace
-						? (wt: string, base: string) =>
-								cloneScopeFiles(workspace, this.deps.projectRoot, wt, base, {
-									timeoutMs: SCOPE_WIP_TIMEOUT_MS,
-								})
-						: changedFiles;
-				})();
-			const listed = await sampler(run.worktreePath, run.baseSha);
+				((wt: string, base: string) =>
+					cloneScopeFiles(
+						createRunWorkspace(this.deps.projectRoot),
+						this.deps.projectRoot,
+						wt,
+						base,
+						{ timeoutMs: SCOPE_WIP_TIMEOUT_MS },
+					));
+			const listed = await sampler(run.workspacePath, run.baseSha);
 			sample = assessScope(
 				listed.files,
 				await this.scopeOwners(run),
@@ -716,7 +713,6 @@ export class Supervisor {
 		policy: ScopePolicy,
 		now: number,
 	): Promise<void> {
-		if (runWorkspaceKind(this.deps.projectRoot, run) !== "clone") return;
 		const seen = this.scopeFailures.get(run.id);
 		if (seen && now - seen.at < policy.sampleMs) return;
 		const count = (seen?.count ?? 0) + 1;
@@ -752,7 +748,7 @@ export class Supervisor {
 		return {
 			owns: own?.owns ?? [],
 			// The sibling rule: a claim held by this run's own group (its attempt
-			// siblings, or a continuation of the same worktree chain) is never foreign.
+			// siblings, or a continuation of the same workspace chain) is never foreign.
 			others: foreignClaims(run, claimed),
 		};
 	}

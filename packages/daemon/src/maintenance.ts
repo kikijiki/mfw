@@ -6,14 +6,10 @@ import { appendEvent, type EventBus } from "@mfw/db/eventlog";
 import { engineKv, events as eventRows } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
 import { runEventsPath } from "./containment/run-dir.ts";
-import { git, gitComplete } from "./git.ts";
+import { git } from "./git.ts";
 import type { Logger } from "./log.ts";
 import { loadReopenPolicies, reopenDefinitionHash } from "./reopen-policy.ts";
-import {
-	CLAIM_HOLDING_RUN_STATES,
-	type RunRegistry,
-	type RunRow,
-} from "./run-registry.ts";
+import { CLAIM_HOLDING_RUN_STATES, type RunRegistry } from "./run-registry.ts";
 import {
 	createCheckClones,
 	createRunWorkspace,
@@ -25,7 +21,6 @@ import type { DefinitionOfDone, DoDCheck } from "./tasks/types.ts";
 import { summarizeTranscript } from "./transcript-summary.ts";
 import {
 	describeVerificationEnvironment,
-	type EnvPolicy,
 	type VerificationResult,
 	type VerifyOptions,
 	verifyInClone,
@@ -35,9 +30,9 @@ import {
  * Periodic housekeeping, driven by the scheduler's maintenance hook.
  *
  * The regression sweep is the only thing that sets and clears `main_red`, the
- * breaker the merge queue respects. It runs in an ephemeral worktree off the
- * integration branch, never the primary checkout or the merge worker's
- * integration worktree.
+ * breaker the merge queue respects. Its checks run in a disposable clone of
+ * the integration tip, in the `merge-verify` sandbox role, never in the primary
+ * checkout or on the host.
  */
 
 /** Input to the brain's second opinion on a sweep failure the deterministic classifiers could not place (see `Maintenance.diagnoseVerdict`). */
@@ -73,7 +68,6 @@ export interface MaintenanceDeps {
 	integrationBranch: string;
 	mfwHome?: string;
 	checkPrefix?: string;
-	envPolicy?: EnvPolicy;
 	/** Renewal window applied to a live run's lease during a groom pass. */
 	leaseMs?: number;
 	now?: () => number;
@@ -202,9 +196,7 @@ export const REOPEN_CHECK_INTERVAL_MS = 10 * 60_000;
 
 export interface GcResult {
 	runDirsPruned: number;
-	worktreesRemoved: number;
-	/** Merged `mfw/<runId>` branches of finished runs (never `wip/*`). */
-	branchesDeleted: number;
+	workspacesRemoved: number;
 }
 
 export class Maintenance {
@@ -233,8 +225,8 @@ export class Maintenance {
 	 *   regression. Signal deaths are classified earlier (`VerificationResult.crashed`).
 	 * - Attribution is coarse: tasks sharing a check are all reopened when it
 	 *   breaks, with no bisection.
-	 * - `diff_against_base` is stripped from re-run checks: in the shared tip
-	 *   worktree it is structurally false.
+	 * - `diff_against_base` is stripped from re-run checks: on the shared tip
+	 *   it is structurally false.
 	 */
 	private regressionCheckableDod(dod: DefinitionOfDone): DefinitionOfDone {
 		return {
@@ -347,7 +339,6 @@ export class Maintenance {
 		{
 			const opts: VerifyOptions = {
 				checkPrefix: this.deps.checkPrefix,
-				envPolicy: this.deps.envPolicy,
 				// A sweep must not be held up by one pathological check.
 				defaultTimeoutMs: 5 * 60_000,
 				signal,
@@ -649,16 +640,13 @@ export class Maintenance {
 						: "the brain was not consulted (disabled); no second opinion beyond the deterministic checks above",
 				],
 				environment:
-					"The sweep runs in an EPHEMERAL worktree off the integration branch " +
-					"(`.mfw/sweep`), torn down after every pass; it will be gone by the " +
-					"time you read this. Its installed dependencies are a hard-linked " +
-					"SNAPSHOT (`.mfw/sweep-deps`), not the live checkout, refreshed only " +
-					"when the lockfile changes; a project whose workspace packages or " +
-					"dependency layout are unusual can fail here in ways that do not " +
-					"reproduce in your own shell (this exact gap once hid a real bug " +
-					"for hours: see `Maintenance.shadowLink`'s doc comment). Reproduce " +
-					"in a fresh worktree off the integration branch to rule that out " +
-					"before trusting this as a genuine regression.",
+					"The sweep runs each check in a disposable clone of the integration " +
+					"tip, inside the no-network merge-verify sandbox, torn down after " +
+					"every pass. The clone holds only tracked files: no installed " +
+					"dependencies and no ambient environment, so a check that needs " +
+					"either fails here in ways that do not reproduce in your own shell. " +
+					"Reproduce in a fresh clone of the integration branch to rule that " +
+					"out before trusting this as a genuine regression.",
 				hypothesis:
 					(causeTaskId
 						? `The merge attributed to ${causeTaskId} is the only candidate since the last green tip. `
@@ -1091,7 +1079,6 @@ export class Maintenance {
 						"",
 						{
 							checkPrefix: this.deps.checkPrefix,
-							envPolicy: this.deps.envPolicy,
 							defaultTimeoutMs: 5 * 60_000,
 							signal,
 							role: "merge-verify",
@@ -1138,7 +1125,7 @@ export class Maintenance {
 
 	/**
 	 * Bounded history: prune old terminal run directories, and remove only
-	 * positively owned, clean, integrated worktrees no live run or preserved-work
+	 * positively owned, clean, integrated workspaces no live run or preserved-work
 	 * pointer still references. A historical row never authorizes deleting an
 	 * unmerged branch; a finished run's `mfw/` branch whose tip the integration
 	 * branch already contains is deleted, since that loses nothing.
@@ -1207,7 +1194,7 @@ export class Maintenance {
 			runDirsPruned++;
 		}
 
-		// --- worktrees + branches ---
+		// --- run workspaces ---
 		const wm = createRunWorkspace(this.deps.projectRoot);
 		const liveStates = new Set<string>([
 			"starting",
@@ -1215,7 +1202,7 @@ export class Maintenance {
 			"ended",
 			"finalizing",
 			"merging",
-			// An import parked for human approval keeps its branch and worktree: they are the work being judged.
+			// An import parked for human approval keeps its workspace: it is the work being judged.
 			"needs_review",
 		]);
 		const liveRuns = allRuns.filter(
@@ -1223,39 +1210,38 @@ export class Maintenance {
 		);
 		const allTasks = await this.deps.tasks.list();
 		const preserved = new Set(
-			allTasks.map((t) => t.preservedWorktree).filter((p): p is string => !!p),
+			allTasks.map((t) => t.preservedWorkspace).filter((p): p is string => !!p),
 		);
-		// Tasks in review or blocked keep their worktree even without a preserved pointer (T14/T15 release without a gc step).
+		// Tasks in review or blocked keep their workspace even without a preserved pointer (T14/T15 release without a gc step).
 		const awaitingHuman = new Set(
 			allTasks
 				.filter((t) => t.status === "review" || t.status === "blocked")
 				.map((t) => t.id),
 		);
 		for (const run of allRuns) {
-			if (run.taskId && awaitingHuman.has(run.taskId) && run.worktreePath) {
-				preserved.add(run.worktreePath);
+			if (run.taskId && awaitingHuman.has(run.taskId) && run.workspacePath) {
+				preserved.add(run.workspacePath);
 			}
 		}
 		const keepPaths = new Set([
 			...liveRuns
-				.map((run) => run.worktreePath)
+				.map((run) => run.workspacePath)
 				.filter((path): path is string => !!path)
 				.map((path) => resolve(path)),
 			...[...preserved].map((path) => resolve(path)),
 		]);
 
-		// Git lists every repository worktree; only those with the durable identity
-		// from RunWorkspace.seed() (`<repo>/worktrees/<runId>` on branch
-		// `mfw/<runId>`) are removable. The creator row supplies the base SHA, so
-		// manual/IDE/terminal-manager worktrees are never candidates.
+		// Only a workspace with the durable identity from RunWorkspace.seed()
+		// (`$MFW_HOME/workspaces/<runId>`, branch `mfw/<runId>`) whose creator row
+		// matches is removable.
 		const registered = new Set((await wm.list()).map((path) => resolve(path)));
 		const ownedCandidates = new Map<
 			string,
 			{ branch: string; baseSha: string }
 		>();
 		for (const run of allRuns) {
-			if (!run.worktreePath || !run.branch || !run.baseSha) continue;
-			const path = resolve(run.worktreePath);
+			if (!run.workspacePath || !run.branch || !run.baseSha) continue;
+			const path = resolve(run.workspacePath);
 			if (path !== resolve(wm.paths(run.id).workPath)) continue;
 			if (run.branch !== `mfw/${run.id}`) continue;
 			if (!registered.has(path)) continue;
@@ -1274,31 +1260,34 @@ export class Maintenance {
 			});
 		}
 
-		let worktreesRemoved = 0;
+		let workspacesRemoved = 0;
 		for (const [path, owned] of ownedCandidates) {
 			if (keepPaths.has(path)) continue;
 
-			// Never erase work: preserve a dirty tree or a branch whose tip has not landed. GC is not a finalizer.
+			// Never erase work: preserve a clone whose result was never imported,
+			// or whose imported tip has not landed. GC is not a finalizer.
+			// The first read performs the end-of-run import. The newest work
+			// includes the WIP snapshot of anything left uncommitted.
+			const imported = await wm
+				.fetchResult({ path, ...owned })
+				.then(() => wm.newestWorkOf({ path }))
+				.catch(() => null);
 			const localChanges = await wm.hasLocalChanges({ path }).catch(() => true);
-			// A clone's HEAD is agent-written; only a linked worktree's is asked.
-			const onBranch =
-				wm.kind === "clone" ||
-				(await git(["symbolic-ref", "--short", "HEAD"], path).then(
-					(b) => b.exitCode === 0 && b.stdout.trim() === owned.branch,
-				));
-			const integrated = await git(
-				[
-					"merge-base",
-					"--is-ancestor",
-					owned.branch,
-					this.deps.integrationBranch,
-				],
-				this.deps.projectRoot,
-			);
-			if (localChanges || !onBranch || integrated.exitCode !== 0) {
+			const integrated = imported
+				? await git(
+						[
+							"merge-base",
+							"--is-ancestor",
+							imported,
+							this.deps.integrationBranch,
+						],
+						this.deps.projectRoot,
+					)
+				: null;
+			if (localChanges || integrated?.exitCode !== 0) {
 				this.deps.log.warn(
 					{ path, branch: owned.branch },
-					"preserving MFW worktree because clean integrated state is not proven",
+					"preserving a run workspace: its result is not proven landed",
 				);
 				continue;
 			}
@@ -1311,78 +1300,13 @@ export class Maintenance {
 			} catch (error) {
 				this.deps.log.warn(
 					{ path, error },
-					"preserving MFW worktree because Git refused removal",
+					"preserving a run workspace: its removal was refused",
 				);
 				continue;
 			}
-			worktreesRemoved++;
+			workspacesRemoved++;
 		}
-		await git(["worktree", "prune"], this.deps.projectRoot);
-
-		const branchesDeleted = await this.gcMergedBranches(
-			allRuns,
-			liveRuns,
-			keepPaths,
-		);
-		return { runDirsPruned, worktreesRemoved, branchesDeleted };
-	}
-
-	/**
-	 * Delete `mfw/<runId>` branches that can lose nothing: the run row exists
-	 * and is finished, no worktree has the branch checked out, nothing keeps
-	 * the run's worktree (live, preserved, awaiting a human), and the tip is
-	 * already contained in the integration branch. Deletion is
-	 * compare-and-delete on the tip just checked. `wip/*` and every other
-	 * namespace are never touched; an unmerged branch is never deleted.
-	 */
-	private async gcMergedBranches(
-		allRuns: RunRow[],
-		liveRuns: RunRow[],
-		keepPaths: Set<string>,
-	): Promise<number> {
-		const root = this.deps.projectRoot;
-		const refs = await git(
-			["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/mfw/"],
-			root,
-		);
-		if (refs.exitCode !== 0 || !refs.stdout) return 0;
-		// A cut list could leave a checked-out branch looking free to delete.
-		const worktrees = await gitComplete(
-			["worktree", "list", "--porcelain"],
-			root,
-		).catch(() => null);
-		if (worktrees === null) return 0;
-		const checkedOut = new Set(
-			worktrees
-				.split("\n")
-				.filter((line) => line.startsWith("branch "))
-				.map((line) => line.slice("branch ".length)),
-		);
-		const byId = new Map(allRuns.map((run) => [run.id, run]));
-		const live = new Set(liveRuns.map((run) => run.id));
-		let deleted = 0;
-		for (const line of refs.stdout.split("\n")) {
-			const [ref, sha] = line.split(" ");
-			if (!ref || !sha || checkedOut.has(ref)) continue;
-			const runId = ref.slice("refs/heads/mfw/".length);
-			const run = byId.get(runId);
-			if (!run || run.branch !== `mfw/${runId}` || live.has(run.id)) continue;
-			if (run.worktreePath && keepPaths.has(resolve(run.worktreePath)))
-				continue;
-			const integrated = await git(
-				[
-					"merge-base",
-					"--is-ancestor",
-					sha,
-					`refs/heads/${run.integrationBranch ?? this.deps.integrationBranch}`,
-				],
-				root,
-			);
-			if (integrated.exitCode !== 0) continue;
-			const removed = await git(["update-ref", "-d", ref, sha], root);
-			if (removed.exitCode === 0) deleted++;
-		}
-		return deleted;
+		return { runDirsPruned, workspacesRemoved };
 	}
 
 	/**

@@ -7,18 +7,13 @@
 import { stripAutonomyFlags } from "@mfw/plugin-api/harness-autonomy";
 import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 import { profileFor } from "../../src/agents/acp-translate.ts";
-import {
-	AdapterRegistry,
-	acpInferenceLaunch,
-	PI_ACP_VERSION,
-} from "../../src/agents/adapter.ts";
+import { AdapterRegistry, PI_ACP_VERSION } from "../../src/agents/adapter.ts";
 import {
 	catalogueCredentialIds,
 	DEFAULT_PROVIDER_ID,
 	MODEL_SNAPSHOT_CHECKED,
 	PROVIDER_CATALOGUE,
 } from "../../src/agents/catalogue.ts";
-import { inferenceEnv } from "../../src/agents/inference-env.ts";
 import {
 	HARNESS_CONFIG_PATHS,
 	isHostExecutedPath,
@@ -116,16 +111,6 @@ export function captureHarnessMaps(): Record<string, unknown> {
 			}
 		}
 	}
-	const inference: Record<string, unknown> = {};
-	for (const id of acpIds)
-		for (const model of ["default", "fixture-model"]) {
-			const l = acpInferenceLaunch(id, model);
-			inference[`${id}|${model}`] = {
-				providerArgv: l.providerArgv,
-				env: l.env,
-			};
-		}
-
 	const autonomyCorpus = [
 		"--dangerously-skip-permissions",
 		"--dangerously-skip-permissions=true",
@@ -216,22 +201,6 @@ export function captureHarnessMaps(): Record<string, unknown> {
 				};
 			}
 
-	const inferenceEnvs: Record<string, unknown> = {};
-	const source = Object.fromEntries(
-		[
-			"PATH",
-			"HOME",
-			"CODEX_HOME",
-			"CLAUDE_CONFIG_DIR",
-			"UNRELATED",
-			...PROVIDER_CATALOGUE.flatMap((p) =>
-				p.auth.flatMap((a) => a.envVars ?? []),
-			),
-		].map((k) => [k, `v-${k}`]),
-	);
-	for (const id of [...ids, "unknown"])
-		inferenceEnvs[id] = inferenceEnv(id, source);
-
 	return plainJson({
 		capturedFrom: "the hand-written harness maps before the manifests",
 		piAcpVersion: PI_ACP_VERSION,
@@ -253,8 +222,6 @@ export function captureHarnessMaps(): Record<string, unknown> {
 			[...acpIds, "unknown"].map((id) => [id, profileFor(id)]),
 		),
 		launches,
-		inference,
-		inferenceEnvs,
 		autonomyCorpus,
 		hostProbeScript: hostProbeScript(),
 	});

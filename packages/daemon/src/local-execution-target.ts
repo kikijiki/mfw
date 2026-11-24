@@ -12,11 +12,11 @@ import type {
 	PreparedExecution,
 	PrepareExecutionRequest,
 } from "./execution-target.ts";
-import { gitOk } from "./git.ts";
+import { isRunWorkspacePath } from "./host-git/legacy-guard.ts";
 import {
-	createRunWorkspace,
+	newestImportedWork,
+	projectWorkspacePort,
 	type WorkspacePort,
-	workspacePort,
 } from "./run-workspace/factory.ts";
 
 /** The tmux-shaped mechanics needed by the local adapter, kept out of RunEngine. */
@@ -39,64 +39,84 @@ export interface LocalExecutionHost {
 	kill(runDir: string, runId: string, reason: string): Promise<void>;
 }
 
-export type LocalWorktreePort = WorkspacePort;
+export type LocalWorkspacePort = WorkspacePort;
 
 export interface LocalExecutionTargetDeps {
 	projectRoot: string;
 	integrationBranch: string;
 	host: LocalExecutionHost;
-	worktrees?: LocalWorktreePort;
+	workspaces?: LocalWorkspacePort;
 }
 
 const LOCAL_OBSERVED_SHAPE = { host: "daemon", transport: "tmux" } as const;
 
-/** Current local worktree + tmux behavior expressed through the shared target contract. */
+/** Current local workspace + tmux behavior expressed through the shared target contract. */
 export class LocalExecutionTarget implements ExecutionTarget {
 	readonly kind = "local";
-	private readonly worktrees: LocalWorktreePort;
+	private readonly workspaces: LocalWorkspacePort;
 
 	constructor(private readonly deps: LocalExecutionTargetDeps) {
-		this.worktrees =
-			deps.worktrees ?? workspacePort(createRunWorkspace(deps.projectRoot));
+		this.workspaces = deps.workspaces ?? projectWorkspacePort(deps.projectRoot);
 	}
 
 	async prepare(request: PrepareExecutionRequest): Promise<PreparedExecution> {
-		if (request.reuse) {
-			// A clone's HEAD is agent-written, so its base is only ever the recorded one.
-			if (
-				!request.reuse.baseSha &&
-				createRunWorkspace(this.deps.projectRoot).kind === "clone"
-			) {
-				throw new Error(
-					`cannot reuse ${request.reuse.worktreePath}: the clone has no recorded base`,
-				);
-			}
-			const baseSha =
-				request.reuse.baseSha ??
-				(await gitOk(["rev-parse", "HEAD"], request.reuse.worktreePath));
+		// A brain turn reuses its scratch dir as is; only a run clone is continued.
+		if (request.reuse && !isRunWorkspacePath(request.reuse.workspacePath)) {
+			const { workspacePath, branch, baseSha } = request.reuse;
+			if (!baseSha) throw new Error(`cannot reuse ${workspacePath}: no base`);
 			return {
 				targetKind: this.kind,
 				workspace: {
-					canonicalPath: request.reuse.worktreePath,
-					executionPath: request.reuse.worktreePath,
-					branch: request.reuse.branch,
+					canonicalPath: workspacePath,
+					executionPath: workspacePath,
+					branch,
 					baseSha,
 				},
 				globalLeaseRef: null,
 				observedShape: LOCAL_OBSERVED_SHAPE,
 			};
 		}
-		const worktree = await this.worktrees.create(
+		if (request.reuse) {
+			// A clone's HEAD is agent-written, so its base is only ever the recorded one.
+			const baseSha = request.reuse.baseSha;
+			if (!baseSha) {
+				throw new Error(
+					`cannot continue ${request.reuse.workspacePath}: the clone has no recorded base`,
+				);
+			}
+			// A continuation gets a clone of its own, seeded from the work the
+			// host imported from the earlier one (its WIP snapshot included): an
+			// import is keyed to the clone's run and happens once.
+			const from =
+				(await newestImportedWork(
+					this.deps.projectRoot,
+					request.reuse.workspacePath,
+				)) ?? baseSha;
+			const clone = await this.workspaces.create(request.owner.runId, from);
+			return {
+				targetKind: this.kind,
+				workspace: {
+					canonicalPath: clone.path,
+					executionPath: clone.path,
+					branch: clone.branch,
+					// Judged against the original base, so the earlier work counts.
+					baseSha,
+				},
+				globalLeaseRef: null,
+				observedShape: LOCAL_OBSERVED_SHAPE,
+			};
+		}
+		const workspace = await this.workspaces.create(
 			request.owner.runId,
 			request.integrationBranch,
 		);
 		return {
 			targetKind: this.kind,
 			workspace: {
-				canonicalPath: worktree.path,
-				executionPath: worktree.path,
-				branch: worktree.branch,
-				baseSha: worktree.baseSha,
+				canonicalPath: workspace.path,
+				executionPath: workspace.path,
+				branch: workspace.branch,
+				baseSha: workspace.baseSha,
 			},
 			globalLeaseRef: null,
 			observedShape: LOCAL_OBSERVED_SHAPE,
@@ -107,8 +127,10 @@ export class LocalExecutionTarget implements ExecutionTarget {
 		request: PrepareExecutionRequest,
 		prepared: PreparedExecution,
 	): Promise<void> {
-		if (request.reuse) return;
-		await this.worktrees.remove({
+		if (request.reuse && !isRunWorkspacePath(request.reuse.workspacePath)) {
+			return;
+		}
+		await this.workspaces.remove({
 			path: prepared.workspace.canonicalPath,
 			branch: prepared.workspace.branch,
 			baseSha: prepared.workspace.baseSha,
@@ -138,7 +160,7 @@ export class LocalExecutionTarget implements ExecutionTarget {
 				initialMessage: request.driver.initialMessage,
 				steer: request.driver.steer,
 				approvalMode: request.driver.approvalMode,
-				isolation: request.driver.isolation,
+				isolation: requireIsolation(request.driver.isolation),
 				runKind: request.driver.runKind,
 				providerId: request.driver.providerId,
 			});
@@ -199,7 +221,7 @@ export class LocalExecutionTarget implements ExecutionTarget {
 	}
 
 	async collect(_ref: ExecutionTargetRef): Promise<CollectExecutionResult> {
-		// The canonical worktree and run directory already are local.
+		// The canonical workspace and run directory already are local.
 		return { observedShape: LOCAL_OBSERVED_SHAPE };
 	}
 
@@ -245,4 +267,10 @@ export function createLocalExecutionTarget(
 	deps: LocalExecutionTargetDeps,
 ): LocalExecutionTarget {
 	return new LocalExecutionTarget(deps);
+}
+
+/** A local run always launches in the sandbox; a request without one is a bug. */
+function requireIsolation<T>(isolation: T | undefined): T {
+	if (!isolation) throw new Error("a local run launches only in its sandbox");
+	return isolation;
 }

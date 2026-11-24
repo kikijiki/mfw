@@ -43,7 +43,7 @@ function sortedEnvironment(
 	);
 }
 
-/** Builds from a literal baseline, never `process.env`, so a remote checkout cannot depend on direnv or dotfiles. Used by worktree setup and the driver. */
+/** Builds from a literal baseline, never `process.env`, so a remote checkout cannot depend on direnv or dotfiles. Used by workspace setup and the driver. */
 export class ExecutionEnvironmentBuilder {
 	constructor(
 		private readonly configured: Readonly<Record<string, string>> = {},

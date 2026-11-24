@@ -197,7 +197,7 @@ export type ChipKey =
 	| "blocked"
 	| "review"
 	| "sessions"
-	| "worktrees"
+	| "workspaces"
 	| "brain"
 	| "spend";
 
@@ -303,12 +303,12 @@ export function statChips(
 			to: href.flow(project, { f: "live" }),
 		});
 	}
-	const wt = summary.worktrees;
+	const wt = summary.workspaces;
 	if (wt.active + wt.parked > 0) {
 		add({
-			key: "worktrees",
+			key: "workspaces",
 			text: String(wt.active + wt.parked),
-			label: `${plural(wt.active + wt.parked, "worktree")} (${wt.active} active, ${wt.parked} parked)`,
+			label: `${plural(wt.active + wt.parked, "workspace")} (${wt.active} active, ${wt.parked} parked)`,
 			tone: "neutral",
 			to: href.files(project),
 		});

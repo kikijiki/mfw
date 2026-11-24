@@ -6,7 +6,6 @@ import {
 	type InferenceClient,
 	type InferenceOpts,
 	type InferenceReply,
-	inferenceForProvider,
 	parseClaudeReply,
 } from "./brain.ts";
 import type { LauncherSteps } from "./containment/agent-launch.ts";
@@ -117,7 +116,13 @@ export function criticInferenceFor(
 				},
 			};
 		default:
-			// Its own call-time refusal: no non-interactive transport.
-			return inferenceForProvider(provider);
+			// Deferred to call time so enabled:false stays a no-op.
+			return {
+				complete: async () => {
+					throw new Error(
+						`provider '${provider.id}' has no non-interactive brain transport`,
+					);
+				},
+			};
 	}
 }

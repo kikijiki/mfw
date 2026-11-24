@@ -43,7 +43,7 @@ const summary = (over: Partial<ProjectSummary> = {}): ProjectSummary => ({
 	project: "dummy-todo",
 	tasks: { ...EMPTY_TASK_COUNTS },
 	sessions: { live: 0, waiting: 0 },
-	worktrees: { active: 0, parked: 0 },
+	workspaces: { active: 0, parked: 0 },
 	needsYou: 0,
 	brain: { enabled: true, state: "idle" },
 	spendTodayUsd: 0,
@@ -131,7 +131,7 @@ describe("statChips", () => {
 		const s = summary({
 			tasks: { ...EMPTY_TASK_COUNTS, in_progress: 2, review: 1 },
 			sessions: { live: 2, waiting: 1 },
-			worktrees: { active: 2, parked: 1 },
+			workspaces: { active: 2, parked: 1 },
 			needsYou: 1,
 			spendTodayUsd: 1.234,
 		});
@@ -141,7 +141,7 @@ describe("statChips", () => {
 			"progress",
 			"review",
 			"sessions",
-			"worktrees",
+			"workspaces",
 			"spend",
 		]);
 		expect(chips.find((c) => c.key === "sessions")?.label).toContain(

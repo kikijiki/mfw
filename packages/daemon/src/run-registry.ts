@@ -125,7 +125,7 @@ export interface NewRunSpec {
 	providerId?: string;
 	reasoningEffort?: RunReasoningEffort;
 	cwd: string;
-	worktreePath?: string;
+	workspacePath?: string;
 	branch?: string;
 	integrationBranch?: string;
 	baseSha?: string;
@@ -155,7 +155,7 @@ export interface NewRunSpec {
 	hostId?: string | null;
 	/** Typed lineage. Derived from kind/label/parent when absent (the same rules the backfill uses). */
 	relation?: RunRelation;
-	/** First run of the worktree chain; derived from the parent's chain when absent. */
+	/** First run of the workspace chain; derived from the parent's chain when absent. */
 	chainRootId?: string;
 	/** The `decisions.id` whose action created this run. */
 	spawnedByDecisionId?: number;
@@ -183,7 +183,7 @@ export interface TargetLifecycleEntry {
 		Pick<
 			RunRow,
 			| "cwd"
-			| "worktreePath"
+			| "workspacePath"
 			| "branch"
 			| "baseSha"
 			| "targetProjectId"
@@ -219,7 +219,7 @@ export type TransitionPatch = Partial<
 		| "finishedAt"
 		| "capabilities"
 		| "usage"
-		| "worktreePath"
+		| "workspacePath"
 		| "branch"
 		| "baseSha"
 		| "cwd"
@@ -348,7 +348,7 @@ export class RunRegistry {
 			providerId: spec.providerId ?? null,
 			reasoningEffort: spec.reasoningEffort ?? null,
 			cwd: spec.cwd,
-			worktreePath: spec.worktreePath ?? null,
+			workspacePath: spec.workspacePath ?? null,
 			branch: spec.branch ?? null,
 			integrationBranch: spec.integrationBranch ?? null,
 			baseSha: spec.baseSha ?? null,
@@ -699,10 +699,10 @@ export class RunRegistry {
 	}
 
 	/** Record a new worktree while the run is still starting. Not a transition/event; closes the crash window between `git worktree add` and agent launch. */
-	async setStartingWorktree(
+	async setStartingWorkspace(
 		runId: string,
 		patch: {
-			worktreePath: string;
+			workspacePath: string;
 			branch: string;
 			baseSha: string;
 			cwd: string;
@@ -910,39 +910,6 @@ export class RunRegistry {
 			.update(runs)
 			.set({ runDirLayout: "split" })
 			.where(eq(runs.id, runId));
-	}
-
-	/**
-	 * Record what the run's workspace is, once. Later code routes on this and
-	 * never on the project's current `runWorkspace`.
-	 */
-	async recordWorkspaceKind(
-		runId: string,
-		kind: "worktree" | "clone",
-	): Promise<void> {
-		await this.handle.db
-			.update(runs)
-			.set({ workspaceKind: kind })
-			.where(and(eq(runs.id, runId), isNull(runs.workspaceKind)));
-	}
-
-	/**
-	 * Record the mode the agent is about to launch under. Autonomous always
-	 * wins: a relaunch without a person approving each action must not keep an
-	 * earlier `interactive`, which would let its checks run on the host.
-	 */
-	async recordApprovalMode(
-		runId: string,
-		mode: "autonomous" | "interactive",
-	): Promise<void> {
-		await this.handle.db
-			.update(runs)
-			.set({ approvalMode: mode })
-			.where(
-				mode === "autonomous"
-					? eq(runs.id, runId)
-					: and(eq(runs.id, runId), isNull(runs.approvalMode)),
-			);
 	}
 
 	/** What the agent left at `outbox/exit`. Stored as a claim, never read for a verdict. */

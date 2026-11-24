@@ -74,10 +74,7 @@ beforeEach(async () => {
 	expect(await has(primaryGit, otherBranchBlob)).toBe(true);
 	expect(await has(primaryGit, deletedBlob)).toBe(true);
 	expect(await has(primaryGit, tipBlob)).toBe(true);
-	configureRunWorkspace(primary, {
-		kind: "worktree",
-		clone: { workspaceRoot: workspaces },
-	});
+	configureRunWorkspace(primary, { workspaceRoot: workspaces });
 });
 
 afterEach(async () => {

@@ -10,7 +10,7 @@
  *
  * The check sees its clone's tree (writable, for build outputs), a read-only
  * gitdir, a synthetic home and tmpfs scratch. It has no network, no credentials
- * and no ambient environment: `envPolicy` no longer reaches it.
+ * and no ambient environment.
  *
  * The project's approved dev environment (dev-env-resolve.ts) is applied as
  * the sandbox's own environment, with its store closure bound read-only, so a

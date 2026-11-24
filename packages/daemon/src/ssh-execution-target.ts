@@ -37,18 +37,21 @@ import {
 	assertRemoteTargetEnabled,
 	remoteTargetEnabled,
 } from "./remote-experimental.ts";
-import { applyRemoteCollection, createRemoteStage } from "./remote-worktree.ts";
 import {
-	createRunWorkspace,
+	applyRemoteCollection,
+	createRemoteStage,
+} from "./remote-workspace.ts";
+import {
+	newestImportedWork,
+	projectWorkspacePort,
 	type WorkspacePort,
-	workspacePort,
 } from "./run-workspace/factory.ts";
 import { RemoteTransportError, type SshTransport } from "./ssh-transport.ts";
 
 /**
  * Execution on a registry SSH host (`execution_target: ssh`). Same lifecycle
  * and remote runtime as RunPod, minus the provider account: the box exists,
- * so `prepare` only creates the canonical local worktree and names the run's
+ * so `prepare` only creates the canonical local workspace and names the run's
  * directory on the box; `launch` ships a stage bundle (never the repo's
  * remotes or credentials), the runtime and the driver, then starts the
  * detached driver; `collect` brings changes back by 3-way apply; `dispose`
@@ -59,7 +62,7 @@ import { RemoteTransportError, type SshTransport } from "./ssh-transport.ts";
  *     passwordless sudo, bwrap where required);
  *   - `sandbox: bwrap` hosts run the driver in bwrap: filesystem read-only
  *     except $HOME and /tmp, `~/.ssh` and every other run's directory masked,
- *     this run's worktree and run dir bound writable;
+ *     this run's workspace and run dir bound writable;
  *   - a `shared` host receives only the workload secrets it lists in
  *     `secrets`; any other granted secret refuses the launch;
  *   - no push credential, agent socket or $MFW_HOME ever crosses: the public
@@ -85,7 +88,7 @@ export interface SshExecutionTargetOptions {
 	integrationBranch: string;
 	/** Experimental, off by default: omitted reads MFW_EXPERIMENTAL_REMOTE=1. */
 	enabled?: boolean;
-	worktrees?: WorkspacePort;
+	workspaces?: WorkspacePort;
 	/** Defaults to the strict, registry-pinned SshTransport. */
 	transport: (
 		host: RegisteredHost,
@@ -113,7 +116,7 @@ export class SshHostUnavailableError extends Error {
 
 interface RemotePaths {
 	root: string;
-	worktree: string;
+	workspace: string;
 	runDir: string;
 	support: string;
 	stage: string;
@@ -126,7 +129,7 @@ interface RemotePaths {
 function pathsAt(root: string): RemotePaths {
 	return {
 		root,
-		worktree: `${root}/worktree`,
+		workspace: `${root}/workspace`,
 		runDir: `${root}/run`,
 		support: `${root}/support`,
 		stage: `${root}/support/stage.json`,
@@ -162,14 +165,14 @@ export function hostWorkdir(
  * The bwrap prefix for a run's driver on the box: host filesystem read-only,
  * `$HOME` and `/tmp` writable (harness state and auth live in `$HOME`),
  * `~/.ssh` masked so the agent cannot touch authorized_keys, every other
- * run's directory masked, this run's support read-only and its worktree and
+ * run's directory masked, this run's support read-only and its workspace and
  * run dir writable. Network stays shared (documented).
  */
 export function remoteBwrapArgv(input: {
 	bwrapPath: string;
 	home: string;
 	workdir: string;
-	paths: Pick<RemotePaths, "support" | "worktree" | "runDir">;
+	paths: Pick<RemotePaths, "support" | "workspace" | "runDir">;
 }): string[] {
 	for (const path of [input.bwrapPath, input.home, input.workdir]) {
 		if (!isAbsolute(path)) throw new Error("sandbox paths must be absolute");
@@ -198,8 +201,8 @@ export function remoteBwrapArgv(input: {
 		input.paths.support,
 		input.paths.support,
 		"--bind",
-		input.paths.worktree,
-		input.paths.worktree,
+		input.paths.workspace,
+		input.paths.workspace,
 		"--bind",
 		input.paths.runDir,
 		input.paths.runDir,
@@ -209,14 +212,13 @@ export function remoteBwrapArgv(input: {
 
 export class SshExecutionTarget implements ExecutionTarget {
 	readonly kind = "ssh";
-	private readonly worktrees: NonNullable<
-		SshExecutionTargetOptions["worktrees"]
+	private readonly workspaces: NonNullable<
+		SshExecutionTargetOptions["workspaces"]
 	>;
 
 	constructor(private readonly options: SshExecutionTargetOptions) {
-		this.worktrees =
-			options.worktrees ??
-			workspacePort(createRunWorkspace(options.projectRoot));
+		this.workspaces =
+			options.workspaces ?? projectWorkspacePort(options.projectRoot);
 	}
 
 	private get maxTransferBytes(): number {
@@ -243,7 +245,7 @@ export class SshExecutionTarget implements ExecutionTarget {
 	): RemotePaths {
 		const execution = ref.workspace?.executionPath;
 		return pathsAt(
-			execution?.endsWith("/worktree")
+			execution?.endsWith("/workspace")
 				? dirname(execution)
 				: `${hostWorkdir(host.config, host.observed)}/${hex}`,
 		);
@@ -261,27 +263,27 @@ export class SshExecutionTarget implements ExecutionTarget {
 		const ref = sshRunRef(hostId, request.owner.ownerKey);
 		const { hex } = parseRef(ref);
 		const root = `${hostWorkdir(host.config, host.observed)}/${hex}`;
-		const worktree = request.reuse
+		const workspace = request.reuse
 			? {
-					path: request.reuse.worktreePath,
+					path: request.reuse.workspacePath,
 					branch: request.reuse.branch,
 					baseSha: request.reuse.baseSha ?? "",
 				}
-			: await this.worktrees.create(
+			: await this.workspaces.create(
 					request.owner.runId,
 					request.integrationBranch,
 				);
-		if (!worktree.baseSha) {
-			if (!request.reuse) await this.worktrees.remove(worktree);
-			throw new Error("remote canonical worktree has no base SHA");
+		if (!workspace.baseSha) {
+			if (!request.reuse) await this.workspaces.remove(workspace);
+			throw new Error("remote canonical workspace has no base SHA");
 		}
 		return {
 			targetKind: this.kind,
 			workspace: {
-				canonicalPath: worktree.path,
-				executionPath: pathsAt(root).worktree,
-				branch: worktree.branch,
-				baseSha: worktree.baseSha,
+				canonicalPath: workspace.path,
+				executionPath: pathsAt(root).workspace,
+				branch: workspace.branch,
+				baseSha: workspace.baseSha,
 			},
 			globalLeaseRef: ref,
 			observedShape: { hostId, phase: "prepared" },
@@ -293,7 +295,7 @@ export class SshExecutionTarget implements ExecutionTarget {
 		prepared: PreparedExecution,
 	): Promise<void> {
 		if (!request.reuse) {
-			await this.worktrees.remove({
+			await this.workspaces.remove({
 				path: prepared.workspace.canonicalPath,
 				branch: prepared.workspace.branch,
 				baseSha: prepared.workspace.baseSha,
@@ -352,6 +354,15 @@ export class SshExecutionTarget implements ExecutionTarget {
 			runDir: request.runDir,
 			branch: request.workspace.branch,
 			baseSha: request.workspace.baseSha,
+			// From the trusted primary: the base, or the work a continued run imported.
+			source: {
+				repo: this.options.projectRoot,
+				rev:
+					(await newestImportedWork(
+						this.options.projectRoot,
+						request.workspace.canonicalPath,
+					)) ?? request.workspace.baseSha,
+			},
 			maxTransferBytes: this.maxTransferBytes,
 		});
 		const bridgeLocal = request.driver.bridgeArgv?.find(
@@ -375,7 +386,7 @@ export class SshExecutionTarget implements ExecutionTarget {
 				remote.runtime,
 				"stage",
 				remote.stage,
-				remote.worktree,
+				remote.workspace,
 				observed.gitPath as string,
 			],
 			{ timeoutMs: 10 * 60_000 },
@@ -391,11 +402,11 @@ export class SshExecutionTarget implements ExecutionTarget {
 			// The harness logs in once on the box as this user: its auth is in $HOME.
 			HOME: home,
 			PATH: observed.path ?? `${dirname(bunPath)}:/usr/local/bin:/usr/bin:/bin`,
-			MFW_REPORT_PATH: `${remote.worktree}/MFW_REPORT.json`,
+			MFW_REPORT_PATH: `${remote.workspace}/MFW_REPORT.json`,
 		};
 		const config = {
 			runDir: remote.runDir,
-			executionPath: remote.worktree,
+			executionPath: remote.workspace,
 			driverScript: remote.driver,
 			secretNames: secrets.names(),
 			bunPath,
@@ -413,7 +424,7 @@ export class SshExecutionTarget implements ExecutionTarget {
 				argv: request.driver.agentArgv,
 				bridgeArgv: bridgeArgv ?? request.driver.agentArgv,
 				providerArgv: request.driver.providerArgv ?? [],
-				cwd: remote.worktree,
+				cwd: remote.workspace,
 				env: publicEnvironment,
 				model: request.driver.model,
 				reasoningEffort: request.driver.reasoningEffort,
@@ -530,7 +541,7 @@ export class SshExecutionTarget implements ExecutionTarget {
 				"run",
 				remote.runtime,
 				"collect",
-				remote.worktree,
+				remote.workspace,
 				remote.runDir,
 				remote.stage,
 			],
@@ -553,14 +564,14 @@ export class SshExecutionTarget implements ExecutionTarget {
 			bytes,
 			ref.secretEnvironment ?? new SecretEnvironment({}),
 		);
-		const collections = join(ref.runDir, "remote-worktree", "collections");
+		const collections = join(ref.runDir, "remote-workspace", "collections");
 		await mkdir(collections, { recursive: true, mode: 0o700 });
 		const collectionPath = join(collections, `${manifest.digest}.json`);
 		await writeFileAtomic(collectionPath, bytes, { mode: 0o600 });
 		await applyRemoteCollection({
 			canonicalPath: ref.workspace.canonicalPath,
 			runDir: ref.runDir,
-			stagePath: join(ref.runDir, "remote-worktree", "stage.json"),
+			stagePath: join(ref.runDir, "remote-workspace", "stage.json"),
 			collectionPath,
 			maxTransferBytes: this.maxTransferBytes,
 		});

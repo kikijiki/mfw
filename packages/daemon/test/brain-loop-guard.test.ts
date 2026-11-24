@@ -48,7 +48,7 @@ const spawn = (taskId: string, over: Record<string, unknown> = {}) =>
 async function endedRun(
 	taskId: string,
 	state: RunState,
-	over: { outcome?: string; worktreePath?: string } = {},
+	over: { outcome?: string; workspacePath?: string } = {},
 ) {
 	const run = await u.registry.create({
 		kind: "task",
@@ -56,8 +56,8 @@ async function endedRun(
 		label: `${taskId}#implement`,
 		model: "sonnet",
 		cwd: u.root,
-		...(over.worktreePath
-			? { worktreePath: over.worktreePath, branch: "mfw/x" }
+		...(over.workspacePath
+			? { workspacePath: over.workspacePath, branch: "mfw/x" }
 			: {}),
 	});
 	await u.registry.transition(run.id, state, {
@@ -185,21 +185,21 @@ describe("the loop guard", () => {
 });
 
 describe("continue: spawns", () => {
-	test("a run whose worktree is gone cannot be continued; one that is there can", async () => {
+	test("a run whose workspace is gone cannot be continued; one that is there can", async () => {
 		const id = await readyTask();
 		const dir = await mkdtemp(join(tmpdir(), "mfw-continue-"));
 		try {
-			const present = await endedRun(id, "failed", { worktreePath: dir });
+			const present = await endedRun(id, "failed", { workspacePath: dir });
 			const gone = await endedRun(id, "failed", {
-				worktreePath: join(dir, "does-not-exist"),
+				workspacePath: join(dir, "does-not-exist"),
 			});
 
-			const ok = await spawn(id, { worktree: `continue:${present.id}` });
+			const ok = await spawn(id, { workspace: `continue:${present.id}` });
 			expect(ok.status).toBe("accepted");
 
-			const refused = await spawn(id, { worktree: `continue:${gone.id}` });
-			expect(refused.rejection?.code).toBe("worktree_gone");
-			expect(refused.rejection?.fix?.text).toContain("worktree: new");
+			const refused = await spawn(id, { workspace: `continue:${gone.id}` });
+			expect(refused.rejection?.code).toBe("workspace_gone");
+			expect(refused.rejection?.fix?.text).toContain("workspace: new");
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
@@ -213,11 +213,11 @@ describe("continue: spawns", () => {
 			label: "t",
 			model: "sonnet",
 			cwd: u.root,
-			worktreePath: u.root,
+			workspacePath: u.root,
 			branch: "mfw/x",
 		});
 		await u.registry.transition(live.id, "running");
-		const r = await spawn(id, { worktree: `continue:${live.id}` });
-		expect(r.rejection?.code).toBe("worktree_live");
+		const r = await spawn(id, { workspace: `continue:${live.id}` });
+		expect(r.rejection?.code).toBe("workspace_live");
 	});
 });

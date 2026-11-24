@@ -20,7 +20,7 @@ import type { Logger } from "../log.ts";
 import { AdmissionHeldError } from "../project-dispatch-admission.ts";
 import { GlobalStopError, type GroupRunSpec } from "../run-engine.ts";
 import type { RunRegistry, RunRow } from "../run-registry.ts";
-import { workspaceForRun } from "../run-workspace/factory.ts";
+import { createRunWorkspace } from "../run-workspace/factory.ts";
 import type { TaskService } from "../task-service.ts";
 import { TaskOwnershipHeldError } from "../tasks/index.ts";
 import type { VerificationPlan } from "../tasks/types.ts";
@@ -630,11 +630,11 @@ export class BrainActionExecutor {
 					pick: pickOf(v),
 					...(typeof v.target === "string" ? { target: v.target } : {}),
 					...(typeof v.brief === "string" ? { brief: v.brief } : {}),
-					worktree: { mode: "new" as const },
+					workspace: { mode: "new" as const },
 				};
 			});
 		}
-		const wt = String(a.worktree ?? "new");
+		const wt = String(a.workspace ?? "new");
 		return [
 			{
 				...base,
@@ -643,7 +643,7 @@ export class BrainActionExecutor {
 				pick: pickOf(a),
 				...(typeof a.target === "string" ? { target: a.target } : {}),
 				...(typeof a.brief === "string" ? { brief: a.brief } : {}),
-				worktree: wt.startsWith("continue:")
+				workspace: wt.startsWith("continue:")
 					? { mode: "continue" as const, runId: wt.slice("continue:".length) }
 					: { mode: "new" as const },
 			},
@@ -1373,17 +1373,17 @@ export class BrainActionExecutor {
 		return changed;
 	}
 
-	/** Save a loser's work to `wip/<task>-<run>`, then drop its worktree and keep its branch. */
+	/** Save a loser's work to `wip/<task>-<run>`, then drop its workspace and keep its branch. */
 	private async archiveLoser(run: RunRow): Promise<boolean> {
-		if (!run.worktreePath || !run.branch || !run.baseSha) return false;
-		const wt = workspaceForRun(this.deps.projectRoot, run);
+		if (!run.workspacePath || !run.branch || !run.baseSha) return false;
+		const wt = createRunWorkspace(this.deps.projectRoot);
 		const handle = {
-			path: run.worktreePath,
+			path: run.workspacePath,
 			branch: run.branch,
 			baseSha: run.baseSha,
 		};
 		const present = (await wt.list()).some(
-			(p) => p === run.worktreePath || p.endsWith(run.worktreePath as string),
+			(p) => p === run.workspacePath || p.endsWith(run.workspacePath as string),
 		);
 		if (!present) return false;
 		const archive = await wt.archive(handle, {

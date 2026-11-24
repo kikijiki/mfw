@@ -15,7 +15,7 @@ import {
  * Task attempt outcomes: one `task_attempt_outcomes` row per attempt chain.
  *
  * A chain is a root `task` run plus every `task` run that continues it in the
- * same worktree through `parent_run_id` (repair, resume and merge-unblock
+ * same workspace through `parent_run_id` (repair, resume and merge-unblock
  * children). A human rejection or any fresh dispatch starts a new chain.
  * Regression-recovery runs (`kind: "repair"`) never belong to a task chain.
  *

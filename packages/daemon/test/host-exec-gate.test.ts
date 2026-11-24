@@ -275,7 +275,7 @@ describe("merges", () => {
 		file: string,
 		content: string,
 	): Promise<void> {
-		const wt = join(root, "worktrees", name);
+		const wt = join(root, "workspaces", name);
 		await gitOk(["worktree", "add", "-q", "-b", name, wt, "main"], root);
 		await mkdir(join(wt, file, ".."), { recursive: true });
 		await writeFile(join(wt, file), content);
@@ -288,7 +288,7 @@ describe("merges", () => {
 			label: name,
 			model: "sonnet",
 			cwd: wt,
-			worktreePath: wt,
+			workspacePath: wt,
 			branch: name,
 			integrationBranch: "main",
 			startedAt: new Date(),

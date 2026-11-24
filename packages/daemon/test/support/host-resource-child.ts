@@ -194,6 +194,8 @@ async function crashDaemon(config: DaemonConfig): Promise<void> {
 	const orchestrator = await boot({
 		projects: config.projects,
 		mfwHome: config.home,
+		// The real probe needs a systemd user scope; the launch path is real.
+		sandboxPreflight: async () => null,
 		autostart: false,
 		log: silentLogger(),
 		kernelBootId: config.kernelBootId,
@@ -224,6 +226,8 @@ async function recoverDaemon(config: DaemonConfig): Promise<void> {
 	const orchestrator = await boot({
 		projects: config.projects,
 		mfwHome: config.home,
+		// The real probe needs a systemd user scope; the launch path is real.
+		sandboxPreflight: async () => null,
 		autostart: false,
 		log: silentLogger(),
 		kernelBootId: config.kernelBootId,

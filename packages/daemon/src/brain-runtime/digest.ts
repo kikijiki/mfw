@@ -129,7 +129,7 @@ How to work:
   review_fix, question, interrupted, merge_parked, ...) and its report are in
   "What happened", and its task is listed under "Waiting on you". Nothing
   happens to that task until you decide. To repair, resume, answer or fix a
-  conflict, \`spawn\` with \`worktree: "continue:<runId>"\` (same branch and
+  conflict, \`spawn\` with \`workspace: "continue:<runId>"\` (same branch and
   files; the settle's detail is in its prompt). Repeated failure on one task
   is refused: escalate with \`notify_human\` or archive it.
 - Every act tool needs a \`rationale\` (at most 1000 characters). Add

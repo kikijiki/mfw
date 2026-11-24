@@ -133,9 +133,9 @@ describe("spawn", () => {
 	test("a launch the engine refuses marks the action failed, with the reason, and wakes nothing twice", async () => {
 		const id = await ready("one");
 		const r = await act("spawn", { taskId: id, role: "implement" });
-		u.hooks.failLaunch = "worktree could not be created";
+		u.hooks.failLaunch = "workspace could not be created";
 		expect(await launchAll()).toEqual([
-			{ outcome: "failed", error: "worktree could not be created" },
+			{ outcome: "failed", error: "workspace could not be created" },
 		]);
 		const [row] = await u.handle.db
 			.select()
@@ -156,7 +156,7 @@ describe("spawn", () => {
 		const fork = await act("spawn", {
 			taskId: id,
 			role: "implement",
-			worktree: "fork:01ABC",
+			workspace: "fork:01ABC",
 		});
 		expect(fork.rejection?.code).toBe("fork_unsupported");
 		const cap = await act("spawn", {

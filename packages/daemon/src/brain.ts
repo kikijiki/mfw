@@ -1,5 +1,3 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { filesOutsideOwns, writeFileAtomic } from "@mfw/board-core";
 import type { ProjectDbHandle } from "@mfw/db/client";
@@ -13,16 +11,8 @@ import {
 	type RunState,
 	reviewVerdicts,
 } from "@mfw/db/schema";
-import {
-	type HarnessArgvValues,
-	renderHarnessArgv,
-} from "@mfw/plugin-api/harness";
-import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
-import { runAcpOneShot } from "./agents/acp-inference.ts";
-import { acpInferenceLaunch, type ProviderConfig } from "./agents/adapter.ts";
-import { inferenceEnv } from "./agents/inference-env.ts";
 import type {
 	BrainCallCtx,
 	BrainPort,
@@ -32,7 +22,6 @@ import { gitRaw } from "./git.ts";
 import { affectedPaths, parseDiffPaths } from "./git-diff-paths.ts";
 import type { Logger } from "./log.ts";
 import type { DiagnoseCtx, DiagnoseResult } from "./maintenance.ts";
-import { runProc } from "./proc.ts";
 import {
 	AGENT_REVIEW_LABEL,
 	DEFAULT_REVIEW_POLICY,
@@ -117,78 +106,6 @@ function addUsage(a: InferenceUsage, b: InferenceUsage): InferenceUsage {
 	return out;
 }
 
-const CLI_MAX_OUTPUT_BYTES = 1024 * 1024;
-
-/** A harness's one-shot argv from its manifest, on an optional replacement binary. */
-function inferenceArgv(
-	id: string,
-	bin: string | undefined,
-	values: HarnessArgvValues,
-): string[] {
-	const m = builtinHarnessRegistry().require(id);
-	const [command, ...rest] = renderHarnessArgv(
-		m.modes.inference ?? [],
-		m,
-		values,
-	);
-	return [bin ?? (command as string), ...rest];
-}
-
-/**
- * Headless `claude` CLI via `proc.ts` (budgeted, group-killed).
- *
- * Brain prompts are self-contained (the diff and facts are inlined), so the
- * model gets no tools, no MCP servers and no permission bypass, and runs in a
- * fresh empty directory that is removed afterwards: never the project root or
- * a run worktree, so it cannot read or write the code it is judging.
- */
-export class ClaudeCliInference implements InferenceClient {
-	constructor(private readonly opts: { bin?: string; tmpRoot?: string } = {}) {}
-
-	async complete(prompt: string, opts: InferenceOpts): Promise<InferenceReply> {
-		const cwd = await mkdtemp(
-			join(this.opts.tmpRoot ?? tmpdir(), "mfw-brain-"),
-		);
-		try {
-			return await this.run(prompt, opts, cwd);
-		} finally {
-			await rm(cwd, { recursive: true, force: true }).catch(() => {
-				// best-effort: an empty temp dir left behind is harmless
-			});
-		}
-	}
-
-	private async run(
-		prompt: string,
-		opts: InferenceOpts,
-		cwd: string,
-	): Promise<InferenceReply> {
-		const r = await runProc(
-			inferenceArgv("claude-cli", this.opts.bin, {
-				model: opts.model,
-				prompt,
-			}),
-			{
-				cwd,
-				env: inferenceEnv("claude-cli"),
-				timeoutMs: opts.timeoutMs,
-				maxOutputBytes: CLI_MAX_OUTPUT_BYTES,
-				...(opts.signal ? { signal: opts.signal } : {}),
-			},
-		);
-		if (r.timedOut) throw new Error("claude CLI timed out");
-		if (opts.signal?.aborted) throw new Error("claude CLI aborted");
-		if (r.exitCode !== 0) {
-			throw new Error(
-				`claude CLI failed (${r.exitCode ?? "signal"}): ${
-					r.stderr.trim() || r.stdout.trim() || "no output"
-				}`,
-			);
-		}
-		return parseClaudeReply(r.stdout);
-	}
-}
-
 /** A `--output-format json` envelope; anything else is usable raw text. */
 export function parseClaudeReply(stdout: string): InferenceReply {
 	try {
@@ -203,113 +120,6 @@ export function parseClaudeReply(stdout: string): InferenceReply {
 		// best-effort: a non-JSON envelope is still usable raw text
 	}
 	return { text: stdout };
-}
-
-/** Ephemeral Codex decision in a read-only sandbox (brain prompts only classify facts). */
-export class CodexCliInference implements InferenceClient {
-	constructor(private readonly opts: { cwd?: string; bin?: string } = {}) {}
-
-	async complete(prompt: string, opts: InferenceOpts): Promise<string> {
-		const reasoning = opts.reasoningEffort
-			? ["-c", `model_reasoning_effort=${JSON.stringify(opts.reasoningEffort)}`]
-			: [];
-		const r = await runProc(
-			inferenceArgv("codex-cli", this.opts.bin, {
-				model: opts.model,
-				prompt,
-				effortArgv: reasoning,
-			}),
-			{
-				cwd: this.opts.cwd,
-				env: inferenceEnv("codex-cli"),
-				timeoutMs: opts.timeoutMs,
-				maxOutputBytes: CLI_MAX_OUTPUT_BYTES,
-				...(opts.signal ? { signal: opts.signal } : {}),
-			},
-		);
-		if (r.timedOut) throw new Error("codex CLI timed out");
-		if (opts.signal?.aborted) throw new Error("codex CLI aborted");
-		if (r.exitCode !== 0) {
-			throw new Error(
-				`codex CLI failed (${r.exitCode ?? "signal"}): ${
-					r.stderr.trim() || r.stdout.trim() || "no output"
-				}`,
-			);
-		}
-		return r.stdout;
-	}
-}
-
-/**
- * One-shot call through the ACP bridge (Cursor, Gemini CLI, opencode) under
- * policy `none` (no tools), in a fresh temp dir removed afterwards. The
- * bridge owns read-only enforcement; this is just the app-server client.
- */
-export class AcpInference implements InferenceClient {
-	constructor(
-		private readonly providerId: string,
-		private readonly opts: {
-			providerArgv?: string[];
-			env?: Record<string, string>;
-		} = {},
-	) {}
-
-	async complete(prompt: string, opts: InferenceOpts): Promise<InferenceReply> {
-		const launch = acpInferenceLaunch(this.providerId, opts.model);
-		const cwd = await mkdtemp(join(tmpdir(), "mfw-brain-acp-"));
-		try {
-			const r = await runAcpOneShot(prompt, {
-				argv: [
-					...launch.bridgeArgv,
-					...(this.opts.providerArgv ?? launch.providerArgv),
-				],
-				cwd,
-				env: {
-					...inferenceEnv(this.providerId),
-					...launch.env,
-					...(this.opts.env ?? {}),
-				},
-				model: opts.model,
-				...(opts.reasoningEffort
-					? { reasoningEffort: opts.reasoningEffort }
-					: {}),
-				timeoutMs: opts.timeoutMs,
-				...(opts.signal ? { signal: opts.signal } : {}),
-			});
-			return Object.keys(r.usage).length > 0
-				? { text: r.text, usage: r.usage }
-				: { text: r.text };
-		} finally {
-			await rm(cwd, { recursive: true, force: true }).catch(() => {
-				// best-effort: an empty temp dir left behind is harmless
-			});
-		}
-	}
-}
-
-/** Provider selection at the composition boundary. */
-export function inferenceForProvider(
-	provider: ProviderConfig,
-	opts: { cwd?: string } = {},
-): InferenceClient {
-	switch (provider.type) {
-		case "claude-cli":
-			// Deliberately not `opts.cwd`: Claude brain calls run in a fresh temp dir.
-			return new ClaudeCliInference();
-		case "codex-cli":
-			return new CodexCliInference(opts);
-		case "acp":
-			return new AcpInference(provider.id);
-		default:
-			// Deferred to call time so enabled:false stays a no-op.
-			return {
-				complete: async () => {
-					throw new Error(
-						`provider '${provider.id}' has no non-interactive brain transport`,
-					);
-				},
-			};
-	}
 }
 
 // --- Prompt inputs ---
@@ -345,10 +155,10 @@ const EMPTY_FACTS: DiffFacts = { patch: "", stat: "", commits: "", files: [] };
 const GIT_TIMEOUT_MS = 30_000;
 const GIT_MAX_BYTES = 8 * 1024 * 1024;
 
-/** Real git in the subject run's worktree. Missing worktree/baseSha yields empty facts. */
+/** Real git in the subject run's workspace. Missing workspace/baseSha yields empty facts. */
 export class GitDiffSource implements DiffSource {
 	async collect(ctx: BrainCallCtx): Promise<DiffFacts> {
-		const cwd = ctx.worktreePath;
+		const cwd = ctx.workspacePath;
 		if (!cwd || !ctx.baseSha) return EMPTY_FACTS;
 		const range = `${ctx.baseSha}..HEAD`;
 		const [patch, stat, commits, names] = await Promise.all([
@@ -691,7 +501,7 @@ export interface BrainServiceDeps {
 	enabled: boolean;
 	/** Hard budget per decision, §6.3 default 120 s. */
 	timeoutMs?: number;
-	/** Where brain runs are rooted when the subject has no worktree. */
+	/** Where brain runs are rooted when the subject has no workspace. */
 	projectRoot?: string;
 	diffs?: DiffSource;
 	/** Task title/stall count for prompt context; a missing board only degrades the prompt. */
@@ -705,7 +515,7 @@ export interface BrainServiceDeps {
 	 */
 	agentReview?: (subject: {
 		branch: string;
-		runWorktree: string | null;
+		runWorkspace: string | null;
 	}) => InferenceClient | null;
 	/** Budget for one agent review (it reads code and may run tests). */
 	agentReviewTimeoutMs?: number;
@@ -832,7 +642,7 @@ export class BrainService implements BrainPort {
 			wantsAgent && ctx.branch
 				? (this.deps.agentReview?.({
 						branch: ctx.branch,
-						runWorktree: ctx.worktreePath,
+						runWorkspace: ctx.workspacePath,
 					}) ?? null)
 				: null;
 		const mode: ReviewMode = agentInference ? "agent" : "critic";
@@ -1165,7 +975,7 @@ export class BrainService implements BrainPort {
 				const { facts, subject } = await this.gather(ctx, point);
 				return {
 					prompt: spec.build(subject, facts),
-					cwd: ctx.worktreePath ?? this.deps.projectRoot ?? process.cwd(),
+					cwd: ctx.workspacePath ?? this.deps.projectRoot ?? process.cwd(),
 					attachTaskId: subject.exists,
 					extraInput: { diffChars: facts.patch.length },
 					parseContext: subject,

@@ -404,7 +404,7 @@ export class HumanOverrideService {
 					op: "continue_run",
 					runId,
 					taskId: run.taskId,
-					summary: `continue ${run.taskId} in run ${runId}'s worktree`,
+					summary: `continue ${run.taskId} in run ${runId}'s workspace`,
 				});
 				break;
 			}
@@ -623,7 +623,7 @@ export class HumanOverrideService {
 					actionId: `override-${overrideId}`,
 					decisionId: overrideId,
 					originRef: `human:override-${overrideId}`,
-					worktree: { mode: "continue", runId: step.runId },
+					workspace: { mode: "continue", runId: step.runId },
 				});
 				return;
 			}

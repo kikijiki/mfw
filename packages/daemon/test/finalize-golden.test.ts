@@ -67,7 +67,7 @@ const EXPECTED_SETTLE: Record<string, string> = {
 	"07 critic fix with rounds exhausted: human review": "review_fix",
 	"08 scope gate: files outside owns go to review before the critic":
 		"scope_outside",
-	"12 scope watchdog kill in a local worktree: reap, archive wip, block":
+	"12 scope watchdog kill in a local workspace: reap, archive wip, block":
 		"scope_violation",
 };
 
@@ -97,7 +97,7 @@ function base(over: Partial<FinalizeCtx> = {}): FinalizeCtx {
 			hasDod: true,
 			escalation: null,
 			attempt: 1,
-			worktreeDirty: false,
+			workspaceDirty: false,
 			exitCode: 0,
 		},
 		gates: {
@@ -111,7 +111,7 @@ function base(over: Partial<FinalizeCtx> = {}): FinalizeCtx {
 		critic: null,
 		planParsed: null,
 		reportHasFollowUps: false,
-		localWorktree: false,
+		localWorkspace: false,
 		leftBackground: false,
 		...over,
 	};
@@ -196,8 +196,8 @@ const CONTEXTS: Recorded[] = [
 		verify: { passed: false, crashed: true },
 	}),
 	record(
-		"12 scope watchdog kill in a local worktree: reap, archive wip, block",
-		base({ localWorktree: true }),
+		"12 scope watchdog kill in a local workspace: reap, archive wip, block",
+		base({ localWorkspace: true }),
 		{
 			outcome: "killed_watchdog",
 			killReason: "watchdog-scope",

@@ -139,7 +139,7 @@ export interface CloneLayout {
 }
 
 const CLONE_FIX =
-	'set "runWorkspace": "clone" for this project: a sandboxed run needs a private clone';
+	"discard the run and start it again: mfw seeds every run's private clone itself, so this one is missing or was altered";
 
 function isRealDir(path: string): boolean {
 	try {
@@ -158,8 +158,9 @@ function isRealFile(path: string): boolean {
 }
 
 /**
- * The clone around a work tree: `<root>/{tree,git,mfw-workspace.json}`. A linked
- * worktree is refused, because its gitdir lives in the primary repository.
+ * The clone around a work tree: `<root>/{tree,git,mfw-workspace.json}`.
+ * Anything else is refused: a tree whose gitdir lived elsewhere (a linked
+ * `git worktree`, say) would bind the primary repository into the sandbox.
  */
 export function cloneLayout(tree: string): CloneLayout {
 	const root = dirname(tree);

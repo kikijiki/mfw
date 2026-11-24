@@ -61,7 +61,6 @@ approve: changing it asks again.
 ```json
 {
   "name": "my-project",
-  "runWorkspace": "clone",
   "env": {
     "source": "auto",
     "setup": ["bun install --frozen-lockfile"],

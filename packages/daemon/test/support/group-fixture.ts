@@ -8,6 +8,8 @@ import { git } from "../../src/git.ts";
 import { silentLogger } from "../../src/log.ts";
 import type { Orchestrator, ProjectServices } from "../../src/services.ts";
 import { brainSpawn, openTurn, STUB_BRAIN } from "./brain-spawn.ts";
+import { useHostSnapshots } from "./host-snapshot.ts";
+import { onRunTree } from "./scripted-driver.ts";
 import { TEST_TMUX_SOCKET } from "./tmux-test-socket.ts";
 
 /**
@@ -31,12 +33,12 @@ const emit = (e) => appendFileSync(dir + "/events.jsonl",
   JSON.stringify({ ts: new Date().toISOString(), seq: seq++, ...e }) + "\\n");
 emit({ type: "hello", provider: "claude-cli", capabilities: { steer: true } });
 const control = JSON.parse(readFileSync(${JSON.stringify(controlPath)}, "utf8").toString() || "{}");
-const runId = cfg.cwd.split("/").pop();
+const runId = process.env.MFW_RUN_ID ?? cfg.cwd.split("/").at(-2);
 const slow = Number(control.slowMs ?? 0);
 if (slow > 0) await Bun.sleep(slow);
 if ((control.dirty ?? []).some((id) => cfg.cwd.includes(id))) {
   // Work in progress that never satisfies the DoD: left uncommitted, so the
-  // worktree survives finalization for a continue: spawn.
+  // workspace survives finalization for a continue: spawn.
   await Bun.write(cfg.cwd + "/scratch.txt", "half done by " + runId + "\\n");
 } else if (!(control.fail ?? []).some((id) => cfg.cwd.includes(id))) {
   await Bun.write(cfg.cwd + "/feature.txt", "implemented by " + runId + "\\n");
@@ -95,7 +97,10 @@ export async function groupFixture(
 	await git(["add", "-A"], root);
 	await git(["commit", "-q", "-m", "init"], root);
 	const driver = join(driverDir, "driver.ts");
-	await writeFile(driver, driverSource(controlPath));
+	await writeFile(
+		driver,
+		onRunTree(driverSource(controlPath), join(home, "workspaces")),
+	);
 	await writeFile(controlPath, "{}");
 
 	const config: ProjectConfig = {
@@ -108,9 +113,6 @@ export async function groupFixture(
 			changeReview: "off",
 		},
 		brain: STUB_BRAIN,
-		// The scripted driver and its control file live in a temp dir that a real
-		// sandbox's private /tmp would hide, and nothing here needs isolation.
-		agentIsolation: "none",
 		approvalMode: "interactive",
 		...over,
 	};
@@ -121,10 +123,14 @@ export async function groupFixture(
 		orchestrator = await boot({
 			projects: [config],
 			mfwHome: home,
+			// The real probe needs a systemd user scope; the launch path is real.
+			sandboxPreflight: async () => null,
 			autostart: false,
 			log: silentLogger(),
 		});
 		svc = orchestrator.get(config.name);
+		// Scripted agents run unsandboxed: the end-of-run snapshot runs on the host.
+		useHostSnapshots(config.root);
 		const adapters = (
 			svc.engine as unknown as {
 				deps: {

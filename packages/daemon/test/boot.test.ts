@@ -180,10 +180,11 @@ describe("machine-wide boot foundation", () => {
 		});
 		const svc = orchestrator.get("handoff");
 		const runId = `shutdown-${Date.now()}`;
-		const runDir = join(root, "shutdown-run");
-		await mkdir(runDir);
-		const driver = join(root, "long-driver.ts");
+		const runDir = svc.registry.runDir(runId);
+		await mkdir(runDir, { recursive: true });
+		const driver = join(home, "long-driver.ts");
 		await writeFile(driver, "await Bun.sleep(60_000);\n");
+		// A scripted host driver in place of the bridge: no agent starts.
 		await svc.host.launch({
 			runId,
 			runDir,
@@ -192,8 +193,10 @@ describe("machine-wide boot foundation", () => {
 			driverScript: driver,
 			agentArgv: ["true"],
 			steer: false,
-			// a bare long-lived driver, not a sandboxed autonomous agent
 			approvalMode: "interactive",
+			isolation: { mode: "bwrap", hidePaths: [home], mfwHome: home },
+			providerId: "claude-cli",
+			runKind: "task",
 		});
 		expect(await svc.host.isAlive(runId)).toBe(true);
 

@@ -6,9 +6,7 @@ import { AgentHost } from "../src/agent-host.ts";
 import { SecretEnvironment } from "../src/execution-environment.ts";
 import { git } from "../src/git.ts";
 import { pinnedTool, resetBwrapAvailableCache } from "../src/sandbox.ts";
-import { buildRunner } from "../src/verifier.ts";
 import {
-	baseSpec,
 	fakeHome,
 	installCleanup,
 	plant,
@@ -16,6 +14,7 @@ import {
 	usable,
 } from "./support/review-fixes.ts";
 import { runShTmux } from "./support/run-sh-tmux.ts";
+import { sandboxedSpec } from "./support/sandboxed-launch.ts";
 
 /** Security review wave 1 (C), X8: git, mkfifo and sh come from a trusted PATH only. */
 
@@ -31,20 +30,16 @@ describe("X8: git, mkfifo and sh are resolved from a trusted PATH only", () => {
 		process.env.PATH = `${join(home, "bin")}:${savedEnv.PATH}`;
 		resetBwrapAvailableCache();
 		expect((await git(["--version"], base)).exitCode).toBe(0);
-		expect(buildRunner({} as never)("true")[0]).toBe(
-			pinnedTool("sh") as string,
-		);
 		expect(pinnedTool("sh")).not.toContain(home);
 		// mkfifo runs when a launch carries a secret.
 		const why = await usable();
 		if (!why) {
-			const runDir = mk("run");
 			const driver = join(base, "d.ts");
 			writeFileSync(driver, "process.exit(0);");
 			const { runner, procs } = runShTmux();
 			const host = new AgentHost(undefined, { tmuxRunner: runner });
 			await host.launch({
-				...baseSpec(base, "x8", runDir, mk("wt")),
+				...(await sandboxedSpec(base, "x8", mk("wt"))),
 				driverScript: driver,
 				secretEnvironment: new SecretEnvironment({ MFW_X8: "v" }),
 			});

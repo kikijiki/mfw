@@ -4,7 +4,7 @@ import { git } from "./git.ts";
 import type { Logger } from "./log.ts";
 import type { RefusalFix } from "./refusal-fix.ts";
 import type { RunRegistry, RunRow } from "./run-registry.ts";
-import { workspaceForRun } from "./run-workspace/factory.ts";
+import { createRunWorkspace } from "./run-workspace/factory.ts";
 import type { WipArchive } from "./run-workspace/run-workspace.ts";
 import { runHoldsClaim, type TaskService } from "./task-service.ts";
 
@@ -14,7 +14,7 @@ import { runHoldsClaim, type TaskService } from "./task-service.ts";
  * not closed while its branch holds work that never landed.
  */
 
-/** Run states in which the run still owns its worktree and branch. */
+/** Run states in which the run still owns its workspace and branch. */
 const LIVE_RUN_STATES = new Set<string>([
 	"starting",
 	"running",
@@ -29,7 +29,7 @@ export interface UnmergedBranch {
 	branch: string;
 	baseSha: string;
 	tip: string;
-	worktreePath: string;
+	workspacePath: string;
 	/** Commits on the branch that are not on the integration branch. */
 	ahead: number;
 	integrationBranch: string;
@@ -59,7 +59,7 @@ export class TaskUnmergedError extends Error {
 	}
 }
 
-/** Discarding a run that still owns its worktree would pull it from under the agent. */
+/** Discarding a run that still owns its workspace would pull it from under the agent. */
 export class RunLiveError extends Error {
 	readonly fix: RefusalFix;
 	constructor(
@@ -67,7 +67,7 @@ export class RunLiveError extends Error {
 		readonly state: string,
 	) {
 		super(
-			`run ${runId} is ${state}; a live run's worktree cannot be discarded`,
+			`run ${runId} is ${state}; a live run's workspace cannot be discarded`,
 		);
 		this.name = "RunLiveError";
 		this.fix = {
@@ -110,13 +110,15 @@ export class LifecycleService {
 			.sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime())[0];
 		if (!newest?.branch || !newest.baseSha) return null;
 		const root = this.deps.projectRoot;
-		const tip = await git(
-			["rev-parse", "--verify", "-q", `refs/heads/${newest.branch}^{commit}`],
-			root,
-		);
-		if (tip.exitCode !== 0) return null; // branch gone: nothing to strand
-		const sha = tip.stdout.trim();
-		if (sha === newest.baseSha) return null;
+		// The run's work is what the host imported from its clone.
+		const sha = (
+			await createRunWorkspace(root).fetchResult({
+				path: this.workspacePathOf(newest),
+				branch: newest.branch,
+				baseSha: newest.baseSha,
+			})
+		).sha;
+		if (!sha || sha === newest.baseSha) return null; // nothing to strand
 		const integration = newest.integrationBranch ?? this.deps.integrationBranch;
 		const merged = await git(
 			["merge-base", "--is-ancestor", sha, `refs/heads/${integration}`],
@@ -138,15 +140,15 @@ export class LifecycleService {
 			branch: newest.branch,
 			baseSha: newest.baseSha,
 			tip: sha,
-			worktreePath: this.worktreePathOf(newest),
+			workspacePath: this.workspacePathOf(newest),
 			ahead: Number.parseInt(count.stdout, 10) || 1,
 			integrationBranch: integration,
 		};
 	}
 
 	/**
-	 * Save a non-live run's worktree and branch to `wip/<task>-<run>`, then
-	 * remove both. Refuses a live run, and a run whose cleanup is still pending
+	 * Save a non-live run's work to `wip/<task>-<run>`, then remove its
+	 * workspace and quarantine refs. Refuses a live run, and a run whose cleanup is still pending
 	 * (it still owns its writers).
 	 */
 	async discardRun(
@@ -170,12 +172,11 @@ export class LifecycleService {
 		if (!run.branch || !run.baseSha) {
 			return { runId, archive: null, removed: false };
 		}
-		const { archive, removed } = await workspaceForRun(
+		const { archive, removed } = await createRunWorkspace(
 			this.deps.projectRoot,
-			run,
 		).discard(
 			{
-				path: this.worktreePathOf(run),
+				path: this.workspacePathOf(run),
 				branch: run.branch,
 				baseSha: run.baseSha,
 			},
@@ -184,7 +185,7 @@ export class LifecycleService {
 		if (run.taskId) {
 			const task = await this.deps.tasks.get(run.taskId);
 			if (task?.preservedBranch === run.branch) {
-				await this.deps.tasks.clearPreservedWorktree(run.taskId);
+				await this.deps.tasks.clearPreservedWorkspace(run.taskId);
 			}
 		}
 		const event = await this.deps.handle.withTx((tx) =>
@@ -203,7 +204,7 @@ export class LifecycleService {
 		this.deps.bus.publish([event]);
 		this.deps.log.info(
 			{ runId, taskId: run.taskId, wip: archive?.ref ?? null, actor },
-			"run worktree discarded",
+			"run workspace discarded",
 		);
 		return { runId, archive, removed };
 	}
@@ -223,8 +224,8 @@ export class LifecycleService {
 		}
 		const results: DiscardResult[] = [];
 		for (const run of runs) {
-			const path = this.worktreePathOf(run);
-			const workspace = workspaceForRun(this.deps.projectRoot, run);
+			const path = this.workspacePathOf(run);
+			const workspace = createRunWorkspace(this.deps.projectRoot);
 			const result = await workspace.fetchResult({
 				path,
 				branch: run.branch as string,
@@ -237,10 +238,10 @@ export class LifecycleService {
 		return results;
 	}
 
-	private worktreePathOf(run: RunRow): string {
+	private workspacePathOf(run: RunRow): string {
 		return (
-			run.worktreePath ??
-			workspaceForRun(this.deps.projectRoot, run).paths(run.id).workPath
+			run.workspacePath ??
+			createRunWorkspace(this.deps.projectRoot).paths(run.id).workPath
 		);
 	}
 }

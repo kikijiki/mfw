@@ -213,9 +213,7 @@ describe("the doctor and the launch gate agree", () => {
 				config: async () => ({
 					ok: true,
 					config: {
-						projects: [
-							{ name: "demo", root: "/srv/demo", runWorkspace: "clone" },
-						],
+						projects: [{ name: "demo", root: "/srv/demo" }],
 					},
 				}),
 				project: async () =>

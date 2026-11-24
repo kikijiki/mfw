@@ -53,10 +53,7 @@ beforeEach(async () => {
 	mkdirSync(primary);
 	await gitOk(["init", "-q", "-b", "main"], primary);
 	baseSha = await commit("base");
-	configureRunWorkspace(primary, {
-		kind: "clone",
-		clone: { workspaceRoot: workspaces },
-	});
+	configureRunWorkspace(primary, { workspaceRoot: workspaces });
 });
 
 afterEach(() => {
@@ -101,7 +98,7 @@ describe("m8: no host git in a clone tree", () => {
 		expect(
 			await runner.isDirty({
 				id: RUN,
-				worktreePath: tree,
+				workspacePath: tree,
 				branch: `mfw/${RUN}`,
 				baseSha,
 			}),
@@ -119,7 +116,7 @@ describe("m8: no host git in a clone tree", () => {
 			target.prepare({
 				owner: { runId: RUN },
 				integrationBranch: "main",
-				reuse: { worktreePath: tree, branch: `mfw/${RUN}`, baseSha: null },
+				reuse: { workspacePath: tree, branch: `mfw/${RUN}`, baseSha: null },
 			} as never),
 		).rejects.toThrow("no recorded base");
 	});

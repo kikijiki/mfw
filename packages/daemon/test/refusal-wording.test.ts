@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isolationDispatchProblem } from "../src/config.ts";
 import {
 	devEnvRefusal,
 	NO_DEV_ENV_RESOLVER,
@@ -22,10 +21,6 @@ describe("user-facing refusals name no internal work package", () => {
 		expect(`${r?.detail} ${NO_DEV_ENV_RESOLVER}`).not.toContain(
 			"agentIsolation",
 		);
-		for (const runWorkspace of ["worktree", "clone"] as const) {
-			const issue = isolationDispatchProblem({ runWorkspace });
-			expect(`${issue?.detail} ${issue?.fix}`).not.toContain("P8");
-		}
 	});
 
 	test("no string literal in the refusal sources mentions it", () => {

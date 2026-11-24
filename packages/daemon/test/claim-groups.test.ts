@@ -60,7 +60,7 @@ async function legacyClaim(
 			claimedAt: Date.now(),
 			leaseExpiresAt: Date.now() + 600_000,
 			statusChangedAt: Date.now(),
-			worktree: null,
+			workspace: null,
 		})}\n`,
 	);
 }
@@ -127,7 +127,7 @@ describe("claim sidecar migration", () => {
 				claimedAt: 1,
 				leaseExpiresAt: null,
 				statusChangedAt: 1,
-				worktree: null,
+				workspace: null,
 			})}\n`,
 		);
 		const report = await revertClaimGroups({ root });

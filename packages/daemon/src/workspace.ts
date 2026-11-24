@@ -5,7 +5,7 @@ import { runProc } from "./proc.ts";
 import type { RunRegistry } from "./run-registry.ts";
 
 /**
- * Read-only workspace browser over the project root or a run's worktree.
+ * Read-only workspace browser over the project root or a run's workspace.
  *
  * Path containment is why this is a daemon service and not a tRPC router: a
  * lexical `startsWith(root)` check passes a symlink inside the tree that points
@@ -25,7 +25,7 @@ export class PathEscapeError extends Error {
 	}
 }
 
-/** Missing file/dir/worktree; mapped to NOT_FOUND by the API. */
+/** Missing file/dir/workspace; mapped to NOT_FOUND by the API. */
 export class NotFoundError extends Error {
 	constructor(message: string) {
 		super(message);
@@ -48,7 +48,7 @@ export interface DirEntry {
 }
 
 export interface DirListing {
-	/** "root" or the runId whose worktree was listed. */
+	/** "root" or the runId whose workspace was listed. */
 	base: string;
 	path: string;
 	entries: DirEntry[];
@@ -70,7 +70,7 @@ export interface FileContents {
 
 export interface WorkspaceStatusFile {
 	path: string;
-	/** Porcelain XY codes: index status, worktree status. */
+	/** Porcelain XY codes: index status, work tree status. */
 	index: string;
 	worktree: string;
 	/** Original path for renames/copies. */
@@ -92,7 +92,7 @@ export interface WorkspaceStatus {
 	files: WorkspaceStatusFile[];
 }
 
-export interface WorktreeRef {
+export interface WorkspaceRef {
 	runId: string;
 	taskId: string | null;
 	branch: string | null;
@@ -129,15 +129,15 @@ export const viewerImageMime = (path: string): string | null =>
 export class WorkspaceService {
 	constructor(private readonly deps: { root: string; registry: RunRegistry }) {}
 
-	/** Worktrees that still exist on disk, for the base picker. */
-	async worktrees(): Promise<WorktreeRef[]> {
+	/** Workspaces that still exist on disk, for the base picker. */
+	async workspaces(): Promise<WorkspaceRef[]> {
 		const rows = await this.deps.registry.list();
-		const out: WorktreeRef[] = [];
+		const out: WorkspaceRef[] = [];
 		for (const run of rows) {
-			// A brain turn's scratch dir is not a worktree anyone should base work on.
-			if (!run.worktreePath || run.kind === "brain") continue;
+			// A brain turn's scratch dir is not a workspace anyone should base work on.
+			if (!run.workspacePath || run.kind === "brain") continue;
 			try {
-				await stat(run.worktreePath);
+				await stat(run.workspacePath);
 			} catch {
 				continue; // finalized and cleaned up
 			}
@@ -145,7 +145,7 @@ export class WorkspaceService {
 				runId: run.id,
 				taskId: run.taskId,
 				branch: run.branch,
-				path: run.worktreePath,
+				path: run.workspacePath,
 				state: run.state,
 				label: run.label,
 			});
@@ -171,7 +171,7 @@ export class WorkspaceService {
 			try {
 				info = await lstat(full);
 			} catch {
-				continue; // vanished between readdir and lstat (live worktree)
+				continue; // vanished between readdir and lstat (live workspace)
 			}
 			const kind: EntryKind = info.isSymbolicLink()
 				? "symlink"
@@ -283,7 +283,7 @@ export class WorkspaceService {
 	}
 
 	async gitStatus(input: { runId?: string } = {}): Promise<WorkspaceStatus> {
-		const base = await this.baseDir(input.runId);
+		const base = await this.gitBaseDir(input.runId);
 		const head = await git(["symbolic-ref", "--short", "-q", "HEAD"], base);
 		// gitRaw, not `git()`: that trims stdout, and porcelain records start
 		// with a status character that is often a space (" M path").
@@ -314,7 +314,7 @@ export class WorkspaceService {
 
 	/**
 	 * Both sides of one dirty file: HEAD against what is on disk now (index and
-	 * worktree changes combined).
+	 * workspace changes combined).
 	 *
 	 * `fromPath` is the pre-rename path from a `gitStatus` row; without it a
 	 * rename reads as "added", since the new path never existed at HEAD.
@@ -324,7 +324,7 @@ export class WorkspaceService {
 		runId?: string;
 		fromPath?: string;
 	}): Promise<FileDiff> {
-		const base = await this.baseDir(input.runId);
+		const base = await this.gitBaseDir(input.runId);
 		const relPath = stripLeadingSlashes(input.path);
 		const oldPath = input.fromPath
 			? stripLeadingSlashes(input.fromPath)
@@ -377,15 +377,29 @@ export class WorkspaceService {
 	// containment
 	// ------------------------------------------------------------------
 
+	/**
+	 * Where host git may run for a request: the project root only. A run's
+	 * clone is agent-writable, and git there would run what its config names;
+	 * its changes are read from the imported result, on the run's page.
+	 */
+	private async gitBaseDir(runId?: string): Promise<string> {
+		if (runId) {
+			throw new NotFoundError(
+				`run ${runId}'s clone is not read with host git: see its changes on the run`,
+			);
+		}
+		return this.baseDir();
+	}
+
 	/** The physical directory a request is scoped to. */
 	private async baseDir(runId?: string): Promise<string> {
 		if (!runId) return this.realOrThrow(this.deps.root, "project root");
 		const run = await this.deps.registry.get(runId);
 		if (!run) throw new NotFoundError(`unknown run ${runId}`);
-		if (!run.worktreePath) {
-			throw new NotFoundError(`run ${runId} has no worktree`);
+		if (!run.workspacePath) {
+			throw new NotFoundError(`run ${runId} has no workspace`);
 		}
-		return this.realOrThrow(run.worktreePath, `worktree of run ${runId}`);
+		return this.realOrThrow(run.workspacePath, `workspace of run ${runId}`);
 	}
 
 	private async realOrThrow(path: string, what: string): Promise<string> {
