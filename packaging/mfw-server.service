@@ -11,9 +11,14 @@ After=network.target
 
 [Service]
 Type=simple
-# Adjust WorkingDirectory to your checkout. The single app serves UI + /api/trpc
-# and boots the orchestrator in-process. Build once (`bun run build`) then run the
-# Nitro (bun-preset) server output under Bun.
+# A compiled install (docs/install.md) runs from its own read-only directory:
+#   ExecStart=/opt/mfw/bin/mfw server
+# and needs neither WorkingDirectory nor bun on PATH. Use that line in place of
+# the two below.
+#
+# From a checkout (development): adjust WorkingDirectory to it. The single app
+# serves UI + /api/trpc and boots the orchestrator in-process. Build once
+# (`bun run build`) then run the Nitro (bun-preset) server output under Bun.
 WorkingDirectory=%h/dev/mfw
 ExecStart=/usr/bin/env bun run apps/start/.output/server/index.mjs
 Restart=on-failure
