@@ -54,25 +54,6 @@ function deps(outcome: "pass" | "fail" = "pass") {
 }
 
 describe("agentSandboxRefusal", () => {
-	test("an unsandboxed interactive run needs no probe", async () => {
-		const d = deps();
-		expect(
-			await agentSandboxRefusal(
-				input({ approvalMode: "interactive", isolation: undefined }),
-				d.value,
-			),
-		).toBeNull();
-		expect(d.seen.calls).toBe(0);
-	});
-
-	test("autonomy without isolation is refused", async () => {
-		const r = await agentSandboxRefusal(
-			input({ isolation: undefined }),
-			deps().value,
-		);
-		expect(r?.code).toBe("sandbox_unavailable");
-	});
-
 	test("a project with an .envrc is refused and the file is not read", async () => {
 		writeFileSync(join(base, ".envrc"), "not evaluated\n", { mode: 0o000 });
 		const d = deps();

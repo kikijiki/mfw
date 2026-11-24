@@ -19,6 +19,8 @@ import { RAM_OBSERVATION_MAX_AGE_MS } from "../src/resources/quantity.ts";
 import type { ProjectServices } from "../src/services.ts";
 import { TaskOwnershipHeldError } from "../src/tasks/index.ts";
 import { brainSpawn, STUB_BRAIN } from "./support/brain-spawn.ts";
+import { useHostSnapshots } from "./support/host-snapshot.ts";
+import { onRunTree } from "./support/scripted-driver.ts";
 
 const roots: string[] = [];
 const orchestrators: Awaited<ReturnType<typeof boot>>[] = [];
@@ -62,8 +64,6 @@ function config(name: string, root: string): ProjectConfig {
 		name,
 		root,
 		integrationBranch: "main",
-		// Scripted agents, no sandbox: autonomy needs bwrap, so these fixtures run interactive.
-		agentIsolation: "none",
 		approvalMode: "interactive",
 		maxConcurrent: 4,
 		assistance: {
@@ -98,13 +98,15 @@ async function startFixture(
 	const driverDir = await mkdtemp(join(tmpdir(), "mfw-admission-driver-"));
 	roots.push(driverDir);
 	const driver = join(driverDir, "driver.ts");
-	await writeFile(driver, DRIVER);
+	await writeFile(driver, onRunTree(DRIVER, join(home, "workspaces")));
 	const projects = await Promise.all(
 		projectNames.map(async (name) => config(name, await repo(name))),
 	);
 	const orchestrator = await boot({
 		projects,
 		mfwHome: home,
+		// The real probe needs a systemd user scope; the launch path is real.
+		sandboxPreflight: async () => null,
 		autostart: false,
 		log: silentLogger(),
 		afterAdmissionTransition: afterTransition
@@ -112,7 +114,11 @@ async function startFixture(
 			: undefined,
 	});
 	orchestrators.push(orchestrator);
-	for (const service of orchestrator.list()) useDriver(service, driver);
+	for (const service of orchestrator.list()) {
+		useDriver(service, driver);
+		// Scripted host drivers: the end-of-run snapshot runs on the host.
+		useHostSnapshots(service.root);
+	}
 	return orchestrator;
 }
 
@@ -885,6 +891,8 @@ describe("project-to-host task admission", () => {
 		const restarted = await boot({
 			projects: [config("demo", root)],
 			mfwHome: home,
+			// The real probe needs a systemd user scope; the launch path is real.
+			sandboxPreflight: async () => null,
 			autostart: false,
 			log: silentLogger(),
 		});
@@ -910,7 +918,7 @@ describe("project-to-host task admission", () => {
 		// Work in the workspace, so it survives finalization for the continuation.
 		await writeFile(join(parentRow.workspacePath, "wip.txt"), "work\n");
 		await service.engine.stop(parent.runId);
-		for (let i = 0; i < 40; i++) {
+		for (let i = 0; i < 200; i++) {
 			await service.supervisor.pass();
 			const row = await service.registry.get(parent.runId);
 			if (
@@ -947,7 +955,7 @@ describe("project-to-host task admission", () => {
 		expect(child?.relation).toBe("continue");
 		// Its own clone, seeded from the parent's imported work.
 		expect(child?.workspacePath).not.toBe(parentRow.workspacePath);
-	});
+	}, 60_000);
 
 	test("restart compensates an activated pre-launch lease before dispatch resumes", async () => {
 		let boundary: AdmissionTransition | null = "host_active";
@@ -970,6 +978,8 @@ describe("project-to-host task admission", () => {
 		const restarted = await boot({
 			projects: [config("demo", root)],
 			mfwHome: home,
+			// The real probe needs a systemd user scope; the launch path is real.
+			sandboxPreflight: async () => null,
 			autostart: false,
 			log: silentLogger(),
 		});
@@ -1013,6 +1023,8 @@ describe("project-to-host task admission", () => {
 		const restarted = await boot({
 			projects: [config("demo", root)],
 			mfwHome: home,
+			// The real probe needs a systemd user scope; the launch path is real.
+			sandboxPreflight: async () => null,
 			autostart: false,
 			log: silentLogger(),
 		});

@@ -8,7 +8,6 @@ import { ensureRunDirLayout } from "../src/containment/run-dir.ts";
 import { RunRegistry } from "../src/run-registry.ts";
 import { controlRootPath } from "../src/sandbox.ts";
 import {
-	baseSpec,
 	fakeHome,
 	installCleanup,
 	mkfifoSync,
@@ -16,6 +15,7 @@ import {
 	waitFor,
 } from "./support/review-fixes.ts";
 import { runShTmux } from "./support/run-sh-tmux.ts";
+import { sandboxedSpec } from "./support/sandboxed-launch.ts";
 
 /** Security review wave 1 (C), X9 and X15: the host does not trust or follow files in the writable run dir. */
 
@@ -46,7 +46,8 @@ describe("X9: the host does not trust or follow files in the writable run dir", 
 
 	test("an exit forged in the run dir does not read as completion while the run lives", async () => {
 		const { base, mk } = await fakeHome();
-		const runDir = mk(`xrun-forge-${uid}`);
+		const spec = await sandboxedSpec(base, `xrun-forge-${uid}`, mk("wt"));
+		const runDir = spec.runDir;
 		ensureRunDirLayout(runDir);
 		const driver = join(base, "forge.ts");
 		writeFileSync(
@@ -63,7 +64,7 @@ process.exit(3);
 		const { runner, procs } = runShTmux();
 		const host = new AgentHost(undefined, { tmuxRunner: runner });
 		await host.launch({
-			...baseSpec(base, `xrun-forge-${uid}`, runDir, mk("wt")),
+			...spec,
 			driverScript: driver,
 		});
 		expect(
@@ -114,13 +115,14 @@ process.exit(3);
 describe("X15: housekeeping", () => {
 	test("the run script is removed from the control dir once the exit is observed", async () => {
 		const { base, mk } = await fakeHome();
-		const runDir = mk(`xrun-clean-${uid}`);
+		const spec = await sandboxedSpec(base, `xrun-clean-${uid}`, mk("wt"));
+		const runDir = spec.runDir;
 		const driver = join(base, "d.ts");
 		writeFileSync(driver, "process.exit(0);");
 		const { runner, procs } = runShTmux();
 		const host = new AgentHost(undefined, { tmuxRunner: runner });
 		await host.launch({
-			...baseSpec(base, `xrun-clean-${uid}`, runDir, mk("wt")),
+			...spec,
 			driverScript: driver,
 		});
 		const script = join(controlRootPath(), `run-xrun-clean-${uid}.sh`);

@@ -196,7 +196,7 @@ export const REFUSAL_FIXES: Record<RefusalCode, FixFor> = {
 	}),
 	sandbox_unavailable: (waitingFor) => ({
 		kind: "command",
-		text: `${waitingFor[0] ? `${waitingFor[0]}. ` : ""}Autonomous runs need bubblewrap (bwrap) with agentIsolation bwrap, and a systemd user manager; otherwise set approvalMode to interactive for this project. They are refused without that sandbox.`,
+		text: `${waitingFor[0] ? `${waitingFor[0]}. ` : ""}Every run needs bubblewrap (bwrap) and a systemd user manager, and is refused without that sandbox: install bwrap and enable the user manager.`,
 	}),
 	sandbox_probe_failed: (waitingFor) => ({
 		kind: "command",

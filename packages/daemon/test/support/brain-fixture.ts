@@ -80,9 +80,6 @@ export async function brainFixture(
 		name: "brainy",
 		root,
 		integrationBranch: "main",
-		// Scripted agents and session files live in a temp dir that a real
-		// sandbox's private /tmp would hide; nothing here needs isolation.
-		agentIsolation: "none",
 		approvalMode: "interactive",
 		provider: {
 			id: "claude-cli",
@@ -101,6 +98,19 @@ export async function brainFixture(
 		...opts.project,
 	};
 
+	// The real bridge, with the passthrough launcher standing in for the sandbox.
+	const bridge = join(base, "passthrough-bridge.ts");
+	await writeFile(
+		bridge,
+		`await import(${JSON.stringify(join(import.meta.dir, "passthrough-launcher-preload.ts"))});\nawait import(${JSON.stringify(join(import.meta.dir, "../../src/agents/bridges/claude-app-server.ts"))});\n`,
+	);
+	const savedBridge = process.env.MFW_CLAUDE_BRIDGE_SCRIPT;
+	process.env.MFW_CLAUDE_BRIDGE_SCRIPT = bridge;
+	const restoreBridge = () => {
+		if (savedBridge === undefined) delete process.env.MFW_CLAUDE_BRIDGE_SCRIPT;
+		else process.env.MFW_CLAUDE_BRIDGE_SCRIPT = savedBridge;
+	};
+
 	let orchestrator!: Orchestrator;
 	let svc!: ProjectServices;
 	const start = async () => {
@@ -109,6 +119,8 @@ export async function brainFixture(
 		orchestrator = await boot({
 			projects: [config],
 			mfwHome: home,
+			// The real probe needs a systemd user scope; the launch path is real.
+			sandboxPreflight: async () => null,
 			autostart: false,
 			log: silentLogger(),
 		});
@@ -196,6 +208,7 @@ export async function brainFixture(
 			);
 		},
 		async cleanup() {
+			restoreBridge();
 			await orchestrator.shutdown().catch(() => {});
 			const killer = Bun.spawn(
 				["tmux", "-L", TEST_TMUX_SOCKET, "kill-server"],

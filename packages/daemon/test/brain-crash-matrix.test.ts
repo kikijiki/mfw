@@ -471,12 +471,13 @@ describe("brain crash matrix: the action executor", () => {
 					name: "grp",
 					root: f.root,
 					integrationBranch: "main",
-					agentIsolation: "none",
 					approvalMode: "interactive",
 					brain: { routes: [{ provider: "claude-cli" }], maxTurnsPerDay: 0 },
 				},
 			],
 			mfwHome: `${f.home}-second`,
+			// The real probe needs a systemd user scope; the launch path is real.
+			sandboxPreflight: async () => null,
 			autostart: false,
 			log: silentLogger(),
 		});

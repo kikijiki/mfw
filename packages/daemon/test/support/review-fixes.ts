@@ -102,19 +102,3 @@ export async function waitFor(
 	}
 	return false;
 }
-
-export const baseSpec = (
-	base: string,
-	runId: string,
-	runDir: string,
-	cwd: string,
-) => ({
-	runId,
-	runDir,
-	cwd,
-	projectRoot: base,
-	agentArgv: ["true"],
-	env: {},
-	steer: false,
-	approvalMode: "interactive" as const,
-});

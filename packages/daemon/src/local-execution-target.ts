@@ -160,7 +160,7 @@ export class LocalExecutionTarget implements ExecutionTarget {
 				initialMessage: request.driver.initialMessage,
 				steer: request.driver.steer,
 				approvalMode: request.driver.approvalMode,
-				isolation: request.driver.isolation,
+				isolation: requireIsolation(request.driver.isolation),
 				runKind: request.driver.runKind,
 				providerId: request.driver.providerId,
 			});
@@ -267,4 +267,10 @@ export function createLocalExecutionTarget(
 	deps: LocalExecutionTargetDeps,
 ): LocalExecutionTarget {
 	return new LocalExecutionTarget(deps);
+}
+
+/** A local run always launches in the sandbox; a request without one is a bug. */
+function requireIsolation<T>(isolation: T | undefined): T {
+	if (!isolation) throw new Error("a local run launches only in its sandbox");
+	return isolation;
 }

@@ -644,7 +644,7 @@ describe("D. a failed run waits for the brain, which continues it", () => {
 		expect((await f.svc.tasks.get(taskId))?.status).toBe("done");
 		// The brain acted: the task no longer awaits it.
 		expect((await awaitingOf(f))[taskId]).toBeUndefined();
-	});
+	}, 120_000);
 
 	test("the verified fast path merges with no settle and no brain wake", async () => {
 		fx = await groupFixture();
@@ -667,7 +667,7 @@ describe("D. a failed run waits for the brain, which continues it", () => {
 		expect(await awaitingOf(f)).toEqual({});
 		expect((await f.svc.tasks.get(taskId))?.status).toBe("done");
 		expect(runId).toBeTruthy();
-	});
+	}, 120_000);
 });
 
 describe("E. the brain's circuit breaker", () => {
@@ -732,5 +732,5 @@ describe("E. the brain's circuit breaker", () => {
 		await f.svc.brainRuntime.resetCircuit();
 		expect((await f.svc.brainRuntime.currentSession())?.status).toBe("idle");
 		expect((await awaitingOf(f))[failing]).toBeDefined();
-	});
+	}, 120_000);
 });

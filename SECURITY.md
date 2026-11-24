@@ -12,7 +12,7 @@ Please report privately and do not open a public issue.
 **Contact:** `<security contact: the maintainer fills this in before release>`
 
 Include the mfw commit, your OS and kernel, your `bwrap` and git versions, the
-project settings involved (`agentIsolation`, `approvalMode`), and
+project settings involved (such as `approvalMode`), and
 the steps to reproduce. Leave out real tokens and private repository content.
 
 mfw is maintained on a best-effort basis, so no response time is promised. Please
@@ -33,8 +33,7 @@ and the configuration, so back up `$MFW_HOME` and each project's `.mfw/` first.
 
 ## What mfw protects against
 
-With the default `agentIsolation: "bwrap"`, on a host that passes the sandbox
-probe:
+Every run is sandboxed. On a host that passes the sandbox probe:
 
 - **A hostile or mistaken agent.** It runs in a private clone with a synthetic
   home, a read-only system, no capabilities, a seccomp filter and its own network
@@ -42,7 +41,7 @@ probe:
   repository.
 - **Launching without proof.** An autonomous launch needs a fresh, passing,
   single-use probe of that exact sandbox. If the proof is missing, the run is
-  refused. It never falls back to running unsandboxed.
+  refused. There is no unsandboxed run to fall back to.
 - **Open network access.** A run reaches the network only through its own proxy,
   which allows a short list of exact vendor hosts.
 - **Tampered results.** The host imports a run's work as a validated git bundle
@@ -60,9 +59,8 @@ probe:
   limit this and the proxy records it, but neither prevents it.
 - **Code you merge.** Ordinary source changes merge and push without a card when
   their checks pass. That code runs with your rights once you build or run it.
-- **Unsandboxed modes.** `agentIsolation: "none"`, ACP agents and armed host
-  triggers run as your user. Checks never do: they run only in the verifier
-  sandbox.
+- **Host commands.** Armed host triggers run as your user. Agents and checks
+  never do: they run only in their sandbox.
 - **Remote targets.** SSH and RunPod are [experimental](docs/experimental.md), off
   by default, and do not have the local sandbox's protections.
 - **A stolen owner session.** The owner can configure commands the host runs, so

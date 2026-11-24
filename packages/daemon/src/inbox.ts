@@ -262,8 +262,6 @@ export class InboxService {
 					}[]
 				>;
 			};
-			/** A project-level refusal that holds every autonomous dispatch (`agentIsolation: none` without interactive approvals). */
-			isolationIssue?: () => { detail: string; fix: string } | null;
 			/** The preflight will refuse every sandboxed launch (`isolationDispatchProblem`). */
 			dispatchIssue?: () => { detail: string; fix: string } | null;
 			/** Providers held for a failed login (`ProviderHoldStore` entries with reason `auth`). */
@@ -336,19 +334,6 @@ export class InboxService {
 		const db = this.deps.handle.db;
 		const project = this.deps.project;
 		const items: Omit<InboxItem, "ref" | "attention">[] = [];
-		const isolation = this.deps.isolationIssue?.();
-		if (isolation) {
-			items.push({
-				id: "admission:isolation",
-				project,
-				kind: "admission",
-				severity: "attention",
-				title: "autonomous dispatch is refused for this project",
-				detail: isolation.detail,
-				fix: isolation.fix,
-				ts: 0,
-			});
-		}
 		const dispatch = this.deps.dispatchIssue?.();
 		if (dispatch) {
 			items.push({

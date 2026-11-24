@@ -483,32 +483,6 @@ function acpAdapter(id: string): AgentAdapter {
 	};
 }
 
-/**
- * Launch facts for a one-shot, tool-less critic call through the ACP bridge:
- * policy `none`, the brain's read-only argv flags without MCP approval, no MCP
- * config, no resume. `AcpInference` spawns `[...bridgeArgv, ...providerArgv]`
- * in a fresh temp dir. Throws for an id that is not an ACP provider.
- */
-export function acpInferenceLaunch(
-	providerId: string,
-	model: string,
-): {
-	bridgeArgv: string[];
-	providerArgv: string[];
-	env: Record<string, string>;
-} {
-	const providerArgv = acpArgv(providerId, model, "inference");
-	if (!providerArgv) throw new Error(`'${providerId}' is not an ACP provider`);
-	return {
-		bridgeArgv: ["bun", "run", bridgeScript("acp")],
-		providerArgv,
-		env: {
-			MFW_ACP_AGENT: providerId,
-			MFW_ACP_POLICY: "none",
-		},
-	};
-}
-
 export const cursorAdapter = acpAdapter("cursor-agent");
 export const geminiAdapter = acpAdapter("gemini-cli");
 export const opencodeAdapter = acpAdapter("opencode");

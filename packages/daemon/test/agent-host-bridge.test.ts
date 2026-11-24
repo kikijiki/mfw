@@ -318,14 +318,4 @@ describe("a host-bridged launch", () => {
 		expect(calls).toEqual([]);
 		expect(existsSync(join(base, "evaluated"))).toBe(false);
 	});
-
-	test("an unsandboxed interactive run no longer evaluates .envrc on the host", async () => {
-		const s = spec({
-			approvalMode: "interactive",
-			isolation: undefined,
-			runKind: "task",
-		});
-		await new AgentHost(undefined, { tmuxRunner: runner }).launch(s);
-		expect(script()).not.toContain("direnv");
-	});
 });

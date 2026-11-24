@@ -9,7 +9,7 @@ cannot afford to lose.
 | --- | --- | --- | --- |
 | [Remote targets (SSH)](#remote-targets-ssh-and-runpod) | off by default, never autonomous | `MFW_EXPERIMENTAL_REMOTE=1` | no sandbox-profile parity; work does not come back yet |
 | [RunPod](#remote-targets-ssh-and-runpod) | off by default, never autonomous | `MFW_EXPERIMENTAL_REMOTE=1` plus account setup | same, and it spends money |
-| [ACP agents](#acp-agents) | unsandboxed only | `agentIsolation: "none"`, `approvalMode: "interactive"` | run as your user; work does not come back yet |
+| [ACP agents](#acp-agents) | not runnable locally | none | no sandbox profile yet |
 | [Scoped API tokens](#scoped-api-tokens) | on, awaiting outside review | `mfw auth token create` | no second-party review yet |
 | [Checks without dependencies](#checks-without-dependencies) | always | none | a check that needs `node_modules` and the like cannot pass yet |
 | [Passkeys](#passkeys) | on, awaiting review | Settings > Passkeys | Chrome's virtual authenticator only |
@@ -37,15 +37,9 @@ work is not verified or merged.
 ## ACP agents
 
 Cursor, Gemini CLI, opencode, pi and other Agent Client Protocol agents have no
-sandbox profile. A sandboxed launch refuses them, so they need
-`agentIsolation: "none"` with `approvalMode: "interactive"`, and then run with your
-user's permissions. The brain's chat and the change-review critic refuse ACP
-transports, because they could read the machine while handling untrusted text.
-
-Every run works in a private clone, and a run's work comes back only as the
-bundle the in-sandbox WIP helper writes at the end of the run. An unsandboxed
-run (`agentIsolation: "none"`, so every ACP agent) has no such helper yet: it
-can work in its clone, but its result is not imported, verified or merged.
+sandbox profile yet. Every local run is sandboxed, so a launch on one of them is
+refused, and so are the brain's chat and the change-review critic on an ACP
+transport. Their adapters remain for the day they get a profile.
 
 ## Scoped API tokens
 

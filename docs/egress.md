@@ -3,9 +3,8 @@
 A sandboxed task or repair run has no network of its own. Its only way out is
 a proxy on the host, one per run, reached through a unix socket that only that
 run can see. Every other isolated launch is bridged the same way or refused;
-none has a network path of its own. An unsandboxed run (`agentIsolation:
-"none"`) has no proxy and uses the host network, and so does an
-[experimental](experimental.md) remote target. The
+none has a network path of its own. An [experimental](experimental.md) remote
+target has no proxy and uses its host's network. The
 [threat model](threat-model.md) covers what this does and does not stop.
 
 ## What a run can reach

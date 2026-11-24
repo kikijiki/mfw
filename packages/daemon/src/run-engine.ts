@@ -134,8 +134,8 @@ export interface RunEngineDeps {
 	 * queue policy. Absent = no global stop.
 	 */
 	globalPaused?: () => { reason: string } | null;
-	/** Filesystem-isolate every run from the daemon's own home. Undefined = unsandboxed. */
-	isolation?: BwrapIsolation;
+	/** The sandbox every local run launches in. There is no unsandboxed run. */
+	isolation: BwrapIsolation;
 	/** Dispatch preflight for local task runs (`dispatch-preflight.ts`). Absent = no preflight. */
 	preflight?: Pick<
 		DispatchPreflightDeps,
@@ -1195,7 +1195,7 @@ export class RunEngine {
 
 	/** Every local kind has a sandbox role; a kind without one cannot start. */
 	assertKindMayRun(kind: string): void {
-		if (!this.deps.isolation || sandboxRoleOfKind(kind)) return;
+		if (sandboxRoleOfKind(kind)) return;
 		throw new DispatchPreflightError(
 			"sandbox_role_unavailable",
 			[kind],
@@ -1442,7 +1442,7 @@ export class RunEngine {
 				workloadSecrets?.binding ?? null,
 			);
 			// Before the launch: a crash after it must still find the marker.
-			if (target.kind === "local" && this.deps.isolation) {
+			if (target.kind === "local") {
 				await this.deps.registry.markRunDirSplit(run.id);
 			}
 			await target.launch({
@@ -1463,15 +1463,6 @@ export class RunEngine {
 						MFW_TASK_ID: run.taskId ?? "",
 						MFW_RUN_KIND: run.kind,
 						MFW_REPORT_PATH: join(run.workspacePath, "MFW_REPORT.json"),
-						// The sandbox binds the clone's gitdir and sets these. An
-						// unsandboxed run gets the same, so its git never walks up
-						// out of the clone into a repository around it.
-						...(target.kind === "local" && !this.deps.isolation
-							? {
-									GIT_DIR: join(dirname(run.workspacePath), "git"),
-									GIT_WORK_TREE: run.workspacePath,
-								}
-							: {}),
 					},
 					model: run.model,
 					reasoningEffort:

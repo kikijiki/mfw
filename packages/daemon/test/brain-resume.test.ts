@@ -62,10 +62,11 @@ describe("native resume", () => {
 		const s = await session(fx);
 		expect(s.nativeSessionId).toBe(minted ?? null);
 		expect(s.generation).toBe(0);
-		// A fixed cwd: the scratch dir, never a workspace.
-		expect(first.cwd).toBe(second.cwd);
-		expect(first.cwd).toEndWith(join(".mfw", "brain", s.id));
-		expect(first.projectDir).toBe(`mfw-brain-${s.id}`);
+		// Each turn reads a fresh read-only role clone (`/work` in the sandbox),
+		// never a run's workspace.
+		for (const turn of [first, second]) {
+			expect(turn.cwd).toMatch(/\/workspaces\/ro-[^/]+\/tree$/);
+		}
 
 		const [t1, t2] = (await fx.turns()).reverse();
 		expect(t1?.resumed).toBe(false);

@@ -4,11 +4,7 @@ import { join } from "node:path";
 import { parseTaskFile } from "@mfw/core/taskfile";
 import { renderHarnessArgv } from "@mfw/plugin-api/harness";
 import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
-import {
-	AdapterRegistry,
-	acpInferenceLaunch,
-	claudeBrainArgv,
-} from "../src/agents/adapter.ts";
+import { AdapterRegistry, claudeBrainArgv } from "../src/agents/adapter.ts";
 import type { BrainTurnLaunch } from "../src/brain-runtime/turn-run.ts";
 import { brainSchema, routingSchema } from "../src/config.ts";
 
@@ -57,9 +53,6 @@ describe("a flag-like model is refused", () => {
 				expect(() =>
 					new AdapterRegistry().invocation(cfg, model, "p", { steer: false }),
 				).toThrow("cannot start with");
-			expect(() => acpInferenceLaunch("gemini-cli", model)).toThrow(
-				"cannot start with",
-			);
 		});
 
 		test(`${shown}: argv rendering`, () => {

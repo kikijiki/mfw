@@ -9,6 +9,7 @@ import { silentLogger } from "../../src/log.ts";
 import type { Orchestrator, ProjectServices } from "../../src/services.ts";
 import { brainSpawn, openTurn, STUB_BRAIN } from "./brain-spawn.ts";
 import { useHostSnapshots } from "./host-snapshot.ts";
+import { onRunTree } from "./scripted-driver.ts";
 import { TEST_TMUX_SOCKET } from "./tmux-test-socket.ts";
 
 /**
@@ -96,7 +97,10 @@ export async function groupFixture(
 	await git(["add", "-A"], root);
 	await git(["commit", "-q", "-m", "init"], root);
 	const driver = join(driverDir, "driver.ts");
-	await writeFile(driver, driverSource(controlPath));
+	await writeFile(
+		driver,
+		onRunTree(driverSource(controlPath), join(home, "workspaces")),
+	);
 	await writeFile(controlPath, "{}");
 
 	const config: ProjectConfig = {
@@ -109,9 +113,6 @@ export async function groupFixture(
 			changeReview: "off",
 		},
 		brain: STUB_BRAIN,
-		// The scripted driver and its control file live in a temp dir that a real
-		// sandbox's private /tmp would hide, and nothing here needs isolation.
-		agentIsolation: "none",
 		approvalMode: "interactive",
 		...over,
 	};
@@ -122,6 +123,8 @@ export async function groupFixture(
 		orchestrator = await boot({
 			projects: [config],
 			mfwHome: home,
+			// The real probe needs a systemd user scope; the launch path is real.
+			sandboxPreflight: async () => null,
 			autostart: false,
 			log: silentLogger(),
 		});

@@ -70,9 +70,7 @@ async function booted(project: Record<string, unknown>, lines: string[] = []) {
 describe("isolationDispatchProblem agrees with the preflight", () => {
 	test.each([
 		[{}, null],
-		[{ agentIsolation: "bwrap" }, null],
-		[{ approvalMode: "interactive" }, null],
-		[{ agentIsolation: "none", approvalMode: "interactive" }, null],
+		[{ hasDevShell: false }, null],
 		[{ hasDevShell: true }, /\.envrc/],
 	] as const)("%j", (input, want) => {
 		const problem = isolationDispatchProblem(input);

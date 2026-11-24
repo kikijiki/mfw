@@ -204,8 +204,19 @@ describe("LocalExecutionTarget", () => {
 				initialMessage: "go",
 				steer: true,
 				approvalMode: "autonomous" as const,
+				isolation: {
+					mode: "bwrap" as const,
+					hidePaths: ["/home"],
+					mfwHome: "/home",
+				},
 			},
 		};
+		await expect(
+			target.launch({
+				...launch,
+				driver: { ...launch.driver, isolation: undefined },
+			}),
+		).rejects.toThrow("launches only in its sandbox");
 		await target.launch(launch);
 		await target.launch(launch);
 		expect(host.launches).toBe(1);

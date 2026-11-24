@@ -4,8 +4,7 @@
  * (`core.fsmonitor`, hooks, filters). Only `HostGit` and the seed and scratch
  * paths built on it may touch one, and they say so with `hostGitChecked`.
  *
- * Roots stay registered for the life of the process and are registered at boot
- * whatever the project's current `runWorkspace` is, so changing that setting
+ * Roots stay registered for the life of the process, so detaching a project
  * cannot reopen a live clone to plain git.
  */
 

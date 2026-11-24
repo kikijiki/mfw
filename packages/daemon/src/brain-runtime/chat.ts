@@ -4,13 +4,13 @@ import { ulid } from "@mfw/db/ids";
 import { decisions } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
 import { providerConfigFor } from "../agents/catalogue.ts";
-import {
-	extractJson,
-	type InferenceClient,
-	inferenceForProvider,
-} from "../brain.ts";
+import { extractJson, type InferenceClient } from "../brain.ts";
 import { CLAIM_INSTRUCTION, type ClaimSubject } from "../claims.ts";
 import { guardWithRecords } from "../claims-evidence.ts";
+import {
+	type CriticHost,
+	SandboxedCriticInference,
+} from "../critic-inference.ts";
 import type { Logger } from "../log.ts";
 import type { RoutingDecision } from "../routing.ts";
 import type { RunRegistry } from "../run-registry.ts";
@@ -541,12 +541,14 @@ export class BrainChat {
  */
 export function chatInferenceFor(
 	route: Pick<RoutingDecision, "provider" | "endpoint">,
+	host: CriticHost,
 ): InferenceClient | null {
 	if (route.endpoint) return null;
 	try {
 		const provider = providerConfigFor(route.provider);
+		// The same sandboxed no-tools launch as the critic: never a host CLI.
 		return provider.type === "claude-cli"
-			? inferenceForProvider(provider)
+			? new SandboxedCriticInference(host)
 			: null;
 	} catch {
 		return null;

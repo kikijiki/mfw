@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openProjectDb } from "@mfw/db/client";
@@ -36,6 +36,7 @@ import { RunRegistry } from "../src/run-registry.ts";
 import { TaskOwnershipHeldError } from "../src/tasks/index.ts";
 import { makeTasks } from "./fixtures/board.ts";
 import { useCheckClones } from "./support/check-clones.ts";
+import { onRunTree } from "./support/scripted-driver.ts";
 
 async function waitFor(cond: () => Promise<boolean>, timeoutMs = 8000) {
 	const t0 = Date.now();
@@ -122,7 +123,9 @@ async function fixture(
 	const host = new AgentHost();
 	const adapters = opts.adapters ?? new AdapterRegistry();
 	const driverPath = join(root, "fake-driver.ts");
-	await writeFile(driverPath, FAKE_DRIVER);
+	await writeFile(driverPath, onRunTree(FAKE_DRIVER, `${root}-workspaces`));
+	const mfwHome = `${root}-home`;
+	await mkdir(join(mfwHome, "agents", "claude"), { recursive: true });
 	adapters.driverOverride = driverPath;
 	adapters.buildArgv = () => ["true"];
 
@@ -138,6 +141,7 @@ async function fixture(
 		registry,
 		tasks,
 		host,
+		isolation: { mode: "bwrap", hidePaths: [mfwHome], mfwHome },
 		executionTargets: opts.executionTarget
 			? new ExecutionTargetRegistry([opts.executionTarget])
 			: undefined,
@@ -348,7 +352,9 @@ describe("RunEngine v2", () => {
 		expect(run?.providerId).toBe("claude-cli");
 		expect(run?.reasoningEffort).toBe("high");
 		const driverConfig = JSON.parse(
-			await Bun.file(join(f.registry.runDir(runId), "driver.json")).text(),
+			await Bun.file(
+				join(f.registry.runDir(runId), "control", "driver.json"),
+			).text(),
 		);
 		expect(driverConfig.reasoningEffort).toBe("high");
 
@@ -446,7 +452,7 @@ describe("RunEngine v2", () => {
 		expect(adapters.calls.map((c) => c.id)).toEqual(["claude-cli"]);
 		const driverConfig = JSON.parse(
 			await Bun.file(
-				join(f.registry.runDir(prepared.runId), "driver.json"),
+				join(f.registry.runDir(prepared.runId), "control", "driver.json"),
 			).text(),
 		);
 		expect(driverConfig.model).toBe("sonnet");
@@ -580,7 +586,7 @@ describe("RunEngine v2", () => {
 		expect(await f.host.isAlive(prepared.runId)).toBe(false);
 		expect(
 			await Bun.file(
-				join(f.registry.runDir(prepared.runId), "driver.json"),
+				join(f.registry.runDir(prepared.runId), "control", "driver.json"),
 			).exists(),
 		).toBe(false);
 		expect(
@@ -1115,7 +1121,7 @@ describe("RunEngine v2", () => {
 		await f.registry.setCapabilities(runId, { steer: true, verified: true });
 		await f.engine.steer(runId, "hi");
 		const steer = await Bun.file(
-			join(f.registry.runDir(runId), "steer.jsonl"),
+			join(f.registry.runDir(runId), "control", "steer.jsonl"),
 		).text();
 		expect(steer.trim()).toBe(JSON.stringify("hi"));
 		// a verified non-steerable run still refuses
@@ -1354,7 +1360,9 @@ describe("run context", () => {
 		const { runId } = await f.engine.startTask(t.id);
 
 		const driverCfg = JSON.parse(
-			await Bun.file(join(f.registry.runDir(runId), "driver.json")).text(),
+			await Bun.file(
+				join(f.registry.runDir(runId), "control", "driver.json"),
+			).text(),
 		) as { env: Record<string, string> };
 		expect(driverCfg.env.MFW_RUN_ID).toBe(runId);
 		expect(driverCfg.env.MFW_PROJECT).toBe("demo");

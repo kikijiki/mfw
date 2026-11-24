@@ -6,7 +6,7 @@ and this page disagree, that is a bug: please report it through
 [SECURITY.md](../SECURITY.md).
 
 It describes the default local setup: one owner, one Linux x86_64 machine,
-`agentIsolation: "bwrap"`, with every run in a private clone. For how the parts fit
+every run sandboxed in a private clone. For how the parts fit
 together, see the [architecture overview](architecture-overview.md).
 
 ## Assets
@@ -192,8 +192,8 @@ See [verifier-sandbox.md](verifier-sandbox.md).
 **Goal:** sign in, lock the owner out, or impersonate a client.
 
 Sandboxed runs are not in this group, because each has its own network namespace.
-This group is any other process of any local user, an unsandboxed
-`agentIsolation: "none"` run, an armed host trigger and a notify command.
+This group is any other process of any local user, an armed host trigger and a
+notify command.
 
 - **Stopped:** using the API without a session and request key, and escaping the
   throttle by rotating `127.x` addresses (all of loopback is one bucket).
@@ -243,8 +243,8 @@ mfw has no third-party plugin loader. Resources and targets are built in, and
 - **Reported data is not trusted.** Usage, rate limits and errors from a run are
   tagged `sandbox-reported`. They do not feed budget hard stops, and a hold taken
   from one is clamped and scoped (`packages/daemon/src/provider-holds.ts`).
-- **ACP agents have no sandbox profile.** A sandboxed launch refuses them, so they
-  run only with `agentIsolation: "none"` and interactive approval, as your user.
+- **ACP agents have no sandbox profile.** Every local run is sandboxed, so they
+  cannot run locally at all.
 - **OpenAI-compatible endpoints and OpenRouter** receive the prompts and code sent
   to them.
 
@@ -255,13 +255,13 @@ is acceptable for your setup.
 
 | # | Risk | Effect | What limits it today |
 | --- | --- | --- | --- |
-| R1 | **Shared loopback outside the sandbox.** Sandboxed runs have a private network namespace. Unsandboxed runs, host triggers, notify commands and other local processes do not | Password guessing, sign-in lockout, and forged clients if a loopback proxy is trusted | One loopback throttle bucket, `mfw auth unlock`, the private unix socket |
+| R1 | **Shared loopback outside the sandbox.** Sandboxed runs have a private network namespace. Host triggers, notify commands and other local processes do not | Password guessing, sign-in lockout, and forged clients if a loopback proxy is trusted | One loopback throttle bucket, `mfw auth unlock`, the private unix socket |
 | R2 | **The fleet login is readable by agents.** A run needs its CLI's token and can use it against allowed hosts | Vendor account use or theft of that login | Dedicated fleet directory, egress allowlist, logging out the fleet login |
 | R3 | **Uploads to allowed hosts are bounded, not blocked.** Vendor APIs accept other accounts' keys, and read-only roles have egress too | Code or the token can leave, up to the budget | Per-run budgets (1 GiB and 2 GiB, not calibrated), host-observed ledger |
 | R4 | **The TLS check stops at the hello.** A `Host` header inside TLS is invisible | A shared CDN might route a matching hello to another site | SNI must match, exact host list. Not tested against real CDNs |
 | R5 | **Codex's own sandbox is not a boundary here.** The bridge asks for `workspace-write`, and the outer sandbox disables nested user namespaces, which made Codex's shell calls fail in earlier experiments | Codex task runs may not work, and its inner sandbox adds no protection | `bwrap` is the boundary, and results are verified on the host. Not retested with a real CLI |
 | R6 | **Systemd limits are unproven in CI.** CI installs no `bwrap` and does not require the live suites, so they skip there | A regression in the scope chain would not fail CI | Autonomous launches refuse without a scope. The live gate exists for hosts that have one |
-| R7 | **Unsandboxed runs return nothing.** A run's work comes back only through the in-sandbox WIP helper, which `agentIsolation: "none"` (every ACP agent) and remote targets do not have yet | Such runs can work in their clone, but their result is never imported, verified or merged | Nothing to defend: the host never reads a clone with git, so no fallback exists to abuse |
+| R7 | **Remote runs return nothing.** A run's work comes back only through the in-sandbox WIP helper, which remote targets do not have yet | A remote run can work, but its result is never imported, verified or merged | Nothing to defend: the host never reads a clone with git, so no fallback exists to abuse |
 | R8 | **Merged code runs later.** Ordinary source and dependency changes that pass their checks merge and, with `pushOnMerge` on by default, push without a card | Hostile code that passes checks reaches the branch, the remote, and your machine when you run it | Ask-first paths, verification, review settings. Set `pushOnMerge: false` to keep merges local |
 | R9 | **Armed triggers are host commands.** A pinned script can do anything you can, and tools on `PATH` are checked for location only | Whatever the armed command does | Owner arming, whole-tree pin, sealed checkout |
 | R10 | **Same user, shared kernel.** The sandbox runs as your uid | A kernel or `bwrap` flaw is an escape. Any process already outside the sandbox can read `auth.db` and `mcp-token` | Namespaces, seccomp, no capabilities. There is no VM tier yet |

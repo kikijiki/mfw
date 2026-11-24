@@ -25,7 +25,6 @@ import {
 	effectiveAssistance,
 	effectiveReview,
 	FALLBACK_MERGE_CHECKS,
-	isolationConfigProblem,
 	loadConfig,
 	mutateConfig,
 	type NotifyConfigInput,
@@ -322,10 +321,6 @@ export class SettingsService {
 					};
 				}
 				applyPatch(stored, effectivePatch);
-				if (patch.approvalMode !== undefined) {
-					const problem = isolationConfigProblem(stored);
-					if (problem) throw new Error(problem);
-				}
 				this.assertIndependentReview(stored, patch);
 				return structuredClone(stored);
 			});

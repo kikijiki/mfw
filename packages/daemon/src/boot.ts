@@ -13,7 +13,12 @@ import { AgentReviewInference } from "./agent-review.ts";
 import { AdapterRegistry } from "./agents/adapter.ts";
 import { DEFAULT_PROVIDER_ID, providerConfigFor } from "./agents/catalogue.ts";
 import { AUTH_HOLD_REASON } from "./auth-failure.ts";
-import { buildBoardLayoutRecord, recordBoardLocation } from "./board-layout.ts";
+import {
+	buildBoardLayoutRecord,
+	firewalledPath,
+	readProtectedBoardPaths,
+	recordBoardLocation,
+} from "./board-layout.ts";
 import {
 	assertNoForeignTasksDir,
 	relocateLegacyBoard,
@@ -35,7 +40,6 @@ import {
 	effectiveAssistance,
 	effectiveReview,
 	FALLBACK_MERGE_CHECKS,
-	isolationConfigProblem,
 	isolationDispatchProblem,
 	loadConfig,
 	mutateConfig,
@@ -263,8 +267,6 @@ export interface ProjectConfig {
 	pushAllowLocalUrl?: boolean;
 	/** Remote to push to. Defaults to `origin`. */
 	pushRemote?: string;
-	/** Filesystem-isolate agent runs via `bwrap`. Defaults and fallback: see `config.ts`. */
-	agentIsolation?: "none" | "bwrap";
 	/** Let sandboxed runs reach their CLI's telemetry hosts; see `config.ts`. */
 	agentEgressTelemetry?: boolean;
 	/** Per-run upload limits through the egress proxy; see `config.ts`. */
@@ -301,6 +303,11 @@ export interface BootOptions {
 	dispatchPaused?: boolean;
 	/** Explicit coordination domain; production defaults to configured MFW_HOME. */
 	mfwHome?: string;
+	/**
+	 * Test seam: the dispatch-time sandbox probe (`agentSandboxRefusal`).
+	 * Production never sets it; the real launch still probes and attests.
+	 */
+	sandboxPreflight?: typeof agentSandboxRefusal;
 	/** Recovery seams for deterministic boot/reboot tests. */
 	hostLiveness?: LeaseLiveness;
 	kernelBootId?: string | null;
@@ -435,6 +442,7 @@ export async function attachProject(
 		/** RunPod capacity and cleanup records in the core. */
 		runpodCore?: RunPodCoreBridge;
 		mfwHome: string;
+		sandboxPreflight?: BootOptions["sandboxPreflight"];
 		afterAdmissionTransition?: BootOptions["afterAdmissionTransition"];
 		/** The one process-global RunPod control plane. */
 		runpod?: RunPodAccountService;
@@ -839,11 +847,12 @@ export async function attachProject(
 		// A conflict rebases in a host-owned scratch clone.
 		...(rebaseOpts
 			? {
-					rebaseClone: (job: MergeJobView, onto: string) =>
+					rebaseClone: async (job: MergeJobView, onto: string) =>
 						rebaseQuarantineInScratch(rebaseOpts, {
 							runId: job.runId,
 							targetBranch: job.targetBranch,
 							onto,
+							isFirewalled: firewalledPath(await readProtectedBoardPaths(root)),
 						}),
 				}
 			: {}),
@@ -1133,16 +1142,13 @@ export async function attachProject(
 			memAvailableBytes: readMemAvailable,
 			// Autonomy is refused without the sandbox a real launch would get.
 			sandbox: () =>
-				agentSandboxRefusal({
+				(opts.sandboxPreflight ?? agentSandboxRefusal)({
 					approvalMode: cfg.approvalMode ?? DEFAULTS.approvalMode,
-					isolation:
-						(cfg.agentIsolation ?? DEFAULTS.agentIsolation) === "bwrap"
-							? {
-									mode: "bwrap",
-									hidePaths: [opts.mfwHome],
-									mfwHome: opts.mfwHome,
-								}
-							: undefined,
+					isolation: {
+						mode: "bwrap",
+						hidePaths: [opts.mfwHome],
+						mfwHome: opts.mfwHome,
+					},
 					projectRoot: root,
 					mfwHome: opts.mfwHome,
 				}),
@@ -1156,20 +1162,15 @@ export async function attachProject(
 			{ hint: async () => (await docsRef.current?.promptHint()) ?? null },
 		),
 		// Hide the daemon's home (trigger arming store, credentials.json).
-		isolation:
-			(cfg.agentIsolation ?? DEFAULTS.agentIsolation) === "bwrap"
-				? {
-						mode: "bwrap",
-						hidePaths: [opts.mfwHome],
-						mfwHome: opts.mfwHome,
-						...(cfg.agentEgressTelemetry === true
-							? { egressTelemetry: true }
-							: {}),
-						...(cfg.agentEgressUploadBudget
-							? { egressUploadBudget: cfg.agentEgressUploadBudget }
-							: {}),
-					}
-				: undefined,
+		isolation: {
+			mode: "bwrap",
+			hidePaths: [opts.mfwHome],
+			mfwHome: opts.mfwHome,
+			...(cfg.agentEgressTelemetry === true ? { egressTelemetry: true } : {}),
+			...(cfg.agentEgressUploadBudget
+				? { egressUploadBudget: cfg.agentEgressUploadBudget }
+				: {}),
+		},
 	});
 	const admission = new ProjectDispatchAdmission(
 		{
@@ -1334,7 +1335,12 @@ export async function attachProject(
 		bootId,
 		config: () => resolveBrainConfig(liveBrainConfig),
 		chat: {
-			inference: chatInferenceFor,
+			inference: (route) =>
+				chatInferenceFor(route, {
+					projectRoot: root,
+					mfwHome: opts.mfwHome,
+					stateDir: mfwDir,
+				}),
 			refusesTransport: chatTransportRefused,
 			budget: new ChatBudget(chatBudgetPath(opts.mfwHome)),
 			inbox: () => inbox.list(),
@@ -1579,11 +1585,7 @@ export async function attachProject(
 	});
 
 	const dispatchIssue = () =>
-		isolationDispatchProblem({
-			agentIsolation: cfg.agentIsolation,
-			approvalMode: cfg.approvalMode,
-			hasDevShell: needsDevShell(root),
-		});
+		isolationDispatchProblem({ hasDevShell: needsDevShell(root) });
 	const inbox = new InboxService({
 		handle,
 		project: cfg.name,
@@ -1603,18 +1605,6 @@ export async function attachProject(
 							key.endsWith(`#project:${cfg.name}`)),
 				)
 				.map(([key, h]) => ({ key, since: h.since ?? 0, until: h.until })),
-		isolationIssue: () => {
-			const detail = isolationConfigProblem({
-				agentIsolation: cfg.agentIsolation,
-				approvalMode: cfg.approvalMode,
-			});
-			return detail
-				? {
-						detail,
-						fix: 'Set agentIsolation to "bwrap" (the default) in this project\'s entry in $MFW_HOME/config.json, or set approvalMode to "interactive".',
-					}
-				: null;
-		},
 		dispatchIssue,
 	});
 	// Agents write in the project, so a host tool is never taken from it.
@@ -1624,17 +1614,6 @@ export async function attachProject(
 		plog.warn(
 			{ project: cfg.name },
 			`doctor: project '${cfg.name}' cannot dispatch. ${startupDispatchIssue.detail} Fix: ${startupDispatchIssue.fix}`,
-		);
-	}
-	if (
-		isolationConfigProblem({
-			agentIsolation: cfg.agentIsolation,
-			approvalMode: cfg.approvalMode,
-		})
-	) {
-		plog.warn(
-			{ project: cfg.name },
-			'agentIsolation "none" without interactive approvals: autonomous dispatch is refused for this project',
 		);
 	}
 	sessions.dismissInboxItem = (itemId) => inbox.dismiss(itemId);
@@ -2592,6 +2571,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 				budgetWindows,
 				runpodCore,
 				mfwHome: home,
+				sandboxPreflight: opts.sandboxPreflight,
 				afterAdmissionTransition: opts.afterAdmissionTransition,
 				runpod,
 				hosts,
@@ -2786,8 +2766,6 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 					}
 				};
 				assertConfigAvailable(await loadConfig(home));
-				const isolationProblem = isolationConfigProblem(cfg);
-				if (isolationProblem) throw new Error(isolationProblem);
 				// `template` only shapes a new board.yaml; it is not project config.
 				const { template, ...stored } = cfg;
 				if (template && !getBoardTemplate(template)) {
@@ -2806,6 +2784,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 						budgetWindows,
 						runpodCore,
 						mfwHome: home,
+						sandboxPreflight: opts.sandboxPreflight,
 						afterAdmissionTransition: opts.afterAdmissionTransition,
 						runpod,
 						hosts,

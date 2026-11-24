@@ -15,6 +15,7 @@ import {
 	type LaunchSpec,
 } from "../src/agent-host.ts";
 import { SecretEnvironment } from "../src/execution-environment.ts";
+import { sandboxedLaunchLayout } from "./support/sandboxed-launch.ts";
 
 async function waitFor(
 	cond: () => Promise<boolean>,
@@ -32,12 +33,12 @@ async function waitFor(
  *  a steer line if told to, exits with the requested code. */
 const DRIVER = `
 const dir = process.argv[2];
-const cfg = JSON.parse(await Bun.file(dir + "/driver.json").text());
+const cfg = JSON.parse(await Bun.file(dir + "/control/driver.json").text());
 console.log("driver-started:" + cfg.model);
 if (process.env.AGENT_TOKEN) console.log("secret-present");
 if (cfg.initialMessage === "wait-for-steer") {
 	for (let i = 0; i < 100; i++) {
-		const steer = await Bun.file(dir + "/steer.jsonl").text();
+		const steer = await Bun.file(dir + "/control/steer.jsonl").text();
 		if (steer.trim()) { console.log("steered:" + JSON.parse(steer.trim().split("\\n")[0])); break; }
 		await Bun.sleep(50);
 	}
@@ -49,19 +50,22 @@ async function setup(
 	over: { initialMessage?: string; env?: Record<string, string> } = {},
 ) {
 	const base = await mkdtemp(join(tmpdir(), "mfw-host-"));
-	const runDir = join(base, "run");
 	const cwd = join(base, "wt");
-	await mkdir(runDir, { recursive: true });
 	await mkdir(cwd, { recursive: true });
 	const driverScript = join(base, "driver.ts");
 	await writeFile(driverScript, DRIVER);
 	const host = new AgentHost();
 	const runId = `t${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`;
+	const layout = await sandboxedLaunchLayout(base, runId);
+	const runDir = layout.runDir;
 	const spec: LaunchSpec = {
 		runId,
 		runDir,
 		cwd,
-		projectRoot: base,
+		projectRoot: layout.projectRoot,
+		isolation: layout.isolation,
+		providerId: layout.providerId,
+		runKind: layout.runKind,
 		driverScript,
 		agentArgv: ["true"],
 		env: { EXIT_CODE: "0", ...over.env },
@@ -179,7 +183,6 @@ describe("AgentHost v2", () => {
 
 	for (const boundary of [
 		"new-session",
-		"pipe-pane",
 		"send-keys",
 		"pre-consumption",
 	] as const) {

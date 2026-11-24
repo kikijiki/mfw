@@ -36,7 +36,7 @@ export interface AgentPreflightRefusal {
 
 export interface AgentPreflightInput {
 	approvalMode: "autonomous" | "interactive";
-	isolation: BwrapIsolation | undefined;
+	isolation: BwrapIsolation;
 	projectRoot: string;
 	mfwHome: string;
 }
@@ -172,13 +172,6 @@ export async function agentSandboxRefusal(
 		now: Date.now,
 	},
 ): Promise<AgentPreflightRefusal | null> {
-	// Unsandboxed interactive runs ask a human for every action. A sandboxed
-	// run of either mode takes the same launch path, so it is refused here too.
-	if (!input.isolation) {
-		return input.approvalMode === "autonomous"
-			? { code: "sandbox_unavailable", detail: "agentIsolation is none" }
-			: null;
-	}
 	if (needsDevShell(input.projectRoot)) {
 		return { code: "sandbox_unavailable", detail: DEV_SHELL_REFUSAL };
 	}

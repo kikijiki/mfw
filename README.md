@@ -67,9 +67,9 @@ The daemon is the engine that does the work. For each project you attach, it:
   overwrite each other or touch your checkout.
 - **Runs a coding agent** on the task, in a sandbox: Claude Code or OpenAI Codex
   CLI. Agents that speak the [Agent Client Protocol](https://agentclientprotocol.com)
-  (ACP), such as Cursor, Gemini CLI, opencode and pi, have no sandbox profile yet
-  and run only unsandboxed with interactive approval
-  ([experimental](docs/experimental.md#acp-agents)). Each agent runs in its own
+  (ACP), such as Cursor, Gemini CLI, opencode and pi, have no sandbox profile yet,
+  so they cannot run locally ([experimental](docs/experimental.md#acp-agents)).
+  Every run is sandboxed; there is no setting to turn that off. Each agent runs in its own
   session that survives restarts of the daemon, and you can steer or stop it while
   it works.
 - **Works in a private clone per run** under `$MFW_HOME/workspaces`, never inside
@@ -96,13 +96,13 @@ The daemon is the engine that does the work. For each project you attach, it:
 ### Safety summary
 
 The scheduler is **off** until you turn it on, so starting mfw never starts
-spending. With the default `agentIsolation: "bwrap"`:
+spending. Every run is sandboxed:
 
 - **An agent runs in a sandbox.** It sees its private clone, a read-only system
   and a synthetic home. It cannot see your home directory, mfw's state or your
   checkout.
 - **An autonomous launch needs proof.** A probe inside the sandbox must pass for
-  that exact launch. If it cannot, the run is refused rather than run unsandboxed.
+  that exact launch. If it cannot, the run is refused; there is no unsandboxed run.
 - **Network access is an allowlist.** Each run has its own network namespace and
   reaches only its vendor's hosts, through a per-run proxy
   ([docs/egress.md](docs/egress.md)).
@@ -116,8 +116,7 @@ What this does **not** stop:
   allowed vendor host, up to an upload budget.
 - Code that passes its checks merges and pushes, and runs with your rights when
   you build or run it.
-- `agentIsolation: "none"`, ACP agents, armed host triggers and remote targets do
-  not have this protection.
+- Armed host triggers and remote targets do not have this protection.
 - The systemd limits and real agent CLIs have not yet been verified end to end
   under the full sandbox.
 
@@ -284,7 +283,6 @@ The main per-project keys in `$MFW_HOME/config.json`:
 
 | Key | Default | What it does |
 | --- | --- | --- |
-| `agentIsolation` | `bwrap` | the sandbox. `none` needs `approvalMode: "interactive"` and runs agents as your user |
 | `approvalMode` | `autonomous` | `interactive` asks a person for agent actions |
 | `pushOnMerge` | `true` | push the integration branch after each merge |
 
@@ -314,9 +312,8 @@ Run these on the host, outside any agent sandbox:
 Failed sign-ins are limited per address (behind a trusted proxy, per forwarded
 client), and all of loopback counts as one address. A sandboxed agent has its own
 network namespace and cannot reach the daemon on loopback, so it cannot use up
-your limit. An unsandboxed run
-(`agentIsolation: "none"`) shares loopback with you and can slow your sign-in;
-`mfw auth unlock` clears it.
+your limit. Another local process sharing loopback with you can slow your
+sign-in; `mfw auth unlock` clears it.
 
 To change the password, use Settings > Session. It asks for the current password
 and signs out every other session. It also deletes every passkey unless you

@@ -9,10 +9,12 @@ import { git } from "../src/git.ts";
 import { acquireKernelLock } from "../src/kernel-lock.ts";
 import { silentLogger } from "../src/log.ts";
 import { BudgetWindows } from "../src/resources/budget-windows.ts";
+import { runWorkspaceOptions } from "../src/run-workspace/factory.ts";
 import type { ProjectServices } from "../src/services.ts";
 import { brainSpawn, openTurn, STUB_BRAIN } from "./support/brain-spawn.ts";
 import { openTestLedger } from "./support/host-ledger.ts";
 import { useHostSnapshots } from "./support/host-snapshot.ts";
+import { pointDriverAtRunTree } from "./support/scripted-driver.ts";
 
 /**
  * End-to-end through the REAL composition root: a task goes ready → claimed →
@@ -135,6 +137,10 @@ async function makeRepo(): Promise<string> {
 }
 
 function useDriver(svc: ProjectServices, path: string) {
+	pointDriverAtRunTree(
+		path,
+		runWorkspaceOptions(svc.root)?.workspaceRoot ?? "/nonexistent",
+	);
 	// The adapter layer's test seams: swap the driver script and neutralize the
 	// agent argv (the driver is what actually runs).
 	const adapters = (
@@ -155,8 +161,7 @@ const cfg = (root: string): ProjectConfig => ({
 	name: "demo",
 	root,
 	integrationBranch: "main",
-	// Scripted agents, no sandbox: autonomy needs bwrap, so this fixture runs interactive.
-	agentIsolation: "none",
+	// Scripted host drivers stand in for the bridge, so no agent CLI starts.
 	approvalMode: "interactive",
 	maxConcurrent: 2,
 	assistance: {
@@ -188,6 +193,8 @@ const directAttach = async (
 			hostResources: ledger,
 			budgetWindows: new BudgetWindows(ledger.coordinator.store),
 			mfwHome: home,
+			// The real probe needs a systemd user scope; the launch path is real.
+			sandboxPreflight: async () => null,
 		},
 	);
 	// The scripted agents run unsandboxed: the end-of-run snapshot is the real

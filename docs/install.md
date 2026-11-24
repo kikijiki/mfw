@@ -66,8 +66,8 @@ launch is refused** until you fix it or accept that exact prefix in
 { "acknowledgeUntrustedInstall": "<the prefix that mfw version names>" }
 ```
 
-Accepting it means any process running as you, including an unsandboxed agent
-run, can change the code the next autonomous run uses on the host.
+Accepting it means any process running as you can change the code the next
+autonomous run uses on the host.
 
 Each launch re-hashes the whole install, and the server re-hashes `mfw` before
 it starts each host process, reading through one open descriptor. The process is
@@ -142,8 +142,8 @@ Sandboxed runs also need a `bun` on the service's `PATH`: the egress relay and
 the WIP helper run on it inside the sandbox. It must be in a root-owned directory
 (a distribution package, `/usr/local/bin` installed as root, or the Nix profile);
 mfw ignores one in a directory you can write, and refuses the launch. Do not add
-`~/.bun/bin` to make it work: anything you can write, an unsandboxed agent can
-replace.
+`~/.bun/bin` to make it work: anything you can write, any process running as
+you can replace.
 
 ## Upgrading
 

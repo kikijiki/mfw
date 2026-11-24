@@ -4,7 +4,6 @@ import {
 	type HarnessDetectionSpec,
 } from "@mfw/plugin-api/harness-registry";
 import {
-	isolationConfigProblem,
 	isolationDispatchProblem,
 	type StoredProjectConfig,
 } from "../config.ts";
@@ -601,13 +600,6 @@ function projectEgressCheck(entry: StoredProjectConfig): Outcome {
 			"set perDestinationBytes to at most totalBytes",
 		);
 	}
-	if (entry.agentIsolation === "none") {
-		return problem(
-			"warn",
-			"unsandboxed runs have no egress proxy and use the host network",
-			'set "agentIsolation": "bwrap"',
-		);
-	}
 	if (entry.agentEgressTelemetry) {
 		return problem(
 			"info",
@@ -689,17 +681,6 @@ async function projectChecks(
 			return split >= 0
 				? problem("blocker", why.slice(0, split), why.slice(split + 6))
 				: problem("blocker", why, "repair the repository's git config");
-		}),
-		at("isolation", () => {
-			const why = isolationConfigProblem(entry);
-			if (why) {
-				return problem(
-					"blocker",
-					why,
-					'set "agentIsolation": "bwrap" (the default) in this project, or "approvalMode": "interactive"',
-				);
-			}
-			return ok(`agent isolation: ${entry.agentIsolation ?? "bwrap"}`);
 		}),
 		at("dispatch", () => {
 			const issue = isolationDispatchProblem({

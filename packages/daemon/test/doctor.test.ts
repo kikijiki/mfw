@@ -98,7 +98,6 @@ describe("a healthy host", () => {
 			"egress.allowlist",
 			"project.root",
 			"project.git-config",
-			"project.isolation",
 			"project.dispatch",
 			"project.push",
 			"project.triggers",
@@ -606,14 +605,6 @@ describe("project checks", () => {
 		const c = await check(withProject({ hasEnvrc: true }), "project.dispatch");
 		expect(c.severity).toBe("blocker");
 		expect(c.detail).toContain(".envrc");
-	});
-
-	test("autonomous without a sandbox is a blocker", async () => {
-		const c = await check(
-			withProject({}, { agentIsolation: "none" }),
-			"project.isolation",
-		);
-		expect([c.status, c.severity]).toEqual(["problem", "blocker"]);
 	});
 
 	test("a remote without pushUrl warns and hides URL credentials", async () => {

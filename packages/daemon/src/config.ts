@@ -327,14 +327,6 @@ const projectSchema = z.object({
 	/** Allow `pushUrl` to be a local path, whose receive hooks run on this host. */
 	pushAllowLocalUrl: z.boolean().optional(),
 	/**
-	 * Isolate agent runs from the daemon's home (trigger arming store,
-	 * `credentials.json`), its environment and the tmux sockets via `bwrap`.
-	 * Defaults to `bwrap`. `none` is allowed only with `approvalMode:
-	 * "interactive"`; an autonomous run without a working sandbox is refused
-	 * at preflight (`sandbox_unavailable`), never silently unsandboxed.
-	 */
-	agentIsolation: z.enum(["none", "bwrap"]).optional(),
-	/**
 	 * Let sandboxed runs reach their CLI's telemetry and error-report hosts.
 	 * Off by default: those hosts are refused and the CLI is told not to send.
 	 */
@@ -374,35 +366,14 @@ const projectSchema = z.object({
 });
 
 /**
- * Why a project entry may not run autonomously without a sandbox, or null.
- * Not part of the schema: an existing entry that violates it must not stop the
- * daemon at boot (security review X5). It loads, its autonomous dispatch is
- * refused with `sandbox_unavailable`, and it shows in the inbox. New and edited
- * entries are checked with this before they are written.
- */
-export function isolationConfigProblem(p: {
-	agentIsolation?: "none" | "bwrap";
-	approvalMode?: "autonomous" | "interactive";
-}): string | null {
-	if (p.agentIsolation === "none" && p.approvalMode !== "interactive") {
-		return 'agentIsolation "none" requires approvalMode "interactive": autonomous runs need a bwrap sandbox';
-	}
-	return null;
-}
-
-/**
  * Why the preflight will refuse every sandboxed launch of this project, with
  * the exact fix, or null. Separate from `isolationConfigProblem`, which vets
  * what may be written: such a project must stay attachable so the owner can
  * see this and act on it.
  */
 export function isolationDispatchProblem(p: {
-	agentIsolation?: "none" | "bwrap";
-	approvalMode?: "autonomous" | "interactive";
 	hasDevShell?: boolean;
 }): { detail: string; fix: string } | null {
-	// `none` is the other rule's case: refused if autonomous, allowed if not.
-	if (p.agentIsolation === "none") return null;
 	if (p.hasDevShell) {
 		return {
 			detail:
@@ -483,7 +454,6 @@ export const PROJECT_DEFAULTS = {
 	// remote already configured. No remote means nothing is pushed.
 	pushOnMerge: true,
 	pushRemote: "origin",
-	agentIsolation: "bwrap",
 	// Enough to rule out a blip without leaving a draft unusable through an outage.
 	draftExpandMaxAttempts: 3,
 	// Read-only planning; should not serialize a capture burst.
@@ -523,6 +493,22 @@ export const FALLBACK_MERGE_CHECKS: VerificationPlan = {
 const EMPTY: DaemonConfig = { projects: [] };
 
 /** Load the config. A malformed file throws rather than reverting to defaults (which looks like a fresh install). */
+/** Keys a config may no longer carry: loading one fails rather than ignore it. */
+export const REMOVED_PROJECT_KEYS: Record<string, string> = {
+	agentIsolation: "agentIsolation was removed: runs are always sandboxed",
+};
+
+export function assertNoRemovedKeys(raw: unknown): void {
+	const projects = (raw as { projects?: unknown } | null)?.projects;
+	if (!Array.isArray(projects)) return;
+	for (const project of projects) {
+		if (!project || typeof project !== "object") continue;
+		for (const [key, message] of Object.entries(REMOVED_PROJECT_KEYS)) {
+			if (Object.hasOwn(project, key)) throw new Error(message);
+		}
+	}
+}
+
 export async function loadConfig(home = mfwHome()): Promise<DaemonConfig> {
 	let raw: string;
 	try {
@@ -534,7 +520,9 @@ export async function loadConfig(home = mfwHome()): Promise<DaemonConfig> {
 		// Not absence: mutateConfig must never overwrite an unreadable file with an empty config.
 		throw error;
 	}
-	const parsed = configSchema.parse(JSON.parse(raw));
+	const json: unknown = JSON.parse(raw);
+	assertNoRemovedKeys(json);
+	const parsed = configSchema.parse(json);
 	return {
 		...parsed,
 		projects: parsed.projects.map((p) => ({
