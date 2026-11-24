@@ -8,12 +8,14 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
 	type EnvRunRequest,
 	type EnvRunResult,
 	runEnvStep,
 } from "../../src/containment/dev-env-build.ts";
+import { discoverToolchain } from "../../src/containment/toolchain.ts";
 import { git } from "../../src/git.ts";
 import { cagedSteps } from "./caged-launch.ts";
 
@@ -74,6 +76,51 @@ export function nixSkipReason(): string | null {
 	return /"trusted":(?:false|0)[,}]/.test(r.stdout.toString())
 		? null
 		: "the nix daemon trusts this user";
+}
+
+/**
+ * Null when every tool resolves on `path` the way the env build resolves them
+ * (the trusted-binary rules of the toolchain, not a bare `which`); otherwise
+ * the reason, which names the tool and how to get it. For `liveGate(..., "nix")`.
+ * `fixture` points the lookup at a fake root, for tests of this function.
+ */
+export function toolSkipReason(
+	names: readonly string[],
+	path: string = process.env.PATH ?? "",
+	fixture?: { root: string; home: string },
+): string | null {
+	const plan = discoverToolchain({
+		home: fixture?.home ?? realpathSync(homedir()),
+		...(fixture ? { root: fixture.root } : {}),
+		binaries: names,
+		path,
+		// Only the lookup matters here: nothing is bound, so no closure is read.
+		closure: () => ({ method: "reference-scan", paths: [] }),
+	});
+	const absent = plan.unresolved
+		.filter((u) => u.reason === "not found on PATH")
+		.map((u) => u.name);
+	const refused = plan.unresolved.filter(
+		(u) => u.reason !== "not found on PATH",
+	);
+	const fix = (what: string) =>
+		`add ${what} to your environment (nix shell nixpkgs#mise nixpkgs#direnv, or the repo dev shell) or unset MFW_REQUIRE_LIVE_NIX`;
+	const parts: string[] = [];
+	if (absent.length > 0) {
+		const list =
+			absent.length === 1
+				? `${absent[0]} is`
+				: `${absent.slice(0, -1).join(", ")} and ${absent.at(-1)} are`;
+		parts.push(
+			`${list} not on PATH: ${fix(absent.length === 1 ? "it" : "them")}`,
+		);
+	}
+	for (const u of refused) {
+		parts.push(
+			`${u.name} on PATH is not a trusted binary (${u.reason}): ${fix("a trusted one")}`,
+		);
+	}
+	return parts.length > 0 ? parts.join("; ") : null;
 }
 
 /** The nixpkgs the repository's own flake is pinned to: already in the store here. */

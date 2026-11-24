@@ -30,6 +30,7 @@ import {
 	createEnvLab,
 	type EnvLab,
 	nixSkipReason,
+	toolSkipReason,
 } from "./support/dev-env-fixture.ts";
 import { liveGate } from "./support/live-gate.ts";
 
@@ -47,7 +48,8 @@ const REPO = resolve(import.meta.dir, "../../..");
 
 const skip =
 	liveGate("dev-env-mfw-live", bwrapSkipReason()) ??
-	liveGate("dev-env-mfw-live", nixSkipReason(), "nix");
+	liveGate("dev-env-mfw-live", nixSkipReason(), "nix") ??
+	liveGate("dev-env-mfw-live", toolSkipReason(["direnv"]), "nix");
 
 describe.skipIf(skip !== null)("mfw on mfw", () => {
 	let lab: EnvLab;

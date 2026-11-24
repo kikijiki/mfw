@@ -17,6 +17,7 @@ import {
 	nixSkipReason,
 	pinnedNixpkgs,
 	tinyFlake,
+	toolSkipReason,
 } from "./support/dev-env-fixture.ts";
 import { liveGate } from "./support/live-gate.ts";
 
@@ -30,6 +31,16 @@ import { liveGate } from "./support/live-gate.ts";
 const skip =
 	liveGate("dev-env-build-live", bwrapSkipReason()) ??
 	liveGate("dev-env-build-live", nixSkipReason(), "nix");
+const noDirenv = liveGate(
+	"dev-env-build-live direnv",
+	toolSkipReason(["direnv", "bash"]),
+	"nix",
+);
+const noMise = liveGate(
+	"dev-env-build-live mise",
+	toolSkipReason(["mise"]),
+	"nix",
+);
 const noDevenv = liveGate(
 	"dev-env-build-live devenv",
 	Bun.which("devenv") ? null : "no devenv on PATH",
@@ -59,55 +70,61 @@ describe.skipIf(skip !== null)("evaluating a dev environment", () => {
 		lab.assertCanaries();
 	}, 300_000);
 
-	test("direnv: use flake, dotenv, source_env, PATH_add, layout and watch_file", async () => {
-		const { root, commit } = await lab.repo("direnv", {
-			"flake.nix": tinyFlake(),
-			"flake.lock": flakeLockText(),
-			".envrc": [
-				"use flake",
-				"dotenv",
-				"source_env sub/extra.envrc",
-				"PATH_add bin",
-				"layout node",
-				"watch_file watched.txt",
-				"export FIXTURE_DIRENV=yes",
-				"",
-			].join("\n"),
-			".env": "FROM_DOTENV=1\n",
-			"sub/extra.envrc": "export FROM_SOURCED=1\n",
-			"watched.txt": "w\n",
-			"bin/local-tool": "#!/bin/sh\necho local\n",
-		});
-		const r = await lab.run(root, commit, {
-			step: "direnv",
-			allow: envBuildAllowlist(),
-		});
-		if (!r.ok) console.log(r.reason, r.log);
-		expect(r.ok).toBe(true);
-		if (!r.ok) return;
-		const env = parseDirenvExport(r.output.toString());
-		expect(env.FIXTURE_DIRENV).toBe("yes");
-		expect(env.FIXTURE_FLAKE).toBe("yes");
-		expect(env.FROM_DOTENV).toBe("1");
-		expect(env.FROM_SOURCED).toBe("1");
-		const path = (env.PATH ?? "").split(":");
-		expect(path).toContain("/work/bin");
-		expect(path).toContain("/work/node_modules/.bin");
-		expect(
-			path.some((p) => /^\/nix\/store\/[^/]+-hello-[^/]+\/bin$/.test(p)),
-		).toBe(true);
-		expect(watchedRepoPaths(decodeDirenvWatches(env.DIRENV_WATCHES))).toEqual([
-			".env",
-			".envrc",
-			"flake.lock",
-			"flake.nix",
-			"sub/extra.envrc",
-			"watched.txt",
-		]);
-		// direnv's own allow record went to the sandbox's private home.
-		expect(existsSync(join(lab.home, ".local/share/direnv"))).toBe(false);
-		lab.assertCanaries();
-	}, 300_000);
+	test.skipIf(noDirenv !== null)(
+		"direnv: use flake, dotenv, source_env, PATH_add, layout and watch_file",
+		async () => {
+			const { root, commit } = await lab.repo("direnv", {
+				"flake.nix": tinyFlake(),
+				"flake.lock": flakeLockText(),
+				".envrc": [
+					"use flake",
+					"dotenv",
+					"source_env sub/extra.envrc",
+					"PATH_add bin",
+					"layout node",
+					"watch_file watched.txt",
+					"export FIXTURE_DIRENV=yes",
+					"",
+				].join("\n"),
+				".env": "FROM_DOTENV=1\n",
+				"sub/extra.envrc": "export FROM_SOURCED=1\n",
+				"watched.txt": "w\n",
+				"bin/local-tool": "#!/bin/sh\necho local\n",
+			});
+			const r = await lab.run(root, commit, {
+				step: "direnv",
+				allow: envBuildAllowlist(),
+			});
+			if (!r.ok) console.log(r.reason, r.log);
+			expect(r.ok).toBe(true);
+			if (!r.ok) return;
+			const env = parseDirenvExport(r.output.toString());
+			expect(env.FIXTURE_DIRENV).toBe("yes");
+			expect(env.FIXTURE_FLAKE).toBe("yes");
+			expect(env.FROM_DOTENV).toBe("1");
+			expect(env.FROM_SOURCED).toBe("1");
+			const path = (env.PATH ?? "").split(":");
+			expect(path).toContain("/work/bin");
+			expect(path).toContain("/work/node_modules/.bin");
+			expect(
+				path.some((p) => /^\/nix\/store\/[^/]+-hello-[^/]+\/bin$/.test(p)),
+			).toBe(true);
+			expect(watchedRepoPaths(decodeDirenvWatches(env.DIRENV_WATCHES))).toEqual(
+				[
+					".env",
+					".envrc",
+					"flake.lock",
+					"flake.nix",
+					"sub/extra.envrc",
+					"watched.txt",
+				],
+			);
+			// direnv's own allow record went to the sandbox's private home.
+			expect(existsSync(join(lab.home, ".local/share/direnv"))).toBe(false);
+			lab.assertCanaries();
+		},
+		300_000,
+	);
 
 	test.skipIf(noDevenv !== null)(
 		"devenv: devenv print-dev-env in the sandbox",
@@ -141,38 +158,42 @@ describe.skipIf(skip !== null)("evaluating a dev environment", () => {
 		590_000,
 	);
 
-	test("mise: trust and install into the sandbox-owned data directory", async () => {
-		const { root, commit } = await lab.repo("mise", {
-			"mise.toml": '[tools]\njq = "1.7.1"\n\n[env]\nFROM_MISE = "1"\n',
-		});
-		const dataDir = join(lab.mfwHome, "env", "data", "mise-fixture");
-		const r = await lab.run(root, commit, {
-			step: "mise",
-			allow: envBuildAllowlist(),
-			dataDir,
-		});
-		if (!r.ok) console.log(r.reason, r.log);
-		expect(r.ok).toBe(true);
-		if (!r.ok) return;
-		const env = parseMiseEnv(r.output.toString());
-		expect(env.FROM_MISE).toBe("1");
-		expect((env.PATH ?? "").split(":")[0]).toBe(
-			"/cache/env-data/mise/installs/jq/1.7.1",
-		);
-		expect(existsSync(join(dataDir, "mise/installs/jq/1.7.1/jq"))).toBe(true);
-		// Host-observed: only allowlisted hosts were reached, none refused.
-		expect(Object.keys(r.egress?.allowed ?? {}).sort()).toEqual([
-			"github.com:443",
-			"mise-versions.jdx.dev:443",
-			"release-assets.githubusercontent.com:443",
-		]);
-		expect(r.egress?.denied).toEqual({});
-		expect(existsSync(join(lab.home, ".config/mise"))).toBe(false);
-		expect(existsSync(join(lab.home, ".local/share/mise"))).toBe(false);
-	}, 300_000);
+	test.skipIf(noMise !== null)(
+		"mise: trust and install into the sandbox-owned data directory",
+		async () => {
+			const { root, commit } = await lab.repo("mise", {
+				"mise.toml": '[tools]\njq = "1.7.1"\n\n[env]\nFROM_MISE = "1"\n',
+			});
+			const dataDir = join(lab.mfwHome, "env", "data", "mise-fixture");
+			const r = await lab.run(root, commit, {
+				step: "mise",
+				allow: envBuildAllowlist(),
+				dataDir,
+			});
+			if (!r.ok) console.log(r.reason, r.log);
+			expect(r.ok).toBe(true);
+			if (!r.ok) return;
+			const env = parseMiseEnv(r.output.toString());
+			expect(env.FROM_MISE).toBe("1");
+			expect((env.PATH ?? "").split(":")[0]).toBe(
+				"/cache/env-data/mise/installs/jq/1.7.1",
+			);
+			expect(existsSync(join(dataDir, "mise/installs/jq/1.7.1/jq"))).toBe(true);
+			// Host-observed: only allowlisted hosts were reached, none refused.
+			expect(Object.keys(r.egress?.allowed ?? {}).sort()).toEqual([
+				"github.com:443",
+				"mise-versions.jdx.dev:443",
+				"release-assets.githubusercontent.com:443",
+			]);
+			expect(r.egress?.denied).toEqual({});
+			expect(existsSync(join(lab.home, ".config/mise"))).toBe(false);
+			expect(existsSync(join(lab.home, ".local/share/mise"))).toBe(false);
+		},
+		300_000,
+	);
 });
 
-describe.skipIf(skip !== null)("a hostile .envrc", () => {
+describe.skipIf(skip !== null || noDirenv !== null)("a hostile .envrc", () => {
 	let lab: EnvLab;
 	beforeAll(() => {
 		lab = createEnvLab("env-hostile");

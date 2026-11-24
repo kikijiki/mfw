@@ -21,6 +21,7 @@ import {
 	flakeLockText,
 	nixSkipReason,
 	tinyFlake,
+	toolSkipReason,
 } from "./support/dev-env-fixture.ts";
 import { liveGate } from "./support/live-gate.ts";
 
@@ -33,7 +34,14 @@ import { liveGate } from "./support/live-gate.ts";
 
 const skip =
 	liveGate("dev-env-apply-live", bwrapSkipReason()) ??
-	liveGate("dev-env-apply-live", nixSkipReason(), "nix");
+	liveGate("dev-env-apply-live", nixSkipReason(), "nix") ??
+	liveGate("dev-env-apply-live", toolSkipReason(["direnv"]), "nix");
+// Only the mise test needs mise; the rest of the suite runs without it.
+const noMise = liveGate(
+	"dev-env-apply-live mise",
+	toolSkipReason(["mise"]),
+	"nix",
+);
 
 const dod = (run: string) =>
 	({ verifier: "deterministic", checks: [{ run }] }) as never;
@@ -186,49 +194,53 @@ describe.skipIf(skip !== null)("a check with the approved environment", () => {
 		expect(builds).toBe(before);
 	}, 60_000);
 
-	test("mise: the installed tool runs from the read-only data directory", async () => {
-		const m = await lab.repo("mise", {
-			"mise.toml": '[tools]\njq = "1.7.1"\n',
-		});
-		await allowEnv(new EnvTrustStore(lab.mfwHome), {
-			project: "fixture",
-			root: m.root,
-			commit: m.commit,
-			setting: "auto",
-			config: undefined,
-			via: "cli",
-		});
-		expect((await resolveFor(m.root, true)).kind).toBe("ready");
-		const mh = await openProjectDb(join(m.root, ".mfw"));
-		try {
-			const runner = createCheckSandbox({
-				db: mh.db,
-				mfwHome: lab.mfwHome,
-				projectRoot: m.root,
-				stateDir: join(m.root, ".mfw"),
-				steps: steps(),
-				devEnv: () => resolveFor(m.root, false),
+	test.skipIf(noMise !== null)(
+		"mise: the installed tool runs from the read-only data directory",
+		async () => {
+			const m = await lab.repo("mise", {
+				"mise.toml": '[tools]\njq = "1.7.1"\n',
 			});
-			const clones = new VerifierClones({
-				workspaceRoot: join(lab.mfwHome, "workspaces"),
-				primaryRoot: m.root,
-				checkRunner: runner,
+			await allowEnv(new EnvTrustStore(lab.mfwHome), {
+				project: "fixture",
+				root: m.root,
+				commit: m.commit,
+				setting: "auto",
+				config: undefined,
+				via: "cli",
 			});
-			const r = await verifyInClone(
-				clones,
-				m.commit,
-				"live",
-				dod(
-					'test "$(jq --version)" = jq-1.7.1 && ! touch /cache/env-data/x 2>/dev/null',
-				),
-				m.commit,
-			);
-			expect(r.checks[0]?.detail).toBeUndefined();
-			expect(r.passed).toBe(true);
-		} finally {
-			mh.close();
-		}
-	}, 300_000);
+			expect((await resolveFor(m.root, true)).kind).toBe("ready");
+			const mh = await openProjectDb(join(m.root, ".mfw"));
+			try {
+				const runner = createCheckSandbox({
+					db: mh.db,
+					mfwHome: lab.mfwHome,
+					projectRoot: m.root,
+					stateDir: join(m.root, ".mfw"),
+					steps: steps(),
+					devEnv: () => resolveFor(m.root, false),
+				});
+				const clones = new VerifierClones({
+					workspaceRoot: join(lab.mfwHome, "workspaces"),
+					primaryRoot: m.root,
+					checkRunner: runner,
+				});
+				const r = await verifyInClone(
+					clones,
+					m.commit,
+					"live",
+					dod(
+						'test "$(jq --version)" = jq-1.7.1 && ! touch /cache/env-data/x 2>/dev/null',
+					),
+					m.commit,
+				);
+				expect(r.checks[0]?.detail).toBeUndefined();
+				expect(r.passed).toBe(true);
+			} finally {
+				mh.close();
+			}
+		},
+		300_000,
+	);
 
 	test("F4: a candidate-tracked bin/bun does not run as the check's bun", async () => {
 		const m = await lab.repo("shadow", {
