@@ -129,6 +129,31 @@ const MIGRATIONS: readonly (readonly string[])[] = [
 		"ALTER TABLE auth_sessions ADD COLUMN passkey_id TEXT",
 		"CREATE INDEX ix_auth_sessions_passkey ON auth_sessions (passkey_id) WHERE passkey_id IS NOT NULL",
 	],
+	[
+		// Where credentials came from. A token minted by a session dies with the
+		// passkey that session signed in with; a passkey shows who added it.
+		"ALTER TABLE api_tokens ADD COLUMN created_by_session TEXT",
+		"CREATE INDEX ix_api_tokens_session ON api_tokens (created_by_session) WHERE created_by_session IS NOT NULL",
+		"ALTER TABLE passkeys ADD COLUMN created_by_session TEXT",
+		"ALTER TABLE passkeys ADD COLUMN created_from TEXT",
+		// Passkey additions and revocations, shown to every other session until
+		// THAT session acknowledges them: no session can dismiss them for another.
+		`CREATE TABLE passkey_notices (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			kind TEXT NOT NULL CHECK (kind IN ('added', 'revoked')),
+			passkey_id TEXT NOT NULL,
+			name TEXT NOT NULL,
+			rp_id TEXT NOT NULL,
+			source TEXT,
+			session_id TEXT,
+			at INTEGER NOT NULL
+		)`,
+		`CREATE TABLE passkey_notice_acks (
+			notice_id INTEGER NOT NULL REFERENCES passkey_notices (id) ON DELETE CASCADE,
+			session_id TEXT NOT NULL,
+			PRIMARY KEY (notice_id, session_id)
+		)`,
+	],
 ];
 
 export const AUTH_SCHEMA_VERSION = MIGRATIONS.length;

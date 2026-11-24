@@ -119,6 +119,10 @@ export interface PasskeyInfo {
 	backedUp: boolean;
 	/** `credProps.rk`, when the browser reported it. */
 	discoverable: boolean | null;
+	/** The address it was added from (null before schema 7). */
+	createdFrom: string | null;
+	/** The session that added it. */
+	createdBySession: string | null;
 }
 
 /** What re-verifies the owner before a passkey is added. */
@@ -1133,13 +1137,16 @@ export class AuthService {
 			lastUsedAt: null,
 			backedUp: verified.backedUp,
 			discoverable: parsed.discoverable,
+			createdFrom: null,
+			createdBySession: null,
 		};
 	}
 
 	/** Registered passkeys, oldest first. Never key material or credential ids. */
 	async listPasskeys(): Promise<PasskeyInfo[]> {
 		const r = await this.db.client.execute(
-			`SELECT id, name, rp_id, created_at, last_used_at, backed_up, discoverable
+			`SELECT id, name, rp_id, created_at, last_used_at, backed_up, discoverable,
+				created_from, created_by_session
 				FROM passkeys ORDER BY created_at, rowid`,
 		);
 		return r.rows.map((row) => ({
@@ -1151,6 +1158,9 @@ export class AuthService {
 			backedUp: Number(row.backed_up) === 1,
 			discoverable:
 				row.discoverable === null ? null : Number(row.discoverable) === 1,
+			createdFrom: row.created_from === null ? null : String(row.created_from),
+			createdBySession:
+				row.created_by_session === null ? null : String(row.created_by_session),
 		}));
 	}
 

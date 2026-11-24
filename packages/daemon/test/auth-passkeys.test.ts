@@ -642,7 +642,7 @@ describe("schema", () => {
 		const epoch = await raw.execute("SELECT credential_epoch FROM principals");
 		raw.close();
 		expect(Number(v.rows[0]?.user_version)).toBe(AUTH_SCHEMA_VERSION);
-		expect(AUTH_SCHEMA_VERSION).toBe(6);
+		expect(AUTH_SCHEMA_VERSION).toBe(7);
 		expect(Number(epoch.rows[0]?.credential_epoch)).toBe(3);
 		// Passkeys work on the upgraded database.
 		owner = session as unknown as IssuedSession;
@@ -663,5 +663,50 @@ describe("schema", () => {
 			/newer than this build/,
 		);
 		auth = await AuthService.open(join(dir, "fresh.db"));
+	});
+});
+
+describe("schema 7", () => {
+	test("schema 6 upgrades to 7 with passkeys, sessions and tokens intact", async () => {
+		await addPasskey({}, "old key");
+		const viaPasskey = await passkeyLogin();
+		const { info: token } = await auth.createToken({
+			name: "ci",
+			scopes: ["status:read"],
+		});
+		auth.close();
+		// Back to exactly schema 6: drop what 7 adds.
+		const raw = createClient({ url: `file:${path}` });
+		await raw.batch(
+			[
+				"DROP TABLE passkey_notice_acks",
+				"DROP TABLE passkey_notices",
+				"DROP INDEX ix_api_tokens_session",
+				"ALTER TABLE api_tokens DROP COLUMN created_by_session",
+				"ALTER TABLE passkeys DROP COLUMN created_by_session",
+				"ALTER TABLE passkeys DROP COLUMN created_from",
+				"PRAGMA user_version=6",
+			],
+			"write",
+		);
+		raw.close();
+		auth = await AuthService.open(path, {
+			now: () => clock,
+			passwordCheckIntervalMs: 0,
+		});
+		const [pk] = await auth.listPasskeys();
+		expect(pk?.name).toBe("old key");
+		expect(pk?.createdFrom ?? null).toBeNull();
+		expect(await auth.authenticate(viaPasskey.token)).not.toBeNull();
+		expect((await auth.listTokens()).map((t) => t.id)).toEqual([token.id]);
+		expect((await passkeyLogin()).token).toBeString();
+		const check = createClient({ url: `file:${path}` });
+		const v = await check.execute("PRAGMA user_version");
+		const cols = await check.execute("PRAGMA table_info(api_tokens)");
+		check.close();
+		expect(Number(v.rows[0]?.user_version)).toBe(7);
+		expect(cols.rows.map((r) => String(r.name))).toContain(
+			"created_by_session",
+		);
 	});
 });
