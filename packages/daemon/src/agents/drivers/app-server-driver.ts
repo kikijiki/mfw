@@ -5,6 +5,7 @@ import {
 	agentSpawnCwd,
 	refuseBridgedRunWithoutRequest,
 } from "../../containment/agent-launch-argv.ts";
+import { hostSpawnEnv } from "../../containment/host-spawn-env.ts";
 import { driverRunPaths, isHostBridged } from "../../containment/run-dir.ts";
 import {
 	type ApprovalDecision,
@@ -59,7 +60,11 @@ function emit(payload: Record<string, unknown>): void {
 // A bridged run's `cwd` is the sandbox path; the bridge itself stays on the host.
 const child = Bun.spawn([...cfg.bridgeArgv, ...cfg.providerArgv], {
 	cwd: agentSpawnCwd(cfg.cwd),
-	env: { ...process.env, ...(cfg.env ?? {}) },
+	// The bridge is mfw (or bun): only the allowlist and the declared names.
+	env: hostSpawnEnv(
+		{ ...process.env, ...(cfg.env ?? {}) },
+		Object.keys(cfg.env ?? {}),
+	),
 	stdin: "pipe",
 	stdout: "pipe",
 	stderr: "pipe",

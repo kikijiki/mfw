@@ -46,6 +46,76 @@ describe("the units' tool path", () => {
 	});
 });
 
+describe("the compiled install in packaging", () => {
+	test("the home-manager unit runs `mfw server` from a package, and the checkout only without one", async () => {
+		const nix = await readFile(
+			resolve(root, "packaging/mfw.home-manager.nix"),
+			"utf8",
+		);
+		expect(nix).toContain('cfg.package}/bin/mfw server"');
+		expect(nix).toContain("lib.mkIf (!compiled)");
+		expect(nix).toContain("lib.types.nullOr lib.types.package");
+	});
+
+	test("the flake's module defaults to the flake's compiled package", async () => {
+		const flake = await readFile(resolve(root, "flake.nix"), "utf8");
+		expect(flake).toContain("homeManagerModules.default");
+		expect(flake).toContain("services.mfw-server.package");
+		expect(flake).toContain("./packaging/nix/mfw.nix");
+	});
+
+	test("the Nix package keeps the compiled executables intact and records its runtime in place", async () => {
+		const pkg = await readFile(resolve(root, "packaging/nix/mfw.nix"), "utf8");
+		for (const flag of [
+			"dontStrip = true",
+			"dontPatchELF = true",
+			"dontFixup = true",
+		]) {
+			expect(pkg).toContain(flag);
+		}
+		expect(pkg).toContain("--runtime-in-place --skip-build");
+		expect(pkg).toContain("--frozen-lockfile --ignore-scripts");
+	});
+
+	// Security review REL-1 M4: the placeholder hash must fail loudly, never quietly.
+	test("a placeholder node_modules hash warns with the command that computes the real one", async () => {
+		const [pkg, flake, doc] = await Promise.all([
+			readFile(resolve(root, "packaging/nix/mfw.nix"), "utf8"),
+			readFile(resolve(root, "flake.nix"), "utf8"),
+			readFile(resolve(root, "docs/install.md"), "utf8"),
+		]);
+		expect(pkg).toContain("nodeModulesHash == lib.fakeHash");
+		expect(pkg).toContain("lib.warn");
+		expect(pkg).toContain("outputHash = checkedHash;");
+		expect(pkg).toContain("passthru = {inherit nodeModules;};");
+		const command = "nix build .#mfw.nodeModules 2>&1 | grep 'got:'";
+		for (const text of [pkg, flake, doc]) expect(text).toContain(command);
+	});
+
+	test("the home-manager unit is hardened without touching its PATH", async () => {
+		const nix = await readFile(
+			resolve(root, "packaging/mfw.home-manager.nix"),
+			"utf8",
+		);
+		for (const line of [
+			'UMask = "0077";',
+			"NoNewPrivileges = true;",
+			'ProtectSystem = "full";',
+			"RestrictSUIDSGID = true;",
+		]) {
+			expect(nix).toContain(line);
+		}
+	});
+
+	test("the plain unit documents the compiled ExecStart", async () => {
+		const unit = await readFile(
+			resolve(root, "packaging/mfw-server.service"),
+			"utf8",
+		);
+		expect(unit).toContain("#   ExecStart=/opt/mfw/bin/mfw server");
+	});
+});
+
 describe("packaged listener safety", () => {
 	test("plain systemd binds loopback and documented host controls are real", async () => {
 		const [service, homeManager, readme] = await Promise.all([

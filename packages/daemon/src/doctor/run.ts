@@ -22,6 +22,10 @@ import {
 	detectUserns,
 } from "../containment/host-caps.ts";
 import {
+	ACK_UNTRUSTED_INSTALL,
+	installTrustFix,
+} from "../containment/install-trust.ts";
+import {
 	type LaunchPreflightItem,
 	launchPreflight,
 } from "../containment/launch-preflight.ts";
@@ -367,6 +371,31 @@ async function authFilesCheck(p: DoctorProbes): Promise<Outcome> {
 async function buildCheck(p: DoctorProbes): Promise<Outcome> {
 	const b = await p.build();
 	if (b.kind === "source") return ok("running from source, no build to verify");
+	if (b.kind === "compiled") {
+		const why = [b.migrations, b.install === "none" ? null : b.install]
+			.filter(Boolean)
+			.join("; ");
+		if (why) return problem("blocker", why, "reinstall mfw");
+		if (b.trust) {
+			const fix = `${installTrustFix(b.prefix)}`;
+			return b.acknowledged
+				? problem(
+						"warn",
+						`the install at ${b.prefix} is not safe from agents (${b.trust}); acknowledged by ${ACK_UNTRUSTED_INSTALL}, so autonomous runs go ahead`,
+						fix,
+					)
+				: problem(
+						"blocker",
+						`the install at ${b.prefix} is not safe from agents (${b.trust}); autonomous runs are refused`,
+						fix,
+					);
+		}
+		return ok(
+			b.install === "none"
+				? "compiled mfw: embedded migrations verify (a standalone executable, no install)"
+				: "compiled mfw: embedded migrations and the install verify",
+		);
+	}
 	const why = [b.hostScripts, b.migrations].filter(Boolean).join("; ");
 	return why
 		? problem("blocker", why, "bun run build, then restart the server")

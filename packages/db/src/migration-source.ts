@@ -15,6 +15,11 @@
  * It never searches from the working directory or upward: a run's working
  * directory is agent-written, and a planted journal would be applied.
  *
+ * A compiled `mfw` carries its migrations inside the executable with the same
+ * manifest, registered by its entry point before any command runs, and checks
+ * them the same way at every open. It never reads migrations from disk, and an
+ * executable without them refuses rather than looking for a checkout.
+ *
  * Node builtins only. `import.meta.dir` is not used because Vite's dev server
  * does not define it.
  */
@@ -34,6 +39,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildKind } from "../../core/src/build-info.ts";
 
 /** Inside the build output, beside the built host scripts. */
 export const MIGRATIONS_OUTPUT_DIR = join("server", "migrations");
@@ -41,9 +47,38 @@ export const MIGRATIONS_MANIFEST = "manifest.json";
 export const MIGRATIONS_MANIFEST_VERSION = 1;
 
 const JOURNAL = "meta/_journal.json";
+const SERVER_DIR = `${sep}server${sep}`;
+const BUNDLE_MODULE =
+	/^(?:index\.mjs|chunks\/.+\.mjs|host-scripts\/[^/]+\.js)$/;
 const LISTED_NAME = /^(?:meta\/_journal\.json|[A-Za-z0-9_-]+\.sql)$/;
 const BUNDLE_DIR = `${sep}apps${sep}start${sep}.output${sep}`;
 const REBUILD = "Fix: rebuild with `bun run build` and restart the server";
+
+/**
+ * The output directory of the bundle a module runs from, null from source. The
+ * same rule as the host scripts' (`host-script.ts`): a checkout's build by its
+ * path, a bundle copied elsewhere by its build stamp, and a stamped bundle in an
+ * unknown layout is refused rather than treated as source.
+ */
+function bundleOutputOf(moduleFile: string): string | null {
+	const legacy = moduleFile.lastIndexOf(BUNDLE_DIR);
+	if (legacy >= 0) return moduleFile.slice(0, legacy + BUNDLE_DIR.length);
+	if (buildKind() !== "bundle") return null;
+	const at = moduleFile.lastIndexOf(SERVER_DIR);
+	const rest =
+		at >= 0
+			? moduleFile
+					.slice(at + SERVER_DIR.length)
+					.split(sep)
+					.join("/")
+			: "";
+	if (at < 0 || !BUNDLE_MODULE.test(rest)) {
+		throw new Error(
+			`refusing to migrate: ${moduleFile} is a production build in a layout mfw does not know. ${REBUILD}`,
+		);
+	}
+	return moduleFile.slice(0, at + 1);
+}
 
 export interface MigrationManifest {
 	version: number;
@@ -130,6 +165,13 @@ function readManifest(dir: string): MigrationManifest {
 			`refusing to migrate: the migration manifest is unreadable. ${REBUILD}`,
 		);
 	}
+	return validManifest(parsed, REBUILD);
+}
+
+function validManifest(
+	parsed: Partial<MigrationManifest>,
+	fix: string,
+): MigrationManifest {
 	if (
 		parsed.version !== MIGRATIONS_MANIFEST_VERSION ||
 		typeof parsed.files !== "object" ||
@@ -138,7 +180,7 @@ function readManifest(dir: string): MigrationManifest {
 		!Object.keys(parsed.files).every((name) => LISTED_NAME.test(name))
 	) {
 		throw new Error(
-			`refusing to migrate: the migration manifest has the wrong format. ${REBUILD}`,
+			`refusing to migrate: the migration manifest has the wrong format. ${fix}`,
 		);
 	}
 	return parsed as MigrationManifest;
@@ -154,33 +196,135 @@ function walk(dir: string, prefix = ""): string[] {
 	});
 }
 
-/** The verified bytes of every listed file, read once. */
-function verifiedFiles(dir: string): Map<string, Uint8Array> {
-	const manifest = readManifest(dir);
-	for (const name of walk(dir)) {
-		if (name !== MIGRATIONS_MANIFEST && !Object.hasOwn(manifest.files, name)) {
+/** Where the bytes come from: a build's directory, or the compiled executable. */
+interface MigrationSource {
+	manifest: MigrationManifest;
+	/** Every file present, relative, besides the manifest. */
+	names: string[];
+	/** The bytes of a listed file, or null when it is missing or not a regular file. */
+	read(name: string): Uint8Array | null;
+}
+
+function directorySource(dir: string): MigrationSource {
+	return {
+		manifest: readManifest(dir),
+		names: walk(dir).filter((n) => n !== MIGRATIONS_MANIFEST),
+		read: (name) => {
+			const path = join(dir, name);
+			return regularFile(path) ? readFileSync(path) : null;
+		},
+	};
+}
+
+/** Every listed file, each checked against its hash, and nothing unlisted. */
+function verifiedFrom(
+	source: MigrationSource,
+	fix: string,
+): Map<string, Uint8Array> {
+	const { manifest } = source;
+	for (const name of source.names) {
+		if (!Object.hasOwn(manifest.files, name)) {
 			throw new Error(
-				`refusing to migrate: ${name} is not in the manifest. ${REBUILD}`,
+				`refusing to migrate: ${name} is not in the manifest. ${fix}`,
 			);
 		}
 	}
 	const out = new Map<string, Uint8Array>();
 	for (const [name, expected] of Object.entries(manifest.files)) {
-		const path = join(dir, name);
-		if (!regularFile(path)) {
+		const bytes = source.read(name);
+		if (bytes === null) {
 			throw new Error(
-				`refusing to migrate: the built ${name} is not a regular file. ${REBUILD}`,
+				`refusing to migrate: the built ${name} is not a regular file. ${fix}`,
 			);
 		}
-		const bytes = readFileSync(path);
 		if (sha256Hex(bytes) !== expected) {
 			throw new Error(
-				`refusing to migrate: the built ${name} does not match its manifest hash. ${REBUILD}`,
+				`refusing to migrate: the built ${name} does not match its manifest hash. ${fix}`,
 			);
 		}
 		out.set(name, bytes);
 	}
 	return out;
+}
+
+/** The verified bytes of every listed file, read once. */
+function verifiedFiles(dir: string): Map<string, Uint8Array> {
+	return verifiedFrom(directorySource(dir), REBUILD);
+}
+
+// ---------- a compiled executable ----------
+
+const EMBEDDED = Symbol.for("mfw.embeddedMigrations");
+const RECOMPILE = "Fix: rebuild mfw with tools/compile.ts";
+
+export interface EmbeddedMigrations {
+	/** The manifest text, as the build wrote it. */
+	manifest: string;
+	/** File path inside the migrations directory to its text. */
+	files: Record<string, string>;
+}
+
+/** Called once by the compiled `mfw` entry, before any command runs. */
+export function registerEmbeddedMigrations(embedded: EmbeddedMigrations): void {
+	(globalThis as Record<symbol, unknown>)[EMBEDDED] = Object.freeze({
+		manifest: embedded.manifest,
+		files: Object.freeze({ ...embedded.files }),
+	});
+}
+
+function embeddedSource(): MigrationSource {
+	const embedded = (globalThis as Record<symbol, unknown>)[EMBEDDED] as
+		| EmbeddedMigrations
+		| undefined;
+	if (!embedded) {
+		throw new Error(
+			`refusing to migrate: this executable carries no migrations. ${RECOMPILE}`,
+		);
+	}
+	let parsed: Partial<MigrationManifest>;
+	try {
+		parsed = JSON.parse(embedded.manifest);
+	} catch {
+		throw new Error(
+			`refusing to migrate: the embedded migration manifest is unreadable. ${RECOMPILE}`,
+		);
+	}
+	const manifest = validManifest(parsed, RECOMPILE);
+	const encoder = new TextEncoder();
+	return {
+		manifest,
+		names: Object.keys(embedded.files),
+		read: (name) =>
+			Object.hasOwn(embedded.files, name)
+				? encoder.encode(embedded.files[name])
+				: null,
+	};
+}
+
+/**
+ * The embedded migrations, checked. Throws the refusal a compiled `mfw` would
+ * hit at open; `mfw version` and the doctor report it.
+ */
+export function verifyEmbeddedMigrations(): MigrationManifest {
+	const source = embeddedSource();
+	verifiedFrom(source, RECOMPILE);
+	return source.manifest;
+}
+
+/** The embedded payload for a build directory's migrations (the compile step). */
+export function embeddableMigrations(sourceDir: string): EmbeddedMigrations {
+	const files: Record<string, string> = {};
+	const hashes: Record<string, string> = {};
+	for (const name of journalFiles(sourceDir)) {
+		const bytes = readFileSync(join(sourceDir, name));
+		files[name] = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+		hashes[name] = sha256Hex(bytes);
+	}
+	const manifest: MigrationManifest = {
+		version: MIGRATIONS_MANIFEST_VERSION,
+		files: hashes,
+	};
+	return { manifest: `${JSON.stringify(manifest, null, 2)}\n`, files };
 }
 
 /**
@@ -193,6 +337,11 @@ export function verifyBuiltMigrations(outputDir: string): void {
 
 /** The migrations beside this package, for a server running from source. */
 export function sourceMigrationsDir(moduleUrl: string): string {
+	if (buildKind() === "compiled") {
+		throw new Error(
+			"refusing to migrate: a compiled mfw applies only its embedded migrations",
+		);
+	}
 	const override = process.env.MFW_MIGRATIONS_DIR;
 	if (override) {
 		if (!existsSync(join(override, "meta", "_journal.json"))) {
@@ -218,16 +367,19 @@ export async function withVerifiedMigrations<T>(
 	moduleUrl: string,
 	fn: (folder: string) => Promise<T>,
 ): Promise<T> {
+	const compiled = buildKind() === "compiled";
 	const moduleFile = fileURLToPath(moduleUrl);
-	const bundle = moduleFile.lastIndexOf(BUNDLE_DIR);
-	if (bundle < 0) return fn(sourceMigrationsDir(moduleUrl));
+	const output = compiled ? null : bundleOutputOf(moduleFile);
+	if (!compiled && output === null) return fn(sourceMigrationsDir(moduleUrl));
 	if (process.env.MFW_MIGRATIONS_DIR) {
 		throw new Error(
 			"refusing to migrate: MFW_MIGRATIONS_DIR is set, and a production build applies only its own verified migrations. Fix: unset it",
 		);
 	}
-	const output = moduleFile.slice(0, bundle + BUNDLE_DIR.length);
-	const files = verifiedFiles(join(output, MIGRATIONS_OUTPUT_DIR));
+	const files =
+		output === null
+			? verifiedFrom(embeddedSource(), RECOMPILE)
+			: verifiedFiles(join(output, MIGRATIONS_OUTPUT_DIR));
 	// mkdtemp creates the directory private to this user.
 	const folder = mkdtempSync(join(tmpdir(), "mfw-migrations-"));
 	try {

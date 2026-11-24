@@ -1,9 +1,11 @@
+import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
 import { nitro } from "nitro/vite";
 import { defineConfig } from "vite";
 import tsConfigPaths from "vite-tsconfig-paths";
+import { buildStampFor, stampDefine } from "../../tools/build-stamp.ts";
 
 /**
  * The app is served at https://<host>.ts.net/mfw/ by `tailscale serve`.
@@ -25,6 +27,18 @@ export default defineConfig(({ command, isPreview }) => ({
 		__MFW_VITE_DEV_SERVER__: JSON.stringify(
 			command === "serve" && isPreview !== true,
 		),
+		/**
+		 * A built bundle knows it is one from this constant, not from where it was
+		 * copied to (`packages/core/src/build-info.ts`).
+		 */
+		...(command === "build"
+			? stampDefine(
+					buildStampFor(
+						fileURLToPath(new URL("../..", import.meta.url)),
+						"bundle",
+					),
+				)
+			: {}),
 	},
 	server: { port: 7777 },
 	plugins: [

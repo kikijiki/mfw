@@ -17,6 +17,7 @@ import {
 	EGRESS_PROXY,
 	EGRESS_PROXY_BESIDE,
 	EGRESS_RELAY,
+	type HostScript,
 	hostScript,
 	WIP_HELPER,
 } from "../src/containment/host-script.ts";
@@ -33,9 +34,10 @@ describe("host-side scripts in the bundled server (review F5)", () => {
 	};
 	const url = (rel: string) => pathToFileURL(join(root, rel)).href;
 	const CHUNK = "repo/apps/start/.output/server/chunks/_/router.mjs";
-	const script = {
+	const script: HostScript = {
 		file: "x-main.ts",
 		fromRoot: "packages/daemon/src/x-main.ts",
+		id: "agent-launcher",
 	};
 
 	beforeEach(() => {

@@ -25,6 +25,13 @@ import {
 	realpathSync,
 	writeSync,
 } from "node:fs";
+import { buildKind, buildStamp } from "../../../core/src/build-info.ts";
+import {
+	fileMismatch,
+	installOfExecutable,
+	installPath,
+	readInstallManifest,
+} from "./install-manifest.ts";
 
 /** Every sealed descriptor's name starts with this, as `/memfd:<name>`. */
 export const SEALED_PROBE_PREFIX = "mfw-probe-";
@@ -158,9 +165,63 @@ function openLibc() {
 	});
 }
 
-/** Seal the runtime at `runtimePath`, by default the one running this code. */
+/**
+ * The bun the probe runs on: the one running this code, except in a compiled
+ * `mfw`, which runs only its own commands. There it is the install's pinned
+ * runtime, checked against the install manifest and against the digest this
+ * `mfw` was built with; a standalone `mfw` without an install has none, and the
+ * launch is refused.
+ */
+export function defaultProbeRuntime(): string {
+	if (buildKind() !== "compiled") return process.execPath;
+	const { libDir } = installOfExecutable(realpathSync(process.execPath));
+	let manifest: ReturnType<typeof readInstallManifest>;
+	try {
+		manifest = readInstallManifest(libDir);
+	} catch (e) {
+		throw new ProbeRuntimeError((e as Error).message);
+	}
+	if (!manifest) {
+		throw new ProbeRuntimeError(
+			"a standalone mfw has no bun to probe the sandbox with; install mfw with its runtime",
+		);
+	}
+	const built = buildStamp()?.integrity?.runtime;
+	if (built && built !== manifest.runtime.sha256) {
+		throw new ProbeRuntimeError(
+			"the install names another bun than this mfw was built with",
+		);
+	}
+	let path: string;
+	try {
+		path = installPath(libDir, manifest.runtime);
+	} catch (e) {
+		throw new ProbeRuntimeError((e as Error).message);
+	}
+	const problem = fileMismatch(path, manifest.runtime.sha256);
+	if (problem) throw new ProbeRuntimeError(problem);
+	return path;
+}
+
+/**
+ * The bun the launcher's toolchain is resolved against: this process's own,
+ * or in a compiled `mfw` the install's verified runtime, so a sandbox binds
+ * bun's store closure rather than the `mfw` executable's (REL-1 L3). A
+ * standalone `mfw` has none and falls back to itself; its launch is refused
+ * later, at the probe.
+ */
+export function launcherRuntime(): string {
+	if (buildKind() !== "compiled") return process.execPath;
+	try {
+		return defaultProbeRuntime();
+	} catch {
+		return process.execPath;
+	}
+}
+
+/** Seal the runtime at `runtimePath`, by default `defaultProbeRuntime()`. */
 export function sealProbeRuntime(
-	runtimePath: string = process.execPath,
+	runtimePath: string = defaultProbeRuntime(),
 ): SealedProbeRuntime {
 	const bun = realpathSync(runtimePath);
 	const interp = elfInterpreter(readFileSync(bun));

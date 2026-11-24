@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
+import { buildKind } from "../../../core/src/build-info.ts";
 import { CliError, type CliIo, type Command, UsageError } from "./types.ts";
 
 /** First line after the shebang; `install` only ever overwrites a file that has it. */
@@ -78,6 +79,12 @@ export const shim: Command = {
 			args.positional.length > 1
 		) {
 			throw new UsageError();
+		}
+		if (buildKind() === "compiled") {
+			throw new CliError(
+				"a compiled mfw-board is already an executable: put the directory that holds it on PATH instead of a shim",
+				2,
+			);
 		}
 		if (args.dir?.startsWith("~")) {
 			throw new CliError(

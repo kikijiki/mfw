@@ -1,14 +1,27 @@
 # mfw-server: home-manager systemd user service (unit `mfw-server`).
 #
 # A per-user service (mfw needs your home, your tmux, and your Claude
-# subscription auth). The single TanStack Start app is one Bun process: it boots
-# the orchestrator in-process, serves the UI, and exposes tRPC on :7777.
+# subscription auth). One Bun process boots the orchestrator in-process, serves
+# the UI, and exposes tRPC on :7777.
 #
-# Usage: import this module from your home-manager config and adjust `dir`:
+# Two ways to run it:
+#  - Compiled (the release): set `services.mfw-server.package` to a compiled
+#    install, such as this flake's `packages.<system>.mfw`. Importing
+#    `homeManagerModules.default` from the flake does that for you. The service
+#    runs `mfw server` from the Nix store: the server bundle, its pinned bun and
+#    every host process (`mfw __host`) come from that read-only install, and
+#    nothing is built or read from a checkout.
+#  - From a checkout (development): import this file by path and leave
+#    `package` unset. The service builds the checkout once and runs the bundle
+#    from it. A checkout mfw manages itself is refused at attach.
+#
+# Usage, compiled (flake):
+#   imports = [ inputs.mfw.homeManagerModules.default ];
+# Usage, from a checkout:
 #   imports = [ /path/to/mfw/packaging/mfw.home-manager.nix ];
+#   services.mfw-server.checkout = "/path/to/mfw";
 # then `home-manager switch`. The app answers at http://127.0.0.1:7777/mfw, the
 # `/mfw` prefix is Vite's `base`, baked in at build time (`/` redirects to it).
-# Rebuild with MFW_BASE_PATH=/ to mount at the root instead.
 #
 # To reach it from another device, keep this loopback bind and publish it through
 # a TLS proxy on its own origin. Set the two variables below, then run:
@@ -29,15 +42,21 @@
   pkgs,
   ...
 }: let
-  # Adjust to your checkout.
-  dir = "${config.home.homeDirectory}/dev/mfw";
+  cfg = config.services.mfw-server;
+  compiled = cfg.package != null;
+  dir = cfg.checkout;
   out = "${dir}/apps/start/.output/server/index.mjs";
 
   # bun is required; tmux hosts agent runs; git/bash/coreutils/direnv are used by
   # the per-run scripts. `claude` is found via the profile bin below. bubblewrap
   # sandboxes agent runs (`agentIsolation: "bwrap"`, the default); without it
   # autonomous runs are refused with a fix, never run unsandboxed.
-  binPath = lib.makeBinPath [pkgs.bun pkgs.tmux pkgs.git pkgs.bash pkgs.coreutils pkgs.direnv pkgs.bubblewrap];
+  # Compiled, `mfw` and `mfw-board` come first, so `mfw board` inside the
+  # service resolves to the same install.
+  binPath = lib.makeBinPath (
+    lib.optional compiled cfg.package
+    ++ [pkgs.bun pkgs.tmux pkgs.git pkgs.bash pkgs.coreutils pkgs.direnv pkgs.bubblewrap]
+  );
 
   # First boot self-builds when the Nitro output or its host script or migration
   # manifest is missing (the server refuses to launch agents or open a database
@@ -56,14 +75,28 @@
     fi
   '';
 in {
-  systemd.user.services.mfw-server = {
+  options.services.mfw-server = {
+    package = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      default = null;
+      description = "A compiled mfw install to run. Null runs the checkout at `checkout` (development).";
+    };
+    checkout = lib.mkOption {
+      type = lib.types.str;
+      default = "${config.home.homeDirectory}/dev/mfw";
+      description = "The mfw checkout to build and run when `package` is null.";
+    };
+  };
+
+  config.systemd.user.services.mfw-server = {
     Unit = {
       Description = "mfw: local autonomous project orchestrator (loopback)";
       After = ["network.target"];
     };
     Service = {
       Type = "simple";
-      WorkingDirectory = dir;
+      # Compiled, `mfw server` runs the bundle from its own install directory.
+      WorkingDirectory = if compiled then "%h" else dir;
       Environment = [
         "PATH=${binPath}:${config.home.profileDirectory}/bin:/run/current-system/sw/bin"
         "MFW_HOME=%h/.local/share/mfw"
@@ -74,8 +107,11 @@ in {
         # "MFW_LISTEN_SOCKET=%h/.local/share/mfw/serve/mfw.sock"
         # "MFW_ALLOWED_HOSTS=mybox.tail1234.ts.net:8443"
       ];
-      ExecStartPre = "${buildIfMissing}";
-      ExecStart = "${pkgs.bun}/bin/bun run ${out}";
+      ExecStartPre = lib.mkIf (!compiled) "${buildIfMissing}";
+      ExecStart =
+        if compiled
+        then "${cfg.package}/bin/mfw server"
+        else "${pkgs.bun}/bin/bun run ${out}";
       Restart = "on-failure";
       RestartSec = 5;
 
@@ -91,6 +127,14 @@ in {
 
       # A child being OOM-killed must not tear the orchestrator down with it.
       OOMPolicy = "continue";
+
+      # Hardening that costs mfw nothing: bwrap needs no privileges (it uses an
+      # unprivileged user namespace), and the systemd scopes are asked for over
+      # the user bus. Files mfw writes are private to you.
+      UMask = "0077";
+      NoNewPrivileges = true;
+      ProtectSystem = "full";
+      RestrictSUIDSGID = true;
 
       # Agent runs are accounted to this unit's cgroup. Uncomment to cap, leaving
       # generous headroom, a legitimate agent may run a full build or test suite.

@@ -24,6 +24,7 @@ import { HOST_BUN_FLAGS } from "./agent-launch-argv.ts";
 import type { FleetCli } from "./agent-profile.ts";
 import { brainTranscriptStore } from "./brain-transcript.ts";
 import { SANDBOX_PATHS } from "./compile-bwrap.ts";
+import { hostScriptText, MCP_MAIN, runsHostEntries } from "./host-script.ts";
 import { runDirLayout } from "./run-dir.ts";
 
 const MCP_BUNDLE = "mfw-mcp.js";
@@ -89,7 +90,15 @@ export function rewriteBrainArgv(
 	return out;
 }
 
-async function bundleMcp(dest: string): Promise<void> {
+/** The MCP server as one script. A compiled install carries it prebuilt in `mfw`. */
+async function mcpBundleText(): Promise<string> {
+	if (runsHostEntries(import.meta.url)) {
+		try {
+			return hostScriptText(import.meta.url, MCP_MAIN);
+		} catch (err) {
+			throw new BrainLaunchError((err as Error).message);
+		}
+	}
 	const built = await Bun.build({
 		entrypoints: [mcpMainScript()],
 		target: "bun",
@@ -98,8 +107,13 @@ async function bundleMcp(dest: string): Promise<void> {
 	if (!built.success || !output) {
 		throw new BrainLaunchError("could not bundle the brain's MCP server");
 	}
+	return output.text();
+}
+
+async function bundleMcp(dest: string): Promise<void> {
+	const text = await mcpBundleText();
 	rmSync(dest, { force: true });
-	writeFileSync(dest, await output.text(), { mode: 0o444 });
+	writeFileSync(dest, text, { mode: 0o444 });
 	chmodSync(dest, 0o444);
 }
 

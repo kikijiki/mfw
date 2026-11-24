@@ -1,0 +1,12 @@
+{
+	"$comment": "The official bun that runs mfw-server in a tarball install, and the base the portable mfw and mfw-board executables are compiled from. Checked by tools/fetch-bun-runtime.ts. Each sha256 is of the release asset (the zip), and matches nixpkgs' fixed-output hash for the same file. Add a target only with a hash checked the same way.",
+	"version": "1.3.13",
+	"releaseUrl": "https://github.com/oven-sh/bun/releases/download/bun-v1.3.13",
+	"targets": {
+		"bun-linux-x64": {
+			"asset": "bun-linux-x64.zip",
+			"member": "bun-linux-x64/bun",
+			"sha256": "79c0771fa8b92c33aae41e15a0e0d307ea99d0e2f00317c71c6c53237a78e25a"
+		}
+	}
+}

@@ -20,6 +20,7 @@ import {
 	liveHostReaders,
 } from "./host-caps.ts";
 import { launchPreflight, liveLaunchPreflightIo } from "./launch-preflight.ts";
+import { launcherRuntime } from "./probe-runtime.ts";
 import { discoverToolchain } from "./toolchain.ts";
 
 export const realOrNull = (p: string): string | null => {
@@ -65,9 +66,10 @@ export async function liveCompileHost(
 			home,
 			binaries,
 			path: process.env.PATH ?? "",
-			// The runtime the launcher itself runs on: a CLI installed outside the
-			// store links against it. Taken from this process, not from any file.
-			storeRoots: [realOrNull(process.execPath) ?? process.execPath],
+			// The bun the launcher runs on (in a compiled install, its verified
+			// runtime, never the mfw executable): a CLI installed outside the store
+			// links against it.
+			storeRoots: [realOrNull(launcherRuntime()) ?? launcherRuntime()],
 		}),
 		home,
 		mfwHome: req.mfwHome,

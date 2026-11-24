@@ -29,6 +29,11 @@ name: ci-check
 # "true" to use `check-fallback` there, and run the live suites elsewhere: a
 # release must not be cut from a run where they were skipped.
 #
+# Both jobs set MFW_REQUIRE_COMPILED=1: compiling the standalone `mfw` and
+# `mfw-board` needs no user namespace, so a runner that cannot compile them
+# fails instead of skipping their suite (packages/cli/test/compiled-live.test.ts).
+# `check` also runs `smoke:compiled`, the release gate for a compiled install.
+#
 # Not run from here: the workflow only defines the jobs. Pushing it is the
 # repository owner's call.
 
@@ -45,6 +50,7 @@ jobs:
     timeout-minutes: 30
     env:
       MFW_REQUIRE_LIVE_SANDBOX: "1"
+      MFW_REQUIRE_COMPILED: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -75,11 +81,15 @@ jobs:
         run: bun run --cwd apps/start typecheck
       - name: Test (live sandbox suites required)
         run: bun run test
+      - name: Compiled install smoke (release gate)
+        run: bun run build && bun run smoke:compiled
 
   check-fallback:
     if: ${{ vars.MFW_CI_NO_USERNS == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      MFW_REQUIRE_COMPILED: "1"
     steps:
       - name: This job does not run the live sandbox suites
         run: |

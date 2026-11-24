@@ -13,7 +13,7 @@
  * in place of the agent CLI.
  */
 
-import { chmodSync, copyFileSync, rmSync } from "node:fs";
+import { chmodSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ProjectDb } from "@mfw/db/client";
@@ -45,7 +45,7 @@ import {
 	SANDBOX_PATHS,
 } from "./compile-bwrap.ts";
 import { EGRESS_SOCKET_NAME } from "./egress-run.ts";
-import { EGRESS_RELAY, hostScript } from "./host-script.ts";
+import { EGRESS_RELAY, hostScriptText } from "./host-script.ts";
 import { launchSandbox } from "./launch-sandbox.ts";
 import { attestSandbox } from "./probe-run.ts";
 import { ProfileRejectedError, type SandboxProfile } from "./profile.ts";
@@ -178,7 +178,10 @@ export function withEgressRelay(
 ): string[] {
 	const copy = join(req.runDir, RUN_CONTROL_DIR, RELAY_FILE);
 	rmSync(copy, { force: true });
-	copyFileSync(hostScript(import.meta.url, EGRESS_RELAY), copy);
+	writeFileSync(copy, hostScriptText(import.meta.url, EGRESS_RELAY), {
+		mode: 0o444,
+		flag: "wx",
+	});
 	chmodSync(copy, 0o444);
 	return [
 		bun,

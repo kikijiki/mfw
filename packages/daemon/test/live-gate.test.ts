@@ -61,6 +61,67 @@ describe("the live gate", () => {
 		}
 	});
 
+	test("a compiled-executable suite fails instead of skipping under MFW_REQUIRE_COMPILED", () => {
+		const saved = process.env.MFW_REQUIRE_COMPILED;
+		process.env.MFW_REQUIRE_COMPILED = "1";
+		try {
+			expect(() => liveGate("t", "cannot compile", "compiled")).toThrow(
+				"MFW_REQUIRE_COMPILED is set, but cannot compile",
+			);
+		} finally {
+			if (saved === undefined) delete process.env.MFW_REQUIRE_COMPILED;
+			else process.env.MFW_REQUIRE_COMPILED = saved;
+		}
+		const cli = readFileSync(
+			resolve(TESTS, "../../cli/test/compiled-live.test.ts"),
+			"utf8",
+		);
+		expect(cli).toContain(
+			'liveGate("compiled-live", compileUnavailable(), "compiled")',
+		);
+	});
+
+	test("with compiling impossible and MFW_REQUIRE_COMPILED set, the compiled suite fails", async () => {
+		const repo = resolve(TESTS, "../../..");
+		const child = Bun.spawn(
+			[
+				process.execPath,
+				"test",
+				join(repo, "packages/cli/test/compiled-live.test.ts"),
+			],
+			{
+				cwd: repo,
+				env: {
+					PATH: dirname(process.execPath),
+					HOME: process.env.HOME ?? "/nonexistent",
+					MFW_REQUIRE_COMPILED: "1",
+					MFW_TEST_COMPILE_TARGET: "bun-plan9-x64",
+				},
+				stdout: "pipe",
+				stderr: "pipe",
+				stdin: "ignore",
+			},
+		);
+		const [stdout, stderr, code] = await Promise.all([
+			new Response(child.stdout).text(),
+			new Response(child.stderr).text(),
+			child.exited,
+		]);
+		expect(code).not.toBe(0);
+		expect(`${stdout}${stderr}`).toContain(
+			"MFW_REQUIRE_COMPILED is set, but no libsql addon is known for bun-plan9-x64",
+		);
+	}, 60_000);
+
+	test("CI requires the compiled suite in both jobs, and runs the compiled smoke", () => {
+		const ci = readFileSync(
+			resolve(TESTS, "../../../.github/workflows/ci-check.yml"),
+			"utf8",
+		);
+		expect(ci.match(/MFW_REQUIRE_COMPILED: "1"/g)?.length).toBe(2);
+		expect(ci).toContain("bun run build && bun run smoke:compiled");
+	});
+
 	test("every *-live test file uses it, or is listed as needing no capability", () => {
 		const live = testFiles.filter((f) => /-live.*\.test\.ts$/.test(f));
 		expect(live.length).toBeGreaterThan(0);

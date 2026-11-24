@@ -14,6 +14,7 @@ import {
 	dispatch,
 	findBoardExecutable,
 } from "../src/main.ts";
+import { runForwarding } from "../src/run-child.ts";
 
 const MAIN = join(import.meta.dir, "../src/main.ts");
 const dirs: string[] = [];
@@ -99,12 +100,34 @@ describe("mfw board", () => {
 		expect(t.ran).toEqual([{ argv: [exe, "list", "--json"], cwd: undefined }]);
 	});
 
-	test("falls back to mfw-board on PATH", async () => {
+	test("falls back to mfw-board on PATH, only from a directory agents cannot write", async () => {
 		const dir = tmp();
 		const exe = fakeBoard(dir);
-		expect(findBoardExecutable({ PATH: `/nope:${dir}` }, "/nonexistent")).toBe(
-			exe,
-		);
+		// The real rule: a temporary directory is agent-writable, so never.
+		expect(
+			findBoardExecutable({ PATH: `/nope:${dir}` }, "/nonexistent"),
+		).toBeNull();
+		// A trusted PATH entry is used.
+		const asked: (string | undefined)[] = [];
+		expect(
+			findBoardExecutable({ PATH: `/nope:${dir}` }, "/nonexistent", (n, p) => {
+				asked.push(p);
+				return n === "mfw-board" ? exe : null;
+			}),
+		).toBe(exe);
+		expect(asked).toEqual([`/nope:${dir}`]);
+	});
+
+	test("the sibling must pass the install's check", async () => {
+		const dir = tmp();
+		const exe = fakeBoard(dir);
+		const t = deps({
+			selfDir: dir,
+			siblingProblem: (p) => (p === exe ? "it does not match" : null),
+		});
+		expect(await dispatch(["board", "list"], t.d)).toBe(78);
+		expect(t.ran).toEqual([]);
+		expect(t.err.join("\n")).toContain("it does not match");
 	});
 
 	test("falls back to the source checkout CLI under bun", async () => {
@@ -127,21 +150,31 @@ describe("mfw board", () => {
 		expect(boardMissingMessage()).toContain("Fix:");
 	});
 
-	test("end to end: the child's exit code and output come back", async () => {
+	test("end to end: a planted mfw-board in a writable PATH directory never runs", async () => {
 		const dir = tmp();
 		fakeBoard(dir);
-		const p = Bun.spawn([process.execPath, "run", MAIN, "board", "a", "b"], {
+		const p = Bun.spawn([process.execPath, "run", MAIN, "board", "--help"], {
 			env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
 			stdout: "pipe",
 			stderr: "pipe",
 		});
-		const [out, code] = await Promise.all([
+		const [out, err, code] = await Promise.all([
 			new Response(p.stdout).text(),
+			new Response(p.stderr).text(),
 			p.exited,
 		]);
-		// selfDir has no mfw-board, so the PATH one runs.
-		expect(out.trim()).toBe("fake-board a b");
-		expect(code).toBe(3);
+		// selfDir has no mfw-board and the PATH one is untrusted: the checkout's runs.
+		expect(`${out}${err}`).not.toContain("fake-board");
+		expect(out).toContain("usage: mfw-board");
+		expect(code).toBe(0);
+	});
+
+	test("end to end: the child's exit code and output come back", async () => {
+		const dir = tmp();
+		const exe = fakeBoard(dir);
+		const t = deps({ selfDir: dir, run: (argv) => runForwarding(argv) });
+		expect(await dispatch(["board", "a", "b"], t.d)).toBe(3);
+		expect(exe).toBe(join(dir, "mfw-board"));
 	});
 });
 
@@ -208,13 +241,21 @@ describe("mfw: other subcommands", () => {
 		}
 	});
 
-	test("version reports mfw and mfw-board", async () => {
+	test("version reports mfw, mfw-board and bun", async () => {
 		const p = Bun.spawn([process.execPath, "run", MAIN, "version"], {
 			stdout: "pipe",
 		});
 		const out = await new Response(p.stdout).text();
-		expect(out).toMatch(/^mfw \d+\.\d+\.\d+\nmfw-board \d+\.\d+\.\d+\n$/);
+		expect(out).toMatch(
+			/^mfw \d+\.\d+\.\d+ \(source\)\nmfw-board \d+\.\d+\.\d+\nbun \d+\.\d+\.\d+\n$/,
+		);
 		expect(await p.exited).toBe(0);
+	});
+
+	test("__host is refused from a checkout", async () => {
+		const t = deps();
+		expect(await dispatch(["__host", "agent-launcher"], t.d)).toBe(78);
+		expect(t.err.join("\n")).toContain("internal to a compiled mfw");
 	});
 });
 

@@ -14,6 +14,7 @@ import {
 	chmodSync,
 	cpSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -25,6 +26,7 @@ import {
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
+import type { BunPlugin } from "bun";
 import { saveConfig } from "../packages/daemon/src/config.ts";
 import { AGENT_BASE_TOOLS } from "../packages/daemon/src/containment/agent-profile.ts";
 import {
@@ -34,11 +36,21 @@ import {
 	HOST_SCRIPTS_MANIFEST,
 	sha256Hex,
 } from "../packages/daemon/src/containment/host-script.ts";
+import { installBuild } from "./install-build.ts";
 
 const ROOT = resolve(import.meta.dir, "..");
 const ENTRY =
 	process.env.MFW_SMOKE_ENTRY ??
 	join(ROOT, "apps/start/.output/server/index.mjs");
+/**
+ * `MFW_SMOKE_COMPILED=1` runs the launch through a compiled install instead:
+ * every host entry is `mfw __host`, and the install has no script files. The
+ * smoke assembles its own install from this checkout's build with the same
+ * pipeline, plus one plugin that compiles the caged launcher in place of the
+ * real one (the production executable takes no override at all).
+ */
+const COMPILED = process.env.MFW_SMOKE_COMPILED === "1";
+const LAUNCHER_MARK = "compiled-launcher.json";
 const FIXTURES = join(ROOT, ".live-sandbox");
 const SUPPORT = join(ROOT, "packages/daemon/test/support");
 const BRIDGE = join(
@@ -171,6 +183,66 @@ function buildWithBridge(base: string, bridge: string): string {
 	return join(output, "server/index.mjs");
 }
 
+/** Owner-writable again, never through a link. */
+function writable(path: string): void {
+	const st = lstatSync(path);
+	if (st.isSymbolicLink()) return;
+	chmodSync(path, st.mode | 0o200);
+	if (st.isDirectory())
+		for (const c of readdirSync(path)) writable(join(path, c));
+}
+
+/** Compiles the caged launcher in place of `agent-launch-main.ts`, with the cage baked in. */
+function cagedLauncherPlugin(cageConfig: string, mark: string): BunPlugin {
+	return {
+		name: "caged-compiled-launcher",
+		setup(build) {
+			build.onLoad(
+				{ filter: /containment[\\/]agent-launch-main\.ts$/ },
+				() => ({
+					loader: "ts",
+					contents: `
+import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(mark)}, JSON.stringify({ execPath: process.execPath, entry: process.env.MFW_HOST_ENTRY }));
+process.env.MFW_CAGE_CONFIG = ${JSON.stringify(cageConfig)};
+await import(${JSON.stringify(join(SUPPORT, "caged-launcher.ts"))});
+`,
+				}),
+			);
+		},
+	};
+}
+
+/** A compiled install of this checkout's build, with the caged launcher compiled in. */
+async function cagedInstall(
+	base: string,
+	cageConfig: string,
+): Promise<{ argv: string[]; cwd: string; mfw: string; lib: string }> {
+	const prefix = join(base, "install");
+	const r = await installBuild({
+		root: ROOT,
+		prefix,
+		runtime: process.execPath,
+		skipBuild: true,
+		readOnly: true,
+		mfwPlugins: [cagedLauncherPlugin(cageConfig, join(base, LAUNCHER_MARK))],
+	});
+	if (existsSync(join(r.libDir, HOST_SCRIPTS_DIR))) {
+		fail("the compiled install ships host scripts");
+	}
+	return {
+		argv: [
+			join(r.libDir, r.manifest.runtime.path),
+			`--preload=${join(SUPPORT, "caged-server-preload.ts")}`,
+			"run",
+			join(r.libDir, "server/index.mjs"),
+		],
+		cwd: r.libDir,
+		mfw: join(prefix, "bin/mfw"),
+		lib: r.libDir,
+	};
+}
+
 async function main(): Promise<number> {
 	if (!existsSync(ENTRY)) fail("no production build. Fix: bun run build");
 	liveSandboxOrFail();
@@ -218,6 +290,7 @@ await import(${JSON.stringify(BRIDGE)});
 `,
 	);
 
+	const compiled = COMPILED ? await cagedInstall(base, cageConfig) : null;
 	await saveConfig(
 		{
 			projects: [
@@ -234,6 +307,11 @@ await import(${JSON.stringify(BRIDGE)});
 				},
 			],
 			dispatchPaused: false,
+			// The fixture install sits in this user's tree, so autonomous launches
+			// from it are refused unless the owner accepts that exact prefix.
+			...(compiled
+				? { acknowledgeUntrustedInstall: dirname(dirname(compiled.mfw)) }
+				: {}),
 		} as never,
 		mfwHome,
 	);
@@ -242,14 +320,14 @@ await import(${JSON.stringify(BRIDGE)});
 	const origin = `http://127.0.0.1:${port}/mfw`;
 	const logFile = join(base, "server.log");
 	const server = Bun.spawn(
-		[
+		compiled?.argv ?? [
 			process.execPath,
 			`--preload=${join(SUPPORT, "caged-server-preload.ts")}`,
 			"run",
 			buildWithBridge(base, bridge),
 		],
 		{
-			cwd: ROOT,
+			cwd: compiled?.cwd ?? ROOT,
 			env: {
 				PATH: path,
 				HOME: home,
@@ -346,6 +424,23 @@ await import(${JSON.stringify(BRIDGE)});
 			["agent's HOME is not the host's", proof.home !== home],
 			["agent reaches the network only by its relay", !!proof.proxy],
 		];
+		if (compiled) {
+			let mark: { execPath?: string; entry?: string } = {};
+			try {
+				mark = JSON.parse(readFileSync(join(base, LAUNCHER_MARK), "utf8"));
+			} catch {}
+			checks.push(
+				[
+					"the launcher ran as the compiled mfw, re-executed by a bridge",
+					mark.execPath === realpathSync(compiled.mfw) &&
+						mark.entry === "agent-launcher",
+				],
+				[
+					"the install still has no script files",
+					!existsSync(join(compiled.lib, HOST_SCRIPTS_DIR)),
+				],
+			);
+		}
 		for (const [name, passed] of checks)
 			console.log(`${passed ? "ok  " : "FAIL"} ${name}`);
 		ok = checks.every(([, passed]) => passed);
@@ -361,9 +456,11 @@ await import(${JSON.stringify(BRIDGE)});
 		server.kill("SIGKILL");
 		await server.exited;
 		rmSync(tmuxDir, { recursive: true, force: true });
-		if (ok && base.startsWith(`${FIXTURES}${sep}agent-smoke-`))
+		if (ok && base.startsWith(`${FIXTURES}${sep}agent-smoke-`)) {
+			// A compiled install is read-only: make it removable first.
+			if (compiled) writable(join(base, "install"));
 			rmSync(base, { recursive: true, force: true });
-		else console.log(`agent-smoke: fixture kept at ${base}`);
+		} else console.log(`agent-smoke: fixture kept at ${base}`);
 	}
 	return ok ? 0 : 1;
 }

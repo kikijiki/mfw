@@ -480,6 +480,12 @@ const configSchema = z.object({
 	runpod: RunPodMachinePolicySchema.optional(),
 	/** Machine-wide budgets: account-wide keys, summed over every project's ledger. */
 	budgets: budgetsSchema.optional(),
+	/**
+	 * The prefix of a compiled install that agents could write, accepted by the
+	 * owner: autonomous launches from it are otherwise refused
+	 * (`containment/install-trust.ts`).
+	 */
+	acknowledgeUntrustedInstall: z.string().optional(),
 });
 
 export type DaemonConfig = z.infer<typeof configSchema>;
