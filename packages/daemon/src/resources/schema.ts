@@ -1,6 +1,6 @@
 /**
- * The resource core's tables inside host.db, with their own schema version:
- * a store refuses to open a version it does not know.
+ * The resource core's tables inside host.db, with their own schema version.
+ * There is one schema and no upgrade path: a store refuses any other version.
  */
 export const RESOURCE_SCHEMA_VERSION = 5;
 
@@ -8,7 +8,7 @@ export const RESOURCE_SCHEMA_VERSION = 5;
  * Cleanup records: written before a machine is provisioned and closed only
  * when a later inventory proves the object is gone.
  */
-export const RESOURCE_CLEANUP_SCHEMA = `
+const CLEANUP_TABLES = `
 CREATE TABLE rp_cleanup (
   ownership_token TEXT PRIMARY KEY,
   lease_id TEXT NOT NULL REFERENCES rp_leases(id),
@@ -62,7 +62,7 @@ CREATE INDEX ix_rp_host_bindings_resource ON rp_host_bindings(resource_id);
  * Incidents: one row per condition key, so a condition that persists across
  * observations and restarts is one incident with one opening.
  */
-export const RESOURCE_INCIDENT_SCHEMA = `
+const INCIDENT_TABLES = `
 CREATE TABLE rp_incidents (
   incident_key TEXT PRIMARY KEY,
   kind TEXT NOT NULL CHECK (kind IN ('ram-low-headroom','gpu-occupancy-conflict','cpu-pressure')),
@@ -80,7 +80,7 @@ CREATE INDEX ix_rp_incidents_state ON rp_incidents(state, pool_id);
  * The latest probe evidence. It survives a restart so the operator can see
  * what was last known, and admission refuses it because its boot id is old.
  */
-export const RESOURCE_PROBE_SCHEMA = `
+const PROBE_TABLES = `
 CREATE TABLE rp_probe_health (
   kind TEXT PRIMARY KEY,
   result TEXT NOT NULL CHECK (result IN ('ok','degraded','error','unsupported')),
@@ -107,7 +107,7 @@ CREATE TABLE rp_probe_samples (
 `;
 
 /** Recent agent reports per provider account, for two-project confirmation. */
-export const RESOURCE_PROVIDER_REPORT_SCHEMA = `
+const PROVIDER_REPORT_TABLES = `
 CREATE TABLE rp_provider_reports (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   hold_key TEXT NOT NULL,
@@ -117,7 +117,7 @@ CREATE TABLE rp_provider_reports (
 CREATE INDEX ix_rp_provider_reports_key ON rp_provider_reports(hold_key, at_ms);
 `;
 
-export const RESOURCE_SCHEMA = `
+const CORE_TABLES = `
 CREATE TABLE rp_schema (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   version INTEGER NOT NULL,
@@ -259,3 +259,12 @@ CREATE TABLE rp_audit (
 );
 INSERT INTO rp_schema(singleton, version) VALUES (1, ${RESOURCE_SCHEMA_VERSION});
 `;
+
+/** The whole schema, created at once in an empty host.db. */
+export const RESOURCE_SCHEMA = [
+	CORE_TABLES,
+	CLEANUP_TABLES,
+	INCIDENT_TABLES,
+	PROBE_TABLES,
+	PROVIDER_REPORT_TABLES,
+].join("\n");

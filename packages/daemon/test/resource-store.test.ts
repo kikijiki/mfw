@@ -105,18 +105,20 @@ afterEach(async () => {
 });
 
 describe("store and host.db", () => {
-	test("refuses a newer resource schema", async () => {
+	test.each([
+		99, 4,
+	])("refuses resource schema %d with the fix", async (version) => {
 		store.close();
-		const client = createClient({
-			url: `file:${join(home, "host", "host.db")}`,
-		});
-		await client.execute("UPDATE rp_schema SET version=99");
+		const path = join(home, "host", "host.db");
+		const client = createClient({ url: `file:${path}` });
+		await client.execute(`UPDATE rp_schema SET version=${version}`);
 		client.close();
 		await expect(openResourceStore(home, { now })).rejects.toMatchObject({
 			code: "INCOMPATIBLE_SCHEMA",
+			message: expect.stringContaining(`delete ${path}`),
 		});
-		const fix = createClient({ url: `file:${join(home, "host", "host.db")}` });
-		await fix.execute("UPDATE rp_schema SET version=2");
+		const fix = createClient({ url: `file:${path}` });
+		await fix.execute("UPDATE rp_schema SET version=5");
 		fix.close();
 		store = await openResourceStore(home, { now });
 	});
