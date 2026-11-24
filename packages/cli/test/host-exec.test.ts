@@ -12,7 +12,6 @@ import {
 	type HostExecContext,
 	hostExecRefusal,
 	runHostEntry,
-	runtimeOptionProblem,
 	SANDBOX_MARKERS,
 } from "../src/host-exec.ts";
 
@@ -20,7 +19,6 @@ function ctx(over: Partial<HostExecContext> = {}): HostExecContext {
 	return {
 		compiled: true,
 		env: {},
-		execArgv: [],
 		isDir: () => false,
 		...over,
 	};
@@ -44,21 +42,6 @@ describe("mfw __host refusals", () => {
 		for (const id of HOST_CONTENT_IDS) {
 			expect(hostExecRefusal(["emit", id], ctx())).toBeNull();
 		}
-	});
-
-	test("bun runtime options are refused: they would load code into mfw", () => {
-		for (const env of [
-			{ BUN_OPTIONS: "--preload ./x.ts" },
-			{ BUN_BE_BUN: "1" },
-		]) {
-			expect(hostExecRefusal(["egress-proxy"], ctx({ env }))).toContain(
-				"refusing",
-			);
-		}
-		expect(
-			hostExecRefusal(["egress-proxy"], ctx({ execArgv: ["--smol"] })),
-		).toContain("bun was given options");
-		expect(runtimeOptionProblem({}, [])).toBeNull();
 	});
 
 	test("inside an mfw sandbox every entry and emit is refused", () => {

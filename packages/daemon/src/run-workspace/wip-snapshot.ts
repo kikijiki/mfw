@@ -11,6 +11,7 @@ import {
 	AGENT_LAUNCH_ENV,
 	agentSpawnArgv,
 } from "../containment/agent-launch-argv.ts";
+import { hostSpawnEnv } from "../containment/host-spawn-env.ts";
 import type { FinalSnapshot } from "./clone-impl.ts";
 
 const REQUEST_FILE = "wip-launch.json";
@@ -70,7 +71,7 @@ export function sandboxFinalSnapshot(
 			};
 			const proc = Bun.spawn(argv, {
 				cwd: runDir,
-				env,
+				env: hostSpawnEnv(env),
 				stdin: "ignore",
 				stdout: "ignore",
 				stderr: "pipe",

@@ -57,6 +57,10 @@ import {
 	hostEntry,
 } from "./containment/host-script.ts";
 import {
+	forbiddenHostEnvName,
+	hostSpawnEnvShell,
+} from "./containment/host-spawn-env.ts";
+import {
 	isReadOnlyAgentRole,
 	sandboxRoleOfKind,
 } from "./containment/role-profiles.ts";
@@ -458,6 +462,17 @@ export class AgentHost {
 		) {
 			throw new Error("launch environment uses a reserved internal name");
 		}
+		// Loader and runtime-option names would run code in the host's own
+		// driver, bridge and launcher (security review REL-1 M1).
+		const loader = [
+			...Object.keys(publicEnvironment),
+			...secretEnvironment.names(),
+		].find(forbiddenHostEnvName);
+		if (loader) {
+			throw new Error(
+				`launch environment sets ${loader}, which would load code into the host's mfw processes. Fix: remove it from the provider's env`,
+			);
+		}
 		const bridge = spec.isolation
 			? await this.prepareHostBridge(spec, control, secretEnvironment, made)
 			: null;
@@ -498,12 +513,27 @@ export class AgentHost {
 		// never to the pane, so no agent byte reaches a terminal. The host never
 		// evaluates a project's `.envrc`.
 		const bunBin = pinnedTool("bun") ?? "bun";
-		// A compiled install's driver is `mfw __host`, a bun executable: runtime
-		// options from the environment would load code into it, so none pass.
+		// The driver is `mfw __host` or bun, which cannot defend itself against
+		// its environment (`BUN_OPTIONS` preloads code, `LD_PRELOAD` loads a
+		// library): it starts under `env -i` with only the allowlist of
+		// `host-spawn-env.ts` and this launch's declared names. The `unset` is
+		// defence in depth for the shell lines before it.
 		const driverArgv = [...hostCommand(spec.driverScript, bunBin), dir];
-		const driverCmd = bridge
-			? `unset BUN_OPTIONS BUN_BE_BUN\nexport ${AGENT_BRIDGED_ENV}=1 ${AGENT_LAUNCH_ENV}=${q(bridge.requestPath)}\n${driverArgv.map(q).join(" ")} >> ${q(rawLog)} 2>&1`
-			: `unset BUN_OPTIONS BUN_BE_BUN\n${driverArgv.map(q).join(" ")}`;
+		const driverEnv = hostSpawnEnvShell([
+			...Object.keys(publicEnvironment),
+			...secretEnvironment.names(),
+		]);
+		const driverExec = `${q(requireHostTool("env"))} -i "\${mfw_env[@]}" ${driverArgv.map(q).join(" ")}`;
+		const driverCmd = [
+			"unset BUN_OPTIONS BUN_BE_BUN",
+			...(bridge
+				? [
+						`export ${AGENT_BRIDGED_ENV}=1 ${AGENT_LAUNCH_ENV}=${q(bridge.requestPath)}`,
+					]
+				: []),
+			...driverEnv,
+			bridge ? `${driverExec} >> ${q(rawLog)} 2>&1` : driverExec,
+		].join("\n");
 
 		// Secrets never touch a regular file: write through a 0600 FIFO once run.sh
 		// acknowledges its reader, then unlink. A crash leaves at worst an empty FIFO for the session trap.

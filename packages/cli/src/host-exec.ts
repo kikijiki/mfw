@@ -17,9 +17,11 @@
  *    never re-execs through the launcher again. This is the recursion rule of
  *    `run-child.ts` (`MFW_CHILD_DEPTH`) for self re-exec; it rides on its own
  *    variable because a driver hands its environment to an unsandboxed agent,
- *    whose `mfw board` must keep working;
- *  - when bun runtime options reach the executable (`BUN_OPTIONS`, which would
- *    preload code into it, or `BUN_BE_BUN`).
+ *    whose `mfw board` must keep working.
+ *
+ * It does not refuse bun's runtime variables (`BUN_OPTIONS`, `BUN_BE_BUN`):
+ * a compiled bun executable cannot, because they act before or instead of its
+ * own code. The host's spawn environment (`host-spawn-env.ts`) is the control.
  *
  * None of this is a security boundary on its own: inside a sandbox an agent
  * controls every input a check could read, and `__host` there runs with the
@@ -85,8 +87,6 @@ export const HOST_ENTRY_MODULES: Record<HostEntryId, () => Promise<unknown>> = {
 export interface HostExecContext {
 	compiled: boolean;
 	env: Record<string, string | undefined>;
-	/** Runtime options bun was started with (`process.execArgv`). */
-	execArgv: readonly string[];
 	/** Whether a path is a directory (the sandbox mount points). */
 	isDir: (path: string) => boolean;
 }
@@ -95,7 +95,6 @@ export function liveHostExecContext(compiled: boolean): HostExecContext {
 	return {
 		compiled,
 		env: process.env,
-		execArgv: process.execArgv,
 		isDir: (p) => {
 			try {
 				return existsSync(p) && statSync(p).isDirectory();
@@ -111,18 +110,6 @@ const isEntry = (id: string): id is HostEntryId =>
 const isContent = (id: string): id is HostContentId =>
 	(HOST_CONTENT_IDS as readonly string[]).includes(id);
 
-/** Runtime options a compiled `mfw` refuses: they would change what it runs. */
-export function runtimeOptionProblem(
-	env: HostExecContext["env"],
-	execArgv: readonly string[],
-): string | null {
-	if (env.BUN_BE_BUN) return "BUN_BE_BUN is set";
-	if (env.BUN_OPTIONS) return "BUN_OPTIONS is set";
-	if (execArgv.length > 0)
-		return `bun was given options (${execArgv.join(" ")})`;
-	return null;
-}
-
 /** Why `mfw __host <args>` must not run here, or null. */
 export function hostExecRefusal(
 	args: readonly string[],
@@ -137,8 +124,6 @@ export function hostExecRefusal(
 	if (!id || (emit ? !isContent(id) : !isEntry(id))) {
 		return `\`mfw __host\` has no ${emit ? "content" : "entry"} '${id ?? ""}'`;
 	}
-	const options = runtimeOptionProblem(ctx.env, ctx.execArgv);
-	if (options) return `refusing \`mfw __host\`: ${options}. Fix: unset it`;
 	const marker = SANDBOX_MARKERS.find((m) => ctx.isDir(m));
 	if (marker) {
 		return "refusing `mfw __host` inside an mfw sandbox: host entries run only on the host";

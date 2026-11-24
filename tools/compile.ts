@@ -17,8 +17,10 @@
  *  - the libsql addon for the target, loaded through `native-addon.ts`;
  *  - every host entry, run by self re-exec (`mfw __host <id>`).
  *
- * Neither executable reads `.env` or `bunfig.toml` at start, and both refuse
- * bun runtime options from the environment. The build is reproducible in the
+ * Neither executable reads `.env` or `bunfig.toml` at start. Neither can
+ * refuse bun's runtime variables (`BUN_OPTIONS`, `BUN_BE_BUN`, `LD_PRELOAD`):
+ * they act before, or instead of, the executable's own code. The host starts
+ * both only with an allowlisted environment (`host-spawn-env.ts`). The build is reproducible in the
  * ways it can be: the stamp's time comes from `SOURCE_DATE_EPOCH` or the commit,
  * and embedded module paths are relative to the repository root, so the
  * builder's directories do not end up in the binary.

@@ -2,6 +2,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import {
 	agentSpawnArgv,
 	agentSpawnCwd,
+	agentSpawnEnv,
 } from "../../containment/agent-launch-argv.ts";
 import {
 	type AppServerRequest,
@@ -188,6 +189,7 @@ function startTurn(text: string, effort: string | undefined) {
 	proc = spawn(command as string, args, {
 		cwd: agentSpawnCwd(cwd),
 		stdio: ["pipe", "pipe", "pipe"],
+		env: agentSpawnEnv(),
 	});
 	proc.stdin.end(text);
 	void readLines(proc.stderr, (line) => {

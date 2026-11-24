@@ -36,10 +36,19 @@ runs the same bundle, but from the working tree.
   loaded and removed. `$TMPDIR` must be writable; the install itself never is.
 - `mfw board` runs the `mfw-board` next to `mfw` (checked against the manifest),
   or one on `PATH` only from a root-owned directory agents cannot write.
-- `mfw __host` is refused from a checkout, inside an mfw sandbox, from inside the
-  agent launcher, and with bun runtime options in the environment
-  (`BUN_OPTIONS`, `BUN_BE_BUN`). A compiled `mfw` refuses those options for
-  every command.
+- `mfw __host` is refused from a checkout, inside an mfw sandbox, and from
+  inside the agent launcher.
+- Every process the host starts that is `mfw` or bun gets an allowlisted
+  environment: a fixed base (`PATH`, `HOME`, locale, temp, the user bus, TLS and
+  proxy settings), `MFW_*`, and the run's declared provider and secret names.
+  `BUN_*`, `NODE_*`, `LD_*`, `DYLD_*` and `GLIBC_TUNABLES` never pass, and a
+  provider environment that sets one is refused at launch.
+
+`mfw` cannot refuse bun's runtime variables itself: `BUN_OPTIONS` preloads code
+before any of its own code runs, and `BUN_BE_BUN` makes it a plain bun. The
+daemon never passes them. If you set one in your own shell, or in a unit you
+write, and run `mfw` there, that code runs with your own rights. Keep them out
+of the environment `mfw server` starts in.
 
 The hashes catch a partial upgrade, mixed versions and damaged files. They do not
 stop someone who can write the install, so put it where agents cannot write: the

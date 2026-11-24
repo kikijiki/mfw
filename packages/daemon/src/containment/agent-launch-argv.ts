@@ -17,6 +17,7 @@ import {
 	hostCommand,
 	hostEntry,
 } from "./host-script.ts";
+import { hostSpawnEnv } from "./host-spawn-env.ts";
 
 export { HOST_BUN_FLAGS };
 
@@ -58,6 +59,20 @@ export function agentSpawnArgv(
 	const request = env[AGENT_LAUNCH_ENV];
 	if (!request) return [...argv];
 	return [...launcherCommand(), request, "--", ...argv];
+}
+
+/**
+ * The environment for `agentSpawnArgv`'s command. With a launch request that
+ * command is the launcher, `mfw` or bun, so only the allowlist reaches it
+ * (`host-spawn-env.ts`); without one it is the agent CLI itself, started by a
+ * driver whose own environment was already allowlisted.
+ */
+export function agentSpawnEnv(
+	env: Env = process.env,
+	extraNames: readonly string[] = [],
+): Env {
+	assertRequestPresent(env);
+	return env[AGENT_LAUNCH_ENV] ? hostSpawnEnv(env, extraNames) : { ...env };
 }
 
 /** The launcher's working directory is the host-only one holding its request. */

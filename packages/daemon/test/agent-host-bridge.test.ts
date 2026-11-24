@@ -240,6 +240,50 @@ describe("a host-bridged launch", () => {
 		).rejects.toThrow("reserved");
 	});
 
+	// Security review REL-1 M1: a provider env with a loader name would have
+	// run code in the host's driver, bridge and launcher.
+	test.each([
+		"BUN_OPTIONS",
+		"BUN_BE_BUN",
+		"NODE_OPTIONS",
+		"LD_PRELOAD",
+		"GLIBC_TUNABLES",
+	])("a launch whose env sets %s is refused", async (name) => {
+		await expect(
+			new AgentHost(undefined, { tmuxRunner: runner }).launch(
+				spec({ env: { [name]: "--preload /tmp/evil.ts" } }),
+			),
+		).rejects.toThrow(`launch environment sets ${name}`);
+		await expect(
+			new AgentHost(undefined, { tmuxRunner: runner }).launch(
+				spec({ secretEnvironment: new SecretEnvironment({ [name]: "x" }) }),
+			),
+		).rejects.toThrow(`launch environment sets ${name}`);
+		expect(calls.filter((c) => c[0] === "new-session")).toEqual([]);
+	});
+
+	test("run.sh starts the driver under env -i with only the allowlist and the declared names", async () => {
+		const s = spec({
+			secretEnvironment: new SecretEnvironment({ ANTHROPIC_API_KEY: "k" }),
+		});
+		await new AgentHost(undefined, {
+			tmuxRunner: runner,
+			secretHandoffTimeoutMs: 20,
+		})
+			.launch(s)
+			.catch(() => {});
+		const text = script();
+		const driverLine = text
+			.split("\n")
+			.find((l) => l.includes("/opt/mfw/driver.ts")) as string;
+		expect(driverLine).toMatch(/^'[^']*\/env' -i "\$\{mfw_env\[@\]\}" /);
+		expect(text).toContain(
+			"export MFW_HOST_ENV_NAMES=MFW_RUN_ID,MFW_REPORT_PATH,ANTHROPIC_API_KEY",
+		);
+		expect(text).toContain("unset BUN_OPTIONS BUN_BE_BUN");
+		expect(text).toContain("BUN_*|NODE_*|LD_*|DYLD_*");
+	});
+
 	test.each([
 		["a provider with no profile", { providerId: "gemini-cli" }],
 		["no provider", { providerId: undefined }],
