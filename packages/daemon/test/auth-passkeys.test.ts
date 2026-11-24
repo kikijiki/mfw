@@ -871,3 +871,43 @@ describe("provenance and notices", () => {
 		expect(await auth.passkeyNotices(other.sessionId)).toEqual([]);
 	});
 });
+
+describe("M1: tokens minted under a passkey", () => {
+	test("revoking the passkey revokes the tokens its sessions minted, and only those", async () => {
+		const cred = await addPasskey();
+		const viaPasskey = await passkeyLogin({ use: cred });
+		const fromPasskey = await auth.createToken(
+			{ name: "minted", scopes: ["runs:act"], ttlMs: 7 * 86_400_000 },
+			{ sessionId: viaPasskey.sessionId },
+		);
+		const fromPassword = await auth.createToken(
+			{ name: "mine", scopes: ["status:read"] },
+			{ sessionId: owner.sessionId },
+		);
+		const fromCli = await auth.createToken({
+			name: "cli",
+			scopes: ["status:read"],
+		});
+		const [pk] = await auth.listPasskeys();
+		await auth.revokePasskey(pk?.id as string);
+		expect(await auth.authenticateToken(fromPasskey.token)).toBeNull();
+		expect(await auth.authenticateToken(fromPassword.token)).not.toBeNull();
+		expect(await auth.authenticateToken(fromCli.token)).not.toBeNull();
+	});
+
+	test("the clone warning says what revoking does", async () => {
+		const cred = await addPasskey({ signCount: 10 });
+		await passkeyLogin({ use: cred, signCount: 11 });
+		const lines: string[] = [];
+		const warn = console.warn;
+		console.warn = (...a: unknown[]) => lines.push(a.join(" "));
+		try {
+			await code(passkeyLogin({ use: cred, signCount: 5 }));
+		} finally {
+			console.warn = warn;
+		}
+		expect(lines.join("\n")).toContain(
+			"Revoking it also ends the sessions it signed in and the API tokens they created",
+		);
+	});
+});

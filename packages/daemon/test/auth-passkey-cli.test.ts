@@ -74,6 +74,7 @@ describe("mfw auth passkey", () => {
 	test("revoke removes it and ends its sessions only", async () => {
 		const { info, owner, viaPasskey } = await seed();
 		expect(await run("passkey", "revoke", info.id)).toBe(0);
+		expect(out.at(-1)).toContain("the API tokens they created are revoked");
 		const notices = await (async () => {
 			const a = await AuthService.open(authDbPath(home));
 			try {

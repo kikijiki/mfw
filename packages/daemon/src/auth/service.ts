@@ -922,7 +922,7 @@ export class AuthService {
 			// The one refusal the owner must hear about. Names only, no key material.
 			if (e.reason === "counter")
 				console.warn(
-					`[mfw] passkey '${String(row.name)}' (${String(row.id)}) was refused: its signature counter went backwards, so another authenticator may hold a copy of it. Revoke it if this was not you.`,
+					`[mfw] passkey '${String(row.name)}' (${String(row.id)}) was refused: its signature counter went backwards, so another authenticator may hold a copy of it. If that was not you, revoke it in Settings > Passkeys or with \`mfw auth passkey revoke ${String(row.id)}\`. Revoking it also ends the sessions it signed in and the API tokens they created.`,
 				);
 			return null;
 		}
@@ -1213,8 +1213,9 @@ export class AuthService {
 	}
 
 	/**
-	 * Remove a passkey and end every session it signed in. Other sessions and
-	 * API tokens stay; sign out everywhere for those. False if it did not exist.
+	 * Remove a passkey, end every session it signed in, and revoke the API
+	 * tokens those sessions created. Other sessions and tokens stay. False if
+	 * it did not exist.
 	 */
 	async revokePasskey(
 		id: string,
@@ -1222,7 +1223,7 @@ export class AuthService {
 		by: { sessionId?: string; source?: AuthSource; cli?: boolean } = {},
 	): Promise<boolean> {
 		const now = this.now();
-		const [, deleted, revoked] = await this.db.client.batch(
+		const [, revokedTokens, deleted, revoked] = await this.db.client.batch(
 			[
 				// Announced to every other session, like an addition.
 				{
@@ -1239,6 +1240,14 @@ export class AuthService {
 						id,
 					],
 				},
+				// A token a passkey session minted dies with the passkey: a clone's
+				// holder must not keep a long-lived token after the owner revokes it.
+				{
+					sql: `UPDATE api_tokens SET revoked_at = ? WHERE revoked_at IS NULL
+						AND created_by_session IN (SELECT id FROM auth_sessions WHERE passkey_id = ?)
+						RETURNING id`,
+					args: [now, id],
+				},
 				{ sql: "DELETE FROM passkeys WHERE id = ? RETURNING id", args: [id] },
 				{
 					sql: "UPDATE auth_sessions SET revoked_at = ? WHERE passkey_id = ? AND revoked_at IS NULL RETURNING id",
@@ -1252,6 +1261,7 @@ export class AuthService {
 			"write",
 		);
 		for (const row of revoked?.rows ?? []) this.notifyEnded(String(row.id));
+		for (const row of revokedTokens?.rows ?? []) this.endToken(String(row.id));
 		return (deleted?.rows.length ?? 0) > 0;
 	}
 
@@ -1337,8 +1347,8 @@ export class AuthService {
 			? "AND EXISTS (SELECT 1 FROM auth_sessions WHERE id = ? AND revoked_at IS NULL AND expires_at > ?)"
 			: "";
 		const inserted = await this.db.client.execute({
-			sql: `INSERT INTO api_tokens (id, name, token_hash, principal_id, scopes, project, created_at, expires_at)
-				SELECT ?, ?, ?, ?, ?, ?, ?, ?
+			sql: `INSERT INTO api_tokens (id, name, token_hash, principal_id, scopes, project, created_at, expires_at, created_by_session)
+				SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
 				WHERE (SELECT COUNT(*) FROM api_tokens WHERE revoked_at IS NULL AND expires_at > ?) < ?
 				${sessionClause}`,
 			args: [
@@ -1350,6 +1360,7 @@ export class AuthService {
 				request.project,
 				now,
 				expiresAt,
+				opts.sessionId ?? null,
 				now,
 				MAX_LIVE_TOKENS,
 				...(opts.sessionId ? [opts.sessionId, now] : []),

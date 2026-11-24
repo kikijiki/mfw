@@ -49,7 +49,8 @@ export const AUTH_USAGE = [
 	"  token audit [--limit <n>] [--id <token id>]",
 	"                what tokens changed and streamed, and how often they were refused",
 	"  passkey list  show registered passkeys (add them in Settings > Passkeys)",
-	"  passkey revoke <id>   remove a passkey and end the sessions it signed in",
+	"  passkey revoke <id>   remove a passkey, end the sessions it signed in and",
+	"                revoke the API tokens those sessions created",
 ].join("\n");
 
 export interface AuthCliDeps {
@@ -446,7 +447,7 @@ async function runPasskeyCommand(
 			return withStore(d, async (auth) => {
 				if (await auth.revokePasskey(id, { cli: true })) {
 					d.out(
-						`mfw auth: revoked ${id}. The sessions it signed in are signed out.`,
+						`mfw auth: revoked ${id}. The sessions it signed in are signed out, and the API tokens they created are revoked.`,
 					);
 					return 0;
 				}
