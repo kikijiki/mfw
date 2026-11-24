@@ -60,8 +60,6 @@ export const EnvTrustRecordSchema = z.strictObject({
 	discovered: z.array(EnvFileSchema).max(256).default([]),
 	/** sha256 of the project's canonical `env` config at approval. */
 	configHash: z.string().regex(HEX64),
-	/** The config's `nixDaemon` opt-in at approval (also inside `configHash`). */
-	nixDaemon: z.boolean().default(false),
 	at: z.string(),
 	via: z.enum(["cli", "card"]),
 });
@@ -268,8 +266,6 @@ export async function allowEnv(
 		files: detection.files,
 		discovered: [],
 		configHash,
-		nixDaemon:
-			(input.config as { nixDaemon?: unknown } | undefined)?.nixDaemon === true,
 		at: (input.now ?? (() => new Date()))().toISOString(),
 		via: input.via,
 	};
@@ -292,7 +288,6 @@ export async function denyEnv(
 		files: [],
 		discovered: [],
 		configHash: envConfigHash(input.config),
-		nixDaemon: false,
 		at: (input.now ?? (() => new Date()))().toISOString(),
 		via: input.via,
 	};
@@ -443,7 +438,7 @@ export function envProtection(
 	const nix =
 		record.source === "flake" ||
 		record.source === "devenv" ||
-		(record.source === "direnv" && record.nixDaemon);
+		record.source === "direnv";
 	const mise = record.source === "mise" || record.source === "direnv";
 	return (path) =>
 		exact.has(path) ||

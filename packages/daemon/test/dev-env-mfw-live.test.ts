@@ -75,7 +75,7 @@ describe.skipIf(skip !== null)("mfw on mfw", () => {
 			mfwHome: lab.mfwHome,
 			project: "mfw",
 			root,
-			config: { setup: ["bun install --frozen-lockfile"], nixDaemon: true },
+			config: { setup: ["bun install --frozen-lockfile"] },
 			rev: "main",
 			build: false,
 		});
@@ -125,7 +125,7 @@ describe.skipIf(skip !== null)("mfw on mfw", () => {
 						root,
 						integrationBranch: "main",
 						runWorkspace: "clone",
-						env: { setup: ["bun install --frozen-lockfile"], nixDaemon: true },
+						env: { setup: ["bun install --frozen-lockfile"] },
 					},
 				],
 			}),

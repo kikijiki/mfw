@@ -629,17 +629,6 @@ describe("project checks", () => {
 		);
 	});
 
-	test("env.nixDaemon with the daemon's build sandbox off is a blocker", async () => {
-		const c = await check(
-			withProject({
-				devEnv: { state: "none", detail: "none declared", nixSandbox: "false" },
-			}),
-			"project.env",
-		);
-		expect([c.status, c.severity]).toEqual(["problem", "blocker"]);
-		expect(c.fix).toContain("sandbox = true");
-	});
-
 	test("an approved environment not yet evaluated only warns: the dispatch builds it", async () => {
 		const c = await check(
 			withProject({

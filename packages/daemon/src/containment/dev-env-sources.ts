@@ -264,20 +264,10 @@ export async function readCommitBlob(
 	root: string,
 	oid: string,
 ): Promise<Buffer> {
-	if (!OBJECT_ID.test(oid))
+	if (!OBJECT_ID.test(oid)) {
 		throw new EnvSourceError(`${oid} is not an object id`, "pass a blob id");
+	}
 	return spawnGit(root, ["cat-file", "blob", oid], MAX_ENV_FILE_BYTES);
-}
-
-/**
- * Whether an `.envrc` visibly uses nix. A heuristic for a clear, early
- * refusal only: an `.envrc` that hides it still gets no daemon socket without
- * the opt-in, so its nix calls fail inside the sandbox.
- */
-export function envrcUsesNix(text: string): boolean {
-	return /\buse[ \t]+(?:flake|nix|devenv)\b|(?:^|[\s;|&(`$])(?:nix|nix-shell|nix-build|nix-instantiate|nix-store|devenv)(?=[ \t\n;|&)])/m.test(
-		text,
-	);
 }
 
 /** Resolve `rev` in the primary to a full commit id. */

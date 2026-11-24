@@ -50,7 +50,6 @@ describe.skipIf(skip !== null)("evaluating a dev environment", () => {
 		});
 		const r = await lab.run(root, commit, {
 			step: "flake",
-			nixDaemon: true,
 			allow: envBuildAllowlist(),
 		});
 		if (!r.ok) console.log(r.reason, r.fix, r.log);
@@ -81,7 +80,6 @@ describe.skipIf(skip !== null)("evaluating a dev environment", () => {
 		});
 		const r = await lab.run(root, commit, {
 			step: "direnv",
-			nixDaemon: true,
 			allow: envBuildAllowlist(),
 		});
 		if (!r.ok) console.log(r.reason, r.log);
@@ -122,7 +120,6 @@ describe.skipIf(skip !== null)("evaluating a dev environment", () => {
 			});
 			const r = await lab.run(root, commit, {
 				step: "devenv",
-				nixDaemon: true,
 				allow: envBuildAllowlist(),
 				timeoutMs: 500_000,
 			});
@@ -172,48 +169,6 @@ describe.skipIf(skip !== null)("evaluating a dev environment", () => {
 		expect(r.egress?.denied).toEqual({});
 		expect(existsSync(join(lab.home, ".config/mise"))).toBe(false);
 		expect(existsSync(join(lab.home, ".local/share/mise"))).toBe(false);
-	}, 300_000);
-});
-
-describe.skipIf(skip !== null)("the nix daemon opt-in", () => {
-	let lab: EnvLab;
-	beforeAll(() => {
-		lab = createEnvLab("env-nixd");
-	});
-	afterAll(() => lab.dispose());
-
-	test("the socket is bound only with env.nixDaemon (positive control first)", async () => {
-		const { root, commit } = await lab.repo("sock", {
-			".envrc":
-				"if [ -S /nix/var/nix/daemon-socket/socket ]; then export SOCK=yes; else export SOCK=no; fi\n",
-		});
-		const on = await lab.run(root, commit, {
-			step: "direnv",
-			allow: envBuildAllowlist(),
-			nixDaemon: true,
-		});
-		expect(on.ok && parseDirenvExport(on.output.toString()).SOCK).toBe("yes");
-		const off = await lab.run(root, commit, {
-			step: "direnv",
-			allow: envBuildAllowlist(),
-		});
-		expect(off.ok && parseDirenvExport(off.output.toString()).SOCK).toBe("no");
-	}, 300_000);
-
-	test("an evaluation that grows the store past the cap fails", async () => {
-		const { root, commit } = await lab.repo("grow", {
-			"flake.nix": tinyFlake(),
-			"flake.lock": flakeLockText(),
-		});
-		const free = [100 * 1024 ** 3, 80 * 1024 ** 3];
-		const r = await lab.run(root, commit, {
-			step: "flake",
-			allow: envBuildAllowlist(),
-			nixDaemon: true,
-			maxStoreGrowthMb: 1024,
-			storeFree: () => free.shift() ?? 0,
-		});
-		expect(!r.ok && r.code).toBe("store_growth");
 	}, 300_000);
 });
 

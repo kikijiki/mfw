@@ -64,7 +64,7 @@ beforeAll(async () => {
 					name: "p",
 					root,
 					integrationBranch: "main",
-					env: { nixDaemon: true },
+					env: {},
 				},
 			],
 		}),
@@ -131,7 +131,6 @@ describe("mfw env allow", () => {
 			source: "direnv",
 			files: [],
 			configHash: "h",
-			nixDaemon: true,
 			plan,
 		});
 		expect(card.detail).toContain("+{ evil = true; }");

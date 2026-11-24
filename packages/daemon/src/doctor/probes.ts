@@ -93,8 +93,6 @@ export interface ProjectFacts {
 		code?: string;
 		detail: string;
 		fix?: string;
-		/** With `env.nixDaemon`: the daemon's `sandbox` setting, as the host reads it. */
-		nixSandbox?: string;
 	} | null;
 	/** Why host git refuses this repository, or null. */
 	gitConfigRefusal: string | null;

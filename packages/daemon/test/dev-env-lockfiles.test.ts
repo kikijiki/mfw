@@ -25,7 +25,7 @@ import { git } from "../src/git.ts";
 let base: string;
 let root: string;
 let mfwHome: string;
-const config = { setup: ["bun install --frozen-lockfile"], nixDaemon: true };
+const config = { setup: ["bun install --frozen-lockfile"] };
 const ran: { step: string; commit: string }[] = [];
 
 const fakeRun = async (req: EnvRunRequest): Promise<EnvRunResult> => {

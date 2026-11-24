@@ -647,13 +647,6 @@ function untrackedCheck(f: ProjectFacts, omitNames: boolean): Outcome {
 function devEnvCheck(facts: ProjectFacts): Outcome {
 	const env = facts.devEnv;
 	if (!env) return ok("dev environment: not checked (no repository)");
-	if (env.nixSandbox !== undefined && env.nixSandbox !== "true") {
-		return problem(
-			"blocker",
-			`env.nixDaemon is on, but the nix daemon's build sandbox is ${JSON.stringify(env.nixSandbox)}, so evaluations are refused`,
-			"set `sandbox = true` in /etc/nix/nix.conf (NixOS: nix.settings.sandbox = true) and restart the nix daemon",
-		);
-	}
 	if (env.state === "none") return ok("dev environment: none declared");
 	if (env.state === "ready") return ok(`dev environment: ${env.detail}`);
 	// Approved but not evaluated yet: the next dispatch does it.

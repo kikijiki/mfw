@@ -28,16 +28,16 @@ import {
 } from "./dev-env-trust.ts";
 
 /**
- * What an approved evaluation can reach, said plainly. With the nix daemon
- * it is not contained by the proxy: the card and `mfw env allow` say so.
+ * What an approved evaluation can reach, said plainly. The run's proxy
+ * contains its own commands, not the nix daemon: an accepted risk, the same
+ * trust as `direnv allow` on the host (threat model R21).
  */
-export function envReachStatement(source: string, nixDaemon: boolean): string {
+export function envReachStatement(source: string): string {
 	const proxied =
 		"Inside the env-build sandbox its own commands reach the network only through the run's proxy, which allows the listed hosts.";
-	if (!nixDaemon) {
-		return `${proxied} It gets no nix daemon (env.nixDaemon is off).`;
-	}
-	return `${proxied} It ALSO gets the host's nix daemon (env.nixDaemon is on)${source === "mise" ? "" : ", which this source uses"}: the daemon fetches and builds with this host's network, OUTSIDE the proxy, can reach this machine's loopback services, can read the whole Nix store (other projects' sources included), and can collect store paths that no root holds. Approve only a project you trust that far.`;
+	if (source === "mise" || source === "none" || source === "setup")
+		return proxied;
+	return `${proxied} A nix-based source also uses the host's nix daemon, which fetches and builds with this host's network OUTSIDE the proxy, can reach this machine's loopback services, and can read the whole Nix store.`;
 }
 
 /** `brain_actions.tool` of the card. Not an act tool: the brain cannot call it. */
@@ -53,8 +53,6 @@ export interface EnvCardArgs {
 	previousCommit?: string;
 	setup?: string[];
 	configHash: string;
-	/** The project's `env.nixDaemon` opt-in, shown prominently. */
-	nixDaemon: boolean;
 	/** `env.trustedDependencies`: lifecycle scripts run when not empty. */
 	trustedDependencies?: string[];
 	/** What the owner reads: the whole-tree diff, or the files that shape it. */
@@ -94,7 +92,6 @@ export function envCardArgs(
 			: {}),
 		...(config?.setup?.length ? { setup: [...config.setup] } : {}),
 		configHash: envConfigHash(config),
-		nixDaemon: config?.nixDaemon === true,
 		...(config?.trustedDependencies?.length
 			? { trustedDependencies: [...config.trustedDependencies] }
 			: {}),
@@ -177,7 +174,7 @@ export function describeEnvCard(raw: Record<string, unknown>): {
 	const plan = a.plan ? ` ${planLines(a.plan).join("\n").slice(0, 6000)}` : "";
 	return {
 		title: `decide: dev environment of ${a.project} at ${String(a.commit).slice(0, 12)}`,
-		detail: `${a.nixDaemon === true ? "NIX DAEMON: ON. " : ""}Approving lets mfw evaluate this ${a.source} environment, once, at commit ${a.commit}, and give the result to every run. ${envReachStatement(String(a.source), a.nixDaemon === true)} It records these files: ${files}.${changed}${setup} ${trusted} Declining refuses the project's runs until \`mfw env allow\`.${plan}`,
+		detail: `Approving lets mfw evaluate this ${a.source} environment, once, at commit ${a.commit}, and give the result to every run. ${envReachStatement(String(a.source))} It records these files: ${files}.${changed}${setup} ${trusted} Declining refuses the project's runs until \`mfw env allow\`.${plan}`,
 	};
 }
 

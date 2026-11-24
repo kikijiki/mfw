@@ -119,7 +119,7 @@ touches both classes asks again.
 | Step | Where | Reaches | Writes |
 | --- | --- | --- | --- |
 | Detect and hash the files | host, reading the repository's objects | nothing | nothing |
-| Evaluate (`env-build` role) | a disposable clone of the approved commit | its own commands: the per-run proxy, with the flake and mise hosts (`containment/dev-env-egress.ts`) and `extraHosts`. With `env.nixDaemon` only: the host's nix daemon, see below | the clone, a private home, the environment's data directory (mise installs); with the daemon, the host's Nix store |
+| Evaluate (`env-build` role) | a disposable clone of the approved commit | its own commands: the per-run proxy, with the flake and mise hosts (`containment/dev-env-egress.ts`) and `extraHosts`. For a nix-based source, also the host's nix daemon, which is **outside** the proxy (see below) | the clone, a private home, the environment's data directory (mise installs) |
 | Install (`env-install` role) | a disposable clone of the approved commit, or of a later one whose package lockfiles alone changed, with the evaluated environment applied | the per-run proxy, with the registries only | the clone; `outputs` are then moved into the cache |
 | Run (`task`, `repair`) and check (`verifier`, `merge-verify`) | the run's or check's own clone | as before: the run's harness hosts, or no network for a check | as before |
 
@@ -146,39 +146,21 @@ is refused rather than run.
 
 ## The nix daemon is outside the proxy
 
-direnv with nix (`use flake`, `use nix`), flake and devenv sources need the
-host's nix daemon. mfw gives it to an evaluation only when the project sets
-`"nixDaemon": true` in its `env` entry, which is part of the approval and is
-shown on the card and by `mfw env allow` as **NIX DAEMON: ON**. Without it these
-sources are refused with that fix, and a plain `.envrc` runs with no daemon.
-
-Through the daemon, the approved code is **not** contained by the proxy:
-
-- the daemon fetches and builds with this host's network, outside the proxy,
-  with no allowlist, no upload budget and no record, so a fixed-output
-  derivation can send what the evaluation can read to any host;
-- its builders can reach this machine's loopback services, mfw's own listener
-  included;
-- the evaluation can read the whole Nix store read-only, which includes the
-  source snapshots of your other flake projects;
-- it can ask the daemon to collect garbage, which deletes every store path no
-  root holds. mfw registers GC roots for each cached environment's closure, so
-  its own environments survive; your other unrooted dev shells and build
-  results do not.
-
-Set `nixDaemon` only for a project you trust that far. mise needs no daemon.
-mfw also refuses the evaluation when the daemon's build sandbox is off
-(`nix config show sandbox` is not `true`), when the store's filesystem has less
-than `env.minStoreFreeMb` free (default 4096), and fails it when it grew the
-store by more than `env.maxStoreGrowthMb` (default 16384).
+direnv with nix (`use flake`, `use nix`), flake and devenv sources use the
+host's nix daemon through its socket. The proxy contains the evaluation's own
+commands, not the daemon: through it, the approved code can have the daemon
+fetch and build with this host's network outside the proxy, reach this
+machine's loopback services, and read the whole Nix store. This is an accepted
+risk: approving an environment is the same trust as `direnv allow` or
+`mise trust` on the host, and you approve projects you own. mise needs no
+daemon.
 
 ## Requirements and refusals
 
 - The tool for the source on the host's `PATH`: `direnv`, `mise`, `nix` or
   `devenv`.
-- For direnv with nix, flakes and devenv: `env.nixDaemon`, Nix in multi-user
-  (daemon) mode with `sandbox = true`, and a daemon that does **not** trust
-  your user (`trusted-users`). A trusted client could add
+- For direnv, flakes and devenv: Nix in multi-user (daemon) mode, and a daemon
+  that does **not** trust your user (`trusted-users`). A trusted client could add
   unsigned paths to the store or choose its own substituters, so the evaluation
   is refused when the daemon says it trusts you, or does not say. Keep your user
   in `allowed-users` instead.

@@ -29,7 +29,7 @@ let base: string;
 let root: string;
 let mfwHome: string;
 let handle: ProjectDbHandle;
-const config = { setup: ["bun install"], nixDaemon: true };
+const config = { setup: ["bun install"] };
 
 const resolve = () =>
 	resolveDevEnv({
@@ -199,5 +199,25 @@ describe("deciding the card through the brain's held actions", () => {
 			).status,
 		).toBe("rejected");
 		expect(seen).toEqual([true, true, false]);
+	});
+});
+
+describe("what the card says the evaluation reaches", () => {
+	test("a nix-based source: the nix daemon is outside the proxy", async () => {
+		const { envReachStatement } = await import(
+			"../src/containment/dev-env-card.ts"
+		);
+		const card = describeEnvCard({
+			project: "p",
+			commit: "c".repeat(40),
+			source: "flake",
+			files: [],
+			configHash: "h",
+		});
+		for (const w of ["OUTSIDE the proxy", "loopback", "whole Nix store"]) {
+			expect(card.detail).toContain(w);
+		}
+		expect(card.detail).not.toContain("network only through its proxy)");
+		expect(envReachStatement("mise")).not.toContain("nix daemon");
 	});
 });

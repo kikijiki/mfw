@@ -187,7 +187,6 @@ export async function runEnvCommand(
 				);
 			}
 			d.out(`  config: sha256:${envConfigHash(p.env)}`);
-			d.out(`  nix daemon: ${p.env?.nixDaemon === true ? "ON" : "off"}`);
 			if (p.env?.setup?.length) {
 				d.out(
 					p.env.trustedDependencies?.length
@@ -195,9 +194,7 @@ export async function runEnvCommand(
 						: "  lifecycle scripts: off",
 				);
 			}
-			d.out(
-				`  ${envReachStatement(detection.kind, p.env?.nixDaemon === true)}`,
-			);
+			d.out(`  ${envReachStatement(detection.kind)}`);
 			const store = new EnvTrustStore(d.home);
 			const prior = store.read(root);
 			const plan = await approvalPlan(
