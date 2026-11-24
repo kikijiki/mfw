@@ -14,9 +14,13 @@ import {
 	CODEX_BRIDGE,
 	CODEX_EXEC_BRIDGE,
 	type HostScript,
+	hostEntry,
 	hostScript,
 	isBundledModule,
 	MCP_MAIN,
+	mfwExecutable,
+	runsHostEntries,
+	selfReExecs,
 } from "../containment/host-script.ts";
 import type { RateLimitInfo } from "../rate-limit.ts";
 import { nativeSessionUuid } from "./native-session.ts";
@@ -106,9 +110,16 @@ export const FROM_ROOT = {
 	mcpMain: MCP_MAIN.fromRoot,
 } as const;
 
+/** Whether an env override must be refused: only a source run takes one. */
+function refusesOverrides(moduleUrl: string): boolean {
+	return isBundledModule(moduleUrl) || runsHostEntries(moduleUrl);
+}
+
 /**
- * The script to run. An env override is for running from source: the production
- * server runs only its verified built copies, so it refuses one.
+ * The script to run, or in a compiled install the `mfw __host` entry for it
+ * (`hostCommand` turns either into a command line). An env override is for
+ * running from source: the production server runs only its verified built
+ * copies or its verified `mfw`, so it refuses one.
  */
 export function resolveScript(
 	moduleUrl: string,
@@ -117,8 +128,8 @@ export function resolveScript(
 ): string {
 	const override = process.env[envVar];
 	if (override) {
-		if (isBundledModule(moduleUrl)) {
-			const refused = `refusing ${envVar}: the production server runs only its built host scripts. Fix: unset it`;
+		if (refusesOverrides(moduleUrl)) {
+			const refused = `refusing ${envVar}: the production server runs only its built host code. Fix: unset it`;
 			console.error(`[mfw] ${refused}`);
 			throw new Error(refused);
 		}
@@ -127,13 +138,13 @@ export function resolveScript(
 			`${envVar}="${override}" does not exist: unset it or point it at the real script`,
 		);
 	}
-	return hostScript(moduleUrl, script);
+	return hostEntry(moduleUrl, script);
 }
 
 let appServerDriverCached: string | null = null;
 export function appServerDriverScript(): string {
 	// Only the source path is cached: a built copy is re-verified at each launch.
-	if (isBundledModule(import.meta.url)) {
+	if (refusesOverrides(import.meta.url)) {
 		return resolveScript(
 			import.meta.url,
 			APP_SERVER_DRIVER,
@@ -163,9 +174,44 @@ function bridgeScript(name: keyof typeof BRIDGES): string {
 	return resolveScript(import.meta.url, b.script, b.env);
 }
 
-/** The `@mfw/mcp` entry a brain turn spawns; `MFW_MCP_SCRIPT` overrides from source. */
+/**
+ * The `@mfw/mcp` entry a brain turn spawns; `MFW_MCP_SCRIPT` overrides from
+ * source. A compiled install has no such file: see `brainMcpCommand`.
+ */
 export function mcpMainScript(): string {
-	return resolveScript(import.meta.url, MCP_MAIN, "MFW_MCP_SCRIPT");
+	const override = process.env.MFW_MCP_SCRIPT;
+	if (override && !refusesOverrides(import.meta.url)) {
+		if (existsSync(override)) return override;
+		throw new Error(
+			`MFW_MCP_SCRIPT="${override}" does not exist: unset it or point it at the real script`,
+		);
+	}
+	if (override) {
+		const refused =
+			"refusing MFW_MCP_SCRIPT: the production server runs only its built host code. Fix: unset it";
+		console.error(`[mfw] ${refused}`);
+		throw new Error(refused);
+	}
+	return hostScript(import.meta.url, MCP_MAIN);
+}
+
+/**
+ * How the host starts a brain turn's MCP server: `bun run <mcp main>`, or in a
+ * compiled install the verified `mfw mcp`.
+ */
+export function brainMcpCommand(sessionId: string): {
+	command: string;
+	args: string[];
+} {
+	if (runsHostEntries(import.meta.url)) {
+		// The command goes into another program's MCP config, so never `/proc/self/exe`.
+		const command = selfReExecs() ? process.execPath : mfwExecutable();
+		return { command, args: ["mcp", "--brain", sessionId] };
+	}
+	return {
+		command: "bun",
+		args: ["run", mcpMainScript(), "--brain", sessionId],
+	};
 }
 
 // ---------- adapters ----------

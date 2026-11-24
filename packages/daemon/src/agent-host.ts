@@ -20,7 +20,6 @@ import type { AgentLaunchRequest } from "./containment/agent-launch.ts";
 import {
 	AGENT_BRIDGED_ENV,
 	AGENT_LAUNCH_ENV,
-	HOST_BUN_FLAGS,
 } from "./containment/agent-launch-argv.ts";
 import {
 	DEV_SHELL_REFUSAL,
@@ -53,7 +52,9 @@ import {
 import {
 	BRAIN_TRANSCRIPT,
 	EGRESS_PROXY,
-	hostScript,
+	hostArgv,
+	hostCommand,
+	hostEntry,
 } from "./containment/host-script.ts";
 import {
 	isReadOnlyAgentRole,
@@ -497,9 +498,12 @@ export class AgentHost {
 		// never to the pane, so no agent byte reaches a terminal. The host never
 		// evaluates a project's `.envrc`.
 		const bunBin = pinnedTool("bun") ?? "bun";
+		// A compiled install's driver is `mfw __host`, a bun executable: runtime
+		// options from the environment would load code into it, so none pass.
+		const driverArgv = [...hostCommand(spec.driverScript, bunBin), dir];
 		const driverCmd = bridge
-			? `export ${AGENT_BRIDGED_ENV}=1 ${AGENT_LAUNCH_ENV}=${q(bridge.requestPath)}\n${[bunBin, ...HOST_BUN_FLAGS, "run", spec.driverScript, dir].map(q).join(" ")} >> ${q(rawLog)} 2>&1`
-			: `${q(bunBin)} run ${q(spec.driverScript)} ${q(dir)}`;
+			? `unset BUN_OPTIONS BUN_BE_BUN\nexport ${AGENT_BRIDGED_ENV}=1 ${AGENT_LAUNCH_ENV}=${q(bridge.requestPath)}\n${driverArgv.map(q).join(" ")} >> ${q(rawLog)} 2>&1`
+			: `unset BUN_OPTIONS BUN_BE_BUN\n${driverArgv.map(q).join(" ")}`;
 
 		// Secrets never touch a regular file: write through a 0600 FIFO once run.sh
 		// acknowledges its reader, then unlink. A crash leaves at worst an empty FIFO for the session trap.
@@ -589,10 +593,10 @@ export class AgentHost {
 						[
 							requireHostTool("env"),
 							"-i",
-							bunBin,
-							...HOST_BUN_FLAGS,
-							"run",
-							hostScript(import.meta.url, BRAIN_TRANSCRIPT),
+							...hostCommand(
+								hostEntry(import.meta.url, BRAIN_TRANSCRIPT),
+								bunBin,
+							),
 							bridge.brainTranscript.turnState,
 							bridge.brainTranscript.store,
 							bridge.brainTranscript.cli,
@@ -706,10 +710,7 @@ export class AgentHost {
 		const proxy = [
 			env,
 			"-i",
-			bunBin,
-			...HOST_BUN_FLAGS,
-			"run",
-			hostScript(import.meta.url, EGRESS_PROXY),
+			...hostCommand(hostEntry(import.meta.url, EGRESS_PROXY), bunBin),
 			egress.configPath,
 		]
 			.map(q)
@@ -914,10 +915,7 @@ export class AgentHost {
 			requestPath,
 			cwd: SANDBOX_PATHS.workspace,
 			agentArgv,
-			bridgeArgv:
-				bridgeArgv[0] === "bun"
-					? [bun, ...HOST_BUN_FLAGS, ...bridgeArgv.slice(1)]
-					: bridgeArgv,
+			bridgeArgv: hostArgv(bridgeArgv, bun),
 			providerArgv,
 			env,
 			...(roleCloneRoot ? { roleCloneRoot } : {}),
