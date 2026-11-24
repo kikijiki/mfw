@@ -203,6 +203,22 @@ export function defaultProbeRuntime(): string {
 	return path;
 }
 
+/**
+ * The bun the launcher's toolchain is resolved against: this process's own,
+ * or in a compiled `mfw` the install's verified runtime, so a sandbox binds
+ * bun's store closure rather than the `mfw` executable's (REL-1 L3). A
+ * standalone `mfw` has none and falls back to itself; its launch is refused
+ * later, at the probe.
+ */
+export function launcherRuntime(): string {
+	if (buildKind() !== "compiled") return process.execPath;
+	try {
+		return defaultProbeRuntime();
+	} catch {
+		return process.execPath;
+	}
+}
+
 /** Seal the runtime at `runtimePath`, by default `defaultProbeRuntime()`. */
 export function sealProbeRuntime(
 	runtimePath: string = defaultProbeRuntime(),

@@ -254,3 +254,12 @@ describe("treeDigest", () => {
 		expect(() => treeDigest(root)).toThrow(/links outside the install/);
 	});
 });
+
+describe("the launcher's toolchain root", () => {
+	test("from source it is the bun running this code", async () => {
+		const { launcherRuntime } = await import(
+			"../src/containment/probe-runtime.ts"
+		);
+		expect(launcherRuntime()).toBe(process.execPath);
+	});
+});
