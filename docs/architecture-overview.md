@@ -104,6 +104,11 @@ Every sandboxed run kind goes through one path, in
 A failure at any step refuses the launch. No step falls back to an unsandboxed
 run. An interactive launch skips the attestation but cannot carry autonomy flags.
 
+The host processes around it (driver, bridge, launcher, egress proxy) are, from
+a checkout, scripts run by bun; from a production build, its hash-checked built
+copies; and from a compiled install, `mfw __host <id>`, the install's own `mfw`
+re-executing itself ([install.md](install.md)).
+
 Each role gets its own profile
 (`packages/daemon/src/containment/role-profiles.ts`):
 

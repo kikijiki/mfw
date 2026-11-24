@@ -121,7 +121,11 @@ See [verifier-sandbox.md](verifier-sandbox.md).
 | Control | Mechanism | Code |
 | --- | --- | --- |
 | Built host scripts | a production server runs only its built copies, hash-checked at each lookup | `packages/daemon/src/containment/host-script.ts`, `tools/build-host-scripts.ts` |
-| Built migrations | applied from the build, hash-checked at each open | `packages/db/src/migration-source.ts`, `tools/build-migrations.ts` |
+| Compiled install | every host process is `mfw __host <id>`: the install's `mfw`, checked against `install.json` before each use, or inside `mfw` its own running image. The install has no script files, and removing its manifest leaves a bundle with no scripts, which refuses every launch | `packages/daemon/src/containment/host-script.ts`, `packages/daemon/src/containment/install-manifest.ts`, `packages/cli/src/host-exec.ts` |
+| Install check | `mfw server` verifies the executables, runtime and server tree against the manifest and against digests built into `mfw`, and runs the bundle with no `bunfig.toml` or `.env` | `packages/cli/src/compiled-deps.ts` |
+| Internal subcommands | `mfw __host` is refused from source, inside an mfw sandbox (by its read-only mount points), from the launcher's subtree, and with `BUN_OPTIONS` or `BUN_BE_BUN` set. This keeps a confused caller out; the sandbox is the boundary | `packages/cli/src/host-exec.ts`, `packages/cli/src/compiled-main.ts` |
+| Built migrations | applied from the build, hash-checked at each open. A compiled `mfw` applies only its embedded copy, with the same check | `packages/db/src/migration-source.ts`, `tools/build-migrations.ts`, `tools/compile.ts` |
+| Native addon | the libsql addon is embedded in `mfw`, hash-checked and loaded from a fresh private directory, then removed | `packages/cli/src/native-addon.ts` |
 | Source-run guard | a server run from source refuses to manage its own checkout | `packages/daemon/src/containment/source-run-guard.ts` |
 | Trigger arming | a repository trigger is inert until the owner arms it. The record lives outside every repository | `packages/daemon/src/triggers/arming.ts` |
 | Execution pin | an armed command is tied to its commit's whole tree and runs from a sealed checkout | `packages/daemon/src/containment/exec-pin.ts`, `packages/daemon/src/triggers/script-action.ts` |
