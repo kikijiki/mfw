@@ -16,8 +16,9 @@
  *   agent CLI) runs under this environment too;
  * - every value and the total are size-capped;
  * - `PATH` keeps only entries inside the environment's store closure, its
- *   private data directory, or the run's own tree. Entries of the evaluation
- *   sandbox's own toolchain are removed: a run has its own.
+ *   private data directory, or the run's own tree. The evaluation sandbox's
+ *   own PATH, which direnv and mise keep at the end, is removed: a run has
+ *   its own toolchain.
  *
  * What is dropped is reported, so the owner can see why a variable is absent.
  */
@@ -197,6 +198,25 @@ export interface FilterContext {
 	evaluationPath: readonly string[];
 }
 
+/**
+ * The environment's own PATH entries: the evaluation sandbox's PATH, which
+ * direnv and mise keep after their own entries, comes off the end, matched
+ * entry by entry. An entry of the environment that happens to equal one of
+ * the sandbox's (the same bun) stays, in its place.
+ */
+export function stripEvaluationPath(
+	entries: readonly string[],
+	evaluation: readonly string[],
+): string[] {
+	const out = [...entries];
+	let i = evaluation.length - 1;
+	while (i >= 0 && out.length > 0 && out[out.length - 1] === evaluation[i]) {
+		out.pop();
+		i--;
+	}
+	return out;
+}
+
 function pathEntryAllowed(entry: string): boolean {
 	if (!entry.startsWith("/") || entry.includes("\0")) return false;
 	if (entry.split("/").some((s) => s === "." || s === "..")) return false;
@@ -244,7 +264,6 @@ export function filterDevEnv(raw: RawEnv, ctx: FilterContext): FilteredDevEnv {
 		env[name] = value;
 	}
 
-	const own = new Set(ctx.evaluationPath);
 	const path: string[] = [];
 	const droppedPath: string[] = [];
 	const rawPath = raw.PATH;
@@ -252,8 +271,11 @@ export function filterDevEnv(raw: RawEnv, ctx: FilterContext): FilteredDevEnv {
 		typeof rawPath === "string" &&
 		rawPath.length <= DEV_ENV_LIMITS.maxValueBytes
 	) {
-		for (const entry of rawPath.split(":")) {
-			if (entry === "" || own.has(entry) || path.includes(entry)) continue;
+		for (const entry of stripEvaluationPath(
+			rawPath.split(":"),
+			ctx.evaluationPath,
+		)) {
+			if (entry === "" || path.includes(entry)) continue;
 			if (
 				!pathEntryAllowed(entry) ||
 				path.length >= DEV_ENV_LIMITS.maxPathEntries

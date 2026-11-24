@@ -73,9 +73,9 @@ describe("filtering a captured environment", () => {
 			"/work/bin",
 			`${S1}/bin`,
 			"/nix/store/../etc",
-			"/eval/own/bin",
 			"relative/bin",
 			`${ENV_DATA_SANDBOX_PATH}/mise/installs/jq/1.7.1`,
+			"/eval/own/bin",
 		].join(":"),
 	};
 
@@ -129,6 +129,23 @@ describe("filtering a captured environment", () => {
 			"relative/bin",
 		]);
 		expect(f.storeRoots).toEqual([S1]);
+	});
+
+	test("only the evaluation's PATH as a suffix comes off; the same entry earlier stays", () => {
+		const evaluation = [`${S2}/bin`, "/eval/coreutils/bin"];
+		const f = filterDevEnv(
+			{
+				PATH: [`${S1}/bin`, `${S2}/bin`, `${S3}/bin`, ...evaluation].join(":"),
+			},
+			{ evaluationPath: evaluation },
+		);
+		expect(f.path).toEqual([`${S1}/bin`, `${S2}/bin`, `${S3}/bin`]);
+		// No suffix match (nix print-dev-env): nothing is removed.
+		const g = filterDevEnv(
+			{ PATH: [`${S2}/bin`, `${S1}/bin`].join(":") },
+			{ evaluationPath: evaluation },
+		);
+		expect(g.path).toEqual([`${S2}/bin`, `${S1}/bin`]);
 	});
 
 	test("the data path is the env-data cache mount", () => {
@@ -213,7 +230,7 @@ describe("a dev environment in the profile", () => {
 		).toThrow("devEnv.env.LD_PRELOAD");
 		expect(() =>
 			parseSandboxProfile(
-				verifier({ devEnv: { ...devEnv, path: ["/home/owner/bin"] } }),
+				verifier({ devEnv: { ...devEnv, path: ["/home/user/bin"] } }),
 			),
 		).toThrow("outside the store closure");
 		expect(() =>
