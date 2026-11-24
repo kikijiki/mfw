@@ -162,7 +162,7 @@ async function makeEnv(
 	const ctx: BrainCallCtx = {
 		runId: subject.id,
 		taskId: "MFW-1",
-		worktreePath: dir,
+		workspacePath: dir,
 		branch: "mfw/task/MFW-1/x",
 		baseSha: "deadbeef",
 		verify: {

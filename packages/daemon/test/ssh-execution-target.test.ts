@@ -201,7 +201,7 @@ await Bun.write(runDir + "/events.jsonl", JSON.stringify({ type: "done" }) + "\\
 		projectRoot: project,
 		integrationBranch: "main",
 		requestedShape: { hostId: "box-a" },
-		reuse: { worktreePath: project, branch: "main", baseSha },
+		reuse: { workspacePath: project, branch: "main", baseSha },
 	});
 	const launch = (
 		secretEnvironment?: SecretEnvironment,

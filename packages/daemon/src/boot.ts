@@ -811,7 +811,7 @@ export async function attachProject(
 			const dod = tasks.effectiveDod(task?.dod ?? null);
 			if (!dod) return { passed: true }; // nothing to re-check
 			const run = await registry.get(job.runId);
-			if (!run?.worktreePath || !run.baseSha)
+			if (!run?.workspacePath || !run.baseSha)
 				return { passed: false, detail: "run workspace is gone" };
 			// After a rebase the candidate sits on the current target, so that is
 			// the baseline its check entry points must match.
@@ -1415,7 +1415,7 @@ export async function attachProject(
 				const result = await brain.critic({
 					runId,
 					taskId: run.taskId,
-					worktreePath: run.worktreePath,
+					workspacePath: run.workspacePath,
 					branch: run.branch,
 					baseSha: run.baseSha,
 					verify: (verify as never) ?? null,
@@ -2121,7 +2121,7 @@ export function buildPrompts(
 					leftovers.length > 0 || background.length > 0
 						? `A previous run (${parentRunId}) ended its session while commands it started were still running.`
 						: `A previous run (${parentRunId}) was ${cls === "watchdog_killed" ? "stopped by a watchdog" : "interrupted"} before finishing.`,
-					parent?.worktreePath
+					parent?.workspacePath
 						? "Its work is already in this worktree: inspect `git status` and `git log` before continuing, and do not redo what is done."
 						: "",
 					...(leftovers.length > 0

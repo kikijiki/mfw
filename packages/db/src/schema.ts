@@ -139,7 +139,8 @@ export const runs = sqliteTable(
 		providerId: text("provider_id"),
 		reasoningEffort: text("reasoning_effort").$type<RunReasoningEffort>(),
 		cwd: text("cwd").notNull(),
-		worktreePath: text("worktree_path"),
+		/** The run's private clone work tree (`$MFW_HOME/workspaces/<runId>/tree`). */
+		workspacePath: text("workspace_path"),
 		branch: text("branch"),
 		integrationBranch: text("integration_branch"),
 		baseSha: text("base_sha"),
@@ -306,15 +307,6 @@ export const runs = sqliteTable(
 		 * agent-writable: only this column can say a `control/exit` is the host's.
 		 */
 		runDirLayout: text("run_dir_layout").$type<"split" | null>(),
-		/** What the workspace really was at launch. Never re-derived from config. */
-		workspaceKind: text("workspace_kind").$type<"worktree" | "clone" | null>(),
-		/**
-		 * The approval mode the agent was launched under (0026). Finalization reads
-		 * this, never the project's current mode; null counts as autonomous.
-		 */
-		approvalMode: text("approval_mode").$type<
-			"autonomous" | "interactive" | null
-		>(),
 		// The commit the verifier passed, read by the host. Cleared when a later
 		// verification fails; the merge queue lands only this commit.
 		verifiedSha: text("verified_sha"),

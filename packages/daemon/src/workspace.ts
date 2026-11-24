@@ -135,9 +135,9 @@ export class WorkspaceService {
 		const out: WorktreeRef[] = [];
 		for (const run of rows) {
 			// A brain turn's scratch dir is not a worktree anyone should base work on.
-			if (!run.worktreePath || run.kind === "brain") continue;
+			if (!run.workspacePath || run.kind === "brain") continue;
 			try {
-				await stat(run.worktreePath);
+				await stat(run.workspacePath);
 			} catch {
 				continue; // finalized and cleaned up
 			}
@@ -145,7 +145,7 @@ export class WorkspaceService {
 				runId: run.id,
 				taskId: run.taskId,
 				branch: run.branch,
-				path: run.worktreePath,
+				path: run.workspacePath,
 				state: run.state,
 				label: run.label,
 			});
@@ -382,10 +382,10 @@ export class WorkspaceService {
 		if (!runId) return this.realOrThrow(this.deps.root, "project root");
 		const run = await this.deps.registry.get(runId);
 		if (!run) throw new NotFoundError(`unknown run ${runId}`);
-		if (!run.worktreePath) {
+		if (!run.workspacePath) {
 			throw new NotFoundError(`run ${runId} has no worktree`);
 		}
-		return this.realOrThrow(run.worktreePath, `worktree of run ${runId}`);
+		return this.realOrThrow(run.workspacePath, `worktree of run ${runId}`);
 	}
 
 	private async realOrThrow(path: string, what: string): Promise<string> {

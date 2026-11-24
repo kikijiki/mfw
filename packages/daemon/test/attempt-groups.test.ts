@@ -83,7 +83,7 @@ describe("attempt groups", () => {
 		const rows = await Promise.all(runIds.map((id) => f.svc.registry.get(id)));
 		expect(rows.map((r) => r?.role)).toEqual(["attempt", "attempt"]);
 		expect(rows.every((r) => r?.groupId === groupId)).toBe(true);
-		expect(new Set(rows.map((r) => r?.worktreePath)).size).toBe(2);
+		expect(new Set(rows.map((r) => r?.workspacePath)).size).toBe(2);
 		const task = await f.svc.tasks.get(taskId);
 		expect(task?.claimedByGroupId).toBe(groupId);
 		expect(task?.claimedByRunId).toBe(runIds[0]);
@@ -169,8 +169,8 @@ describe("attempt groups", () => {
 			f.root,
 		);
 		expect(kept.exitCode).toBe(0);
-		expect(loser?.worktreePath).toBeTruthy();
-		expect(existsSync(loser?.worktreePath as string)).toBe(false);
+		expect(loser?.workspacePath).toBeTruthy();
+		expect(existsSync(loser?.workspacePath as string)).toBe(false);
 	}, 180_000);
 
 	test("first_verified: the first verified attempt is selected and merged without the brain", async () => {

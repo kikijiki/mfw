@@ -165,7 +165,7 @@ async function seedRun(
 		label: "t",
 		model: "sonnet",
 		cwd: f.root,
-		worktreePath: join(f.root, "wt"),
+		workspacePath: join(f.root, "wt"),
 		branch: "mfw/x",
 		executionTarget: over.executionTarget ?? "local",
 	});
@@ -918,7 +918,7 @@ async function scopeFixture(
 		label: "t",
 		model: "sonnet",
 		cwd: wt.path,
-		worktreePath: wt.path,
+		workspacePath: wt.path,
 		branch: wt.branch,
 		baseSha: wt.baseSha,
 		executionTarget: "local",
@@ -1090,10 +1090,6 @@ describe("Supervisor: diff-scope watchdog", () => {
 				},
 			);
 			try {
-				await s.f.handle.db
-					.update(runs)
-					.set({ workspaceKind: "clone" })
-					.where(eq(runs.id, s.run.id));
 				const failedSample = async () => {
 					s.f.now.value += 1_000;
 					await Bun.sleep(5);
@@ -1198,7 +1194,7 @@ describe("Supervisor: diff-scope watchdog", () => {
 					label: "t",
 					model: "sonnet",
 					cwd: f.root,
-					worktreePath: join(f.root, "wt"),
+					workspacePath: join(f.root, "wt"),
 					branch: "mfw/x",
 					baseSha: "0".repeat(40),
 					executionTarget: "runpod",

@@ -906,9 +906,9 @@ describe("project-to-host task admission", () => {
 		const task = await hostTask(service, "continue lineage");
 		const parent = await service.engine.startTask(task.id);
 		const parentRow = await service.registry.get(parent.runId);
-		if (!parentRow?.worktreePath) throw new Error("parent has no worktree");
+		if (!parentRow?.workspacePath) throw new Error("parent has no worktree");
 		// Work in the worktree, so it survives finalization for the continuation.
-		await writeFile(join(parentRow.worktreePath, "wip.txt"), "work\n");
+		await writeFile(join(parentRow.workspacePath, "wip.txt"), "work\n");
 		await service.engine.stop(parent.runId);
 		for (let i = 0; i < 40; i++) {
 			await service.supervisor.pass();
@@ -946,7 +946,7 @@ describe("project-to-host task admission", () => {
 		expect(child?.parentRunId).toBe(parent.runId);
 		expect(child?.relation).toBe("continue");
 		// Its own clone, seeded from the parent's imported work.
-		expect(child?.worktreePath).not.toBe(parentRow.worktreePath);
+		expect(child?.workspacePath).not.toBe(parentRow.workspacePath);
 	});
 
 	test("restart compensates an activated pre-launch lease before dispatch resumes", async () => {

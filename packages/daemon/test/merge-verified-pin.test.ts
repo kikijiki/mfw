@@ -98,7 +98,7 @@ async function pin(): Promise<Pin> {
 				label: name,
 				model: "sonnet",
 				cwd: wt(name),
-				worktreePath: wt(name),
+				workspacePath: wt(name),
 				branch: name,
 				integrationBranch: "main",
 				startedAt: new Date(),

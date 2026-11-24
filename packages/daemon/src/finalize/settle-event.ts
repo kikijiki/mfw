@@ -84,9 +84,9 @@ export async function settleParkedMerge(
 ): Promise<void> {
 	const run = await deps.registry.get(job.runId);
 	if (job.taskId) {
-		if (run?.worktreePath && run.branch) {
+		if (run?.workspacePath && run.branch) {
 			await deps.tasks
-				.recordPreservedWorktree(job.taskId, run.worktreePath, run.branch)
+				.recordPreservedWorktree(job.taskId, run.workspacePath, run.branch)
 				.catch(() => {
 					// best-effort: the pointer only helps the brain's continuation
 				});
@@ -115,7 +115,7 @@ export async function settleParkedMerge(
 			target: job.targetBranch,
 			branch: job.branch,
 			retries: job.parkRetries,
-			worktree: run?.worktreePath ?? null,
+			worktree: run?.workspacePath ?? null,
 		},
 	});
 }

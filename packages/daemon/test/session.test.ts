@@ -180,7 +180,7 @@ describe("SessionService.raise: composing the brief", () => {
 			label: "MFW-5",
 			model: "sonnet",
 			cwd: "/tmp/wt",
-			worktreePath: "/tmp/wt",
+			workspacePath: "/tmp/wt",
 			branch: "mfw/MFW-5",
 		});
 		await env.registry.beginStep(run.id, "verify");
@@ -269,7 +269,7 @@ describe("SessionService.open: the run that actually costs something", () => {
 			label: "MFW-8",
 			model: "sonnet",
 			cwd: "/tmp/wt8",
-			worktreePath: "/tmp/wt8",
+			workspacePath: "/tmp/wt8",
 			branch: "mfw/MFW-8",
 			baseSha: "deadbeef",
 		});
@@ -296,7 +296,7 @@ describe("SessionService.open: the run that actually costs something", () => {
 				prompt: (await env.sessions.get(raised?.id as string))?.context,
 				opts: {
 					reuse: {
-						worktreePath: "/tmp/wt8",
+						workspacePath: "/tmp/wt8",
 						branch: "mfw/MFW-8",
 						baseSha: "deadbeef",
 					},

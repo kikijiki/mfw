@@ -474,7 +474,7 @@ describe("C. a parked merge settles merge_parked", () => {
 			label: t.id,
 			model: "sonnet",
 			cwd: u.root,
-			worktreePath: u.root,
+			workspacePath: u.root,
 			branch: "mfw/parked",
 			baseSha: "a".repeat(40),
 		});
@@ -486,7 +486,7 @@ describe("C. a parked merge settles merge_parked", () => {
 			taskId: t.id,
 			branch: "mfw/parked",
 			targetBranch: "main",
-			worktreePath: u.root,
+			workspacePath: u.root,
 			attempt: 1,
 			parkRetries: 3,
 		};
@@ -636,8 +636,8 @@ describe("D. a failed run waits for the brain, which continues it", () => {
 			relation: "continue",
 		});
 		// Its own clone, seeded from the parent's imported work.
-		expect(child?.worktreePath).not.toBe(
-			(await f.svc.registry.get(runId))?.worktreePath,
+		expect(child?.workspacePath).not.toBe(
+			(await f.svc.registry.get(runId))?.workspacePath,
 		);
 		expect(child?.initialPrompt).toContain("did not pass verification");
 		expect(child?.initialPrompt).toContain("Create feature.txt.");

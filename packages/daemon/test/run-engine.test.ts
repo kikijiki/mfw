@@ -342,7 +342,7 @@ describe("RunEngine v2", () => {
 		const { runId } = await f.engine.startTask(t.id);
 		const run = await f.registry.get(runId);
 		expect(run?.state).toBe("running");
-		expect(run?.worktreePath).toBe(`${f.root}-workspaces/${run?.id}/tree`);
+		expect(run?.workspacePath).toBe(`${f.root}-workspaces/${run?.id}/tree`);
 		expect(run?.branch).toBe(`mfw/${runId}`);
 		expect(run?.integrationBranch).toBe("main");
 		expect(run?.providerId).toBe("claude-cli");
@@ -363,7 +363,7 @@ describe("RunEngine v2", () => {
 		});
 		expect(
 			await Bun.file(
-				join(run?.worktreePath ?? "", "made-by-agent.txt"),
+				join(run?.workspacePath ?? "", "made-by-agent.txt"),
 			).exists(),
 		).toBe(true);
 		f.handle.close();
@@ -575,7 +575,7 @@ describe("RunEngine v2", () => {
 			targetLifecycleState: "prepared",
 			targetProjectId: "demo",
 		});
-		expect(run?.worktreePath).toBe(`${f.root}-workspaces/${run?.id}/tree`);
+		expect(run?.workspacePath).toBe(`${f.root}-workspaces/${run?.id}/tree`);
 		expect((await f.tasks.get(task.id))?.claimedByRunId).toBe(prepared.runId);
 		expect(await f.host.isAlive(prepared.runId)).toBe(false);
 		expect(
@@ -1162,7 +1162,7 @@ describe("RunEngine v2", () => {
 		await f.engine.startGroupRun(spec);
 
 		const child = await f.registry.get(childId);
-		expect(child?.worktreePath).toBe(`${f.root}-workspaces/${childId}/tree`);
+		expect(child?.workspacePath).toBe(`${f.root}-workspaces/${childId}/tree`);
 		expect(child?.branch).toBe(`mfw/${childId}`);
 		expect(child?.baseSha).toBe(parent?.baseSha);
 		expect(child?.attempt).toBe((parent?.attempt ?? 1) + 1);
@@ -1201,7 +1201,7 @@ describe("RunEngine v2", () => {
 	test("a continuation never re-asks the parent's journaled question: its report is in neither clone", async () => {
 		const f = await fixture();
 		const { taskId, runId, parent } = await settledParent(f, "asks");
-		const worktree = parent?.worktreePath as string;
+		const worktree = parent?.workspacePath as string;
 		await writeFile(
 			join(worktree, "MFW_REPORT.json"),
 			JSON.stringify({ status: "question", question: "Keep v1?" }),
@@ -1220,11 +1220,11 @@ describe("RunEngine v2", () => {
 		});
 
 		const child = await f.registry.get(childId);
-		expect(child?.worktreePath).not.toBe(worktree);
+		expect(child?.workspacePath).not.toBe(worktree);
 		expect(child?.initialPrompt).toContain("until March");
 		expect(existsSync(join(worktree, "MFW_REPORT.json"))).toBe(false);
 		expect(
-			existsSync(join(child?.worktreePath as string, "MFW_REPORT.json")),
+			existsSync(join(child?.workspacePath as string, "MFW_REPORT.json")),
 		).toBe(false);
 		f.handle.close();
 		await rm(f.root, { recursive: true, force: true });

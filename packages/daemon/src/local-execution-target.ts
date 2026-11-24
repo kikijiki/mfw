@@ -61,14 +61,14 @@ export class LocalExecutionTarget implements ExecutionTarget {
 
 	async prepare(request: PrepareExecutionRequest): Promise<PreparedExecution> {
 		// A brain turn reuses its scratch dir as is; only a run clone is continued.
-		if (request.reuse && !isRunWorkspacePath(request.reuse.worktreePath)) {
-			const { worktreePath, branch, baseSha } = request.reuse;
-			if (!baseSha) throw new Error(`cannot reuse ${worktreePath}: no base`);
+		if (request.reuse && !isRunWorkspacePath(request.reuse.workspacePath)) {
+			const { workspacePath, branch, baseSha } = request.reuse;
+			if (!baseSha) throw new Error(`cannot reuse ${workspacePath}: no base`);
 			return {
 				targetKind: this.kind,
 				workspace: {
-					canonicalPath: worktreePath,
-					executionPath: worktreePath,
+					canonicalPath: workspacePath,
+					executionPath: workspacePath,
 					branch,
 					baseSha,
 				},
@@ -81,7 +81,7 @@ export class LocalExecutionTarget implements ExecutionTarget {
 			const baseSha = request.reuse.baseSha;
 			if (!baseSha) {
 				throw new Error(
-					`cannot continue ${request.reuse.worktreePath}: the clone has no recorded base`,
+					`cannot continue ${request.reuse.workspacePath}: the clone has no recorded base`,
 				);
 			}
 			// A continuation gets a clone of its own, seeded from the work the
@@ -90,7 +90,7 @@ export class LocalExecutionTarget implements ExecutionTarget {
 			const from =
 				(await newestImportedWork(
 					this.deps.projectRoot,
-					request.reuse.worktreePath,
+					request.reuse.workspacePath,
 				)) ?? baseSha;
 			const clone = await this.worktrees.create(request.owner.runId, from);
 			return {
@@ -127,7 +127,7 @@ export class LocalExecutionTarget implements ExecutionTarget {
 		request: PrepareExecutionRequest,
 		prepared: PreparedExecution,
 	): Promise<void> {
-		if (request.reuse && !isRunWorkspacePath(request.reuse.worktreePath)) {
+		if (request.reuse && !isRunWorkspacePath(request.reuse.workspacePath)) {
 			return;
 		}
 		await this.worktrees.remove({

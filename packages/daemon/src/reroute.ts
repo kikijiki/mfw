@@ -91,7 +91,7 @@ export async function rerouteRun(
 			"Only a task's worker run can be rerouted.",
 		);
 	}
-	if (!run.worktreePath || !run.branch) {
+	if (!run.workspacePath || !run.branch) {
 		throw new RerouteError(
 			"no_worktree",
 			`${run.id} has no worktree to continue`,

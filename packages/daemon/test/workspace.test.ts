@@ -148,7 +148,7 @@ describe("containment", () => {
 			label: "MFW-1",
 			model: "sonnet",
 			cwd: worktree,
-			worktreePath: worktree,
+			workspacePath: worktree,
 		});
 
 		const listing = await env.ws.listDir({ runId: run.id });
@@ -199,7 +199,7 @@ describe("worktrees", () => {
 		const olderDir = join(env.root, "worktrees", older.id);
 		await mkdir(olderDir, { recursive: true });
 		await env.registry.transition(older.id, "running", {
-			worktreePath: olderDir,
+			workspacePath: olderDir,
 			branch: `mfw/${older.id}`,
 		});
 
@@ -213,7 +213,7 @@ describe("worktrees", () => {
 		const newerDir = join(env.root, "worktrees", newer.id);
 		await mkdir(newerDir, { recursive: true });
 		await env.registry.transition(newer.id, "running", {
-			worktreePath: newerDir,
+			workspacePath: newerDir,
 			branch: `mfw/${newer.id}`,
 		});
 
@@ -248,13 +248,13 @@ describe("worktrees", () => {
 		const dir = join(env.root, "worktrees", run.id);
 		await mkdir(dir, { recursive: true });
 		await env.registry.transition(run.id, "running", {
-			worktreePath: dir,
+			workspacePath: dir,
 			branch: `mfw/${run.id}`,
 		});
 
 		expect((await env.ws.worktrees()).map((b) => b.runId)).toEqual([run.id]);
 
-		// The row keeps its worktreePath after cleanup; the picker follows the disk.
+		// The row keeps its workspacePath after cleanup; the picker follows the disk.
 		await rm(dir, { recursive: true, force: true });
 		await env.registry.transition(run.id, "completed");
 

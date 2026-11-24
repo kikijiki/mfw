@@ -232,7 +232,7 @@ describe("BrainService: agent review mode", () => {
 		const ctx: BrainCallCtx = {
 			runId: subject.id,
 			taskId: "T-1",
-			worktreePath: r.runWt,
+			workspacePath: r.runWt,
 			branch: BRANCH,
 			baseSha: r.base,
 			verify: { passed: true, crashed: false, checks: [] },

@@ -14,11 +14,11 @@ import type { CloneRunWorkspace } from "./clone-impl.ts";
 export async function cloneScopeFiles(
 	workspace: Pick<CloneRunWorkspace, "requestWip">,
 	primaryRoot: string,
-	worktreePath: string,
+	workspacePath: string,
 	baseSha: string,
 	opts: { timeoutMs?: number } = {},
 ): Promise<{ files: string[]; truncated: boolean }> {
-	const handle = { path: worktreePath };
+	const handle = { path: workspacePath };
 	const { ack, imported } = await workspace.requestWip(handle, opts);
 	if (!ack.ok)
 		throw new Error(`wip snapshot failed: ${ack.error ?? "no reason"}`);

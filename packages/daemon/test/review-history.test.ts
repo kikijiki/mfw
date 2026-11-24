@@ -89,7 +89,7 @@ describe("ReviewService bundle", () => {
 			await git(["add", "-A"], f.root);
 			await git(["commit", "-q", "-m", "scope paths"], f.root);
 			const facts = await new GitDiffSource().collect({
-				worktreePath: f.root,
+				workspacePath: f.root,
 				baseSha,
 			} as Parameters<GitDiffSource["collect"]>[0]);
 			expect(facts.files).toContain("keep.txt");

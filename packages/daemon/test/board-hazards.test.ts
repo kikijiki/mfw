@@ -332,7 +332,7 @@ describe("board writes and merges at the same time", () => {
 				label: branch,
 				model: "sonnet",
 				cwd: wt,
-				worktreePath: wt,
+				workspacePath: wt,
 				branch,
 				integrationBranch: "main",
 				startedAt: new Date(),

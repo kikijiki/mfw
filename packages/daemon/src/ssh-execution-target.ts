@@ -262,7 +262,7 @@ export class SshExecutionTarget implements ExecutionTarget {
 		const root = `${hostWorkdir(host.config, host.observed)}/${hex}`;
 		const worktree = request.reuse
 			? {
-					path: request.reuse.worktreePath,
+					path: request.reuse.workspacePath,
 					branch: request.reuse.branch,
 					baseSha: request.reuse.baseSha ?? "",
 				}

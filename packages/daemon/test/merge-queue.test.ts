@@ -122,7 +122,7 @@ async function fixture(
 			label: name,
 			model: "sonnet",
 			cwd: wt,
-			worktreePath: wt,
+			workspacePath: wt,
 			branch: name,
 			integrationBranch: "main",
 			startedAt: new Date(),
@@ -779,7 +779,7 @@ describe("MergeQueue v2, real git matrix", () => {
 				label: name,
 				model: "sonnet",
 				cwd: wt,
-				worktreePath: wt,
+				workspacePath: wt,
 				branch: name,
 				integrationBranch: "main",
 				startedAt: new Date(),
@@ -852,7 +852,7 @@ describe("MergeQueue v2, real git matrix", () => {
 				label: name,
 				model: "sonnet",
 				cwd: wt,
-				worktreePath: wt,
+				workspacePath: wt,
 				branch: name,
 				integrationBranch: "main",
 				startedAt: new Date(),
@@ -1259,7 +1259,7 @@ describe("no branch may change the board on its way in", () => {
 			label: name,
 			model: "sonnet",
 			cwd: wt,
-			worktreePath: wt,
+			workspacePath: wt,
 			branch: name,
 			integrationBranch: "main",
 			startedAt: new Date(),
@@ -1392,7 +1392,7 @@ describe("no branch may change the board on its way in", () => {
 			label: "triggers",
 			model: "sonnet",
 			cwd: wt,
-			worktreePath: wt,
+			workspacePath: wt,
 			branch: "mfw/triggers",
 			integrationBranch: "main",
 			startedAt: new Date(),
@@ -1694,7 +1694,7 @@ describe("a clone run is merged from its quarantine ref", () => {
 		const tip = await gitOk(["rev-parse", name], f.root);
 		await gitOk(["update-ref", `refs/mfw/quarantine/${runId}`, tip], f.root);
 		const [row] = await f.handle.db
-			.select({ wt: runs.worktreePath })
+			.select({ wt: runs.workspacePath })
 			.from(runs)
 			.where(eq(runs.id, runId));
 		await gitOk(["worktree", "remove", "--force", row?.wt as string], f.root);

@@ -29,7 +29,7 @@ export interface UnmergedBranch {
 	branch: string;
 	baseSha: string;
 	tip: string;
-	worktreePath: string;
+	workspacePath: string;
 	/** Commits on the branch that are not on the integration branch. */
 	ahead: number;
 	integrationBranch: string;
@@ -113,7 +113,7 @@ export class LifecycleService {
 		// The run's work is what the host imported from its clone.
 		const sha = (
 			await createRunWorkspace(root).fetchResult({
-				path: this.worktreePathOf(newest),
+				path: this.workspacePathOf(newest),
 				branch: newest.branch,
 				baseSha: newest.baseSha,
 			})
@@ -140,7 +140,7 @@ export class LifecycleService {
 			branch: newest.branch,
 			baseSha: newest.baseSha,
 			tip: sha,
-			worktreePath: this.worktreePathOf(newest),
+			workspacePath: this.workspacePathOf(newest),
 			ahead: Number.parseInt(count.stdout, 10) || 1,
 			integrationBranch: integration,
 		};
@@ -176,7 +176,7 @@ export class LifecycleService {
 			this.deps.projectRoot,
 		).discard(
 			{
-				path: this.worktreePathOf(run),
+				path: this.workspacePathOf(run),
 				branch: run.branch,
 				baseSha: run.baseSha,
 			},
@@ -224,7 +224,7 @@ export class LifecycleService {
 		}
 		const results: DiscardResult[] = [];
 		for (const run of runs) {
-			const path = this.worktreePathOf(run);
+			const path = this.workspacePathOf(run);
 			const workspace = createRunWorkspace(this.deps.projectRoot);
 			const result = await workspace.fetchResult({
 				path,
@@ -238,9 +238,9 @@ export class LifecycleService {
 		return results;
 	}
 
-	private worktreePathOf(run: RunRow): string {
+	private workspacePathOf(run: RunRow): string {
 		return (
-			run.worktreePath ??
+			run.workspacePath ??
 			createRunWorkspace(this.deps.projectRoot).paths(run.id).workPath
 		);
 	}

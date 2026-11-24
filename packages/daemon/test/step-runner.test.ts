@@ -240,7 +240,7 @@ async function seedRun(
 		cwd: spec.wt?.path ?? env.root,
 		...(spec.wt
 			? {
-					worktreePath: spec.wt.path,
+					workspacePath: spec.wt.path,
 					branch: spec.wt.branch,
 					baseSha: spec.wt.baseSha,
 				}
@@ -2671,7 +2671,7 @@ describe("provenance: a forged outbox never renders as host-observed", () => {
 	test("a report symlinked to a host file is not ingested", async () => {
 		const env = await makeEnv({ mergeChecks: null });
 		const { run, outbox } = await forgedRun(env, "linked", "exit:3");
-		const wtReport = join(run.worktreePath as string, "MFW_REPORT.json");
+		const wtReport = join(run.workspacePath as string, "MFW_REPORT.json");
 		const secret = join(env.root, "host-secret.json");
 		await writeFile(secret, JSON.stringify({ status: "HOSTSECRET" }));
 		for (const path of [wtReport, join(outbox, "MFW_REPORT.json")]) {
@@ -2689,7 +2689,7 @@ describe("provenance: a forged outbox never renders as host-observed", () => {
 	test("a FIFO as the report does not hang finalize", async () => {
 		const env = await makeEnv({ mergeChecks: null });
 		const { run, outbox } = await forgedRun(env, "fifo", "exit:3");
-		const wtReport = join(run.worktreePath as string, "MFW_REPORT.json");
+		const wtReport = join(run.workspacePath as string, "MFW_REPORT.json");
 		for (const path of [wtReport, join(outbox, "MFW_REPORT.json")]) {
 			await rm(path);
 			Bun.spawnSync(["mkfifo", path]);

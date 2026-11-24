@@ -348,7 +348,7 @@ const GIT_MAX_BYTES = 8 * 1024 * 1024;
 /** Real git in the subject run's worktree. Missing worktree/baseSha yields empty facts. */
 export class GitDiffSource implements DiffSource {
 	async collect(ctx: BrainCallCtx): Promise<DiffFacts> {
-		const cwd = ctx.worktreePath;
+		const cwd = ctx.workspacePath;
 		if (!cwd || !ctx.baseSha) return EMPTY_FACTS;
 		const range = `${ctx.baseSha}..HEAD`;
 		const [patch, stat, commits, names] = await Promise.all([
@@ -832,7 +832,7 @@ export class BrainService implements BrainPort {
 			wantsAgent && ctx.branch
 				? (this.deps.agentReview?.({
 						branch: ctx.branch,
-						runWorktree: ctx.worktreePath,
+						runWorktree: ctx.workspacePath,
 					}) ?? null)
 				: null;
 		const mode: ReviewMode = agentInference ? "agent" : "critic";
@@ -1165,7 +1165,7 @@ export class BrainService implements BrainPort {
 				const { facts, subject } = await this.gather(ctx, point);
 				return {
 					prompt: spec.build(subject, facts),
-					cwd: ctx.worktreePath ?? this.deps.projectRoot ?? process.cwd(),
+					cwd: ctx.workspacePath ?? this.deps.projectRoot ?? process.cwd(),
 					attachTaskId: subject.exists,
 					extraInput: { diffChars: facts.patch.length },
 					parseContext: subject,

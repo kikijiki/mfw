@@ -152,7 +152,7 @@ export class RunPodExecutionTarget implements ExecutionTarget {
 		try {
 			const worktree = request.reuse
 				? {
-						path: request.reuse.worktreePath,
+						path: request.reuse.workspacePath,
 						branch: request.reuse.branch,
 						baseSha: request.reuse.baseSha ?? "",
 					}

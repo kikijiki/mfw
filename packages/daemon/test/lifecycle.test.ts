@@ -96,7 +96,7 @@ async function runWithWork(
 		label: taskId,
 		model: "test",
 		cwd: wt.path,
-		worktreePath: wt.path,
+		workspacePath: wt.path,
 		branch: wt.branch,
 		integrationBranch: "main",
 		baseSha: wt.baseSha,

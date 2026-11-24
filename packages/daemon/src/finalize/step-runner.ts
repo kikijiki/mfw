@@ -154,7 +154,7 @@ const RUN_HELD_STATUSES: ReadonlySet<TaskStatus> = new Set([
 export interface BrainCallCtx {
 	runId: string;
 	taskId: string | null;
-	worktreePath: string | null;
+	workspacePath: string | null;
 	branch: string | null;
 	baseSha: string | null;
 	verify: VerificationResult | null;
@@ -812,7 +812,7 @@ export class StepRunner {
 
 		const task = run.taskId ? await this.deps.tasks.get(run.taskId) : null;
 		const worktreeDirty =
-			run.kind === "task" && run.worktreePath
+			run.kind === "task" && run.workspacePath
 				? await this.isDirty(
 						run,
 						foldReportIdentity(results.get("ingest_report")),
@@ -883,7 +883,7 @@ export class StepRunner {
 			localWorktree:
 				run.kind !== "brain" &&
 				run.executionTarget === "local" &&
-				run.worktreePath !== null,
+				run.workspacePath !== null,
 			leftBackground: (reapRes?.processes?.length ?? 0) > 0,
 			backgroundOutstanding: (classify?.background?.length ?? 0) > 0,
 		};
@@ -904,7 +904,7 @@ export class StepRunner {
 		run: RunRow,
 		reportIdentity?: WorktreeReportIdentity,
 	): Promise<boolean> {
-		const wt = run.worktreePath;
+		const wt = run.workspacePath;
 		if (!wt) return false;
 		try {
 			await access(wt);
@@ -1312,8 +1312,8 @@ export class StepRunner {
 	private async ingestReport(built: Built): Promise<unknown> {
 		// The agent writes MFW_REPORT_PATH = <worktree>/MFW_REPORT.json; the run
 		// dir is only a fallback for runs without a worktree.
-		const worktreeReportPath = built.run.worktreePath
-			? join(built.run.worktreePath, "MFW_REPORT.json")
+		const worktreeReportPath = built.run.workspacePath
+			? join(built.run.workspacePath, "MFW_REPORT.json")
 			: null;
 		const candidates = [
 			worktreeReportPath,
@@ -1359,7 +1359,7 @@ export class StepRunner {
 		const dod = this.deps.tasks.effectiveVerification(
 			task?.verification ?? task?.dod ?? null,
 		);
-		if (!run.worktreePath || !dod) {
+		if (!run.workspacePath || !dod) {
 			return {
 				passed: false,
 				checks: [
@@ -1399,7 +1399,7 @@ export class StepRunner {
 		const imported = await createRunWorkspace(
 			this.deps.projectRoot,
 		).fetchResult({
-			path: run.worktreePath,
+			path: run.workspacePath,
 			branch: run.branch ?? "",
 			baseSha: run.baseSha ?? "",
 		});
@@ -1483,7 +1483,7 @@ export class StepRunner {
 		const ctx: BrainCallCtx = {
 			runId: run.id,
 			taskId: run.taskId,
-			worktreePath: run.worktreePath,
+			workspacePath: run.workspacePath,
 			branch: run.branch,
 			baseSha: run.baseSha,
 			verify:
@@ -1700,10 +1700,10 @@ export class StepRunner {
 			goal: null,
 			questions: [text],
 		});
-		if (run.taskId && run.worktreePath && run.branch) {
+		if (run.taskId && run.workspacePath && run.branch) {
 			await this.deps.tasks.recordPreservedWorktree(
 				run.taskId,
-				run.worktreePath,
+				run.workspacePath,
 				run.branch,
 			);
 		}
@@ -1847,7 +1847,7 @@ export class StepRunner {
 			exitCode: classify?.exitCode ?? run.exitCode ?? null,
 			...(classify?.killReason ? { killReason: classify.killReason } : {}),
 			branch: run.branch,
-			worktree: run.worktreePath,
+			worktree: run.workspacePath,
 			...(ctx.task && !verifyRes && ctx.task.exitCode !== 0
 				? { noChecks: true }
 				: {}),
@@ -1920,7 +1920,7 @@ export class StepRunner {
 		// is a failed step, not an empty merge.
 		const workspace = createRunWorkspace(this.deps.projectRoot);
 		const imported = await workspace.fetchResult({
-			path: run.worktreePath ?? workspace.paths(run.id).workPath,
+			path: run.workspacePath ?? workspace.paths(run.id).workPath,
 			branch: run.branch,
 			baseSha: run.baseSha ?? "",
 		});
@@ -1972,7 +1972,7 @@ export class StepRunner {
 		// pointer so the next attempt reuses the work.
 		if (
 			to === "ready" &&
-			run.worktreePath &&
+			run.workspacePath &&
 			run.branch &&
 			(await this.isDirty(
 				run,
@@ -1981,7 +1981,7 @@ export class StepRunner {
 		) {
 			await this.deps.tasks.recordPreservedWorktree(
 				run.taskId,
-				run.worktreePath,
+				run.workspacePath,
 				run.branch,
 			);
 		}
@@ -2001,7 +2001,7 @@ export class StepRunner {
 		const archive = await workspace.archive(
 			{
 				// The archive reads the imported refs, so a gone clone is fine.
-				path: run.worktreePath ?? workspace.paths(run.id).workPath,
+				path: run.workspacePath ?? workspace.paths(run.id).workPath,
 				branch: run.branch,
 				baseSha: run.baseSha,
 			},
@@ -2039,7 +2039,7 @@ export class StepRunner {
 		const workspace = createRunWorkspace(this.deps.projectRoot);
 		if (run.baseSha) {
 			const imported = await workspace.fetchResult({
-				path: run.worktreePath ?? workspace.paths(run.id).workPath,
+				path: run.workspacePath ?? workspace.paths(run.id).workPath,
 				branch: run.branch ?? "",
 				baseSha: run.baseSha,
 			});
@@ -2071,7 +2071,7 @@ export class StepRunner {
 				"refusing non-forced worktree cleanup before report ingestion is journaled",
 			);
 		}
-		const wt = run.worktreePath;
+		const wt = run.workspacePath;
 		if (!wt) return { removed: false, missing: true };
 		const exists = await access(wt).then(
 			() => true,

@@ -1257,7 +1257,7 @@ describe("gc", () => {
 				label: "cleanup",
 				model: "test",
 				cwd: owned.path,
-				worktreePath: owned.path,
+				workspacePath: owned.path,
 				branch: owned.branch,
 				baseSha: owned.baseSha,
 			});
@@ -1352,7 +1352,7 @@ describe("gc retention for work awaiting a human", () => {
 			label: t.id,
 			model: "sonnet",
 			cwd: wt,
-			worktreePath: wt,
+			workspacePath: wt,
 			branch: "mfw/review",
 		});
 		await f.registry.finish(run.id, "completed");
@@ -1400,7 +1400,7 @@ describe("gc retention for work awaiting a human", () => {
 			label: runId,
 			model: "test",
 			cwd: owned.path,
-			worktreePath: owned.path,
+			workspacePath: owned.path,
 			branch: owned.branch,
 			integrationBranch: "main",
 			baseSha: owned.baseSha,
@@ -1463,7 +1463,7 @@ describe("gc retention for work awaiting a human", () => {
 			label: runId,
 			model: "test",
 			cwd: path,
-			worktreePath: path,
+			workspacePath: path,
 			branch: `mfw/${runId}`,
 			integrationBranch: "main",
 			baseSha,

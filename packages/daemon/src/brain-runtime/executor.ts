@@ -1375,15 +1375,15 @@ export class BrainActionExecutor {
 
 	/** Save a loser's work to `wip/<task>-<run>`, then drop its worktree and keep its branch. */
 	private async archiveLoser(run: RunRow): Promise<boolean> {
-		if (!run.worktreePath || !run.branch || !run.baseSha) return false;
+		if (!run.workspacePath || !run.branch || !run.baseSha) return false;
 		const wt = createRunWorkspace(this.deps.projectRoot);
 		const handle = {
-			path: run.worktreePath,
+			path: run.workspacePath,
 			branch: run.branch,
 			baseSha: run.baseSha,
 		};
 		const present = (await wt.list()).some(
-			(p) => p === run.worktreePath || p.endsWith(run.worktreePath as string),
+			(p) => p === run.workspacePath || p.endsWith(run.workspacePath as string),
 		);
 		if (!present) return false;
 		const archive = await wt.archive(handle, {

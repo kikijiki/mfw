@@ -110,7 +110,7 @@ export interface SupervisorDeps {
 	limits?: WatchdogLimitsInput;
 	/** Changed-file listing for the scope watchdog; tests inject failures. */
 	scopeFiles?: (
-		worktreePath: string,
+		workspacePath: string,
 		baseSha: string,
 	) => Promise<{ files: string[]; truncated: boolean }>;
 	/**
@@ -654,7 +654,7 @@ export class Supervisor {
 		if (run.kind !== "task" && run.kind !== "repair") return;
 		// Remote targets have no local workspace to sample (deferred).
 		if (run.executionTarget !== "local") return;
-		if (!run.worktreePath || !run.baseSha) return;
+		if (!run.workspacePath || !run.baseSha) return;
 		const now = this.now();
 		const seen = this.scopeSeen.get(run.id);
 		if (seen && (now - seen.at < policy.sampleMs || seen.mtime === mtime))
@@ -671,7 +671,7 @@ export class Supervisor {
 						base,
 						{ timeoutMs: SCOPE_WIP_TIMEOUT_MS },
 					));
-			const listed = await sampler(run.worktreePath, run.baseSha);
+			const listed = await sampler(run.workspacePath, run.baseSha);
 			sample = assessScope(
 				listed.files,
 				await this.scopeOwners(run),

@@ -257,7 +257,7 @@ interface RunLaunchSpec {
 	steer: boolean;
 	prompt: string;
 	goal?: string;
-	reuse?: { worktreePath: string; branch: string; baseSha?: string };
+	reuse?: { workspacePath: string; branch: string; baseSha?: string };
 	attempt?: number;
 	resumeOrdinal?: number;
 	workloadSecretGrantIds?: string[];
@@ -394,7 +394,7 @@ export class RunEngine {
 		let base: string;
 		if (spec.worktree.mode === "continue") {
 			const parent = await this.deps.registry.get(spec.worktree.runId);
-			if (!parent?.worktreePath || !parent.branch) {
+			if (!parent?.workspacePath || !parent.branch) {
 				throw new Error(
 					`run ${spec.worktree.runId} has no worktree to continue`,
 				);
@@ -402,7 +402,7 @@ export class RunEngine {
 			parentRunId = parent.id;
 			parentAttempt = parent.attempt;
 			reuse = {
-				worktreePath: parent.worktreePath,
+				workspacePath: parent.workspacePath,
 				branch: parent.branch,
 				baseSha: parent.baseSha ?? undefined,
 			};
@@ -416,7 +416,7 @@ export class RunEngine {
 			base = await this.deps.buildPrompt.continuation(spec.taskId, parent.id);
 			// The parent's question report is journaled on it; left in place the
 			// child's own finalize would ingest it and ask the same question again.
-			await rm(join(parent.worktreePath, "MFW_REPORT.json"), { force: true });
+			await rm(join(parent.workspacePath, "MFW_REPORT.json"), { force: true });
 		} else {
 			base = await this.deps.buildPrompt.task(spec.taskId);
 		}
@@ -883,7 +883,7 @@ export class RunEngine {
 		prompt: string,
 		opts: {
 			model?: string;
-			reuse?: { worktreePath: string; branch: string; baseSha?: string };
+			reuse?: { workspacePath: string; branch: string; baseSha?: string };
 			/** The escalation session this run opens (`runs.origin_ref = session:<id>`). */
 			sessionId?: string;
 		} = {},
@@ -955,7 +955,7 @@ export class RunEngine {
 			steer: false,
 			prompt: opts.prompt,
 			reuse: {
-				worktreePath: opts.scratchDir,
+				workspacePath: opts.scratchDir,
 				branch: "mfw-brain",
 				baseSha: BRAIN_BASE_SHA,
 			},
@@ -1285,8 +1285,8 @@ export class RunEngine {
 			harness: route.provider,
 			modelVendor: routeVendor(route),
 			hostId,
-			cwd: spec.reuse?.worktreePath ?? this.deps.projectRoot,
-			worktreePath: spec.reuse?.worktreePath,
+			cwd: spec.reuse?.workspacePath ?? this.deps.projectRoot,
+			workspacePath: spec.reuse?.workspacePath,
 			branch: spec.reuse?.branch,
 			integrationBranch: this.deps.integrationBranch,
 			baseSha: spec.reuse?.baseSha,
@@ -1331,7 +1331,7 @@ export class RunEngine {
 						: null,
 					runPatch: {
 						cwd: prepared.workspace.canonicalPath,
-						worktreePath: prepared.workspace.canonicalPath,
+						workspacePath: prepared.workspace.canonicalPath,
 						branch: prepared.workspace.branch,
 						baseSha: prepared.workspace.baseSha,
 						targetExecutionPath: prepared.workspace.executionPath,
@@ -1388,7 +1388,7 @@ export class RunEngine {
 		if (run.state !== "starting") {
 			throw new Error(`prepared run ${run.id} is in state ${run.state}`);
 		}
-		if (!run.worktreePath || !run.branch || !run.baseSha) {
+		if (!run.workspacePath || !run.branch || !run.baseSha) {
 			throw new Error(`prepared run ${run.id} has no canonical worktree`);
 		}
 		const target = this.requireTarget(run.executionTarget);
@@ -1462,14 +1462,14 @@ export class RunEngine {
 						MFW_PROJECT: this.deps.projectName,
 						MFW_TASK_ID: run.taskId ?? "",
 						MFW_RUN_KIND: run.kind,
-						MFW_REPORT_PATH: join(run.worktreePath, "MFW_REPORT.json"),
+						MFW_REPORT_PATH: join(run.workspacePath, "MFW_REPORT.json"),
 						// The sandbox binds the clone's gitdir and sets these. An
 						// unsandboxed run gets the same, so its git never walks up
 						// out of the clone into a repository around it.
 						...(target.kind === "local" && !this.deps.isolation
 							? {
-									GIT_DIR: join(dirname(run.worktreePath), "git"),
-									GIT_WORK_TREE: run.worktreePath,
+									GIT_DIR: join(dirname(run.workspacePath), "git"),
+									GIT_WORK_TREE: run.workspacePath,
 								}
 							: {}),
 					},
@@ -1617,10 +1617,10 @@ export class RunEngine {
 			runDir: this.deps.registry.runDir(run.id),
 			globalLeaseRef: run.targetLeaseRef,
 			workspace:
-				run.worktreePath && run.branch && run.baseSha
+				run.workspacePath && run.branch && run.baseSha
 					? {
-							canonicalPath: run.worktreePath,
-							executionPath: run.targetExecutionPath ?? run.worktreePath,
+							canonicalPath: run.workspacePath,
+							executionPath: run.targetExecutionPath ?? run.workspacePath,
 							branch: run.branch,
 							baseSha: run.baseSha,
 						}

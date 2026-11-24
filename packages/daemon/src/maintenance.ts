@@ -1222,13 +1222,13 @@ export class Maintenance {
 				.map((t) => t.id),
 		);
 		for (const run of allRuns) {
-			if (run.taskId && awaitingHuman.has(run.taskId) && run.worktreePath) {
-				preserved.add(run.worktreePath);
+			if (run.taskId && awaitingHuman.has(run.taskId) && run.workspacePath) {
+				preserved.add(run.workspacePath);
 			}
 		}
 		const keepPaths = new Set([
 			...liveRuns
-				.map((run) => run.worktreePath)
+				.map((run) => run.workspacePath)
 				.filter((path): path is string => !!path)
 				.map((path) => resolve(path)),
 			...[...preserved].map((path) => resolve(path)),
@@ -1243,8 +1243,8 @@ export class Maintenance {
 			{ branch: string; baseSha: string }
 		>();
 		for (const run of allRuns) {
-			if (!run.worktreePath || !run.branch || !run.baseSha) continue;
-			const path = resolve(run.worktreePath);
+			if (!run.workspacePath || !run.branch || !run.baseSha) continue;
+			const path = resolve(run.workspacePath);
 			if (path !== resolve(wm.paths(run.id).workPath)) continue;
 			if (run.branch !== `mfw/${run.id}`) continue;
 			if (!registered.has(path)) continue;

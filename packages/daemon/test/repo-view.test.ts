@@ -124,7 +124,7 @@ beforeAll(async () => {
 		label: "MFW-8",
 		model: "sonnet",
 		cwd: wtPath,
-		worktreePath: wtPath,
+		workspacePath: wtPath,
 		branch: `mfw/${runId}`,
 	});
 	await registry.create({

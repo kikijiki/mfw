@@ -302,7 +302,7 @@ describe("RunPod ExecutionTarget integration", () => {
 			projectRoot: f.root,
 			integrationBranch: "main",
 			requestedShape: f.account.requestedShape,
-			reuse: { worktreePath: f.root, branch: "main", baseSha: f.baseSha },
+			reuse: { workspacePath: f.root, branch: "main", baseSha: f.baseSha },
 		});
 		await f.target.launch({
 			owner,
@@ -334,7 +334,7 @@ describe("RunPod ExecutionTarget integration", () => {
 				projectRoot: f.root,
 				integrationBranch: "main",
 				requestedShape: { computeType: "CPU" },
-				reuse: { worktreePath: f.root, branch: "main", baseSha: f.baseSha },
+				reuse: { workspacePath: f.root, branch: "main", baseSha: f.baseSha },
 			});
 			const localTransport = f.transport;
 			localTransport.launchResponseFailure = failure;
@@ -397,7 +397,7 @@ describe("RunPod ExecutionTarget integration", () => {
 			projectRoot: f.root,
 			integrationBranch: "main",
 			requestedShape: { computeType: "CPU" },
-			reuse: { worktreePath: f.root, branch: "main", baseSha: f.baseSha },
+			reuse: { workspacePath: f.root, branch: "main", baseSha: f.baseSha },
 		});
 		expect(f.account.commands).toEqual([]);
 
@@ -487,7 +487,7 @@ await Bun.sleep(750);
 			projectRoot: f.root,
 			integrationBranch: "main",
 			requestedShape: { computeType: "CPU" },
-			reuse: { worktreePath: f.root, branch: "main", baseSha: f.baseSha },
+			reuse: { workspacePath: f.root, branch: "main", baseSha: f.baseSha },
 		});
 		await f.target.launch({
 			owner,
@@ -575,7 +575,7 @@ await Bun.sleep(750);
 			projectRoot: f.root,
 			integrationBranch: "main",
 			requestedShape: { computeType: "CPU" },
-			reuse: { worktreePath: f.root, branch: "main", baseSha: f.baseSha },
+			reuse: { workspacePath: f.root, branch: "main", baseSha: f.baseSha },
 		});
 		await f.target.launch({
 			owner,

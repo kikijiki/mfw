@@ -110,7 +110,9 @@ describe("0026 adds the run's approval mode", () => {
 		});
 		await client.execute("PRAGMA foreign_keys = ON");
 
-		await migrate(db, { migrationsFolder: folder(root, "new", all) });
+		// Up to 0026 only: 0028 drops the column again.
+		const toAdd = all.slice(0, all.findIndex((e) => e.tag === ADD) + 1);
+		await migrate(db, { migrationsFolder: folder(root, "new", toAdd) });
 		const rows = await client.execute(
 			"SELECT id, approval_mode FROM runs WHERE id = 'r1'",
 		);
@@ -119,6 +121,6 @@ describe("0026 adds the run's approval mode", () => {
 		const check = await client.execute("PRAGMA foreign_key_check");
 		expect(check.rows).toHaveLength(0);
 		// Idempotent: a second start applies nothing.
-		await migrate(db, { migrationsFolder: folder(root, "again", all) });
+		await migrate(db, { migrationsFolder: folder(root, "again", toAdd) });
 	});
 });

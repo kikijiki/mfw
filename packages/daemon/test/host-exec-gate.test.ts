@@ -288,7 +288,7 @@ describe("merges", () => {
 			label: name,
 			model: "sonnet",
 			cwd: wt,
-			worktreePath: wt,
+			workspacePath: wt,
 			branch: name,
 			integrationBranch: "main",
 			startedAt: new Date(),

@@ -83,7 +83,7 @@ export interface MergeJobView {
 	taskId: string | null;
 	branch: string;
 	targetBranch: string;
-	worktreePath: string | null;
+	workspacePath: string | null;
 	attempt: number;
 	parkRetries: number;
 }
@@ -401,7 +401,7 @@ export class MergeQueue {
 				targetBranch: mergeJobs.targetBranch,
 				attempt: mergeJobs.attempt,
 				parkRetries: mergeJobs.parkRetries,
-				worktreePath: runs.worktreePath,
+				workspacePath: runs.workspacePath,
 			})
 			.from(mergeJobs)
 			.leftJoin(runs, eq(runs.id, mergeJobs.runId))
@@ -513,7 +513,7 @@ export class MergeQueue {
 				return "parked";
 			}
 		} else {
-			if (!job.worktreePath) {
+			if (!job.workspacePath) {
 				await this.park(
 					job,
 					"merge conflict and no run worktree to rebase",
@@ -522,12 +522,12 @@ export class MergeQueue {
 				return "parked";
 			}
 			await this.setState(job.id, "rebasing");
-			const rebase = await git(["rebase", job.targetBranch], job.worktreePath);
+			const rebase = await git(["rebase", job.targetBranch], job.workspacePath);
 			if (rebase.exitCode !== 0) {
 				// Read conflicting paths before aborting; git's own advice is useless
 				// to the operator.
-				const paths = await this.conflictingPaths(job.worktreePath);
-				await git(["rebase", "--abort"], job.worktreePath);
+				const paths = await this.conflictingPaths(job.workspacePath);
+				await git(["rebase", "--abort"], job.workspacePath);
 				await this.park(
 					job,
 					paths.length > 0
@@ -1348,7 +1348,7 @@ export class MergeQueue {
 				attempt: mergeJobs.attempt,
 				parkRetries: mergeJobs.parkRetries,
 				state: mergeJobs.state,
-				worktreePath: runs.worktreePath,
+				workspacePath: runs.workspacePath,
 			})
 			.from(mergeJobs)
 			.leftJoin(runs, eq(runs.id, mergeJobs.runId))
@@ -1364,7 +1364,7 @@ export class MergeQueue {
 			taskId: job.taskId,
 			branch: job.branch,
 			targetBranch: job.targetBranch,
-			worktreePath: job.worktreePath,
+			workspacePath: job.workspacePath,
 			attempt: job.attempt,
 			parkRetries: job.parkRetries,
 		};

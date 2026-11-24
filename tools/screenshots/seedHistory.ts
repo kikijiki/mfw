@@ -362,7 +362,7 @@ export async function seedHistory(input: HistoryInput): Promise<HistoryResult> {
 				providerId: r.harness,
 				reasoningEffort: r.effort ?? null,
 				cwd: gitInfo?.worktree ?? root,
-				worktreePath: gitInfo?.worktree ?? null,
+				workspacePath: gitInfo?.worktree ?? null,
 				branch: gitInfo?.branch ?? null,
 				integrationBranch: "main",
 				baseSha: gitInfo?.baseSha ?? null,

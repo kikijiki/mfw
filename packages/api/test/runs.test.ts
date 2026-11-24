@@ -25,7 +25,7 @@ const row = {
 	providerId: "codex-cli",
 	reasoningEffort: "high",
 	cwd: "/tmp/worktree",
-	worktreePath: "/tmp/worktree",
+	workspacePath: "/tmp/worktree",
 	branch: "mfw/01RUN",
 	integrationBranch: "main",
 	baseSha: "abc",

@@ -83,7 +83,7 @@ function sameIdentity(p: LeftoverProcess, state: ProcessState): boolean {
 
 /** Cwd is diagnostic information only. Only the inherited run marker owns a process. */
 export async function findLeftoverProcesses(
-	run: { id: string; worktreePath: string | null },
+	run: { id: string; workspacePath: string | null },
 	source: ProcSource = linuxProcSource,
 	self: number = process.pid,
 ): Promise<LeftoverProcess[]> {
@@ -102,9 +102,9 @@ export async function findLeftoverProcesses(
 		const before = await source.inspect(pid);
 		const env = await source.environ(pid);
 		if (!env?.split("\0").includes(marker)) {
-			if (env === null && run.worktreePath) {
+			if (env === null && run.workspacePath) {
 				const cwd = await source.cwd(pid);
-				const root = run.worktreePath.replace(/\/$/, "");
+				const root = run.workspacePath.replace(/\/$/, "");
 				if (cwd === root || cwd?.startsWith(root + sep))
 					throw new Error(
 						`Unknown worktree occupant ${pid}: run ownership unreadable`,

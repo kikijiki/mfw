@@ -401,9 +401,9 @@ export class RepoViewService {
 		for (const run of rows) {
 			byId.set(run.id, run);
 			if (run.branch) byBranch.set(run.branch, run);
-			if (run.worktreePath) {
-				byPath.set(run.worktreePath, run);
-				const real = await realpath(run.worktreePath).catch(() => null);
+			if (run.workspacePath) {
+				byPath.set(run.workspacePath, run);
+				const real = await realpath(run.workspacePath).catch(() => null);
 				if (real) byPath.set(real, run);
 			}
 		}
@@ -1250,7 +1250,7 @@ export class RepoViewService {
 	// uncommitted changes of one worktree
 	// ------------------------------------------------------------------
 
-	private async worktreePath(id: string): Promise<string> {
+	private async workspacePath(id: string): Promise<string> {
 		const { worktrees } = await this.worktrees();
 		const wt = worktrees.find((w) => w.id === id);
 		if (!wt) throw new NotFoundError(`no such worktree: ${id}`);
@@ -1268,7 +1268,7 @@ export class RepoViewService {
 		deleted: number;
 		truncated: boolean;
 	}> {
-		const cwd = await this.worktreePath(input.id);
+		const cwd = await this.workspacePath(input.id);
 		const [status, nums, headOut, branchOut] = await Promise.all([
 			this.git(["status", "--porcelain=v1", "-z", "--untracked-files=normal"], {
 				cwd,
@@ -1347,7 +1347,7 @@ export class RepoViewService {
 		path: string;
 		oldPath?: string;
 	}): Promise<RepoFileDiff> {
-		const cwd = await this.worktreePath(input.id);
+		const cwd = await this.workspacePath(input.id);
 		const path = validateRepoPath(input.path);
 		const oldPath = input.oldPath ? validateRepoPath(input.oldPath) : path;
 		if (!path) throw new InvalidRefError("a file path is required");

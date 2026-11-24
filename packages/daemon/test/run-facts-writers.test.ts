@@ -42,7 +42,7 @@ const NOT_FACTS = [
 	"providerId",
 	"reasoningEffort",
 	"cwd",
-	"worktreePath",
+	"workspacePath",
 	"branch",
 	"integrationBranch",
 	"baseSha",
@@ -84,8 +84,6 @@ const NOT_FACTS = [
 	"groupId",
 	"role",
 	"runDirLayout",
-	"workspaceKind",
-	"approvalMode",
 	"verifiedSha",
 ];
 

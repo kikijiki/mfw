@@ -496,10 +496,10 @@ export class BrainReadService {
 			.from(reviewVerdicts)
 			.where(eq(reviewVerdicts.subjectRunId, runId));
 		let diffStat: string | null = null;
-		if (run.worktreePath && run.baseSha && run.kind !== "brain") {
+		if (run.workspacePath && run.baseSha && run.kind !== "brain") {
 			const r = await git(
 				["diff", "--stat", run.baseSha, "HEAD"],
-				run.worktreePath,
+				run.workspacePath,
 			).catch(() => null);
 			diffStat = r && r.exitCode === 0 ? clip(r.stdout, 4000) : null;
 		}
@@ -559,7 +559,7 @@ export class BrainReadService {
 	) {
 		const run = await this.deps.registry.get(runId);
 		if (!run) throw new BrainReadError("not_found", `unknown run ${runId}`);
-		if (!run.worktreePath || !run.baseSha || run.kind === "brain") {
+		if (!run.workspacePath || !run.baseSha || run.kind === "brain") {
 			throw new BrainReadError(
 				"not_found",
 				`run ${runId} has no worktree diff`,
@@ -567,7 +567,7 @@ export class BrainReadService {
 		}
 		const r = await git(
 			["diff", run.baseSha, "HEAD", ...(path ? ["--", path] : [])],
-			run.worktreePath,
+			run.workspacePath,
 		);
 		if (r.exitCode !== 0) {
 			throw new BrainReadError("not_found", `diff unavailable: ${r.stderr}`);

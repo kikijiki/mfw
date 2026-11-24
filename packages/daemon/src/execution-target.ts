@@ -284,7 +284,7 @@ export interface PrepareExecutionRequest {
 	integrationBranch: string;
 	requestedShape: TargetShape;
 	reuse?: {
-		worktreePath: string;
+		workspacePath: string;
 		branch: string;
 		baseSha?: string;
 	};

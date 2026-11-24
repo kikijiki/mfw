@@ -125,7 +125,7 @@ export interface NewRunSpec {
 	providerId?: string;
 	reasoningEffort?: RunReasoningEffort;
 	cwd: string;
-	worktreePath?: string;
+	workspacePath?: string;
 	branch?: string;
 	integrationBranch?: string;
 	baseSha?: string;
@@ -183,7 +183,7 @@ export interface TargetLifecycleEntry {
 		Pick<
 			RunRow,
 			| "cwd"
-			| "worktreePath"
+			| "workspacePath"
 			| "branch"
 			| "baseSha"
 			| "targetProjectId"
@@ -219,7 +219,7 @@ export type TransitionPatch = Partial<
 		| "finishedAt"
 		| "capabilities"
 		| "usage"
-		| "worktreePath"
+		| "workspacePath"
 		| "branch"
 		| "baseSha"
 		| "cwd"
@@ -348,7 +348,7 @@ export class RunRegistry {
 			providerId: spec.providerId ?? null,
 			reasoningEffort: spec.reasoningEffort ?? null,
 			cwd: spec.cwd,
-			worktreePath: spec.worktreePath ?? null,
+			workspacePath: spec.workspacePath ?? null,
 			branch: spec.branch ?? null,
 			integrationBranch: spec.integrationBranch ?? null,
 			baseSha: spec.baseSha ?? null,
@@ -702,7 +702,7 @@ export class RunRegistry {
 	async setStartingWorktree(
 		runId: string,
 		patch: {
-			worktreePath: string;
+			workspacePath: string;
 			branch: string;
 			baseSha: string;
 			cwd: string;

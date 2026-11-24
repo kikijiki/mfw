@@ -80,7 +80,7 @@ export class SessionService {
 	startSession?: (
 		prompt: string,
 		opts: {
-			reuse?: { worktreePath: string; branch: string; baseSha?: string };
+			reuse?: { workspacePath: string; branch: string; baseSha?: string };
 			sessionId?: string;
 		},
 	) => Promise<{ runId: string }>;
@@ -154,13 +154,13 @@ export class SessionService {
 			throw new Error("sessions cannot be opened: no run engine wired");
 		}
 		let reuse:
-			| { worktreePath: string; branch: string; baseSha?: string }
+			| { workspacePath: string; branch: string; baseSha?: string }
 			| undefined;
 		if (session.runId) {
 			const run = await this.deps.registry.get(session.runId);
-			if (run?.worktreePath && run.branch) {
+			if (run?.workspacePath && run.branch) {
 				reuse = {
-					worktreePath: run.worktreePath,
+					workspacePath: run.workspacePath,
 					branch: run.branch,
 					baseSha: run.baseSha ?? undefined,
 				};
@@ -289,7 +289,7 @@ export class SessionService {
 					"",
 					"## Where this ran",
 					`- run: ${run.id} (${run.kind}, attempt ${run.attempt})`,
-					`- worktree: ${run.worktreePath ?? "(none, no worktree to reuse)"}`,
+					`- worktree: ${run.workspacePath ?? "(none, no worktree to reuse)"}`,
 					...(run.branch ? [`- branch: ${run.branch}`] : []),
 					...(run.exitCode !== null ? [`- exit code: ${run.exitCode}`] : []),
 					...(run.killReason ? [`- killed: ${run.killReason}`] : []),

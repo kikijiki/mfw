@@ -2785,7 +2785,7 @@ export class BrainActionService {
 		}
 		if (worktree.startsWith("continue:")) {
 			const parent = await this.deps.registry.get(worktree.split(":")[1] ?? "");
-			if (!parent || parent.taskId !== taskId || !parent.worktreePath) {
+			if (!parent || parent.taskId !== taskId || !parent.workspacePath) {
 				return reject(
 					"worktree_unavailable",
 					`${worktree} is not a finished run of ${taskId} with a worktree`,
@@ -2805,7 +2805,7 @@ export class BrainActionService {
 					text: "continue: works only on a settled run; stop it first.",
 				});
 			}
-			const present = await access(parent.worktreePath).then(
+			const present = await access(parent.workspacePath).then(
 				() => true,
 				() => false,
 			);

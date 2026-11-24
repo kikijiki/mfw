@@ -98,7 +98,7 @@ async function gate(): Promise<Gate> {
 				label: name,
 				model: "sonnet",
 				cwd: wt,
-				worktreePath: wt,
+				workspacePath: wt,
 				branch: name,
 				baseSha: await gitOk(["rev-parse", "main"], root),
 				integrationBranch: "main",

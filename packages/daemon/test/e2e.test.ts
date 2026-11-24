@@ -601,9 +601,9 @@ describe("v2 end-to-end: import a repository", () => {
 		useDriver(svc, driver);
 
 		const { runId } = await svc.engine.startImport();
-		const worktreePath = (await svc.registry.get(runId))
-			?.worktreePath as string;
-		expect(worktreePath).toBeTruthy();
+		const workspacePath = (await svc.registry.get(runId))
+			?.workspacePath as string;
+		expect(workspacePath).toBeTruthy();
 
 		await waitFor(async () => {
 			await svc.supervisor.pass();
@@ -647,7 +647,7 @@ describe("v2 end-to-end: import a repository", () => {
 		]);
 
 		// --- an import writes no code, so its clone is thrown away
-		expect(existsSync(worktreePath)).toBe(false);
+		expect(existsSync(workspacePath)).toBe(false);
 		expect((await git(["status", "--porcelain"], root)).stdout.trim()).toBe("");
 
 		// --- the brain applies what it chooses, with the board tools
