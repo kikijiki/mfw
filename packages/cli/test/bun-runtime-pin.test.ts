@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
@@ -12,6 +14,7 @@ import { join, resolve } from "node:path";
 import {
 	installRuntime,
 	type RuntimePin,
+	readCapped,
 	readPin,
 	zipMember,
 } from "../../../tools/fetch-bun-runtime.ts";
@@ -126,4 +129,38 @@ describe("the pinned bun runtime", () => {
 			);
 		},
 	);
+
+	test.skipIf(!python)(
+		"an --out that is a directory is refused, and no temp file is left",
+		() => {
+			const dir = tmp();
+			const zip = makeZip(dir, { "bun-x/bun": "b" }) as Uint8Array;
+			const pin: RuntimePin = {
+				version: "9.9.9",
+				releaseUrl: "https://example.invalid",
+				targets: {
+					t: { asset: "bun.zip", member: "bun-x/bun", sha256: sha(zip) },
+				},
+			};
+			mkdirSync(join(dir, "out"));
+			expect(() => installRuntime(zip, pin, "t", join(dir, "out"))).toThrow(
+				/is a directory/,
+			);
+			writeFileSync(join(dir, `.bun-${process.pid}.tmp`), "stale");
+			expect(() => installRuntime(zip, pin, "t", join(dir, "bun"))).toThrow();
+			expect(readdirSync(dir).filter((n) => n.startsWith(".bun-"))).toEqual([
+				`.bun-${process.pid}.tmp`,
+			]);
+		},
+	);
+
+	test("a download over the cap is refused, by its header or as it streams", async () => {
+		const stream = (n: number) =>
+			new Response(new Uint8Array(n)).body as ReadableStream<Uint8Array>;
+		expect(await readCapped(stream(10), 10, 16)).toHaveLength(10);
+		await expect(readCapped(stream(10), 999, 16)).rejects.toThrow(
+			/declares 999/,
+		);
+		await expect(readCapped(stream(32), null, 16)).rejects.toThrow(/passed 16/);
+	});
 });

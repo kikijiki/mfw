@@ -17,7 +17,16 @@
  */
 
 import { createHash } from "node:crypto";
-import { chmodSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	lstatSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { inflateRawSync } from "node:zlib";
 
@@ -93,6 +102,37 @@ export function zipMember(zip: Uint8Array, name: string): Uint8Array {
 	throw new Error(`the zip has no ${name}`);
 }
 
+/** A bun release zip is about 35 MB; anything far larger is refused before it is read. */
+export const MAX_ZIP_BYTES = 256 * 1024 * 1024;
+
+/** The body of a download, refused once it passes `max` bytes. */
+export async function readCapped(
+	body: ReadableStream<Uint8Array>,
+	declared: number | null,
+	max = MAX_ZIP_BYTES,
+): Promise<Uint8Array> {
+	if (declared !== null && declared > max) {
+		throw new Error(
+			`refusing: the download declares ${declared} bytes, over ${max}`,
+		);
+	}
+	const parts: Uint8Array[] = [];
+	let total = 0;
+	for await (const part of body) {
+		total += part.length;
+		if (total > max)
+			throw new Error(`refusing: the download passed ${max} bytes`);
+		parts.push(part);
+	}
+	const out = new Uint8Array(total);
+	let at = 0;
+	for (const part of parts) {
+		out.set(part, at);
+		at += part.length;
+	}
+	return out;
+}
+
 /** Check `zip` against the pin and write its bun to `out`, read-only. Returns the bun's sha256. */
 export function installRuntime(
 	zip: Uint8Array,
@@ -109,10 +149,21 @@ export function installRuntime(
 		);
 	}
 	const bun = zipMember(zip, t.member);
+	if (existsSync(out) && lstatSync(out).isDirectory()) {
+		throw new Error(
+			`refusing: ${out} is a directory; --out names the bun file to write`,
+		);
+	}
 	const tmp = join(dirname(out), `.bun-${process.pid}.tmp`);
+	// `wx`: a file already at the temp name is not ours, and is never removed.
 	writeFileSync(tmp, bun, { mode: 0o555, flag: "wx" });
-	chmodSync(tmp, 0o555);
-	renameSync(tmp, out);
+	try {
+		chmodSync(tmp, 0o555);
+		renameSync(tmp, out);
+	} catch (e) {
+		rmSync(tmp, { force: true });
+		throw e;
+	}
 	return sha256(bun);
 }
 
@@ -143,13 +194,21 @@ if (import.meta.main) {
 		let zip: Uint8Array;
 		const given = flag(argv, "--zip");
 		if (given) {
+			const size = statSync(resolve(given)).size;
+			if (size > MAX_ZIP_BYTES) {
+				throw new Error(
+					`refusing: ${given} is ${size} bytes, over ${MAX_ZIP_BYTES}`,
+				);
+			}
 			zip = readFileSync(resolve(given));
 		} else {
 			const url = `${pin.releaseUrl}/${t.asset}`;
 			console.log(`downloading ${url}`);
 			const r = await fetch(url, { redirect: "follow" });
 			if (!r.ok) throw new Error(`${url} returned ${r.status}`);
-			zip = new Uint8Array(await r.arrayBuffer());
+			if (!r.body) throw new Error(`${url} returned no body`);
+			const length = r.headers.get("content-length");
+			zip = await readCapped(r.body, length ? Number(length) : null);
 		}
 		const sha = installRuntime(zip, pin, target, resolve(out));
 		console.log(
