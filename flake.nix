@@ -44,6 +44,10 @@
             git
             tmux        # agent runs are hosted in detached tmux sessions
             bubblewrap  # required: agentIsolation defaults to "bwrap"
+            devenv      # ... and devenv.nix projects
+            openssl     # optional: the doctor and the serve-check rehearsal use it for TLS certificates
+            direnv      # the dev-env live suites evaluate .envrc files
+            mise        # ... and mise.toml projects (MFW_REQUIRE_LIVE_NIX=1 needs both)
           ];
 
           shellHook = ''

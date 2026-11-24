@@ -13,7 +13,11 @@ import { UNATTESTED_CONFIG_MARKER } from "@mfw/plugin-api/harness";
 import { findAutonomyFlags } from "@mfw/plugin-api/harness-autonomy";
 import { builtinHarnessRegistry } from "@mfw/plugin-api/harness-registry";
 import type { PinnedBind } from "./pinned-binds.ts";
-import { parseSandboxProfile, type SandboxProfile } from "./profile.ts";
+import {
+	type DevEnvGrant,
+	parseSandboxProfile,
+	type SandboxProfile,
+} from "./profile.ts";
 
 /** Printed wherever the temporary fleet allowlist below is in force. */
 export { UNATTESTED_CONFIG_MARKER };
@@ -210,6 +214,8 @@ export interface RunProfileInput {
 	deny?: readonly string[];
 	/** The end-of-run snapshot: the clone and run dir only, no fleet config. */
 	snapshotOnly?: boolean;
+	/** The project's approved dev environment (dev-env-cache.ts). */
+	devEnv?: DevEnvGrant;
 }
 
 export function buildRunProfile(input: RunProfileInput): SandboxProfile {
@@ -234,6 +240,7 @@ export function buildRunProfile(input: RunProfileInput): SandboxProfile {
 						},
 					}),
 			...(input.deny?.length ? { deny: [...input.deny] } : {}),
+			...(input.devEnv ? { devEnv: input.devEnv } : {}),
 		},
 		process: {
 			env: input.env,

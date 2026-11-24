@@ -33,6 +33,7 @@ import {
 	type CompileRefusal,
 	compileBwrap,
 	FIRST_PINNED_FD,
+	NIX_DAEMON_SOCKET_DIR,
 	SANDBOX_PATHS,
 } from "./compile-bwrap.ts";
 import type { PinIdentity } from "./pinned-binds.ts";
@@ -440,6 +441,9 @@ export function buildProbePlan(
 			...(opts.sealedFds ? { sealedFds: opts.sealedFds } : {}),
 			...(profile.filesystem?.brainSocket
 				? { brainSocket: `${SANDBOX_PATHS.brain}/${BRAIN_SOCKET_NAME}` }
+				: {}),
+			...(profile.filesystem?.nixDaemon
+				? { nixDaemonSocket: `${NIX_DAEMON_SOCKET_DIR}/socket` }
 				: {}),
 		},
 	};

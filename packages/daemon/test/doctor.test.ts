@@ -99,6 +99,7 @@ describe("a healthy host", () => {
 			"project.root",
 			"project.git-config",
 			"project.dispatch",
+			"project.env",
 			"project.push",
 			"project.triggers",
 			"project.egress",
@@ -601,10 +602,37 @@ describe("project checks", () => {
 		expect(c.project).toBe("demo");
 	});
 
-	test("an .envrc blocks a project", async () => {
-		const c = await check(withProject({ hasEnvrc: true }), "project.dispatch");
-		expect(c.severity).toBe("blocker");
-		expect(c.detail).toContain(".envrc");
+	test("an unapproved dev environment blocks, with the allow command", async () => {
+		const c = await check(
+			withProject({
+				devEnv: {
+					state: "refused",
+					code: "env_not_approved",
+					detail:
+						"the direnv environment of demo at 0123456789ab is not approved (.envrc)",
+					fix: "review those files, then run `mfw env allow demo --rev 0123`",
+				},
+			}),
+			"project.env",
+		);
+		expect([c.status, c.severity]).toEqual(["problem", "blocker"]);
+		expect(c.fix).toContain("mfw env allow demo");
+	});
+
+	test("an approved environment not yet evaluated only warns: the dispatch builds it", async () => {
+		const c = await check(
+			withProject({
+				devEnv: {
+					state: "refused",
+					code: "env_not_built",
+					detail: "not prepared yet",
+					fix: "run `mfw env build demo`",
+				},
+			}),
+			"project.env",
+		);
+		expect([c.status, c.severity]).toEqual(["problem", "warn"]);
+		expect((await check(withProject({}), "project.env")).status).toBe("ok");
 	});
 
 	test("a remote without pushUrl warns and hides URL credentials", async () => {

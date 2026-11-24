@@ -73,6 +73,8 @@ export interface VerifierCloneOptions {
 	primaryRoot: string;
 	/** Caches carried into the clone, as for a run (none by default). */
 	caches?: CacheDeclaration[];
+	/** After the seed, before any check: the approved environment's dependencies (dev-env-deps.ts). */
+	prepareTree?: (tree: string, sha: string) => Promise<void>;
 	gitBin?: string;
 	host?: HostGit;
 	log?: (msg: string) => void;
@@ -169,7 +171,7 @@ export class VerifierClones {
 			{ mode: 0o600 },
 		);
 		let disposed = false;
-		return {
+		const clone: VerifierClone = {
 			id,
 			path: seeded.treeDir,
 			sha,
@@ -185,6 +187,15 @@ export class VerifierClones {
 				}
 			},
 		};
+		if (this.opts.prepareTree) {
+			try {
+				await this.opts.prepareTree(seeded.treeDir, sha);
+			} catch (e) {
+				await clone.dispose().catch(() => {});
+				throw e;
+			}
+		}
+		return clone;
 	}
 
 	/** Whether the commit itself has this path. Asks the trusted primary. */

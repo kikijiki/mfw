@@ -54,22 +54,67 @@ function deps(outcome: "pass" | "fail" = "pass") {
 }
 
 describe("agentSandboxRefusal", () => {
-	test("a project with an .envrc is refused and the file is not read", async () => {
+	test("an .envrc alone is no longer a refusal: the environment's status decides", async () => {
 		writeFileSync(join(base, ".envrc"), "not evaluated\n", { mode: 0o000 });
 		const d = deps();
-		const r = await agentSandboxRefusal(input(), d.value);
-		expect(r?.detail).toContain(".envrc");
-		expect(d.seen.calls).toBe(0);
+		expect(await agentSandboxRefusal(input(), d.value)).toBeNull();
+		const ready = await agentSandboxRefusal(
+			input({
+				devEnv: async () => ({
+					kind: "ready",
+					fingerprint: "a".repeat(64),
+					capture: {} as never,
+					deps: null,
+				}),
+			}),
+			deps().value,
+		);
+		expect(ready).toBeNull();
 	});
 
-	test("m6: the .envrc refusal never steers the owner to an unsandboxed run", async () => {
-		writeFileSync(join(base, ".envrc"), "use flake\n");
-		const r = await agentSandboxRefusal(input(), deps().value);
-		expect(r?.detail).toContain(".envrc");
-		expect(r?.detail).not.toContain("P8");
-		expect(r?.detail).toContain("dev shells");
+	test.each([
+		["env_not_approved", "env_not_approved"],
+		["env_drifted", "env_not_approved"],
+		["env_denied", "env_not_approved"],
+		["env_build_failed", "env_unavailable"],
+		["env_unsupported", "env_unavailable"],
+	] as const)("%s is refused as %s, with the fix and before any probe", async (code, as) => {
+		const d = deps();
+		const r = await agentSandboxRefusal(
+			input({
+				devEnv: async () => ({
+					kind: "refused",
+					code,
+					reason: "the reason",
+					fix: "mfw env allow p --rev abc",
+					commit: "abc",
+					log: "the log",
+				}),
+			}),
+			d.value,
+		);
+		expect(r?.code).toBe(as);
+		expect(r?.detail).toContain("mfw env allow p --rev abc");
+		expect(d.seen.calls).toBe(0);
+		// m6: never steer the owner to an unsandboxed run.
 		expect(r?.detail).not.toContain("agentIsolation");
-		expect(r?.detail).not.toContain("none");
+	});
+
+	test("a failed evaluation carries its log", async () => {
+		const r = await agentSandboxRefusal(
+			input({
+				devEnv: async () => ({
+					kind: "refused",
+					code: "env_build_failed",
+					reason: "the direnv step exited 1",
+					fix: "read the log",
+					commit: "abc",
+					log: "error: attribute 'devShells' missing",
+				}),
+			}),
+			deps().value,
+		);
+		expect(r?.detail).toContain("attribute 'devShells' missing");
 	});
 
 	test("probes the split layout a real launch gets, then removes it", async () => {

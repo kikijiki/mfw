@@ -816,18 +816,6 @@ export function ProjectConfig({ project }: { project: string }) {
 
 	return (
 		<>
-			{view.dispatchProblem ? (
-				<div
-					role="alert"
-					className="px-1"
-					style={{
-						color: "var(--mfw-critical)",
-						fontSize: "var(--mfw-text-xs)",
-					}}
-				>
-					{view.dispatchProblem.detail} Fix: {view.dispatchProblem.fix}
-				</div>
-			) : null}
 			{/* Identity fields are read-only: changing a root at runtime would orphan its workspaces, runs and database. */}
 			<div
 				className="flex flex-wrap items-baseline gap-x-4 gap-y-1 px-1"

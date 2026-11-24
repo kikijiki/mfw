@@ -12,6 +12,7 @@ import {
 	HARNESS_CONFIG_PATHS,
 	isHostExecutedPath,
 } from "../src/brain-runtime/decision-rights.ts";
+import { EVALUATED_ENV_PATHS } from "../src/containment/dev-env-sources.ts";
 import { git, gitOk } from "../src/git.ts";
 import { InboxService } from "../src/inbox.ts";
 import { silentLogger } from "../src/log.ts";
@@ -43,7 +44,9 @@ interface Gate {
 
 const open: Gate[] = [];
 
-async function gate(): Promise<Gate> {
+async function gate(
+	opts: { envProtected?: string[] | ((path: string) => boolean) } = {},
+): Promise<Gate> {
 	const root = await mkdtemp(join(tmpdir(), "mfw-host-gate-"));
 	const bare = `${root}-remote.git`;
 	await git(["init", "-q", "--bare", "-b", "main", bare], tmpdir());
@@ -64,6 +67,9 @@ async function gate(): Promise<Gate> {
 		bus: new EventBus(),
 		projectRoot: root,
 		log: silentLogger(),
+		...(opts.envProtected
+			? { envProtectedPaths: () => opts.envProtected ?? [] }
+			: {}),
 		reverify: async () => ({ passed: true }),
 		hasChecks: async () => true,
 		onMerged: async (_job, sha) => {
@@ -418,8 +424,11 @@ describe("package.json asks only when what it executes changes", () => {
 
 	test.each([
 		"bun.lock",
-		"flake.lock",
+		"pnpm-lock.yaml",
 		"yarn.lock",
+		"Cargo.lock",
+		"uv.lock",
+		"poetry.lock",
 	])("a %s-only change lands with a notify-after item", async (lock) => {
 		const g = await gate();
 		const runId = await g.branchRun("mfw/lock", { [lock]: "locked\n" });
@@ -466,6 +475,14 @@ describe("the host-executed list covers what mfw launches or loads", () => {
 		"bunfig.toml",
 		"flake.nix",
 		".envrc",
+		// The dev environment: evaluated with network, bound into every run.
+		"flake.lock",
+		"devenv.lock",
+		".config/mise.toml",
+		".config/mise/config.toml",
+		".mise/config.toml",
+		"mise/config.toml",
+		"mise.local.toml",
 		".gitattributes",
 		".gitmodules",
 		"Makefile",
@@ -494,11 +511,10 @@ describe("the host-executed list covers what mfw launches or loads", () => {
 		"docs/guide.md",
 		"README.md",
 		"src/makefile.ts",
-		// Judged by content (package.json) or notify-after (lockfiles).
+		// Judged by content (package.json) or notify-after (package lockfiles).
 		"package.json",
 		"packages/x/package.json",
 		"bun.lock",
-		"flake.lock",
 		"yarn.lock",
 	])("%s is not", (path) => {
 		expect(isHostExecutedPath(path)).toBe(false);
@@ -586,5 +602,98 @@ describe("one owner decision covers the merge of the same content", () => {
 		expect(await g.state(runId)).toBe("held");
 		expect(await g.queue.tick()).toBe("idle");
 		expect(g.merged).toEqual([]);
+	});
+});
+
+describe("the dev environment files", () => {
+	test("every file an environment source evaluates is protected", () => {
+		for (const path of EVALUATED_ENV_PATHS) {
+			expect([path, isHostExecutedPath(path)]).toEqual([path, true]);
+		}
+	});
+});
+
+describe("a project's approved environment protects its own files", () => {
+	test("a file the .envrc sources is held when the approval covers it, and lands when not", async () => {
+		const protectedGate = await gate({ envProtected: ["scripts/env.sh"] });
+		const held = await protectedGate.branchRun("mfw/sourced", {
+			"scripts/env.sh": "export LD_PRELOAD=/x\n",
+		});
+		await protectedGate.enqueue(held, "mfw/sourced");
+		expect(await protectedGate.queue.tick()).not.toBe("merged");
+		expect((await protectedGate.card())?.args).toMatchObject({
+			paths: ["scripts/env.sh"],
+		});
+
+		const plain = await gate();
+		const lands = await plain.branchRun("mfw/sourced", {
+			"scripts/env.sh": "export A=1\n",
+		});
+		await plain.enqueue(lands, "mfw/sourced");
+		expect(await plain.queue.tick()).toBe("merged");
+	});
+});
+
+describe("lockfile classes in a project with an approved environment", () => {
+	// What `protectedEnvPaths` returns for an approval with env.setup.
+	const approval = [".envrc", "flake.lock", "flake.nix"];
+	const inboxItems = async (g: Gate) =>
+		new InboxService({
+			handle: g.handle,
+			project: "p",
+			tasks: await makeTasks(g.handle, new EventBus(), join(g.root, ".mfw")),
+		}).list();
+
+	test("a package lockfile change lands with a notify-after item, no card", async () => {
+		const g = await gate({ envProtected: approval });
+		const runId = await g.branchRun("mfw/bump", { "bun.lock": "v2\n" });
+		await g.enqueue(runId, "mfw/bump");
+		expect(await g.queue.tick()).toBe("merged");
+		expect(await g.card()).toBeUndefined();
+		expect(
+			(await inboxItems(g)).find((i) => i.kind === "dependency_change")?.title,
+		).toContain("dependencies changed");
+	});
+
+	test.each([
+		"flake.lock",
+		"devenv.lock",
+	])("a %s change is held: a nix input fetches and builds outside the proxy", async (lock) => {
+		const g = await gate({ envProtected: approval });
+		const runId = await g.branchRun("mfw/nix", { [lock]: "{}\n" });
+		await g.enqueue(runId, "mfw/nix");
+		expect(await g.queue.tick()).not.toBe("merged");
+		expect((await g.card())?.args).toMatchObject({ paths: [lock] });
+	});
+
+	test("a package lockfile together with an .envrc change is held", async () => {
+		const g = await gate({ envProtected: approval });
+		const runId = await g.branchRun("mfw/mixed", {
+			"bun.lock": "v3\n",
+			".envrc": "use flake\ndotenv\n",
+		});
+		await g.enqueue(runId, "mfw/mixed");
+		expect(await g.queue.tick()).not.toBe("merged");
+		expect((await g.card())?.args).toMatchObject({ paths: [".envrc"] });
+	});
+});
+
+describe("an approved nix environment protects nix files at any depth", () => {
+	test("a nested .nix change is held; the same change lands without the approval", async () => {
+		const g = await gate({ envProtected: (p) => p.endsWith(".nix") });
+		const runId = await g.branchRun("mfw/nested", {
+			"nix/shells/dev.nix": "{ evil = 1; }\n",
+		});
+		await g.enqueue(runId, "mfw/nested");
+		expect(await g.queue.tick()).not.toBe("merged");
+		expect((await g.card())?.args).toMatchObject({
+			paths: ["nix/shells/dev.nix"],
+		});
+		const plain = await gate();
+		const lands = await plain.branchRun("mfw/nested", {
+			"nix/shells/dev.nix": "{}\n",
+		});
+		await plain.enqueue(lands, "mfw/nested");
+		expect(await plain.queue.tick()).toBe("merged");
 	});
 });

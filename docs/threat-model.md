@@ -159,6 +159,25 @@ See [verifier-sandbox.md](verifier-sandbox.md).
 | Scoped tokens | four closed scopes, hashed storage, expiry, audit. No scope reaches settings, triggers, merges or approvals | `packages/daemon/src/auth/tokens.ts`, `packages/api/src/token-access.ts` |
 | Browser hardening | nonce-based CSP, with file routes served under `sandbox` | `apps/start/src/server/security-headers.ts` |
 
+### 10. Project dev environments
+
+The evaluation of a project's environment and the install of its dependencies
+are **the one place mfw runs project code with network**. What limits them
+([environments.md](environments.md)):
+
+| Control | Mechanism | Code |
+| --- | --- | --- |
+| Owner approval per commit | evaluation runs only at a commit the owner allowed (`mfw env allow` or a card). The approval records every environment file's sha256 and the hash of the project's `env` config, split into the environment definition (covered only while byte-identical) and the package lockfiles (a lockfile-only change reinstalls in the env-install sandbox with no approval) | `packages/daemon/src/containment/dev-env-trust.ts`, `dev-env-sources.ts` |
+| Read, not evaluated, on the host | the host reads the files' blobs from the primary's object store. Symlinked or submodule environment files are refused | `packages/daemon/src/containment/dev-env-sources.ts` |
+| The same launch chain | `env-build` and `env-install` roles go through profile, compile, probe, attestation and the single-use gate. Their ceilings forbid agent config, credentials and a writable gitdir; only `env-build` may reach the nix daemon | `packages/daemon/src/containment/dev-env-build.ts`, `profile.ts`, `role-profiles.ts` |
+| Disposable clone, private home | the approved commit alone (no history), deleted afterwards. `direnv allow` and `mise trust` write the sandbox's tmpfs home, never the host's | `packages/daemon/src/containment/dev-env-build.ts` |
+| Egress allowlist | the per-run proxy with exact `host:port` lists derived from what the fixtures contacted: flake inputs and mise for an evaluation, the registries for an install. Refused hosts are recorded host-side | `packages/daemon/src/containment/dev-env-egress.ts` |
+| Untrusted nix client | the evaluation is refused when the daemon trusts the user, or does not say, checked on the host before anything runs and again in the sandbox before the first project file is read | `packages/daemon/src/containment/dev-env-build.ts` |
+| Bounds | a wall-clock deadline, the role's task and memory limits, and polled size caps on the tree, the data directory and the outbox | `packages/daemon/src/containment/dev-env-build.ts`, `check-tree-cap.ts` |
+| The result is data | each tool's JSON export is parsed, never a script. Loader and runtime names are dropped, values are capped, and `PATH` keeps only the environment's store closure, its data and the run's tree. The profile schema checks it again at every launch | `packages/daemon/src/containment/dev-env-capture.ts`, `dev-env-rules.ts`, `profile.ts` |
+| Read-only in runs | the store closure and the environment's data are bound read-only, path by path; the rest of the store stays hidden | `packages/daemon/src/containment/compile-bwrap.ts` |
+| Changes are ask-first | a merge that changes an environment definition file, `flake.lock`, `devenv.lock`, or a file the approval covers (a sourced file) waits on a card, and then the approval no longer covers the base. Package lockfiles are notify-after | `packages/daemon/src/merge-gate.ts`, `packages/daemon/src/brain-runtime/decision-rights.ts` |
+
 ## Attacker models
 
 ### A hostile agent, or prompt injection in repository content
@@ -183,9 +202,36 @@ See [verifier-sandbox.md](verifier-sandbox.md).
   Checks have no network. Trigger dependencies install from the lockfile with
   lifecycle scripts off, before any secret is read.
 - **Limited:** a change to an executing `package.json` field needs an approval.
-- **Still possible:** a changed lockfile or dependency version is a notify-after
-  item and does not wait for approval. Malicious code that lands runs with your
-  rights when you build or run the project outside mfw (R8).
+- **Limited further with `env.setup`:** dependencies are installed in the
+  `env-install` sandbox with registry egress only and no credentials, and with
+  lifecycle scripts off unless `env.trustedDependencies` names some. A
+  lockfile-only change installs again there with no approval and leaves a
+  notify-after item. A change to `package.json`'s `scripts` (or another
+  executing field), a setup command or a nix lockfile waits on a card; a change
+  to a file such a script runs, a workspace's code or a patch does not.
+- **Still possible:** a changed lockfile or dependency version is a
+  notify-after item and does not wait for approval, so a new dependency's
+  lifecycle script runs in the install sandbox and can send that commit's code
+  to an allowed registry (R22), and the package it installs reaches every run
+  and check. Malicious code that lands runs with your rights when
+  you build or run the project outside mfw (R8).
+
+### A hostile environment file
+
+**Goal:** run code with network, or on the host, through `.envrc`, `mise.toml`,
+`flake.nix` or what they source.
+
+- **Stopped:** nothing is evaluated on the host. A run's edit to its own
+  `.envrc` is never evaluated: runs and checks get the approved environment.
+  The edit is evaluated only after it merges (an ask-first card) and you allow
+  that commit. In the sandbox the file cannot read your home or write outside
+  its clone, and what it starts dies with the sandbox. `LD_PRELOAD`,
+  `NODE_OPTIONS` and similar exports never reach a run.
+- **Limited:** at an approved commit it runs with egress to the allowlisted
+  hosts, can ask the nix daemon to build or fetch (R21), and its exported
+  variables and dev-shell tools reach every run and check.
+- **Still possible:** what you approve runs. Read the files `mfw env allow`
+  lists before you approve them.
 
 ### A local process sharing loopback
 
@@ -193,7 +239,9 @@ See [verifier-sandbox.md](verifier-sandbox.md).
 
 Sandboxed runs are not in this group, because each has its own network namespace.
 This group is any other process of any local user, an armed host trigger and a
-notify command.
+notify command. It also includes the `env-build` role of a nix-based environment:
+the code it evaluates can have the nix daemon run a build in the host network
+namespace, which reaches loopback (R21).
 
 - **Stopped:** using the API without a session and request key, and escaping the
   throttle by rotating `127.x` addresses (all of loopback is one bucket).
@@ -275,6 +323,10 @@ is acceptable for your setup.
 | R18 | **A compiled bun executable cannot refuse its runtime variables.** `BUN_OPTIONS` preloads code before `mfw`'s own code runs, `BUN_BE_BUN` turns `mfw` into a plain bun, and `LD_PRELOAD` loads a library into it. Bun offers no build option to turn them off | Code runs with the rights of whoever started `mfw` with them set | Every host spawn gets the allowlisted environment, so the daemon never passes them. The one exposure left is a process the daemon does not start, such as your own shell or a unit you wrote running `mfw` with one set: that code runs with your own rights |
 | R19 | **The install manifest is unsigned, and checked then used by path.** It proves the parts belong together, not who made them, and a file renamed between its hash and its start is not caught. Server code loaded lazily is trusted once the server has started | Someone who can write the install can replace any part of it | The location check: root-owned or Nix-store installs only, or the owner's explicit acceptance of the prefix |
 | R20 | **Passkey challenges live in memory, in one bounded pool.** A trusted loopback proxy lets a local process forge clients and keep the proxied share full. Without a proxy, a directly exposed listener can be filled by an attacker with many addresses: IPv4 addresses, or IPv6 prefixes beyond one /48 | Passkey sign-in is delayed (`busy`) while the flood lasts; password sign-in is not, and stays the fallback | 4 challenges per source, 16 per IPv6 /48, 128 for proxied clients, 1024 in all, a 2.5-minute expiry, and the private unix socket (R1) |
+| R21 | **The nix daemon acts outside the proxy (accepted).** A nix-based evaluation (direnv with nix, flake, devenv) uses the host's nix daemon, which substitutes, fetches and builds with this host's network in the host network namespace. Accepted because approving an environment is the same trust as `direnv allow` on the host, and the owner approves projects they own | An approved evaluation can send what it can read (the approved tree and the whole store, other projects' source snapshots included) to any host through a derivation, reach this machine's loopback services (mfw's listener included), fill the store, and collect store paths no root holds | Only an approved commit is evaluated; the daemon must not trust the user; `flake.lock`, `devenv.lock` and every `*.nix` file are ask-first; each cached environment holds GC roots, and a run whose closure is gone is refused, never given less |
+| R22 | **Allowed hosts are reachable from project code.** An evaluation reaches GitHub and mise's hosts, an install the registries. An install also runs for a lockfile-only change, with no approval | The approved commit's code, or anything the evaluation computed, can leave to those hosts | Exact host lists, upload budget, host-observed record, the approval |
+| R23 | **The approved environment shapes every run.** Its tools and variables are on every run's and check's `PATH`. The variable filter drops loader and runtime names, but a tool on `PATH` can be anything the approved shell put there | A check passes or fails by what the approved environment provides | The approval and its files are shown before you allow; drift asks again |
+| R24 | **The environment cache is host-trusted.** `$MFW_HOME/env/cache` holds the evaluated environment and the installed dependencies, re-validated at each launch but not hashed | Someone who can write `$MFW_HOME` can change what runs get | `$MFW_HOME` is outside every sandbox; the schema re-checks variables and paths at each launch |
 
 ## Not yet verified
 
@@ -290,7 +342,12 @@ These protections exist in code but have not been exercised end to end:
 - Ubuntu with its AppArmor user-namespace restriction, and distributions other
   than NixOS;
 - the egress allowlist against what authenticated CLIs actually contact;
-- case-insensitive filesystems, SHA-256 repositories and reftable primaries.
+- case-insensitive filesystems, SHA-256 repositories and reftable primaries;
+- the env-build and env-install roles under a real systemd scope: their task and
+  memory limits, a real fork bomb, and a cache-cold evaluation of a large flake;
+- dev environments on a non-NixOS host, mise tools that link against
+  `/lib64/ld-linux`, `use nix` with a `<nixpkgs>` lookup, and the yarn, cargo and
+  python registry entries, which no fixture installs from.
 
 ## Out of scope
 

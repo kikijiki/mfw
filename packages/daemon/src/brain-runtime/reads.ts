@@ -79,6 +79,14 @@ export interface BrainWorld {
 	changedFiles?(run: RunRow): Promise<string[] | null>;
 	/** The run's host-executed content, to bind an approved `select_winner` to it. */
 	hostExecutedChange?(run: RunRow): Promise<HostExecutedChange | null>;
+	/**
+	 * Carry out the owner's answer to a dev environment card
+	 * (`containment/dev-env-card.ts`): allow at the card's commit, or deny.
+	 */
+	envDecision?(
+		args: Record<string, unknown>,
+		approved: boolean,
+	): Promise<{ ok: true } | { ok: false; message: string }>;
 	/** Master stop and per-project pause, as a reason. */
 	dispatchPaused?():
 		| { reason: string }

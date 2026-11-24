@@ -26,6 +26,7 @@
 
 import { posix } from "node:path";
 import { FLEET_ENV_CEILING } from "@mfw/plugin-api/harness-registry";
+import { ENV_DATA_SANDBOX_PATH } from "./dev-env-rules.ts";
 import { egressClientEnv } from "./egress-env.ts";
 import {
 	type Arch,
@@ -43,6 +44,7 @@ import {
 	ProfileRejectedError,
 	parseSandboxProfile,
 	type SandboxProfile,
+	VERIFY_ROLES,
 } from "./profile.ts";
 import { runDirLayout, runStateRoot } from "./run-dir.ts";
 import {
@@ -66,6 +68,24 @@ export const SANDBOX_PATHS = {
 	runControl: "/mfw-run/control",
 	runOutbox: "/mfw-run/outbox",
 } as const;
+
+/** The nix daemon's socket directory and store: fixed, root-owned, never configurable. */
+export const NIX_DAEMON_SOCKET_DIR = "/nix/var/nix/daemon-socket";
+export const NIX_STORE_ROOT = "/nix/store";
+
+/**
+ * What a nix client in the env-build sandbox runs with. The daemon decides
+ * substituters and trust; nothing here can widen them for a client the daemon
+ * does not trust (dev-env-build.ts refuses a trusted one).
+ */
+export const NIX_CLIENT_ENV: Readonly<Record<string, string>> = {
+	NIX_REMOTE: "daemon",
+	NIX_CONFIG: [
+		"experimental-features = nix-command flakes",
+		"accept-flake-config = false",
+		"warn-dirty = false",
+	].join("\n"),
+};
 
 /** PATH when the profile declares no toolchain: nothing resolves. */
 const EMPTY_PATH = "/nonexistent";
@@ -111,7 +131,8 @@ export type CompileRefusalCode =
 	| "path_denied"
 	| "path_not_canonical"
 	| "path_outside_roots"
-	| "bind_overlap";
+	| "bind_overlap"
+	| "dev_env_missing";
 
 export interface CompileRefusal {
 	ok: false;
@@ -211,6 +232,9 @@ function profileSources(profile: SandboxProfile): SourceBind[] {
 			});
 		}
 	}
+	if (fs?.devEnv?.dataDir) {
+		out.push({ label: "env data", source: fs.devEnv.dataDir, writable: false });
+	}
 	if (fs?.brainSocket) {
 		out.push({
 			label: "brain socket dir",
@@ -226,6 +250,40 @@ function profileSources(profile: SandboxProfile): SourceBind[] {
 		});
 	}
 	return out;
+}
+
+function checkNixDaemon(
+	profile: SandboxProfile,
+	host: CompileHost,
+): CompileRefusal | null {
+	if (!profile.filesystem?.nixDaemon) return null;
+	for (const p of [NIX_DAEMON_SOCKET_DIR, NIX_STORE_ROOT]) {
+		if (host.realpath(p) !== p) {
+			return refuse(
+				"host_unsupported",
+				`${p} is missing or reached through a symlink, so the dev environment cannot be built`,
+				"install Nix in multi-user (daemon) mode, or set env.source to mise or none for this project",
+			);
+		}
+	}
+	return null;
+}
+
+/** Every store path of the dev environment must still exist, as itself. */
+function checkDevEnv(
+	profile: SandboxProfile,
+	host: CompileHost,
+): CompileRefusal | null {
+	for (const p of profile.filesystem?.devEnv?.closure ?? []) {
+		if (host.realpath(p) !== p) {
+			return refuse(
+				"dev_env_missing",
+				`the dev environment needs ${p}, which is not in the store`,
+				"build the environment again: `mfw env build <project>` (a garbage collection may have removed it)",
+			);
+		}
+	}
+	return null;
 }
 
 function checkHost(host: CompileHost): CompileRefusal | null {
@@ -487,13 +545,28 @@ function declaredToolchain(
 	const resolved = declared.flatMap((name) =>
 		plan.resolved.filter((b) => b.name === name),
 	);
+	// With the whole store bound, its paths need no bind of their own and
+	// nothing in it is hidden: an evaluation runs whatever the shell names.
+	const wholeStore = profile.filesystem?.nixDaemon === true;
 	return {
-		binds: plan.binds.filter((b) => !(b.source === "home" && b.optional)),
+		binds: plan.binds.filter(
+			(b) =>
+				!(b.source === "home" && b.optional) &&
+				!(wholeStore && b.source === "nix"),
+		),
 		resolved,
 		unresolved: [],
 		pathDirs: [...new Set(resolved.map((b) => posix.dirname(b.path)))],
-		...(plan.masks ? { masks: plan.masks } : {}),
+		...(plan.masks && !wholeStore
+			? { masks: plan.masks.filter((m) => !inDevEnv(profile, m)) }
+			: {}),
 	};
+}
+
+/** Whether `path` lies in a store path of the profile's dev environment, which is bound whole. */
+function inDevEnv(profile: SandboxProfile, path: string): boolean {
+	const closure = profile.filesystem?.devEnv?.closure ?? [];
+	return closure.some((p) => under(path, p));
 }
 
 function checkToolchain(
@@ -570,8 +643,26 @@ function buildEnv(
 ): Record<string, string> {
 	const home = SANDBOX_PATHS.home;
 	const { pathDirs } = declaredToolchain(profile, host.toolchain);
+	const devEnv = profile.filesystem?.devEnv;
+	// The environment's entries first, as in the shell it came from. In a
+	// check, the tree is the candidate's: its entries (`PATH_add bin`, `layout
+	// node`) come after the toolchain, so a tracked `bin/bun` cannot stand in
+	// for the check's own tools.
+	const envPath = devEnv?.path ?? [];
+	const inTree = (p: string) =>
+		p === SANDBOX_PATHS.workspace ||
+		p.startsWith(`${SANDBOX_PATHS.workspace}/`);
+	const path = VERIFY_ROLES.has(profile.role)
+		? [
+				...new Set([
+					...envPath.filter((p) => !inTree(p)),
+					...pathDirs,
+					...envPath.filter(inTree),
+				]),
+			]
+		: [...new Set([...envPath, ...pathDirs])];
 	const env: Record<string, string> = {
-		PATH: pathDirs.length > 0 ? pathDirs.join(":") : EMPTY_PATH,
+		PATH: path.length > 0 ? path.join(":") : EMPTY_PATH,
 		HOME: home,
 		USER: "agent",
 		LOGNAME: "agent",
@@ -600,8 +691,9 @@ function buildEnv(
 		env.MFW_RUN_OUTBOX = SANDBOX_PATHS.runOutbox;
 	}
 	if (profile.network?.mode === "proxy") Object.assign(env, egressClientEnv());
+	if (fs?.nixDaemon) Object.assign(env, NIX_CLIENT_ENV);
 	// The schema rejects reserved names; the spread order is a second guard.
-	return { ...(profile.process?.env ?? {}), ...env };
+	return { ...(devEnv?.env ?? {}), ...(profile.process?.env ?? {}), ...env };
 }
 
 function buildMounts(
@@ -636,9 +728,20 @@ function buildMounts(
 		"--tmpfs",
 		SANDBOX_PATHS.home,
 	];
-	before.push(
-		...toolchainBwrapArgs(declaredToolchain(profile, host.toolchain)),
-	);
+	if (fs?.nixDaemon) {
+		// Before the toolchain, whose system binds may sit beside it.
+		before.push("--ro-bind", NIX_STORE_ROOT, NIX_STORE_ROOT);
+	}
+	const plan = declaredToolchain(profile, host.toolchain);
+	before.push(...toolchainBwrapArgs(plan));
+	// The environment's closure: each store path on its own, read-only.
+	for (const p of fs?.devEnv?.closure ?? []) {
+		if (plan.binds.some((b) => under(p, b.path))) continue;
+		before.push("--ro-bind", p, p);
+	}
+	if (fs?.nixDaemon) {
+		before.push("--ro-bind", NIX_DAEMON_SOCKET_DIR, NIX_DAEMON_SOCKET_DIR);
+	}
 	if (fs?.scratch) before.push("--tmpfs", SANDBOX_PATHS.scratch);
 
 	const after: string[] = [];
@@ -708,6 +811,9 @@ function buildMounts(
 			after.push("--tmpfs", joinUnder(dest, rel) as string);
 		}
 	}
+	if (fs?.devEnv?.dataDir) {
+		mount("env data", "ro", fs.devEnv.dataDir, ENV_DATA_SANDBOX_PATH);
+	}
 	if (fs?.brainSocket) {
 		mount("brain socket dir", "ro", fs.brainSocket.source, SANDBOX_PATHS.brain);
 	}
@@ -758,6 +864,8 @@ export function compileBwrap(
 	const deny = resolveDeny(profile, host);
 	if (!Array.isArray(deny)) return deny;
 	const refusal =
+		checkNixDaemon(profile, host) ??
+		checkDevEnv(profile, host) ??
 		checkSources(profile, host, deny) ??
 		checkRunDir(profile, host) ??
 		checkToolchain(profile, host, deny);

@@ -1,14 +1,26 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { isolationDispatchProblem } from "../src/config.ts";
-import { DEV_SHELL_REFUSAL } from "../src/containment/agent-preflight.ts";
+import {
+	devEnvRefusal,
+	NO_DEV_ENV_RESOLVER,
+} from "../src/containment/agent-preflight.ts";
 
 describe("user-facing refusals name no internal work package", () => {
-	test("the dev-shell refusals", () => {
-		expect(DEV_SHELL_REFUSAL).not.toContain("P8");
-		const issue = isolationDispatchProblem({ hasDevShell: true });
-		expect(`${issue?.detail} ${issue?.fix}`).not.toContain("P8");
+	test("the dev environment refusals", () => {
+		expect(NO_DEV_ENV_RESOLVER).not.toContain("P8");
+		const r = devEnvRefusal({
+			kind: "refused",
+			code: "env_not_approved",
+			reason: "not approved",
+			fix: "mfw env allow p",
+			commit: null,
+		});
+		expect(r?.detail).not.toContain("P8");
+		// Never steer the owner to an unsandboxed run (the 2026-11-22 incident).
+		expect(`${r?.detail} ${NO_DEV_ENV_RESOLVER}`).not.toContain(
+			"agentIsolation",
+		);
 	});
 
 	test("no string literal in the refusal sources mentions it", () => {

@@ -71,10 +71,12 @@ or another browser. The password always keeps working.
 
 ## Checks without dependencies
 
-A check runs in a disposable clone of the commit, which holds only the
-repository's tracked files. If it needs installed dependencies, it is reported as
-an infrastructure result rather than a failure. Project dev shells in the sandbox
-are not available yet, so a project with an `.envrc` is refused.
+A check runs in a disposable clone of the commit. It has the repository's
+tracked files, the approved environment, and the dependencies `env.setup`
+installed. Anything else it needs is reported as an infrastructure result rather
+than a failure. A project with a dev environment (`.envrc`, `mise.toml`, a flake
+devShell, devenv) runs once you approve it with `mfw env allow`; see
+[environments.md](environments.md).
 
 ## Host-run triggers
 

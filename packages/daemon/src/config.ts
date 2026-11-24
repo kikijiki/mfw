@@ -5,6 +5,7 @@ import { writeFileAtomic } from "@mfw/core/fsatomic";
 import { ModelId, OptionalModelId } from "@mfw/core/model-id";
 import { z } from "zod";
 import type { ProjectConfig } from "./boot.ts";
+import { EnvConfigSchema } from "./containment/dev-env-config.ts";
 import { colorProblem, iconProblem } from "./project-appearance.ts";
 import { DEFAULT_REVIEW_POLICY, type ReviewPolicy } from "./review-verdict.ts";
 import {
@@ -363,26 +364,9 @@ const projectSchema = z.object({
 	workloadSecretGrants: z
 		.array(z.string().regex(/^[A-Za-z0-9._-]+$/))
 		.optional(),
+	/** The development environment (`containment/dev-env-config.ts`). */
+	env: EnvConfigSchema.optional(),
 });
-
-/**
- * Why the preflight will refuse every sandboxed launch of this project, with
- * the exact fix, or null. Separate from `isolationConfigProblem`, which vets
- * what may be written: such a project must stay attachable so the owner can
- * see this and act on it.
- */
-export function isolationDispatchProblem(p: {
-	hasDevShell?: boolean;
-}): { detail: string; fix: string } | null {
-	if (p.hasDevShell) {
-		return {
-			detail:
-				"this project has an .envrc, and dev shells inside the sandbox are not available yet, so no run of this project can start.",
-			fix: "Wait for dev shell support in the sandbox, or remove the .envrc if the project works with its plain toolchain.",
-		};
-	}
-	return null;
-}
 
 /**
  * The machine-level `act` budget (`act-budget.ts`). Every key is optional; an

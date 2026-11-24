@@ -12,8 +12,13 @@
  * gitdir, a synthetic home and tmpfs scratch. It has no network, no credentials
  * and no ambient environment.
  *
- * `checkPrefix` still wraps the command, but inside the sandbox, where it is
- * only a convenience. Entering a real dev shell there is P8.
+ * The project's approved dev environment (dev-env-resolve.ts) is applied as
+ * the sandbox's own environment, with its store closure bound read-only, so a
+ * check sees the dev shell's tools without anything being evaluated here. A
+ * `checkPrefix` that only loads that environment (`direnv exec .`, `nix
+ * develop -c`, ...) is then redundant and dropped: inside a check its tool has
+ * no daemon, no network and no approval. Any other prefix still wraps the
+ * command inside the sandbox, where it is only a convenience.
  */
 
 import { randomUUID } from "node:crypto";
@@ -40,6 +45,9 @@ import {
 	compileBwrap,
 	FIRST_PINNED_FD,
 } from "./compile-bwrap.ts";
+import { devEnvBindRoot, devEnvSection } from "./dev-env-cached.ts";
+import type { DevEnvResolution } from "./dev-env-resolve.ts";
+import { isEnvLoaderPrefix, namesEnvTool } from "./dev-env-rules.ts";
 import { ProfileRejectedError } from "./profile.ts";
 import { buildVerifierProfile, VERIFIER_TOOLS } from "./role-profiles.ts";
 
@@ -53,6 +61,32 @@ export interface CheckSandboxDeps {
 	maxTreeBytes?: number;
 	/** How often the tree is measured. Tests shorten it. */
 	treePollMs?: number;
+	/** The project's approved dev environment, decided per check. */
+	devEnv?: () => Promise<DevEnvResolution>;
+}
+
+/**
+ * The prefix a check runs with once the environment is decided: a loader is
+ * dropped when the approved environment is applied, and refused otherwise.
+ */
+export function effectiveCheckPrefix(
+	prefix: string | undefined,
+	devEnv: DevEnvResolution["kind"],
+): { prefix: string | undefined } | { refuse: string; fix: string } {
+	if (isEnvLoaderPrefix(prefix)) {
+		if (devEnv === "ready") return { prefix: undefined };
+		return {
+			refuse: `checkPrefix \`${prefix?.trim()}\` loads a dev environment, and this project has no approved one to apply`,
+			fix: "add the environment the prefix loads (an .envrc, flake.nix or mise.toml) and approve it with `mfw env allow <project>`, or remove checkPrefix",
+		};
+	}
+	if (namesEnvTool(prefix)) {
+		return {
+			refuse: `checkPrefix \`${prefix?.trim()}\` runs an environment tool in a form mfw does not recognise`,
+			fix: "use `direnv exec .`, `nix develop -c`, `devenv shell` or `mise exec --`, which the approved environment replaces, or remove checkPrefix",
+		};
+	}
+	return { prefix };
 }
 
 /**
@@ -98,6 +132,14 @@ export function createCheckSandbox(deps: CheckSandboxDeps): CheckRunner {
 				"retry the verification",
 			);
 		}
+		const env: DevEnvResolution = deps.devEnv
+			? await deps.devEnv()
+			: { kind: "none" };
+		if (env.kind === "refused") return refuse(env.code, env.reason, env.fix);
+		const wrapped = effectiveCheckPrefix(req.prefix, env.kind);
+		if ("refuse" in wrapped) {
+			return refuse("check_prefix", wrapped.refuse, wrapped.fix);
+		}
 		const looked = await steps.compileHost(
 			{
 				mfwHome,
@@ -105,7 +147,10 @@ export function createCheckSandbox(deps: CheckSandboxDeps): CheckRunner {
 				stateDir: deps.stateDir,
 			} as never,
 			VERIFIER_TOOLS,
-			[dirname(tree)],
+			[
+				dirname(tree),
+				...(env.kind === "ready" ? [devEnvBindRoot(mfwHome, env.capture)] : []),
+			],
 		);
 		const found = new Set(looked.toolchain.resolved.map((b) => b.name));
 		const binaries = VERIFIER_TOOLS.filter((t) => found.has(t));
@@ -128,7 +173,14 @@ export function createCheckSandbox(deps: CheckSandboxDeps): CheckRunner {
 		};
 		let profile: ReturnType<typeof buildVerifierProfile>;
 		try {
-			profile = buildVerifierProfile({ role: req.role, tree, binaries });
+			profile = buildVerifierProfile({
+				role: req.role,
+				tree,
+				binaries,
+				...(env.kind === "ready"
+					? { devEnv: devEnvSection(mfwHome, env.capture) }
+					: {}),
+			});
 		} catch (err) {
 			if (
 				err instanceof AgentProfileError ||
@@ -156,7 +208,7 @@ export function createCheckSandbox(deps: CheckSandboxDeps): CheckRunner {
 				"-c",
 				checkEntry(startFd),
 				sh.path,
-				checkShellText(req.command, req.prefix),
+				checkShellText(req.command, wrapped.prefix),
 			],
 			host,
 		);

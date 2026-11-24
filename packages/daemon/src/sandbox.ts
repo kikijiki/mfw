@@ -16,6 +16,8 @@ import { basename, dirname, join, resolve } from "node:path";
  * `containment/agent-launch.ts`, and no run gets the real home.
  */
 
+import type { DevEnvResolution } from "./containment/dev-env-resolve.ts";
+
 export interface BwrapIsolation {
 	mode: "bwrap";
 	/** Host paths no sandbox may show. Nothing is bound from them in the first place. */
@@ -26,6 +28,8 @@ export interface BwrapIsolation {
 	egressTelemetry?: boolean;
 	/** Per-run upload limits; a limit left out takes the proxy's default. */
 	egressUploadBudget?: { perDestinationBytes?: number; totalBytes?: number };
+	/** The project's approved dev environment, from the cache (containment/dev-env-resolve.ts). */
+	devEnv?: () => Promise<DevEnvResolution>;
 }
 
 /** Thrown instead of launching unsandboxed; the engine maps it to `sandbox_unavailable`. */

@@ -27,9 +27,17 @@ Nothing runs a check on the host, whatever the approval mode.
 - **Tasks and memory:** limited by the systemd scope of the sandbox.
 - **Time:** the check's `timeout`, 10 minutes by default.
 
-## Dependencies
+## Dev environment and dependencies
 
-The clone holds tracked files only. Until the sandbox can supply a project's dev
-shell and installed dependencies, a check that fails in a tree with a
-`package.json` and no `node_modules`, or that exits 126 or 127, is reported as
-infrastructure rather than as a failure of the code.
+A check gets the project's **approved** dev environment
+([environments.md](environments.md)): its tools on `PATH`, its variables, and
+its Nix store paths bound read-only, with nothing evaluated in the check. With
+`env.setup`, the clone also gets the dependencies installed once for that
+approval. A `checkPrefix` that only loads the environment (`nix develop -c`,
+`direnv exec .`) is dropped, because the environment is already applied; without
+an approved environment it is refused.
+
+A project whose environment is not approved, or changed since, has its checks
+refused with the fix. A check that still fails in a tree with a `package.json`
+and no `node_modules`, or that exits 126 or 127, is reported as infrastructure
+rather than as a failure of the code.

@@ -17,6 +17,7 @@ import { decisionCardId } from "./brain-runtime/decision-rights.ts";
 import { guardText, HostEvidence } from "./claims.ts";
 import { loadHostEvidence } from "./claims-evidence.ts";
 import { TASK_QUESTION_KIND } from "./clarify.ts";
+import { describeEnvCard, ENV_ALLOW_TOOL } from "./containment/dev-env-card.ts";
 import { EGRESS_BREACH_KEY_PREFIX } from "./egress-ledger.ts";
 import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
 import {
@@ -262,8 +263,6 @@ export class InboxService {
 					}[]
 				>;
 			};
-			/** The preflight will refuse every sandboxed launch (`isolationDispatchProblem`). */
-			dispatchIssue?: () => { detail: string; fix: string } | null;
 			/** Providers held for a failed login (`ProviderHoldStore` entries with reason `auth`). */
 			authHolds?: () => Promise<
 				{ key: string; since: number; until: number }[]
@@ -334,19 +333,6 @@ export class InboxService {
 		const db = this.deps.handle.db;
 		const project = this.deps.project;
 		const items: Omit<InboxItem, "ref" | "attention">[] = [];
-		const dispatch = this.deps.dispatchIssue?.();
-		if (dispatch) {
-			items.push({
-				id: "admission:sandbox-workspace",
-				project,
-				kind: "admission",
-				severity: "attention",
-				title: "no run of this project can start",
-				detail: dispatch.detail,
-				fix: dispatch.fix,
-				ts: 0,
-			});
-		}
 		for (const issue of (await this.deps.admission?.issues()) ?? []) {
 			items.push({
 				id: `admission:${issue.id}`,
@@ -1068,6 +1054,7 @@ export function describeHeld(row: {
 	effects: Record<string, unknown> | null;
 }): { title: string; detail: string; taskId?: string } {
 	if (row.tool === HOST_MERGE_TOOL) return describeHostMerge(row.args);
+	if (row.tool === ENV_ALLOW_TOOL) return describeEnvCard(row.args);
 	const {
 		rationale,
 		alternatives: _a,

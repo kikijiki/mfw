@@ -109,6 +109,12 @@ spending. Every run is sandboxed:
 - **The host does not trust results.** It imports work as a validated git bundle,
   runs checks in a no-network sandbox, and asks you before merging changes to
   files it later executes.
+- **A project's dev environment runs only where you allowed it.** `.envrc`,
+  mise, flake and devenv setups are evaluated in their own sandbox, only at a
+  commit you approved with `mfw env allow`. Their own commands reach only the
+  hosts they need; for nix-based sources the nix daemon fetches and builds with
+  the host's network, outside the proxy
+  ([docs/environments.md](docs/environments.md)).
 
 What this does **not** stop:
 
@@ -117,6 +123,9 @@ What this does **not** stop:
 - Code that passes its checks merges and pushes, and runs with your rights when
   you build or run it.
 - Armed host triggers and remote targets do not have this protection.
+- An approved environment's evaluation and dependency install run project code
+  with network to their allowed hosts, and the nix daemon builds what the
+  evaluation asks for, with its own network.
 - The systemd limits and real agent CLIs have not yet been verified end to end
   under the full sandbox.
 
@@ -218,9 +227,12 @@ CODEX_HOME="$MFW_HOME/agents/codex" codex login
 ```
 
 **4. Add a project.** Add it in the UI. The defaults run each task in a private
-clone inside the sandbox; there is nothing to switch on. A project with an
-`.envrc` is refused for now, because dev shells do not run inside the sandbox yet,
-and the inbox tells you so.
+clone inside the sandbox; there is nothing to switch on. A project with a dev
+environment (`.envrc`, `mise.toml`, a flake devShell, devenv) needs one more
+step: read what `mfw env allow my-project` prints, then approve that commit with
+`mfw env allow my-project --rev <commit>`. It is then evaluated inside a sandbox,
+only at the commit you approved, and given to every run. See
+[docs/environments.md](docs/environments.md).
 
 **5. Direct the work.** The project opens on **Lead**. Give it a direction or create
 a few tasks on the board, then switch the scheduler on. Nothing runs until you do,
@@ -456,12 +468,46 @@ Use [Nix](https://nixos.org) (flakes) with [direnv](https://direnv.net), or Bun 
 tmux directly.
 
 ```sh
-direnv allow           # enters the dev shell (bun, node, sqlite, git)
+direnv allow           # enters the dev shell (bun, node, sqlite, git, tmux, bwrap, direnv, mise, devenv)
 bun install
 bun run lint           # private-material check, biome, typecheck
 bun run test           # all test suites
 bun run dev            # the app with hot reload
 ```
+
+### What the gate needs on PATH
+
+`bun run test` runs the live suites (real bwrap, a real nix daemon, real direnv
+and mise) when their tools are present and **skips** them, with the reason
+printed, when they are not. A skip is a green run with those tests unrun, so a
+gate that must prove everything sets the `MFW_REQUIRE_*` flags below, which turn
+a missing prerequisite into a failure that names it.
+
+| Prerequisite | Needed by | Required-mode flag |
+| --- | --- | --- |
+| `bwrap` (bubblewrap) that can create a user namespace | the sandbox, launch, check, egress and probe suites | `MFW_REQUIRE_LIVE_SANDBOX=1` |
+| `nix` with a running daemon that does not trust your user | the dev-env live suites (`dev-env-*-live`) | `MFW_REQUIRE_LIVE_NIX=1` |
+| `direnv` | the `.envrc` cases of the dev-env live suites, and `mfw` on `mfw` | `MFW_REQUIRE_LIVE_NIX=1` |
+| `mise` | the `mise.toml` cases (needs registry network to install `jq`) | `MFW_REQUIRE_LIVE_NIX=1` |
+| `devenv` | the `devenv.nix` case | `MFW_REQUIRE_LIVE_NIX=1` |
+| `openssl` | `bun run smoke:serve-check`, and an optional doctor check | none |
+| Chrome (`google-chrome`, `google-chrome-stable` or `chromium`) | the browser case of `bun run smoke:auth` | `MFW_SMOKE_CHROME=1` |
+| `tmux`, `git`, `bun` | everything | none |
+
+The repository's dev shell (`direnv allow`, or `nix develop`) provides bwrap,
+tmux, direnv, mise, devenv and openssl. Nix itself and its daemon come from the
+host, and Chrome is not packaged in the shell. Outside the dev shell, one-off:
+`nix shell nixpkgs#direnv nixpkgs#mise nixpkgs#devenv -c bun run test`.
+
+The full local gate (CI runs a subset, see `.github/workflows/ci-check.yml`):
+
+```sh
+MFW_REQUIRE_LIVE_SANDBOX=1 MFW_REQUIRE_LIVE_NIX=1 MFW_REQUIRE_COMPILED=1 bun run test
+MFW_SMOKE_CHROME=1 bun run smoke:auth
+```
+
+Without `MFW_REQUIRE_LIVE_NIX=1`, a missing direnv, mise or devenv skips only the
+cases that need it (`[dev-env-apply-live mise] skipped: mise is not on PATH: ...`).
 
 Each agent runs in a detached tmux session with its output on disk under
 `<project>/.mfw/runs/<id>/`, so runs survive daemon restarts and are picked up

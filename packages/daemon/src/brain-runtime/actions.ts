@@ -24,6 +24,7 @@ import { spendTotals } from "@mfw/db/spend";
 import { and, asc, desc, eq, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { guardWithRecords } from "../claims-evidence.ts";
+import { ENV_ALLOW_TOOL } from "../containment/dev-env-card.ts";
 import { recordHumanAction } from "../human-actions.ts";
 import { finishHumanOverride, recordHumanOverride } from "../human-override.ts";
 import { TaskUnmergedError } from "../lifecycle.ts";
@@ -977,6 +978,18 @@ export class BrainActionService {
 		} else if (row.tool === HOST_MERGE_TOOL) {
 			// The queue re-checks the commit itself when it runs the job again.
 			next = { status: "applied" };
+		} else if (row.tool === ENV_ALLOW_TOOL) {
+			// Recorded before the card moves, and only for the exact content shown.
+			const done = (await this.deps.world.envDecision?.(row.args, true)) ?? {
+				ok: false as const,
+				message: "this daemon cannot record a dev environment approval",
+			};
+			next = done.ok
+				? { status: "applied" }
+				: {
+						status: "failed",
+						rejection: { code: "stale_on_approval", message: done.message },
+					};
 		} else {
 			const verdict = await this.validate(tool, row.args);
 			next = verdict.ok
@@ -1013,6 +1026,9 @@ export class BrainActionService {
 		);
 		if (row.tool === HOST_MERGE_TOOL && !input.approve) {
 			await this.deps.executor.settleDeclinedHostMerge(row.id);
+		}
+		if (row.tool === ENV_ALLOW_TOOL && !input.approve) {
+			await this.deps.world.envDecision?.(row.args, false);
 		}
 		if (next.status !== "accepted") {
 			return {

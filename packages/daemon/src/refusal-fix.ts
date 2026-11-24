@@ -202,6 +202,14 @@ export const REFUSAL_FIXES: Record<RefusalCode, FixFor> = {
 		kind: "command",
 		text: `The sandbox probe failed (${waitingFor[0] ?? "no detail"}). Check that bwrap can create user namespaces on this host (AppArmor or sysctl kernel.unprivileged_userns_clone), then retry; autonomous runs stay refused until the probe passes.`,
 	}),
+	env_not_approved: (waitingFor) => ({
+		kind: "command",
+		text: `${waitingFor[0] ?? "The project's dev environment is not approved."} The environment runs only at a commit you approved, inside its own sandbox; runs of this project start once you allow it.`,
+	}),
+	env_unavailable: (waitingFor) => ({
+		kind: "command",
+		text: `${waitingFor[0] ?? "The approved dev environment could not be prepared."} Fix the environment at a new commit and allow that commit, or run \`mfw env build <project>\` to retry and see the whole log.`,
+	}),
 	sandbox_role_unavailable: (waitingFor) => ({
 		kind: "setting",
 		text: `${waitingFor[0] ?? "This"} runs have no sandbox role, so they cannot start in a sandbox. This is a bug in mfw or a run kind from a newer version: update mfw. The run stays refused until then.`,

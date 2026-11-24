@@ -88,7 +88,7 @@ Every sandboxed run kind goes through one path, in
 `packages/daemon/src/containment/agent-launch.ts`:
 
 ```
- preflight          refuse early, with the fix (config, tools, dev shell)
+ preflight          refuse early, with the fix (config, tools, dev environment)
     │
  compile            SandboxProfile ──► bwrap options, seccomp, pinned binds
     │
