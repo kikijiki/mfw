@@ -299,9 +299,8 @@ await import(${JSON.stringify(BRIDGE)});
 					root: project,
 					integrationBranch: "main",
 					schedulerAutostart: false,
-					agentIsolation: "bwrap",
-					approvalMode: "autonomous",
-					runWorkspace: "clone",
+					// Nothing about isolation, approvals or the workspace: the
+					// defaults (bwrap, autonomous, a private clone) must launch.
 					pushOnMerge: false,
 					provider: { id: "claude-cli", type: "claude-cli" },
 				},
