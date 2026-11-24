@@ -2,6 +2,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import {
 	agentSpawnArgv,
 	agentSpawnCwd,
+	agentSpawnEnv,
 } from "../../containment/agent-launch-argv.ts";
 import {
 	type AppServerRequest,
@@ -74,6 +75,7 @@ function spawnProvider() {
 	proc = spawn(command as string, args, {
 		cwd: agentSpawnCwd(cwd),
 		stdio: ["pipe", "pipe", "pipe"],
+		env: agentSpawnEnv(),
 	});
 	void readLines(proc.stderr, (line) => {
 		process.stderr.write(`${capText(line, 2048)}\n`);

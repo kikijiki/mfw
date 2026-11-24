@@ -34,6 +34,39 @@ const ROOT = resolve(import.meta.dir, "..");
 const ENTRY =
 	process.env.MFW_SMOKE_ENTRY ??
 	join(ROOT, "apps/start/.output/server/index.mjs");
+/**
+ * `MFW_SMOKE_INSTALL=<prefix>` runs them against a compiled install instead:
+ * the server is its `mfw server`, every CLI call its compiled `mfw`, and the
+ * start-up refusals its pinned runtime running its bundle directly, because
+ * `mfw server` supplies a loopback HOST when none is set.
+ */
+const INSTALL = process.env.MFW_SMOKE_INSTALL
+	? resolve(process.env.MFW_SMOKE_INSTALL)
+	: null;
+function installedBundleArgv(prefix: string): string[] {
+	const lib = join(prefix, "lib/mfw");
+	const manifest = JSON.parse(readFileSync(join(lib, "install.json"), "utf8"));
+	const runtime = String(manifest.runtime.path);
+	return [
+		runtime.startsWith("/") ? runtime : resolve(lib, runtime),
+		"--config=/dev/null",
+		"--no-env-file",
+		"run",
+		join(lib, "server/index.mjs"),
+	];
+}
+/** The command line that starts the server under test. */
+const SERVER_ARGV = INSTALL
+	? [join(INSTALL, "bin/mfw"), "server"]
+	: [process.execPath, "run", ENTRY];
+/** The same server, started past `mfw server`, for the bind refusals. */
+const BUNDLE_ARGV = INSTALL
+	? installedBundleArgv(INSTALL)
+	: [process.execPath, "run", ENTRY];
+/** The `mfw` CLI under test. */
+const MFW_CLI = INSTALL
+	? [join(INSTALL, "bin/mfw")]
+	: [process.execPath, "run", join(ROOT, "packages/cli/src/main.ts")];
 const PASSWORD = "smoke test owner passphrase";
 const Q = "brain.states";
 const AGENT_CLI =
@@ -406,21 +439,12 @@ async function streamEndsOnLogout(port: number): Promise<void> {
 }
 
 function unlock(home: string, env: Record<string, string>): number | null {
-	return Bun.spawnSync(
-		[
-			process.execPath,
-			"run",
-			join(ROOT, "packages/cli/src/main.ts"),
-			"auth",
-			"unlock",
-		],
-		{
-			cwd: ROOT,
-			env: { ...env, MFW_HOME: home },
-			stdout: "ignore",
-			stderr: "ignore",
-		},
-	).exitCode;
+	return Bun.spawnSync([...MFW_CLI, "auth", "unlock"], {
+		cwd: ROOT,
+		env: { ...env, MFW_HOME: home },
+		stdout: "ignore",
+		stderr: "ignore",
+	}).exitCode;
 }
 
 /** N1: every loopback address is one source, so rotating them buys nothing. */
@@ -1134,7 +1158,7 @@ async function refusesToStart(
 ): Promise<void> {
 	const port = await freePort();
 	const logFile = join(scratch, `refused-${passed}-${failures.length}.log`);
-	const p = Bun.spawn([process.execPath, "run", ENTRY], {
+	const p = Bun.spawn(BUNDLE_ARGV, {
 		cwd: ROOT,
 		env: { ...base, ...bind, PORT: String(port) },
 		stdout: Bun.file(logFile),
@@ -1208,7 +1232,7 @@ async function trustedProxy(): Promise<void> {
 	};
 	const logFile = join(scratch, "server.log");
 	const logFd = openSync(logFile, "a");
-	const server = Bun.spawn([process.execPath, "run", ENTRY], {
+	const server = Bun.spawn(SERVER_ARGV, {
 		cwd: ROOT,
 		env: {
 			...base,
@@ -1563,7 +1587,8 @@ async function unixSocketProxy(): Promise<void> {
 		viaProxy(client, { Host: "localhost", ...extra });
 	const start = (port: number, name: string) => {
 		const logFile = join(scratch, `${name}.log`);
-		return Bun.spawn([process.execPath, "run", ENTRY], {
+		// The bundle itself: SIGKILL below must reach the server, not `mfw server`.
+		return Bun.spawn(BUNDLE_ARGV, {
 			cwd: ROOT,
 			env: {
 				...base,
@@ -1724,7 +1749,7 @@ async function unixSocketProxy(): Promise<void> {
 			inside.target,
 		);
 
-		const second = Bun.spawn([process.execPath, "run", ENTRY], {
+		const second = Bun.spawn(BUNDLE_ARGV, {
 			cwd: ROOT,
 			env: {
 				...base,
@@ -1866,16 +1891,13 @@ async function mcpToolCall(
 	tool: string,
 	toolArgs: Record<string, unknown>,
 ): Promise<string> {
-	const child = Bun.spawn(
-		[
-			process.execPath,
-			"run",
-			join(ROOT, "packages/cli/src/main.ts"),
-			"mcp",
-			...args,
-		],
-		{ cwd: ROOT, env, stdin: "pipe", stdout: "pipe", stderr: "ignore" },
-	);
+	const child = Bun.spawn([...MFW_CLI, "mcp", ...args], {
+		cwd: ROOT,
+		env,
+		stdin: "pipe",
+		stdout: "pipe",
+		stderr: "ignore",
+	});
 	const send = (message: unknown) => {
 		child.stdin.write(`${JSON.stringify(message)}\n`);
 		child.stdin.flush();
@@ -2013,9 +2035,7 @@ async function scopedTokens(
 	const otherProject = {
 		token: Bun.spawnSync(
 			[
-				process.execPath,
-				"run",
-				join(ROOT, "packages/cli/src/main.ts"),
+				...MFW_CLI,
 				"auth",
 				"token",
 				"create",
@@ -2185,9 +2205,7 @@ async function scopedTokens(
 	const mcpEnv = { ...env, MFW_URL: `http://127.0.0.1:${port}/mfw/api/trpc` };
 	const created = Bun.spawnSync(
 		[
-			process.execPath,
-			"run",
-			join(ROOT, "packages/cli/src/main.ts"),
+			...MFW_CLI,
 			"auth",
 			"token",
 			"create",
@@ -2272,15 +2290,7 @@ async function scopedTokens(
 		/text\/event-stream/i.test(cliStream.buffer),
 	);
 	const revoked = Bun.spawnSync(
-		[
-			process.execPath,
-			"run",
-			join(ROOT, "packages/cli/src/main.ts"),
-			"auth",
-			"token",
-			"revoke",
-			cliLive.id,
-		],
+		[...MFW_CLI, "auth", "token", "revoke", cliLive.id],
 		{ cwd: ROOT, env },
 	);
 	check(
@@ -2444,10 +2454,16 @@ async function scopedTokens(
 }
 
 async function main(): Promise<number> {
-	if (!existsSync(ENTRY)) {
-		console.error("auth-smoke: no production build. Fix: bun run build");
+	if (INSTALL ? !existsSync(join(INSTALL, "bin/mfw")) : !existsSync(ENTRY)) {
+		console.error(
+			INSTALL
+				? `auth-smoke: no compiled install at ${INSTALL}. Fix: bun run tools/install-build.ts`
+				: "auth-smoke: no production build. Fix: bun run build",
+		);
 		return 2;
 	}
+	if (INSTALL)
+		console.log(`auth-smoke: against the compiled install ${INSTALL}`);
 	// CI sets this with Chrome installed: the browser cases are the only check of
 	// passkeys against a signer other than mfw's own test authenticator.
 	if (process.env.MFW_SMOKE_CHROME === "1" && !chromeBinary()) {
@@ -2478,7 +2494,7 @@ async function main(): Promise<number> {
 		MFW_TMUX_SOCKET: `mfw-smoke-${process.pid}`,
 	};
 	const logFile = join(scratch, "server.log");
-	const server = Bun.spawn([process.execPath, "run", ENTRY], {
+	const server = Bun.spawn(SERVER_ARGV, {
 		cwd: ROOT,
 		env,
 		stdout: Bun.file(logFile),

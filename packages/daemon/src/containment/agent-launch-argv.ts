@@ -11,16 +11,23 @@
  */
 
 import { dirname } from "node:path";
-import { AGENT_LAUNCHER, hostScript } from "./host-script.ts";
+import {
+	AGENT_LAUNCHER,
+	HOST_BUN_FLAGS,
+	hostCommand,
+	hostEntry,
+} from "./host-script.ts";
+import { hostSpawnEnv } from "./host-spawn-env.ts";
+
+export { HOST_BUN_FLAGS };
 
 export const AGENT_LAUNCH_ENV = "MFW_AGENT_LAUNCH_REQUEST";
 /** Set beside the request: this process belongs to a host-bridged run. */
 export const AGENT_BRIDGED_ENV = "MFW_AGENT_BRIDGED";
 
-/** The flags for any bun process the host starts on behalf of a sandboxed run. */
-export const HOST_BUN_FLAGS = ["--config=/dev/null", "--no-env-file"] as const;
-
-const launcherScript = () => hostScript(import.meta.url, AGENT_LAUNCHER);
+/** The launcher: a verified script, or in a compiled install `mfw __host agent-launcher`. */
+const launcherCommand = () =>
+	hostCommand(hostEntry(import.meta.url, AGENT_LAUNCHER), process.execPath);
 
 type Env = Record<string, string | undefined>;
 
@@ -51,15 +58,21 @@ export function agentSpawnArgv(
 	assertRequestPresent(env);
 	const request = env[AGENT_LAUNCH_ENV];
 	if (!request) return [...argv];
-	return [
-		process.execPath,
-		...HOST_BUN_FLAGS,
-		"run",
-		launcherScript(),
-		request,
-		"--",
-		...argv,
-	];
+	return [...launcherCommand(), request, "--", ...argv];
+}
+
+/**
+ * The environment for `agentSpawnArgv`'s command. With a launch request that
+ * command is the launcher, `mfw` or bun, so only the allowlist reaches it
+ * (`host-spawn-env.ts`); without one it is the agent CLI itself, started by a
+ * driver whose own environment was already allowlisted.
+ */
+export function agentSpawnEnv(
+	env: Env = process.env,
+	extraNames: readonly string[] = [],
+): Env {
+	assertRequestPresent(env);
+	return env[AGENT_LAUNCH_ENV] ? hostSpawnEnv(env, extraNames) : { ...env };
 }
 
 /** The launcher's working directory is the host-only one holding its request. */

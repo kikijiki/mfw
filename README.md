@@ -175,6 +175,15 @@ and move tasks, check the inbox and health, and look at runs.
 | Claude Code or Codex CLI | the agents. ACP agents are [experimental](docs/experimental.md#acp-agents) |
 | `openssl` (optional) | only for the `smoke:serve-check` rehearsal |
 
+### Install
+
+A compiled install (`mfw`, `mfw-board`, the server bundle and its pinned bun) is
+the way to run mfw outside development: nothing in it is read from a checkout.
+Build it with the flake (`nix build .#mfw`) or assemble a tarball; see
+[docs/install.md](docs/install.md) for both, upgrades, and what each part checks.
+The quick start below runs from a checkout instead, which is the development
+setup.
+
 ### Quick start
 
 **1. Build and start the server.**
@@ -256,8 +265,10 @@ other proxies, why mfw needs its own origin, the threat notes and a manual check
 
 - **systemd (user):** copy [`packaging/mfw-server.service`](./packaging/mfw-server.service) to
   `~/.config/systemd/user/`, then `systemctl --user enable --now mfw-server`.
-- **NixOS / home-manager:** import
-  [`packaging/mfw.home-manager.nix`](./packaging/mfw.home-manager.nix).
+- **NixOS / home-manager:** import the flake's `homeManagerModules.default`, which
+  runs the compiled install. Importing
+  [`packaging/mfw.home-manager.nix`](./packaging/mfw.home-manager.nix) by path
+  runs a checkout (development).
 
 Both keep the scheduler off until you enable it in the UI.
 
@@ -429,6 +440,7 @@ a local SQLite database. The board itself is always just files.
 | [docs/egress.md](docs/egress.md) | agent network access |
 | [docs/verifier-sandbox.md](docs/verifier-sandbox.md) | where checks run |
 | [docs/exposure.md](docs/exposure.md) | reaching mfw from another device |
+| [docs/install.md](docs/install.md) | compiled installs, upgrades, `mfw version` |
 
 ```
 packages/
@@ -439,10 +451,11 @@ packages/
   daemon/      the daemon: scheduler, agent runs, verification, merging
   api/         the typed API between the UI and the daemon
   mcp/         the MCP server for agents (run as `mfw mcp`)
-  cli/         `mfw`, the dispatcher: `mfw board`, `mfw mcp`, `mfw server`, `mfw version`
+  cli/         `mfw`, the dispatcher: `mfw board`, `mfw mcp`, `mfw server`, `mfw version`;
+               compiled, also every host process (`mfw __host`)
 apps/
   start/       the app: web UI + API, boots the daemon
-packaging/     systemd and NixOS service files
+packaging/     systemd and NixOS service files, the Nix package, the pinned bun
 tools/         small operator scripts
 ```
 

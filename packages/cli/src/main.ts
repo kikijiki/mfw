@@ -1,12 +1,16 @@
 #!/usr/bin/env bun
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { delimiter, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { pinnedToolIn } from "../../daemon/src/sandbox.ts";
 import { runForwarding } from "./run-child.ts";
 
 /**
  * `mfw`: the one dispatcher. It owns no logic of its own; each subcommand is
  * either another executable (`board` -> `mfw-board`, so the board tool stays
  * usable without the server) or a module run in this process (`mcp`).
+ *
+ * The same code runs from a checkout (`bun packages/cli/src/main.ts`) and as
+ * the compiled executable (`compiled-main.ts`); `Deps` carries the difference.
  */
 
 const SUBCOMMANDS = [
@@ -22,8 +26,18 @@ const SUBCOMMANDS = [
 
 export interface Deps {
 	env: Record<string, string | undefined>;
-	/** Directory of this script; `mfw-board` is looked up here first. */
+	/** Directory of this script (or executable); `mfw-board` is looked up here first. */
 	selfDir: string;
+	/** A `mfw-board` on PATH, only from a directory agents cannot write. */
+	trustedOnPath?: (name: string, pathVar: string | undefined) => string | null;
+	/** Why the `mfw-board` beside this executable must not run, or null (the install's hash check). */
+	siblingProblem?: (path: string) => string | null;
+	/** `mfw __host ...` (compiled only). Resolves to an exit code, or null while an entry runs. */
+	runHostExec?: (args: string[]) => Promise<number | null>;
+	/** The lines `mfw version` prints. */
+	versionLines?: () => Promise<string[]>;
+	/** A compiled install's server: the verified runtime and bundle, or why it cannot start. */
+	serverCommand?: () => { argv: string[]; cwd: string } | { error: string };
 	/** The board CLI source in a checkout (fallback when no executable is found). */
 	sourceBoardCli: string | null;
 	/** The built server entry (`bun run build`), or null when absent. */
@@ -55,7 +69,7 @@ export const USAGE = [
 	"  init          guided first run: doctor, setup token path, minimal project config",
 	"  mcp [--token-file <path>]   MCP server over stdio, using a scoped API token",
 	"  server        run the orchestrator + web UI in the foreground",
-	"  version       print the mfw and mfw-board versions",
+	"  version       print the versions, the build and its integrity hashes",
 ].join("\n");
 
 function isExecutable(p: string): boolean {
@@ -67,25 +81,29 @@ function isExecutable(p: string): boolean {
 	}
 }
 
-/** `mfw-board` next to this script, else on PATH; null when neither has it. */
+/**
+ * `mfw-board` next to this executable, else on PATH from a directory agents
+ * cannot write (the trusted-binary rule of `sandbox.ts`); null when neither
+ * has it. A copy in a writable PATH directory is never run: it could be an
+ * agent's.
+ */
 export function findBoardExecutable(
 	env: Deps["env"],
 	selfDir: string,
+	trustedOnPath: NonNullable<Deps["trustedOnPath"]> = (name, pathVar) =>
+		pinnedToolIn(name, pathVar),
 ): string | null {
-	const dirs = [selfDir, ...(env.PATH ?? "").split(delimiter)];
-	for (const dir of dirs) {
-		if (!dir) continue;
-		const p = join(dir, "mfw-board");
-		if (isExecutable(p)) return p;
-	}
-	return null;
+	const sibling = join(selfDir, "mfw-board");
+	if (isExecutable(sibling)) return sibling;
+	return trustedOnPath("mfw-board", env.PATH);
 }
 
 export function boardMissingMessage(): string {
 	return [
-		"mfw: cannot find the `mfw-board` executable (looked next to mfw and on PATH).",
-		"Fix: put it on PATH (it ships next to `mfw`), or in a source checkout run",
-		"`bun install` and use `bun packages/board/src/cli.ts` directly.",
+		"mfw: cannot find the `mfw-board` executable (looked next to mfw, and on PATH",
+		"in directories agents cannot write).",
+		"Fix: install it next to `mfw` (they ship together), or in a source checkout",
+		"run `bun install` and use `bun packages/board/src/cli.ts` directly.",
 	].join("\n");
 }
 
@@ -115,9 +133,27 @@ export async function dispatch(argv: string[], d: Deps): Promise<number> {
 		case "doctor":
 		case "init":
 			return d.runDoctor(cmd, rest);
+		case "__host": {
+			if (!d.runHostExec) {
+				d.err(
+					"mfw: `mfw __host` is internal to a compiled mfw; from a checkout the server runs its scripts directly",
+				);
+				return 78;
+			}
+			const code = await d.runHostExec(rest);
+			return code ?? 0;
+		}
 		case "board": {
-			const exe = findBoardExecutable(d.env, d.selfDir);
-			if (exe) return d.run([exe, ...rest]);
+			const exe = findBoardExecutable(d.env, d.selfDir, d.trustedOnPath);
+			if (exe) {
+				const problem =
+					exe === join(d.selfDir, "mfw-board") ? d.siblingProblem?.(exe) : null;
+				if (problem) {
+					d.err(`mfw: refusing to run ${exe}: ${problem}`);
+					return 78;
+				}
+				return d.run([exe, ...rest]);
+			}
 			if (d.sourceBoardCli)
 				return d.run([d.bun, "run", d.sourceBoardCli, ...rest]);
 			d.err(boardMissingMessage());
@@ -140,6 +176,15 @@ export async function dispatch(argv: string[], d: Deps): Promise<number> {
 				);
 				return 0;
 			}
+			if (d.serverCommand) {
+				const command = d.serverCommand();
+				if ("error" in command) {
+					d.err(`mfw: ${command.error}`);
+					return 1;
+				}
+				if (!d.env.NITRO_HOST && !d.env.HOST) d.env.HOST = "127.0.0.1";
+				return d.run(command.argv, command.cwd);
+			}
 			if (!d.serverEntry) {
 				d.err(
 					"mfw: the server is not built. Fix: run `bun run build` in the mfw checkout.",
@@ -151,10 +196,14 @@ export async function dispatch(argv: string[], d: Deps): Promise<number> {
 			return d.run([d.bun, "run", d.serverEntry], d.repoRoot);
 		}
 		case "version": {
-			d.out(`mfw ${versionOf(join(d.selfDir, "../package.json"))}`);
-			d.out(
-				`mfw-board ${versionOf(join(d.repoRoot, "packages/board/package.json"))}`,
-			);
+			const lines = d.versionLines
+				? await d.versionLines()
+				: [
+						`mfw ${versionOf(join(d.selfDir, "../package.json"))} (source)`,
+						`mfw-board ${versionOf(join(d.repoRoot, "packages/board/package.json"))}`,
+						`bun ${Bun.version}`,
+					];
+			for (const line of lines) d.out(line);
 			return 0;
 		}
 		default:
@@ -165,7 +214,8 @@ export async function dispatch(argv: string[], d: Deps): Promise<number> {
 	}
 }
 
-function realDeps(): Deps {
+/** The real dependencies when run from a checkout. */
+export function sourceDeps(): Deps {
 	const selfDir = import.meta.dir;
 	const repoRoot = resolve(selfDir, "../../..");
 	const boardCli = join(repoRoot, "packages/board/src/cli.ts");
@@ -177,6 +227,16 @@ function realDeps(): Deps {
 		serverEntry: existsSync(serverEntry) ? serverEntry : null,
 		repoRoot,
 		bun: process.execPath,
+		...inProcessCommands(),
+	};
+}
+
+/** The commands that run in this process, the same from source and compiled. */
+export function inProcessCommands(): Pick<
+	Deps,
+	"out" | "err" | "run" | "runMcp" | "runHost" | "runDoctor" | "runAuth"
+> {
+	return {
 		out: (l) => console.log(l),
 		err: (l) => console.error(l),
 		run: (argv, cwd) => runForwarding(argv, cwd),
@@ -236,12 +296,17 @@ function realDeps(): Deps {
 	};
 }
 
-if (import.meta.main) {
+/**
+ * Run `mfw` as this process. `mcp` and a host entry keep the process alive on
+ * their own work; every other command exits with its code.
+ */
+export async function main(argv: string[], deps: Deps): Promise<void> {
 	// Read first: `runMcp` replaces `process.argv` for the MCP entry point.
-	const isMcp = process.argv[2] === "mcp";
-	const wantsHelp =
-		process.argv.includes("--help") || process.argv.includes("-h");
-	const code = await dispatch(process.argv.slice(2), realDeps());
-	// `mcp` keeps the process alive on its stdio transport; everything else exits.
-	if (!isMcp || wantsHelp) process.exit(code);
+	const stays = argv[0] === "mcp" || argv[0] === "__host";
+	const wantsHelp = argv.includes("--help") || argv.includes("-h");
+	const code = await dispatch(argv, deps);
+	if (argv[0] === "__host" && code !== 0) process.exit(code);
+	if (!stays || (argv[0] === "mcp" && wantsHelp)) process.exit(code);
 }
+
+if (import.meta.main) await main(process.argv.slice(2), sourceDeps());

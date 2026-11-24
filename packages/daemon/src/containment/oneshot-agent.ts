@@ -19,13 +19,12 @@ import {
 	launchAgentSandbox,
 	realLaunchSteps,
 } from "./agent-launch.ts";
-import { HOST_BUN_FLAGS } from "./agent-launch-argv.ts";
 import { liveCompileHost } from "./agent-launch-host.ts";
 import type { FleetCli } from "./agent-profile.ts";
 import { drainTail } from "./check-runner.ts";
 import { harnessAllowlist, harnessEgressEnv } from "./egress-allowlists.ts";
 import { prepareRunEgress } from "./egress-run.ts";
-import { EGRESS_PROXY_BESIDE, hostScript } from "./host-script.ts";
+import { EGRESS_PROXY_BESIDE, hostCommand, hostEntry } from "./host-script.ts";
 import { ensureRunDirLayout } from "./run-dir.ts";
 
 const PROXY_START_MS = 20_000;
@@ -62,10 +61,10 @@ async function startRealProxy(
 		[
 			requireHostTool("env"),
 			"-i",
-			process.execPath,
-			...HOST_BUN_FLAGS,
-			"run",
-			hostScript(import.meta.url, EGRESS_PROXY_BESIDE),
+			...hostCommand(
+				hostEntry(import.meta.url, EGRESS_PROXY_BESIDE),
+				process.execPath,
+			),
 			configPath,
 		],
 		{ stdin: "pipe", stdout: "ignore", stderr: "ignore" },

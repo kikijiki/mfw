@@ -44,7 +44,7 @@ const configuredWritableRoots = new Set<string>();
  * configured project root. A binary found there is the agent's, not the
  * host's (security review G4).
  */
-function agentWritableRoots(): string[] {
+export function agentWritableRoots(): string[] {
 	const roots = [
 		homedir(),
 		"/tmp",

@@ -1,4 +1,5 @@
 import { constants } from "node:os";
+import { withoutForbiddenEnv } from "../../daemon/src/containment/host-spawn-env.ts";
 
 /** Signals `mfw server` hands on to its child instead of dying and orphaning it. */
 export const FORWARDED_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
@@ -35,7 +36,10 @@ export async function runForwarding(
 	try {
 		child = Bun.spawn(argv, {
 			cwd,
-			env: { ...process.env, [CHILD_DEPTH_ENV]: "1" },
+			// The child is bun or a compiled bun executable: nothing that would load
+			// code into it passes (`host-spawn-env.ts`). `mfw` itself already ran
+			// with whatever its caller gave it.
+			env: { ...withoutForbiddenEnv(process.env), [CHILD_DEPTH_ENV]: "1" },
 			stdin: "inherit",
 			stdout: "inherit",
 			stderr: "inherit",

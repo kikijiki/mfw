@@ -20,7 +20,6 @@ import type { AgentLaunchRequest } from "./containment/agent-launch.ts";
 import {
 	AGENT_BRIDGED_ENV,
 	AGENT_LAUNCH_ENV,
-	HOST_BUN_FLAGS,
 } from "./containment/agent-launch-argv.ts";
 import {
 	DEV_SHELL_REFUSAL,
@@ -53,8 +52,14 @@ import {
 import {
 	BRAIN_TRANSCRIPT,
 	EGRESS_PROXY,
-	hostScript,
+	hostArgv,
+	hostCommand,
+	hostEntry,
 } from "./containment/host-script.ts";
+import {
+	forbiddenHostEnvName,
+	hostSpawnEnvShell,
+} from "./containment/host-spawn-env.ts";
 import {
 	isReadOnlyAgentRole,
 	sandboxRoleOfKind,
@@ -457,6 +462,17 @@ export class AgentHost {
 		) {
 			throw new Error("launch environment uses a reserved internal name");
 		}
+		// Loader and runtime-option names would run code in the host's own
+		// driver, bridge and launcher (security review REL-1 M1).
+		const loader = [
+			...Object.keys(publicEnvironment),
+			...secretEnvironment.names(),
+		].find(forbiddenHostEnvName);
+		if (loader) {
+			throw new Error(
+				`launch environment sets ${loader}, which would load code into the host's mfw processes. Fix: remove it from the provider's env`,
+			);
+		}
 		const bridge = spec.isolation
 			? await this.prepareHostBridge(spec, control, secretEnvironment, made)
 			: null;
@@ -497,9 +513,27 @@ export class AgentHost {
 		// never to the pane, so no agent byte reaches a terminal. The host never
 		// evaluates a project's `.envrc`.
 		const bunBin = pinnedTool("bun") ?? "bun";
-		const driverCmd = bridge
-			? `export ${AGENT_BRIDGED_ENV}=1 ${AGENT_LAUNCH_ENV}=${q(bridge.requestPath)}\n${[bunBin, ...HOST_BUN_FLAGS, "run", spec.driverScript, dir].map(q).join(" ")} >> ${q(rawLog)} 2>&1`
-			: `${q(bunBin)} run ${q(spec.driverScript)} ${q(dir)}`;
+		// The driver is `mfw __host` or bun, which cannot defend itself against
+		// its environment (`BUN_OPTIONS` preloads code, `LD_PRELOAD` loads a
+		// library): it starts under `env -i` with only the allowlist of
+		// `host-spawn-env.ts` and this launch's declared names. The `unset` is
+		// defence in depth for the shell lines before it.
+		const driverArgv = [...hostCommand(spec.driverScript, bunBin), dir];
+		const driverEnv = hostSpawnEnvShell([
+			...Object.keys(publicEnvironment),
+			...secretEnvironment.names(),
+		]);
+		const driverExec = `${q(requireHostTool("env"))} -i "\${mfw_env[@]}" ${driverArgv.map(q).join(" ")}`;
+		const driverCmd = [
+			"unset BUN_OPTIONS BUN_BE_BUN",
+			...(bridge
+				? [
+						`export ${AGENT_BRIDGED_ENV}=1 ${AGENT_LAUNCH_ENV}=${q(bridge.requestPath)}`,
+					]
+				: []),
+			...driverEnv,
+			bridge ? `${driverExec} >> ${q(rawLog)} 2>&1` : driverExec,
+		].join("\n");
 
 		// Secrets never touch a regular file: write through a 0600 FIFO once run.sh
 		// acknowledges its reader, then unlink. A crash leaves at worst an empty FIFO for the session trap.
@@ -589,10 +623,10 @@ export class AgentHost {
 						[
 							requireHostTool("env"),
 							"-i",
-							bunBin,
-							...HOST_BUN_FLAGS,
-							"run",
-							hostScript(import.meta.url, BRAIN_TRANSCRIPT),
+							...hostCommand(
+								hostEntry(import.meta.url, BRAIN_TRANSCRIPT),
+								bunBin,
+							),
 							bridge.brainTranscript.turnState,
 							bridge.brainTranscript.store,
 							bridge.brainTranscript.cli,
@@ -706,10 +740,7 @@ export class AgentHost {
 		const proxy = [
 			env,
 			"-i",
-			bunBin,
-			...HOST_BUN_FLAGS,
-			"run",
-			hostScript(import.meta.url, EGRESS_PROXY),
+			...hostCommand(hostEntry(import.meta.url, EGRESS_PROXY), bunBin),
 			egress.configPath,
 		]
 			.map(q)
@@ -914,10 +945,7 @@ export class AgentHost {
 			requestPath,
 			cwd: SANDBOX_PATHS.workspace,
 			agentArgv,
-			bridgeArgv:
-				bridgeArgv[0] === "bun"
-					? [bun, ...HOST_BUN_FLAGS, ...bridgeArgv.slice(1)]
-					: bridgeArgv,
+			bridgeArgv: hostArgv(bridgeArgv, bun),
 			providerArgv,
 			env,
 			...(roleCloneRoot ? { roleCloneRoot } : {}),

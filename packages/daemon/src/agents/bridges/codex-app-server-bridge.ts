@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import {
 	agentSpawnArgv,
 	agentSpawnCwd,
+	agentSpawnEnv,
 } from "../../containment/agent-launch-argv.ts";
 import {
 	type AppServerRequest,
@@ -26,6 +27,7 @@ const [command, ...args] = agentSpawnArgv([
 const proc = spawn(command as string, args, {
 	cwd: agentSpawnCwd(undefined),
 	stdio: ["pipe", "pipe", "pipe"],
+	env: agentSpawnEnv(),
 });
 let nativeId = 1;
 let bridgeRequestId = 1_000_000_000;

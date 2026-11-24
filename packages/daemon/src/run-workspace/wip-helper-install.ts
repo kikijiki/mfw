@@ -13,14 +13,14 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { SANDBOX_PATHS } from "../containment/compile-bwrap.ts";
-import { hostScript, WIP_HELPER } from "../containment/host-script.ts";
+import { hostScriptText, WIP_HELPER } from "../containment/host-script.ts";
 import { bundleArgs } from "./wip-helper.ts";
 
 export const WIP_HELPER_FILE = "wip-helper.js";
 
 /** The helper as a single script. It imports node builtins only. */
 export function wipHelperScript(): string {
-	const source = readFileSync(hostScript(import.meta.url, WIP_HELPER), "utf8");
+	const source = hostScriptText(import.meta.url, WIP_HELPER);
 	return new Bun.Transpiler({ loader: "ts", target: "bun" }).transformSync(
 		source,
 	);

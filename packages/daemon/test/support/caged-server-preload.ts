@@ -18,9 +18,13 @@ const CAGED = `compileHost: globalThis[Symbol.for("mfw.test.cagedSteps")].compil
 plugin({
 	name: "caged-server",
 	setup(build) {
-		build.onLoad({ filter: /\.output\/server\/.*\.mjs$/ }, async (args) => {
-			const text = await Bun.file(args.path).text();
-			return { loader: "js", contents: text.replace(TARGET, CAGED) };
-		});
+		// A checkout's build, or a compiled install's bundle (`lib/mfw/server`).
+		build.onLoad(
+			{ filter: /(?:\.output|lib\/mfw)\/server\/.*\.mjs$/ },
+			async (args) => {
+				const text = await Bun.file(args.path).text();
+				return { loader: "js", contents: text.replace(TARGET, CAGED) };
+			},
+		);
 	},
 });

@@ -1,6 +1,10 @@
 import { isAbsolute, join } from "node:path";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
-import { hostScript, REMOTE_RUNTIME } from "./containment/host-script.ts";
+import {
+	hostScript,
+	isHostEntryRef,
+	REMOTE_RUNTIME,
+} from "./containment/host-script.ts";
 import {
 	redactSecretValues,
 	type SecretEnvironment,
@@ -16,6 +20,11 @@ import { RemoteTransportError } from "./ssh-transport.ts";
 export async function bundleRemoteSupport(
 	entrypoint: string,
 ): Promise<Uint8Array> {
+	// A compiled install has no sources to bundle for a remote host.
+	if (isHostEntryRef(entrypoint))
+		throw new Error(
+			"refusing: remote execution targets are experimental and need the from-source build; a compiled install cannot bundle them",
+		);
 	if (!isAbsolute(entrypoint))
 		throw new Error("remote support entrypoint is not absolute");
 	const built = await Bun.build({

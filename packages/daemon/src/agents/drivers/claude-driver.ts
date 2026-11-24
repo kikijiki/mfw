@@ -15,6 +15,7 @@ import type { FileSink } from "bun";
 import {
 	agentSpawnArgv,
 	agentSpawnCwd,
+	agentSpawnEnv,
 	refuseBridgedRunWithoutRequest,
 } from "../../containment/agent-launch-argv.ts";
 import { driverRunPaths, isHostBridged } from "../../containment/run-dir.ts";
@@ -66,7 +67,10 @@ emit({
 
 const proc = Bun.spawn(agentSpawnArgv(cfg.argv), {
 	cwd: agentSpawnCwd(cfg.cwd),
-	env: { ...process.env, ...(cfg.env ?? {}) },
+	env: agentSpawnEnv(
+		{ ...process.env, ...(cfg.env ?? {}) },
+		Object.keys(cfg.env ?? {}),
+	),
 	stdin: "pipe",
 	stdout: "pipe",
 	stderr: "pipe",

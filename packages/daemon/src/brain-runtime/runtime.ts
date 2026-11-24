@@ -36,7 +36,7 @@ import {
 	ne,
 	or,
 } from "drizzle-orm";
-import { mcpMainScript } from "../agents/adapter.ts";
+import { brainMcpCommand, mcpMainScript } from "../agents/adapter.ts";
 import { parseAgentEvents } from "../agents/events.ts";
 import { nativeSessionUuid } from "../agents/native-session.ts";
 import { guardDecisionRows, guardWithRecords } from "../claims-evidence.ts";
@@ -880,8 +880,12 @@ export class BrainRuntime {
 		this.tokenTurns.add(turnRunId);
 		return {
 			name: "mfw_brain",
-			command: mcp.command ?? "bun",
-			args: ["run", mcp.script ?? mcpMainScript(), "--brain", sessionId],
+			...(mcp.command || mcp.script
+				? {
+						command: mcp.command ?? "bun",
+						args: ["run", mcp.script ?? mcpMainScript(), "--brain", sessionId],
+					}
+				: brainMcpCommand(sessionId)),
 			env: {
 				MFW_SOCKET: access.socketPath,
 				MFW_BRAIN_TOKEN_FILE: access.tokenFile,
