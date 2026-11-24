@@ -34,6 +34,15 @@ name: ci-check
 # fails instead of skipping their suite (packages/cli/test/compiled-live.test.ts).
 # `check` also runs `smoke:compiled`, the release gate for a compiled install.
 #
+# The dev environment live suites (`dev-env-*-live`) are NOT required here, and
+# direnv, mise and devenv are deliberately not installed: they also need a nix
+# daemon that does not trust the runner's user, which a stock runner does not
+# have (it has no nix at all), so those suites skip with their reason printed
+# ("no nix daemon") and `MFW_REQUIRE_LIVE_NIX` is not set. Installing only
+# direnv and mise would change nothing, because the nix gate comes first. They
+# run in the local gate (README, "What the gate needs on PATH"), where the dev
+# shell provides every tool and `MFW_REQUIRE_LIVE_NIX=1` makes a missing one fail.
+#
 # Not run from here: the workflow only defines the jobs. Pushing it is the
 # repository owner's call.
 
