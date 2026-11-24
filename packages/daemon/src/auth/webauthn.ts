@@ -345,6 +345,74 @@ export function parseAuthenticatorData(data: Uint8Array): AuthenticatorData {
 	};
 }
 
+// ------------------------------------------------------- Ed25519 key checks
+
+const ED_P = 2n ** 255n - 19n;
+const edMod = (a: bigint) => {
+	const r = a % ED_P;
+	return r < 0n ? r + ED_P : r;
+};
+function edPow(base: bigint, exp: bigint): bigint {
+	let result = 1n;
+	let b = edMod(base);
+	let e = exp;
+	while (e > 0n) {
+		if (e & 1n) result = edMod(result * b);
+		b = edMod(b * b);
+		e >>= 1n;
+	}
+	return result;
+}
+const edInv = (a: bigint) => edPow(a, ED_P - 2n);
+const ED_D = edMod(-121665n * edInv(121666n));
+const ED_SQRT_M1 = edPow(2n, (ED_P - 1n) / 4n);
+
+type EdPoint = { x: bigint; y: bigint };
+
+/** RFC 8032 §5.1.3 decoding, refusing non-canonical encodings. Null if invalid. */
+export function decodeEd25519Point(bytes: Uint8Array): EdPoint | null {
+	if (bytes.length !== 32) return null;
+	const sign = (bytes[31] as number) >> 7;
+	let y = 0n;
+	for (let i = 31; i >= 0; i--)
+		y =
+			(y << 8n) |
+			BigInt(i === 31 ? (bytes[i] as number) & 0x7f : (bytes[i] as number));
+	if (y >= ED_P) return null;
+	const y2 = edMod(y * y);
+	const u = edMod(y2 - 1n);
+	const v = edMod(ED_D * y2 + 1n);
+	const v3 = edMod(v * v * v);
+	let x = edMod(u * v3 * edPow(u * v3 * v3 * v, (ED_P - 5n) / 8n));
+	const vx2 = edMod(v * x * x);
+	if (vx2 === edMod(-u)) x = edMod(x * ED_SQRT_M1);
+	else if (vx2 !== u) return null;
+	if (x === 0n && sign === 1) return null;
+	if (Number(x & 1n) !== sign) x = edMod(-x);
+	return { x, y };
+}
+
+/** Twisted Edwards addition (a = -1); complete, so no special cases. */
+function edAdd(p: EdPoint, q: EdPoint): EdPoint {
+	const t = edMod(ED_D * p.x * q.x * p.y * q.y);
+	return {
+		x: edMod((p.x * q.y + p.y * q.x) * edInv(1n + t)),
+		y: edMod((p.y * q.y + p.x * q.x) * edInv(1n - t)),
+	};
+}
+
+/**
+ * True for a canonical encoding of a point outside the small-order subgroup.
+ * A small-order key (the identity, for one) has signatures anyone can forge.
+ */
+export function isSafeEd25519Key(bytes: Uint8Array): boolean {
+	const a = decodeEd25519Point(bytes);
+	if (!a) return false;
+	let p = a;
+	for (let i = 0; i < 3; i++) p = edAdd(p, p);
+	return !(p.x === 0n && p.y === 1n);
+}
+
 // ------------------------------------------------------------------ COSE keys
 
 export interface CredentialKey {
@@ -392,6 +460,8 @@ export function coseToKey(
 		const x = bytesOf(cose.get(-2), 32);
 		if (kty !== 1 || cose.get(-1) !== 6 || !x)
 			fail("key", "not an Ed25519 OKP key");
+		if (!isSafeEd25519Key(x as Uint8Array))
+			fail("key", "a small-order or non-canonical Ed25519 key");
 		const key = createPublicKey({
 			key: { kty: "OKP", crv: "Ed25519", x: b64(x as Uint8Array) },
 			format: "jwk",

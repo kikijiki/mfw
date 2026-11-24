@@ -370,3 +370,53 @@ describe("relying party and encoding", () => {
 		);
 	});
 });
+
+describe("L4: Ed25519 keys anyone could sign for", () => {
+	const hex = (h: string) => new Uint8Array(Buffer.from(h, "hex"));
+	const ed = (x: Uint8Array) =>
+		new Map<number, CborIn>([
+			[1, 1],
+			[3, -8],
+			[-1, 6],
+			[-2, x],
+		]);
+	const P_LE =
+		"edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f";
+	const cases: [string, string][] = [
+		[
+			"the identity point",
+			"0100000000000000000000000000000000000000000000000000000000000000",
+		],
+		[
+			"the point of order 2 (y = -1)",
+			"ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+		],
+		[
+			"a point of order 4 (y = 0)",
+			"0000000000000000000000000000000000000000000000000000000000000000",
+		],
+		[
+			"a point of order 8",
+			"26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+		],
+		["a non-canonical y (y = p)", P_LE],
+		[
+			"a non-canonical y (y = p + 1, the identity again)",
+			"eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+		],
+		[
+			"x = 0 with the sign bit set",
+			"0100000000000000000000000000000000000000000000000000000000000080",
+		],
+	];
+	for (const [name, x] of cases)
+		test(`refused: ${name}`, () => {
+			expect(
+				refusedWith(register({ cose: ed(hex(x)), alg: "EdDSA" }).run),
+			).toBe("key");
+		});
+
+	test("a real Ed25519 key still registers", () => {
+		expect(refusedWith(register({ alg: "EdDSA" }).run)).toBe("accepted");
+	});
+});
