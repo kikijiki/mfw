@@ -211,6 +211,7 @@ export type AuthRefusalCode =
 	| "invalid_request"
 	| "session_ended"
 	| "passkey_refused"
+	| "passkey_copied"
 	| "passkey_unavailable"
 	| "too_many_passkeys";
 
@@ -887,7 +888,7 @@ export class AuthService {
 		ownerId: string,
 		/** The finishing request's throttle scope: it must be the one that began. */
 		scope: string,
-	): Promise<{ passkeyId: string } | null> {
+	): Promise<{ passkeyId: string } | "counter" | null> {
 		if (!ceremonyFits(ceremony, "login", { scope }, rp)) return null;
 		const parsed = parseAssertionJSON(credential);
 		if (!parsed) return null;
@@ -921,7 +922,7 @@ export class AuthService {
 				console.warn(
 					`[mfw] passkey '${String(row.name)}' (${String(row.id)}) was refused: its signature counter went backwards, so another authenticator may hold a copy of it. If that was not you, revoke it in Settings > Passkeys or with \`mfw auth passkey revoke ${String(row.id)}\`. Revoking it also ends the sessions it signed in and the API tokens they created.`,
 				);
-			return null;
+			return e.reason === "counter" ? "counter" : null;
 		}
 		const updated = await this.db.client.execute({
 			sql: `UPDATE passkeys SET sign_count = ?, backed_up = ?, last_used_at = ?
@@ -991,6 +992,13 @@ export class AuthService {
 					owner.id,
 					scope,
 				));
+			// The signature verified: whoever sent it holds the key, so this is
+			// not a guess and is not charged. It is still refused.
+			if (ok === "counter")
+				throw new AuthRefused(
+					"passkey_copied",
+					"this passkey looks copied; it was refused: sign in with your password and check Settings > Passkeys",
+				);
 			if (!owner || !ok) {
 				await this.recordFailure(scope);
 				if (isProxied(source)) await this.recordFailure(PROXIED_LOGIN_SCOPE);

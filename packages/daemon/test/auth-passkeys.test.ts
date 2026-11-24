@@ -430,10 +430,10 @@ describe("sign-in", () => {
 		const cred = await addPasskey({ signCount: 10 });
 		await passkeyLogin({ use: cred, signCount: 11 });
 		expect(await code(passkeyLogin({ use: cred, signCount: 11 }))).toBe(
-			"passkey_refused",
+			"passkey_copied",
 		);
 		expect(await code(passkeyLogin({ use: cred, signCount: 3 }))).toBe(
-			"passkey_refused",
+			"passkey_copied",
 		);
 		expect(
 			(await passkeyLogin({ use: cred, signCount: 12 })).token,
@@ -952,5 +952,36 @@ describe("L2: a sign-in ceremony belongs to its source", () => {
 		).toBe("passkey_refused");
 		// Same source, fresh ceremony: fine.
 		expect(await code(passkeyLogin({ use: cred }, "10.0.0.1"))).toBe("ok");
+	});
+});
+
+describe("L5: a counter refusal", () => {
+	test("has its own message and is not charged to the throttle", async () => {
+		const cred = await addPasskey({ signCount: 10 });
+		await passkeyLogin({ use: cred, signCount: 11 }, "10.0.0.5");
+		const warn = console.warn;
+		console.warn = () => {};
+		try {
+			for (let i = 0; i < FREE_ATTEMPTS + 2; i++) {
+				const e = await passkeyLogin(
+					{ use: cred, signCount: 3 },
+					"10.0.0.5",
+				).catch((x) => x);
+				expect(e.code).toBe("passkey_copied");
+				expect(e.message).toBe(
+					"this passkey looks copied; it was refused: sign in with your password and check Settings > Passkeys",
+				);
+			}
+		} finally {
+			console.warn = warn;
+		}
+		// The signature was valid each time: not a guess, so no lock.
+		expect(await code(auth.login(PASSWORD, undefined, "10.0.0.5"))).toBe("ok");
+		// A bad signature is still charged.
+		for (let i = 0; i < FREE_ATTEMPTS; i++)
+			await code(passkeyLogin({ use: cred, badSignature: true }, "10.0.0.6"));
+		expect(await code(auth.login(PASSWORD, undefined, "10.0.0.6"))).toBe(
+			"locked",
+		);
 	});
 });

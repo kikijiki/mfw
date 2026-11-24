@@ -67,6 +67,7 @@ const STATUS: Record<AuthRefused["code"], number> = {
 	invalid_request: 400,
 	session_ended: 401,
 	passkey_refused: 401,
+	passkey_copied: 401,
 	passkey_unavailable: 400,
 	too_many_passkeys: 409,
 };

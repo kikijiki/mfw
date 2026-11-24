@@ -992,7 +992,7 @@ async function passkeysInChrome(
 		const cloned = await passkeySignIn();
 		check(
 			"passkeys: a cloned credential (counter regression) is refused",
-			cloned.path === "/mfw/login" && cloned.alert.length > 0,
+			cloned.path === "/mfw/login" && /looks copied/.test(cloned.alert),
 			JSON.stringify(cloned),
 		);
 		check(
