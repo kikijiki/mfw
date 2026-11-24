@@ -179,13 +179,13 @@ function hintFor(kind: string, code: string): string {
 		case "timeout":
 			return "The tool is answering slowly; mfw retries on its own. If it persists, check machine load.";
 		case "stale":
-			return "The probe loop has not reported recently. Re-check now; if it stays stale, restart the daemon.";
+			return "The probe loop has not reported recently. Re-check now; if it stays stale, restart the server.";
 		case "unreachable":
 			return "Check the host is up and reachable over SSH, then re-check.";
 		case "partial-observation":
 			return "Usually clears by itself once the device or its processes stop changing; mfw retries every few seconds.";
 		default:
-			return "Re-check now. If it persists, the daemon log has the probe's full diagnostics.";
+			return "Re-check now. If it persists, the server log has the probe's full diagnostics.";
 	}
 }
 

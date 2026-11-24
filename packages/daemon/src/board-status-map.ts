@@ -9,7 +9,7 @@ import { TASK_STATUSES, type TaskStatus } from "@mfw/core/types";
  * translates through a map the board itself declares in `board.yaml`:
  *
  * ```yaml
- * x-mfw-daemon:
+ * x-mfw:
  *   statusMap:              # mfw status role -> this board's status values
  *     ready: [planned]
  *     in_progress: [doing]
@@ -33,7 +33,7 @@ import { TASK_STATUSES, type TaskStatus } from "@mfw/core/types";
  */
 
 /** The key the map is declared under, and the entry inside it. */
-const EXTENSION_KEY = "x-mfw-daemon";
+const EXTENSION_KEY = "x-mfw";
 const MAP_KEY = "statusMap";
 
 /**
@@ -74,7 +74,7 @@ const list = (values: readonly string[]): string =>
 /** The map to paste into `board.yaml`, one line per role to fill in. */
 function mapToAdd(): string {
 	return [
-		"x-mfw-daemon:",
+		"x-mfw:",
 		`  ${MAP_KEY}:`,
 		...ROLE_PRIORITY.map(
 			(role) => `    ${role}: [<this board's status for ${role}>]`,

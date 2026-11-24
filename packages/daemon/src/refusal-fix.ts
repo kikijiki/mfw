@@ -80,11 +80,11 @@ export const REFUSAL_FIXES: Record<RefusalCode, FixFor> = {
 	// host coordinator state
 	reconciliation: ui(
 		() =>
-			"Nothing to change: host admission recovery is still running and dispatch resumes when it completes. If it does not, check open incidents on the Host Resources page and restart the daemon.",
+			"Nothing to change: host admission recovery is still running and dispatch resumes when it completes. If it does not, check open incidents on the Host Resources page and restart the server.",
 	),
 	coordinator: ui(
 		() =>
-			"Check the host resource store ($MFW_HOME/host) for the error shown on the Host Resources page, then restart the daemon.",
+			"Check the host resource store ($MFW_HOME/host) for the error shown on the Host Resources page, then restart the server.",
 	),
 	fifo: ui(
 		(ids) =>
@@ -233,7 +233,7 @@ export const REFUSAL_FIXES: Record<RefusalCode, FixFor> = {
 	// experimental remote targets (remote-experimental.ts)
 	remote_target_disabled: () => ({
 		kind: "setting",
-		text: "Remote targets (ssh, runpod) are experimental and off by default. Set MFW_EXPERIMENTAL_REMOTE=1 for the daemon to enable them, or use execution_target: local.",
+		text: "Remote targets (ssh, runpod) are experimental and off by default. Set MFW_EXPERIMENTAL_REMOTE=1 for the server to enable them, or use execution_target: local.",
 	}),
 	remote_autonomy_unsupported: () => ({
 		kind: "setting",
@@ -246,15 +246,15 @@ export const REFUSAL_FIXES: Record<RefusalCode, FixFor> = {
 	),
 	reconciliation_uncertain: ui(
 		() =>
-			"Nothing to change: the next reconcile retries; if it persists, restart the daemon.",
+			"Nothing to change: the next reconcile retries; if it persists, restart the server.",
 	),
 	project_slot_recovery: ui(
 		() =>
-			"Nothing to change: project slot recovery retries on its own; if it persists, restart the daemon.",
+			"Nothing to change: project slot recovery retries on its own; if it persists, restart the server.",
 	),
 	compensation: ui(
 		() =>
-			"Nothing to change: the release is retried each tick; if it persists, check the daemon log for the failing step and restart the daemon.",
+			"Nothing to change: the release is retried each tick; if it persists, check the server log for the failing step and restart the server.",
 	),
 };
 

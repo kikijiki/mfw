@@ -41,7 +41,7 @@ const PLANNING_YAML: Record<string, unknown> = {
 			},
 		},
 	},
-	"x-mfw-daemon": { statusMap: PLANNING_STATUS_MAP },
+	"x-mfw": { statusMap: PLANNING_STATUS_MAP },
 };
 
 const MFW_STATUSES = [
@@ -76,7 +76,7 @@ describe("reading a board status", () => {
 	test("a value listed second loses to a role that listed it first", () => {
 		const map = mapOf({
 			...structuredClone(PLANNING_YAML),
-			"x-mfw-daemon": {
+			"x-mfw": {
 				statusMap: { ready: ["done", "planned"], backlog: ["planned"] },
 			},
 		});
@@ -86,7 +86,7 @@ describe("reading a board status", () => {
 	test("with no first-listing role, the fixed priority decides", () => {
 		const map = mapOf({
 			...structuredClone(PLANNING_YAML),
-			"x-mfw-daemon": {
+			"x-mfw": {
 				statusMap: {
 					ready: ["done", "planned"],
 					backlog: ["deferred", "planned"],
@@ -99,12 +99,12 @@ describe("reading a board status", () => {
 	test("a board status no role lists cannot be read", () => {
 		const map = mapOf({
 			...structuredClone(PLANNING_YAML),
-			"x-mfw-daemon": {
+			"x-mfw": {
 				statusMap: { ready: ["planned"], in_progress: ["doing"] },
 			},
 		});
 		expect(() => map.toCanonical("dropped")).toThrow(StatusMapError);
-		expect(() => map.toCanonical("dropped")).toThrow(/x-mfw-daemon\.statusMap/);
+		expect(() => map.toCanonical("dropped")).toThrow(/x-mfw\.statusMap/);
 	});
 });
 
@@ -121,7 +121,7 @@ describe("writing a daemon status", () => {
 		for (const role of ["draft", "review"] as const) {
 			expect(() => map.toBoard(role)).toThrow(StatusMapError);
 			expect(() => map.toBoard(role)).toThrow(new RegExp(`'${role}'`));
-			expect(() => map.toBoard(role)).toThrow(/x-mfw-daemon\.statusMap/);
+			expect(() => map.toBoard(role)).toThrow(/x-mfw\.statusMap/);
 			expect(() => map.toBoard(role)).toThrow(/Add/);
 		}
 	});
@@ -129,7 +129,7 @@ describe("writing a daemon status", () => {
 	test("an empty list is no board equivalent either", () => {
 		const map = mapOf({
 			...structuredClone(PLANNING_YAML),
-			"x-mfw-daemon": {
+			"x-mfw": {
 				statusMap: { ...PLANNING_STATUS_MAP, draft: [] },
 			},
 		});
@@ -159,14 +159,14 @@ describe("with no statusMap", () => {
 
 	test("a board with its own statuses fails, listing them and the map to add", () => {
 		const raw = structuredClone(PLANNING_YAML) as Record<string, unknown>;
-		delete raw["x-mfw-daemon"];
+		delete raw["x-mfw"];
 		expect(() => mapOf(raw)).toThrow(StatusMapError);
 		expect(() => mapOf(raw)).toThrow(/'planned'/);
 		expect(() => mapOf(raw)).toThrow(/'doing'/);
 		expect(() => mapOf(raw)).toThrow(/'deferred'/);
 		// 'done' already is an mfw status, so it is not unmapped.
 		expect(() => mapOf(raw)).not.toThrow(/'done'/);
-		expect(() => mapOf(raw)).toThrow(/x-mfw-daemon:\n {2}statusMap:/);
+		expect(() => mapOf(raw)).toThrow(/x-mfw:\n {2}statusMap:/);
 		expect(() => mapOf(raw)).toThrow(/ready: \[/);
 	});
 });
@@ -176,7 +176,7 @@ describe("map validation", () => {
 		expect(() =>
 			mapOf({
 				...structuredClone(PLANNING_YAML),
-				"x-mfw-daemon": { statusMap: { shipped: ["planned"] } },
+				"x-mfw": { statusMap: { shipped: ["planned"] } },
 			}),
 		).toThrow(/'shipped' is not an mfw status/);
 	});
@@ -185,7 +185,7 @@ describe("map validation", () => {
 		expect(() =>
 			mapOf({
 				...structuredClone(PLANNING_YAML),
-				"x-mfw-daemon": { statusMap: { ready: ["parked"] } },
+				"x-mfw": { statusMap: { ready: ["parked"] } },
 			}),
 		).toThrow(/'parked' is not a value of the task type's 'status' field/);
 	});
@@ -194,7 +194,7 @@ describe("map validation", () => {
 		expect(() =>
 			mapOf({
 				...structuredClone(PLANNING_YAML),
-				"x-mfw-daemon": { statusMap: "ready" },
+				"x-mfw": { statusMap: "ready" },
 			}),
 		).toThrow(/statusMap must be a mapping/);
 	});

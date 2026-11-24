@@ -204,7 +204,7 @@ describe("inspectBoardFolder: status map", () => {
 
 		expect(result.valid).toBe(true);
 		expect(result.statusRoles).toBeNull();
-		expect(result.statusMapError).toContain("x-mfw-daemon");
+		expect(result.statusMapError).toContain("x-mfw");
 	});
 
 	test("a template board reports each status's daemon role", async () => {

@@ -1138,7 +1138,7 @@ export class TaskService {
 		if (!this.suspended) return;
 		throw new Error(
 			`the board is suspended (see board.suspended), refusing to ${what} a ` +
-				"board the daemon does not currently believe. Restore the checkout " +
+				"board the server does not currently believe. Restore the checkout " +
 				"first, then try again.",
 		);
 	}

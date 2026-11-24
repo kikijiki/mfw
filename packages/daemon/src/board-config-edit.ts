@@ -17,7 +17,7 @@ import { git } from "./git.ts";
 
 /**
  * Structured edits of a board's own configuration (`board.yaml`): the task
- * status list, which daemon role each status plays (`x-mfw-daemon.statusMap`),
+ * status list, which daemon role each status plays (`x-mfw.statusMap`),
  * the task `type` values and the hierarchy depth limit.
  *
  * The file is edited through the `yaml` Document API, so comments, key order
@@ -29,7 +29,7 @@ import { git } from "./git.ts";
  * refused (naming the tasks) unless `remapTo` says where they go.
  */
 
-const EXTENSION_KEY = "x-mfw-daemon";
+const EXTENSION_KEY = "x-mfw";
 const MAP_KEY = "statusMap";
 /** Order roles are written in, matching the board templates. */
 const ROLE_ORDER: readonly TaskStatus[] = [

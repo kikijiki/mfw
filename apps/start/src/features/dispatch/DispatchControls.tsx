@@ -540,10 +540,10 @@ function MfwStatusGroup({
 	const token = failed && word === "running" ? "--mfw-warn" : DOT[word];
 	const connectionNote =
 		connection === "offline"
-			? "The daemon is not reachable."
+			? "The server is not reachable."
 			: connection === "reconnecting"
-				? "Reconnecting to the daemon."
-				: "Connected to the daemon.";
+				? "Reconnecting to the server."
+				: "Connected to the server.";
 	const tip = `mfw ${word}. ${connectionNote} ${detail}`;
 	const dot = (
 		<span

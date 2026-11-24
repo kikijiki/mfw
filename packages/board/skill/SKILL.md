@@ -1,13 +1,13 @@
 ---
 name: mfw-board
-description: "Operate a markdown board (tasks, specs, ADRs, any config-defined document types) from the terminal with mfw board, no daemon required. Use when the user asks to list, show, create, update or check documents, find what is ready to work on, start/finish/defer a task (config-declared transitions), edit list fields or checklists, manage parent/child hierarchy, claim a task for a worktree, or install this skill. Do not edit board files by hand with Read/Edit/Write - mfw board goes through the real lock + validation path those tools skip."
+description: "Operate a markdown board (tasks, specs, ADRs, any config-defined document types) from the terminal with mfw board, no server required. Use when the user asks to list, show, create, update or check documents, find what is ready to work on, start/finish/defer a task (config-declared transitions), edit list fields or checklists, manage parent/child hierarchy, claim a task for a worktree, or install this skill. Do not edit board files by hand with Read/Edit/Write - mfw board goes through the real lock + validation path those tools skip."
 ---
 
 # mfw-board: the board CLI
 
-A plain CLI over the same `@mfw/board`/`@mfw/board-core` store the daemon
-uses - same locks, same validation, same files. It needs no daemon running;
-it's also perfectly safe to run **while** the daemon is attached to the same
+A plain CLI over the same `@mfw/board`/`@mfw/board-core` store mfw-server
+uses - same locks, same validation, same files. It needs no server running;
+it's also perfectly safe to run **while** mfw-server is attached to the same
 project, since both go through the same per-document and named locks.
 
 Typical flow on a board with workflow config: `mfw board ready` (what can start) ->
@@ -431,8 +431,7 @@ Everything project-specific lives in the board's `board.yaml` (`mfw: 1` plus
 
 ## What this does NOT do
 
-- No scheduling, no agent dispatch, no worktrees, no merging - that's the
-  daemon (`packages/daemon`, run via `bun run start`/the `mfw` systemd
-  service). `mfw board` only reads and writes board documents (and claim bindings).
-- No comments/review state (that's still daemon+SQLite, not board-core
+- No scheduling, no agent dispatch, no workspaces, no merging - that's
+  `mfw-server` (`mfw server`, or the `mfw-server` systemd user service). `mfw board` only reads and writes board documents (and claim bindings).
+- No comments/review state (that's mfw-server and its SQLite, not board-core
   documents).

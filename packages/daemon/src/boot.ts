@@ -2712,7 +2712,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 		await daemonLock
 			.release()
 			.catch((cleanupError) => failures.push(cleanupError));
-		throw new AggregateError(failures, "orchestrator boot failed");
+		throw new AggregateError(failures, "server boot failed");
 	}
 
 	log.info({ projects: [...projects.keys()] }, "orchestrator ready");

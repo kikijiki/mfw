@@ -129,7 +129,7 @@ nothing.
 
 `/p/$project` is **Lead** (`lead/LeadPage`): the mechanical headline (`inbox.headlines`, each number a link), the brain's paragraph (its latest plan, labelled "brain's words") and standing intent (`brain.intents`), this project's needs (`inbox.list` through `useInbox`) and live runs, then one-click drill-down to Board, Flow, docs, repo and triggers; pure rules in `lead/lead.ts`. It stacks to one column on a phone and takes two from `lg`. The page that was `/fleet` is labelled **Capacity** everywhere (the route path is unchanged). There are no Now, Inbox, History, Agents or review-list routes: Home is the queue.
 
-Note: `/settings` covers projects, providers and appearance (no daemon
+Note: `/settings` covers projects, providers and appearance (no server
 section), and **per-project configuration is a route, not a tab of
 `/settings`** (`/p/$project/settings`), so there is no project picker inside a
 settings screen.
@@ -232,7 +232,7 @@ How it works, in `tools/screenshots/`:
   derives the span timeline, `recordSpend`, the brain tables as
   `BrainActionService.act` writes them), offline and in time order, because a
   real fake-agent run goes through tmux and takes wall-clock minutes, so
-  history could not be days old with controlled costs. The daemon then boots on
+  history could not be days old with controlled costs. The server then boots on
   top of it and supervises it as usual. The project with live runs is attached
   last, after their tmux sessions exist (each project's boot reconcile kills
   tmux sessions it does not own, see `supervisor.ts`).

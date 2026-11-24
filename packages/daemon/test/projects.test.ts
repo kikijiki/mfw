@@ -147,7 +147,7 @@ describe("adding a project", () => {
 
 		const yaml = await readFile(join(board, "board.yaml"), "utf8");
 		expect(yaml).toContain("values: [todo, doing, review, done]");
-		expect(yaml).toContain("x-mfw-daemon:");
+		expect(yaml).toContain("x-mfw:");
 		const stored = (await loadConfig()).projects[0] as Record<string, unknown>;
 		expect(stored.boardRoot).toBe(board);
 		expect(stored).not.toHaveProperty("template");

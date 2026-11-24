@@ -1,7 +1,7 @@
 # mfw-server: home-manager systemd user service (unit `mfw-server`).
 #
 # A per-user service (mfw needs your home, your tmux, and your Claude
-# subscription auth). One Bun process boots the orchestrator in-process, serves
+# subscription auth). One Bun process, mfw-server, runs the engine in-process, serves
 # the UI, and exposes tRPC on :7777.
 #
 # Two ways to run it:
@@ -90,7 +90,7 @@ in {
 
   config.systemd.user.services.mfw-server = {
     Unit = {
-      Description = "mfw: local autonomous project orchestrator (loopback)";
+      Description = "mfw-server: the mfw server (API, web UI and agent runs, loopback)";
       After = ["network.target"];
     };
     Service = {
@@ -115,17 +115,17 @@ in {
       Restart = "on-failure";
       RestartSec = 5;
 
-      # Agent runs are detached tmux sessions meant to survive a daemon restart,
+      # Agent runs are detached tmux sessions meant to survive a server restart,
       # the supervisor re-adopts them on boot. systemd's default KillMode of
       # control-group silently broke that: every restart killed the in-flight
       # runs, which then finalized as "session ended without recording an exit".
-      # `process` signals only the daemon.
+      # `process` signals only the server.
       #
       # Trade-off: `systemctl --user stop mfw-server` leaves running agents alive. Stop
       # them from the UI, or `tmux -L mfw kill-server` to clear them by hand.
       KillMode = "process";
 
-      # A child being OOM-killed must not tear the orchestrator down with it.
+      # A child being OOM-killed must not tear the server down with it.
       OOMPolicy = "continue";
 
       # Hardening that costs mfw nothing: bwrap needs no privileges (it uses an

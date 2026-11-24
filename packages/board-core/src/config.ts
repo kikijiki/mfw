@@ -292,7 +292,7 @@ export interface BoardConfig {
 	/** Tables whose open rows each document set must cover. */
 	coverage?: readonly CoverageRule[];
 	/** Top-level `x-...` keys of `board.yaml`: kept verbatim, never validated
-	 * here. An extension (e.g. `x-mfw-daemon`) declares what it means; the
+	 * here. An extension (e.g. `x-mfw`) declares what it means; the
 	 * engine only guarantees the REST of the file is well-formed. */
 	extensions?: Record<string, unknown>;
 }

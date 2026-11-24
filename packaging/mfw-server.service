@@ -1,4 +1,4 @@
-# mfw daemon: systemd user service.
+# mfw-server: systemd user service.
 # Install:  cp packaging/mfw-server.service ~/.config/systemd/user/
 #           systemctl --user daemon-reload
 #           systemctl --user enable --now mfw-server
@@ -6,7 +6,7 @@
 # First run: the setup token is in $MFW_HOME/setup-token (never in the log), or
 #           run `mfw auth setup-token`. Recovery: `mfw auth --help`.
 [Unit]
-Description=mfw: local autonomous project orchestrator
+Description=mfw-server: the mfw server (API, web UI and agent runs)
 After=network.target
 
 [Service]
@@ -19,7 +19,7 @@ Type=simple
 # Use that line in place of the two below.
 #
 # From a checkout (development): adjust WorkingDirectory to it. The single app
-# serves UI + /api/trpc and boots the orchestrator in-process. Build once
+# serves UI + /api/trpc and runs the engine in-process. Build once
 # (`bun run build`) then run the Nitro (bun-preset) server output under Bun.
 WorkingDirectory=%h/dev/mfw
 ExecStart=/usr/bin/env bun run apps/start/.output/server/index.mjs
@@ -39,17 +39,17 @@ Environment=HOST=127.0.0.1
 #Environment=MFW_LISTEN_SOCKET=%h/.local/share/mfw/serve/mfw.sock
 #Environment=MFW_ALLOWED_HOSTS=mybox.tail1234.ts.net:8443
 
-# Agent runs are detached tmux sessions that are meant to survive a daemon
+# Agent runs are detached tmux sessions that are meant to survive a server
 # restart, the supervisor re-adopts them on boot. The default KillMode of
 # control-group kills the entire cgroup on stop/restart, which silently broke
 # that: every restart killed the in-flight runs, and they finalized as
-# "session ended without recording an exit". `process` signals only the daemon.
+# "session ended without recording an exit". `process` signals only the server.
 #
 # Trade-off: `systemctl --user stop mfw-server` now leaves running agents alive. Stop
 # them from the UI first, or `tmux -L mfw kill-server` to clear them by hand.
 KillMode=process
 
-# A child being OOM-killed must not tear down the orchestrator with it.
+# A child being OOM-killed must not tear down the server with it.
 OOMPolicy=continue
 
 # Runs live under this unit's cgroup, so a runaway agent build is accounted here.

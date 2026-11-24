@@ -143,10 +143,10 @@ describe("parseBoardConfig: x- extension keys", () => {
 		const statusMap = { ready: ["planned"], in_progress: ["doing"] };
 		const cfg = parseBoardConfig({
 			...TK_CONFIG,
-			"x-mfw-daemon": { statusMap },
+			"x-mfw": { statusMap },
 		});
 		expect(cfg.extensions).toEqual({
-			"x-mfw-daemon": { statusMap },
+			"x-mfw": { statusMap },
 		});
 		// Nothing else changed: extensions are not merged into the schema's own keys.
 		expect(cfg.mfw).toBe(1);

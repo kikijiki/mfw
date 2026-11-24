@@ -69,7 +69,7 @@ function acceptanceState(
 		path,
 		`type '${TASK_TYPE}' already declares a field '${ACCEPTANCE_FIELD}' that is not a checklist ` +
 			`(mfw keeps acceptance criteria there as '${FIELD_LINE}'). ` +
-			"Rename that field or change it to a checklist, then restart the daemon.",
+			"Rename that field or change it to a checklist, then restart the server.",
 	);
 }
 

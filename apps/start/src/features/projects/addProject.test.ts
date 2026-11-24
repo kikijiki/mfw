@@ -135,10 +135,10 @@ describe("describeInspection", () => {
 
 	test("a board whose statuses cannot be mapped blocks Add with the fix", () => {
 		const view = describeInspection(
-			found({ statusRoles: null, statusMapError: "add x-mfw-daemon" }),
+			found({ statusRoles: null, statusMapError: "add x-mfw" }),
 		);
 		expect(view).toMatchObject({ kind: "invalid", canAdd: false });
-		expect(view.detail).toBe("add x-mfw-daemon");
+		expect(view.detail).toBe("add x-mfw");
 	});
 });
 

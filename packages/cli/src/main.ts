@@ -68,7 +68,7 @@ export const USAGE = [
 	"  env ...       owner tools for each project's dev environment: status, allow, deny, build",
 	"  init          guided first run: doctor, setup token path, minimal project config",
 	"  mcp [--token-file <path>]   MCP server over stdio, using a scoped API token",
-	"  server        run the orchestrator + web UI in the foreground",
+	"  server        run mfw-server (engine, API and web UI) in the foreground",
 	"  version       print the versions, the build and its integrity hashes",
 ].join("\n");
 
@@ -172,7 +172,7 @@ export async function dispatch(argv: string[], d: Deps): Promise<number> {
 		case "server": {
 			if (rest.includes("--help") || rest.includes("-h")) {
 				d.out(
-					"usage: mfw server   (foreground: orchestrator + web UI on $HOST:$PORT)",
+					"usage: mfw server   (mfw-server in the foreground: engine, API and web UI on $HOST:$PORT)",
 				);
 				return 0;
 			}

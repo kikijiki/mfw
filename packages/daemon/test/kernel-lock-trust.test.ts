@@ -138,7 +138,7 @@ describe("init --write words a lock failure truthfully", () => {
 			new DaemonLockError("/x", "flock is missing", false),
 		);
 		expect(text).not.toContain("the server is running");
-		expect(text).toContain("could not take the daemon lock");
+		expect(text).toContain("could not take the server lock");
 		expect(lockRefusal(new DaemonLockError("/x", "held", true))).toContain(
 			"the server is running",
 		);

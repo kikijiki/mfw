@@ -334,7 +334,7 @@ export async function detectSystemdUser(
 			hostKind === "wsl2"
 				? "enable systemd in WSL2: put `[boot]` and `systemd=true` in /etc/wsl.conf, then run `wsl --shutdown` from Windows and reopen the distro"
 				: hostKind === "container"
-					? "run the daemon on a host with a systemd user session (containers have no user manager); autonomous runs are not supported in this container"
+					? "run the server on a host with a systemd user session (containers have no user manager); autonomous runs are not supported in this container"
 					: "start a systemd user session (log in through a login manager or `loginctl enable-linger $USER`, and make sure XDG_RUNTIME_DIR is set)";
 		return {
 			...base,

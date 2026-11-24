@@ -219,7 +219,7 @@ async function currentBranch(root: string): Promise<string | null> {
 export function lockRefusal(e: unknown): string {
 	return e instanceof DaemonLockError && e.busy
 		? "the server is running. Stop it, or add the project in the web UI"
-		: `could not take the daemon lock: ${(e as Error).message}`;
+		: `could not take the server lock: ${(e as Error).message}`;
 }
 
 const PROJECT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;

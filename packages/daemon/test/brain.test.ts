@@ -197,8 +197,7 @@ const CRITIC_OK = JSON.stringify({
 	accepted: true,
 	criteria: [
 		{
-			criterion:
-				"Deliver the task goal described above (implicit criterion).",
+			criterion: "Deliver the task goal described above (implicit criterion).",
 			verdict: "met",
 			evidenceClass: "source-confirmed",
 			evidence: "The diff implements the requested change.",
@@ -667,8 +666,7 @@ describe("BrainService: orphans, supersede, caps, disabled", () => {
 	});
 });
 
-const LEGACY =
-	"Deliver the task goal described above (implicit criterion).";
+const LEGACY = "Deliver the task goal described above (implicit criterion).";
 
 function criticAnswer(
 	verdict: string,

@@ -3,12 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { appRouter } from "@mfw/api";
 import { formatFlowFilter, parseFlowFilter } from "./features/flow/flowModel";
-import {
-	href,
-	NODE_SEARCH_KEYS,
-	parseNodeSearch,
-	ROUTES,
-} from "./routes";
+import { href, NODE_SEARCH_KEYS, parseNodeSearch, ROUTES } from "./routes";
 
 /**
  * The route table names the procedures each screen reads. A rename on the API
@@ -369,5 +364,4 @@ describe("the Fleet routes", () => {
 		expect(splat).toContain("notFound()");
 		expect(splat).not.toContain("redirect(");
 	});
-
 });

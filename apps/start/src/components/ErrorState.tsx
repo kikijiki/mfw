@@ -109,7 +109,7 @@ export function DaemonUnreachableBanner({
 				style={{ color: "var(--mfw-critical)" }}
 			/>
 			<span>
-				Daemon unreachable
+				Server unreachable
 				{lastContactAt ? ` since ${formatRelative(lastContactAt)}` : ""}: what
 				you see is the last known state.
 			</span>

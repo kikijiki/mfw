@@ -13,11 +13,11 @@ mfw is three things that fit together. You can use the first on its own.
 | Part | What it is | Use it to |
 | --- | --- | --- |
 | [**Board tool**](#1-the-board-tool-mfw-board) (`mfw-board`) | A command-line tool for a folder of task files | Keep and query a project's tasks and decisions, see what is ready to work on, plan work that can run in parallel |
-| [**Daemon**](#2-the-daemon) | A background engine | Run agents on ready tasks automatically, verify their work and merge it |
+| [**Server**](#2-the-server-mfw-server) (`mfw-server`) | A background engine | Run agents on ready tasks automatically, verify their work and merge it |
 | [**Web UI**](#3-the-web-ui) | A website served from your machine | Watch and steer everything: the board, running agents, reviews |
 
 ```
-  you ──► Web UI ──► Daemon ──► coding agents working in git
+  you ──► Web UI ──► mfw-server ──► coding agents working in git
               │         │
               └─────────┴──► Board: plain task files in a folder  ◄── mfw-board (CLI)
 ```
@@ -58,9 +58,9 @@ different projects. Every command is explained in
 [packages/board/README.md](packages/board/README.md). `mfw board skill install` also
 teaches your coding agents (Claude Code, Codex, opencode, pi) how to use it.
 
-## 2. The daemon
+## 2. The server (mfw-server)
 
-The daemon is the engine that does the work. For each project you attach, it:
+`mfw-server` is the engine that does the work. For each project you attach, it:
 
 - **Picks ready tasks** in dependency order, and runs several at once.
 - **Gives each task its own private clone of the repository**, so agents never
@@ -70,7 +70,7 @@ The daemon is the engine that does the work. For each project you attach, it:
   (ACP), such as Cursor, Gemini CLI, opencode and pi, have no sandbox profile yet,
   so they cannot run locally ([experimental](docs/experimental.md#acp-agents)).
   Every run is sandboxed; there is no setting to turn that off. Each agent runs in its own
-  session that survives restarts of the daemon, and you can steer or stop it while
+  session that survives restarts of the server, and you can steer or stop it while
   it works.
 - **Works in a private clone per run** under `$MFW_HOME/workspaces`, never inside
   your checkout. The host never runs git in it: the run's commits come back as a
@@ -323,7 +323,7 @@ Run these on the host, outside any agent sandbox:
 
 Failed sign-ins are limited per address (behind a trusted proxy, per forwarded
 client), and all of loopback counts as one address. A sandboxed agent has its own
-network namespace and cannot reach the daemon on loopback, so it cannot use up
+network namespace and cannot reach the server on loopback, so it cannot use up
 your limit. Another local process sharing loopback with you can slow your
 sign-in; `mfw auth unlock` clears it.
 
@@ -431,7 +431,7 @@ The project brain does not use tokens: it talks over its own unix socket.
 
 The [architecture overview](docs/architecture-overview.md) explains the components,
 the launch chain, the run lifecycle and where state lives. The short version: one app (a [TanStack Start](https://tanstack.com/start) server) runs the
-daemon in-process, serves the web UI and a typed API, and keeps run bookkeeping in
+engine in-process, serves the web UI and a typed API, and keeps run bookkeeping in
 a local SQLite database. The board itself is always just files.
 
 | Document | Covers |
@@ -451,13 +451,13 @@ packages/
   board/       mfw-board, the board CLI, and the agent skill
   core/        shared types and task-graph logic
   db/          database schema and event log
-  daemon/      the daemon: scheduler, agent runs, verification, merging
-  api/         the typed API between the UI and the daemon
+  daemon/      the engine: scheduler, agent runs, verification, merging
+  api/         the typed API between the UI and the engine
   mcp/         the MCP server for agents (run as `mfw mcp`)
   cli/         `mfw`, the dispatcher: `mfw board`, `mfw mcp`, `mfw server`, `mfw version`;
                compiled, also every host process (`mfw __host`)
 apps/
-  start/       the app: web UI + API, boots the daemon
+  start/       the app: web UI + API, runs the engine (mfw-server)
 packaging/     systemd and NixOS service files, the Nix package, the pinned bun
 tools/         small operator scripts
 ```
@@ -510,7 +510,7 @@ Without `MFW_REQUIRE_LIVE_NIX=1`, a missing direnv, mise or devenv skips only th
 cases that need it (`[dev-env-apply-live mise] skipped: mise is not on PATH: ...`).
 
 Each agent runs in a detached tmux session with its output on disk under
-`<project>/.mfw/runs/<id>/`, so runs survive daemon restarts and are picked up
+`<project>/.mfw/runs/<id>/`, so runs survive server restarts and are picked up
 again on boot. For a sandboxed task or repair run the agent itself runs in the
 sandbox behind a host bridge, so the tmux pane does not carry the agent's output:
 read the run in the UI or its `events.jsonl`, not by attaching to tmux.

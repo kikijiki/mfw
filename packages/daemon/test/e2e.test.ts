@@ -780,7 +780,7 @@ describe("single-daemon safety", () => {
 
 	test("a LIVE lock from another daemon blocks the attach", async () => {
 		// Stops a second orchestrator (dev server, stray `bun start`) from putting
-		// two supervisors on one board. `MFW_DISABLE_ORCHESTRATOR` is not a substitute.
+		// two supervisors on one board. `MFW_SERVE_UI_ONLY` is not a substitute.
 		const root = await makeRepo();
 		await mkdir(join(root, ".mfw"), { recursive: true });
 		const liveLock = await acquireKernelLock(join(root, ".mfw/daemon.lock"));

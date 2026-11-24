@@ -1441,7 +1441,7 @@ function friendlyAuditActor(value: string): string {
 	const labels: Record<string, string> = {
 		"observation-service": "Probe service",
 		"local-operator": "Local operator",
-		orchestrator: "MFW",
+		orchestrator: "mfw-server",
 		coordinator: "Host coordinator",
 		"host-policy": "Host policy",
 		owner: "Run owner",

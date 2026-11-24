@@ -7,7 +7,7 @@ directory, and nothing in it is read from a checkout:
 <prefix>/bin/mfw               the CLI and every host process (compiled)
 <prefix>/bin/mfw-board         the board CLI (compiled)
 <prefix>/lib/mfw/install.json  the install manifest: a sha256 for each part
-<prefix>/lib/mfw/server/       the server bundle (`mfw-server`: daemon, API, UI)
+<prefix>/lib/mfw/server/       the server bundle (`mfw-server`: engine, API, UI)
 <prefix>/lib/mfw/public/       the web UI's assets
 <prefix>/lib/mfw/runtime/bun   the pinned bun that runs the server (tarball installs)
 <prefix>/share/mfw/            third-party notices for the executables
@@ -47,7 +47,7 @@ runs the same bundle, but from the working tree.
 
 `mfw` cannot refuse bun's runtime variables itself: `BUN_OPTIONS` preloads code
 before any of its own code runs, and `BUN_BE_BUN` makes it a plain bun. The
-daemon never passes them. If you set one in your own shell, or in a unit you
+server never passes them. If you set one in your own shell, or in a unit you
 write, and run `mfw` there, that code runs with your own rights. Keep them out
 of the environment `mfw server` starts in.
 
