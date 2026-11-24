@@ -283,6 +283,132 @@ describe("assertion", () => {
 	});
 });
 
+describe("M1: the key's whole shape, not its alg label", () => {
+	const random32 = () => new Uint8Array(randomBytes(32));
+	const p384 = () => {
+		const jwk = generateKeyPairSync("ec", {
+			namedCurve: "P-384",
+		}).publicKey.export({ format: "jwk" }) as { x: string; y: string };
+		return new Map<number, CborIn>([
+			[1, 2],
+			[3, COSE_ES256],
+			[-1, 2],
+			[-2, new Uint8Array(Buffer.from(jwk.x, "base64url"))],
+			[-3, new Uint8Array(Buffer.from(jwk.y, "base64url"))],
+		]);
+	};
+	const p256As = (alg: number) => {
+		const k = coseKey(
+			generateKeyPairSync("ec", { namedCurve: "P-256" }).publicKey,
+			"ES256",
+		);
+		k.set(3, alg);
+		return k;
+	};
+	const okp = (alg: number, crv: number, x: Uint8Array) =>
+		new Map<number, CborIn>([
+			[1, 1],
+			[3, alg],
+			[-1, crv],
+			[-2, x],
+		]);
+	const cases: [string, () => Map<number, CborIn>][] = [
+		[
+			"an OKP identity point labelled ES256",
+			() => okp(COSE_ES256, 6, hex(IDENTITY)),
+		],
+		["a random OKP key labelled ES256", () => okp(COSE_ES256, 6, random32())],
+		["an EC2 P-384 key labelled ES256", p384],
+		["an EC2 P-256 key labelled EdDSA", () => p256As(COSE_EDDSA)],
+		["an OKP key with an X25519 crv", () => okp(COSE_EDDSA, 4, random32())],
+		[
+			"an EC2 P-256 key with a short x",
+			() => {
+				const k = p256As(COSE_ES256);
+				k.set(-2, new Uint8Array(31));
+				return k;
+			},
+		],
+	];
+	for (const [name, cose] of cases) {
+		test(`registration refuses ${name}`, async () => {
+			const r = register({ cose: cose() });
+			expect(await libraryVerdict(r.libraryAlone)).toBe("accepted");
+			try {
+				await r.run();
+				throw new Error("accepted");
+			} catch (e) {
+				expect(isWebAuthnError(e) && e.reason).toBe("key");
+				expect((e as Error).message).toBe("unsupported credential key");
+			}
+		});
+		test(`sign-in refuses a stored ${name}`, async () => {
+			const r = register();
+			const json = parseAssertionJSON(
+				r.soft.get(
+					{ challenge: CHALLENGE, rpId: RP.rpId },
+					{ use: r.credential },
+				),
+			)?.response;
+			if (!json) throw new Error("malformed");
+			expect(
+				await refusedWith(() =>
+					verifyAssertion(
+						json,
+						{ id: json.id, publicKey: encodeCbor(cose()), signCount: 0 },
+						{ challenge: CHALLENGE, rp: RP },
+					),
+				),
+			).toBe("key");
+		});
+	}
+
+	test("the forgery under an OKP identity point labelled ES256 verifies in the library alone", async () => {
+		const publicKey = encodeCbor(okp(COSE_ES256, 6, hex(IDENTITY)));
+		const json = parseAssertionJSON(
+			new SoftAuthenticator(RP.origin).get(
+				{ challenge: CHALLENGE, rpId: RP.rpId },
+				{
+					use: {
+						id: new Uint8Array([1, 2, 3]),
+						alg: "EdDSA",
+						privateKey: generateKeyPairSync("ed25519").privateKey,
+						publicKey: generateKeyPairSync("ed25519").publicKey,
+						rpId: RP.rpId,
+						userHandle: new Uint8Array(4),
+						signCount: 0,
+					},
+					signature: new Uint8Array([...hex(IDENTITY), ...new Uint8Array(32)]),
+				},
+			),
+		)?.response;
+		if (!json) throw new Error("malformed");
+		const alone = () =>
+			verifyAuthenticationResponse({
+				response: json,
+				expectedChallenge: CHALLENGE,
+				expectedOrigin: RP.origin,
+				expectedRPID: RP.rpId,
+				credential: {
+					id: json.id,
+					publicKey: new Uint8Array(publicKey),
+					counter: 0,
+				},
+				requireUserVerification: true,
+			}).then((v) => v.verified);
+		expect(await libraryVerdict(alone)).toBe("accepted");
+		expect(
+			await refusedWith(() =>
+				verifyAssertion(
+					json,
+					{ id: json.id, publicKey, signCount: 0 },
+					{ challenge: CHALLENGE, rp: RP },
+				),
+			),
+		).toBe("key");
+	});
+});
+
 describe("policy beyond the library", () => {
 	test("a cross-origin registration: the library accepts it, mfw refuses", async () => {
 		for (const clientData of [

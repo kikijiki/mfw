@@ -87,6 +87,7 @@ async function call(action: string, c: Call = {}): Promise<Response> {
 async function register(
 	soft: SoftAuthenticator,
 	c: Call = {},
+	knobs: Parameters<SoftAuthenticator["create"]>[1] = {},
 ): Promise<Response> {
 	const options = await call("passkey-register-options", {
 		...c,
@@ -97,14 +98,18 @@ async function register(
 		ceremonyId: string;
 		publicKey: Parameters<SoftAuthenticator["create"]>[0];
 	};
-	const { json } = soft.create(begun.publicKey);
+	const { json } = soft.create(begun.publicKey, knobs);
 	return call("passkey-register", {
 		...c,
 		body: { ceremonyId: begun.ceremonyId, credential: json, name: "laptop" },
 	});
 }
 
-async function login(soft: SoftAuthenticator, c: Call = {}) {
+async function login(
+	soft: SoftAuthenticator,
+	c: Call = {},
+	knobs: Parameters<SoftAuthenticator["get"]>[1] = {},
+) {
 	const options = await call("passkey-login-options", {
 		...c,
 		session: null,
@@ -120,7 +125,7 @@ async function login(soft: SoftAuthenticator, c: Call = {}) {
 		session: null,
 		body: {
 			ceremonyId: begun.ceremonyId,
-			credential: soft.get(begun.publicKey),
+			credential: soft.get(begun.publicKey, knobs),
 		},
 	});
 }
@@ -152,6 +157,30 @@ describe("passkey sign-in over HTTP", () => {
 		expect(
 			(await call("passkeys", { session: { token: session.token } })).status,
 		).toBe(403);
+	});
+
+	test("M1: an Ed25519 identity point labelled ES256 cannot be registered, so its forgery cannot sign in", async () => {
+		const soft = new SoftAuthenticator(ORIGIN);
+		const identity = new Uint8Array(32);
+		identity[0] = 1;
+		const cose = new Map<number, number | Uint8Array>([
+			[1, 1],
+			[3, -7],
+			[-1, 6],
+			[-2, identity],
+		]);
+		const registered = await register(soft, {}, { cose });
+		expect(registered.status).toBe(401);
+		expect((await (await call("passkeys")).json()) as unknown).toEqual({
+			passkeys: [],
+		});
+		// R = the identity, S = 0: valid for any message under that key.
+		const forged = await login(
+			soft,
+			{},
+			{ signature: new Uint8Array([...identity, ...new Uint8Array(32)]) },
+		);
+		expect(forged.status).toBe(401);
 	});
 
 	test("the public actions are exactly the guard's public paths", () => {

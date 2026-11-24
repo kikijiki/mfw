@@ -94,6 +94,8 @@ export interface CeremonyKnobs {
 	signCount?: number;
 	/** Corrupt the signature. */
 	badSignature?: boolean;
+	/** Send these bytes as the signature instead of signing. */
+	signature?: Uint8Array;
 	/** Bytes appended after the authenticator data. */
 	trailing?: Uint8Array;
 	/** Replace the COSE key. */
@@ -291,14 +293,16 @@ export class SoftAuthenticator {
 			knobs,
 		);
 		const signed = new Uint8Array([...authData, ...sha(clientDataJSON)]);
-		const signature = new Uint8Array(
-			credential.alg === "ES256"
-				? sign("sha256", signed, {
-						key: credential.privateKey,
-						dsaEncoding: "der",
-					})
-				: sign(null, signed, credential.privateKey),
-		);
+		const signature =
+			knobs.signature ??
+			new Uint8Array(
+				credential.alg === "ES256"
+					? sign("sha256", signed, {
+							key: credential.privateKey,
+							dsaEncoding: "der",
+						})
+					: sign(null, signed, credential.privateKey),
+			);
 		if (knobs.badSignature)
 			signature[signature.length - 1] =
 				(signature[signature.length - 1] as number) ^ 1;

@@ -18,12 +18,17 @@ import {
  * - The RP ID and origin come from the server's own external origin, never
  *   from the client, and must be a DNS name over HTTPS (or `localhost`).
  * - User verification is required on every ceremony.
- * - Only ES256 and EdDSA. Attestation is requested as "none" and not trusted.
+ * - Only ES256 and EdDSA keys. The library checks only the COSE `alg` label;
+ *   `checkCredentialKey` (here) checks the whole key: ES256 is EC2 on P-256
+ *   with 32-byte coordinates, EdDSA is OKP on Ed25519 with a safe 32-byte key,
+ *   at registration and again at every sign-in.
+ * - Attestation is requested as "none" and not trusted.
  * - Discoverable credentials only (enforced by the caller from `credProps`).
  * - No cross-origin frames, on either ceremony.
  * - The id the client reports must be the one in the authenticator data.
- * - Small-order and non-canonical Ed25519 keys are refused: anyone can sign for
- *   those, and the library verifies such signatures.
+ * - Small-order and non-canonical Ed25519 keys are refused (in
+ *   `checkCredentialKey`): anyone can sign for those, and the library verifies
+ *   such signatures.
  * - The signature counter is checked here, AFTER the signature verifies, so a
  *   counter refusal always means the key holder sent it (see `verifyAssertion`).
  */
@@ -199,7 +204,23 @@ export function isSafeEd25519Key(x: Uint8Array): boolean {
 	return !ED_SMALL_ORDER_Y.includes(hex);
 }
 
-/** The COSE key's algorithm, after mfw's own checks on it. */
+const COSE_KTY_OKP = 1;
+const COSE_KTY_EC2 = 2;
+const COSE_CRV_P256 = 1;
+const COSE_CRV_ED25519 = 6;
+
+const bytes32 = (v: unknown): v is Uint8Array =>
+	v instanceof Uint8Array && v.length === 32;
+
+/**
+ * The COSE key's algorithm, after mfw's checks on its WHOLE shape. The library
+ * checks only the `alg` label at registration, but at sign-in picks its
+ * verifier by `kty` and `crv`: an OKP key labelled ES256 would be verified as
+ * Ed25519 (with no small-order check), and an EC2 key of any curve as ECDSA.
+ * So each label must come with exactly its key type, curve and sizes:
+ * ES256 is EC2 on P-256 with 32-byte x and y, EdDSA is OKP on Ed25519 with a
+ * safe 32-byte x. Run on registration and again on every sign-in.
+ */
 function checkCredentialKey(cose: Uint8Array): number {
 	let key: Map<number, unknown>;
 	try {
@@ -210,16 +231,27 @@ function checkCredentialKey(cose: Uint8Array): number {
 	} catch {
 		return fail("key", "the public key is not valid COSE");
 	}
-	const alg = key.get(3);
-	if (typeof alg !== "number" || !SUPPORTED_ALGS.includes(alg))
-		fail("key", "unsupported credential algorithm");
 	// A private component must never be sent; refuse rather than ignore it.
 	if (key.has(-4)) fail("key", "the key carries a private component");
-	if (alg === COSE_EDDSA) {
-		const x = key.get(-2);
-		if (!(x instanceof Uint8Array) || !isSafeEd25519Key(x))
-			fail("key", "a small-order or non-canonical Ed25519 key");
-	}
+	const alg = key.get(3);
+	const kty = key.get(1);
+	const crv = key.get(-1);
+	const x = key.get(-2);
+	const y = key.get(-3);
+	const es256 =
+		alg === COSE_ES256 &&
+		kty === COSE_KTY_EC2 &&
+		crv === COSE_CRV_P256 &&
+		bytes32(x) &&
+		bytes32(y);
+	const eddsa =
+		alg === COSE_EDDSA &&
+		kty === COSE_KTY_OKP &&
+		crv === COSE_CRV_ED25519 &&
+		y === undefined &&
+		bytes32(x) &&
+		isSafeEd25519Key(x);
+	if (!es256 && !eddsa) fail("key", "unsupported credential key");
 	return alg as number;
 }
 
