@@ -170,7 +170,7 @@ export interface RepoBranch {
 }
 
 export interface RepoWorktree {
-	/** Run id for a run's worktree, `root` for the primary, else `wt-<hash>`. */
+	/** `root` for the primary, else `wt-<hash>`. Runs never have one: each runs in a private clone. */
 	id: string;
 	path: string;
 	/** Path relative to the project root when inside it. */
@@ -183,10 +183,6 @@ export interface RepoWorktree {
 	locked: string | null;
 	prunable: string | null;
 	exists: boolean;
-	run: RepoRunOwner | null;
-	mergeJob: RepoMergeJob | null;
-	/** `wip/` archives of the owning run, by branch name. */
-	wipBranches: string[];
 	/** Null when the checkout is gone or status was skipped. */
 	dirty: { changed: number; truncated: boolean } | null;
 	ahead: number | null;
@@ -392,22 +388,15 @@ export class RepoViewService {
 	private async runIndex(): Promise<{
 		byId: Map<string, RunRow>;
 		byBranch: Map<string, RunRow>;
-		byPath: Map<string, RunRow>;
 	}> {
 		const rows = await this.deps.registry.list();
 		const byId = new Map<string, RunRow>();
 		const byBranch = new Map<string, RunRow>();
-		const byPath = new Map<string, RunRow>();
 		for (const run of rows) {
 			byId.set(run.id, run);
 			if (run.branch) byBranch.set(run.branch, run);
-			if (run.workspacePath) {
-				byPath.set(run.workspacePath, run);
-				const real = await realpath(run.workspacePath).catch(() => null);
-				if (real) byPath.set(real, run);
-			}
 		}
-		return { byId, byBranch, byPath };
+		return { byId, byBranch };
 	}
 
 	private async mergeIndex(): Promise<Map<string, RepoMergeJob>> {
@@ -452,15 +441,7 @@ export class RepoViewService {
 	private async listWorktrees(): Promise<
 		Omit<
 			RepoWorktree,
-			| "run"
-			| "mergeJob"
-			| "wipBranches"
-			| "dirty"
-			| "ahead"
-			| "behind"
-			| "displayPath"
-			| "id"
-			| "exists"
+			"dirty" | "ahead" | "behind" | "displayPath" | "id" | "exists"
 		>[]
 	> {
 		const r = await this.git(["worktree", "list", "--porcelain"]);
@@ -503,8 +484,7 @@ export class RepoViewService {
 		return out;
 	}
 
-	private worktreeId(path: string, primary: boolean, run?: RunRow): string {
-		if (run) return run.id;
+	private worktreeId(path: string, primary: boolean): string {
 		if (primary) return "root";
 		let h = 2166136261;
 		for (const ch of path) h = Math.imul(h ^ ch.charCodeAt(0), 16777619);
@@ -515,56 +495,40 @@ export class RepoViewService {
 		integrationBranch: string;
 		worktrees: RepoWorktree[];
 	}> {
-		const [listed, runs, jobs, integ] = await Promise.all([
+		const [listed, integ] = await Promise.all([
 			this.listWorktrees(),
-			this.runIndex(),
-			this.mergeIndex(),
 			this.resolve(this.deps.integrationBranch).catch(() => null),
 		]);
-		const wipByRun = await this.wipByRun();
 		const root = await realpath(this.deps.root).catch(() => this.deps.root);
-		const base = listed.map((wt) => {
-			const byBranch = wt.branch ? runs.byBranch.get(wt.branch) : undefined;
-			const run =
-				runs.byPath.get(wt.path) ?? (wt.primary ? undefined : byBranch);
-			return { wt, run };
+		const rows = await mapPool(listed, STATUS_CONCURRENCY, async (wt) => {
+			const exists = await stat(wt.path).then(
+				() => true,
+				() => false,
+			);
+			const dirty =
+				exists && !wt.bare && !wt.prunable
+					? await this.dirtyCount(wt.path)
+					: null;
+			let ahead: number | null = null;
+			let behind: number | null = null;
+			if (integ && wt.head) {
+				const ab = await this.aheadBehind(integ, wt.head);
+				ahead = ab?.ahead ?? null;
+				behind = ab?.behind ?? null;
+			}
+			const rel = relative(root, wt.path);
+			const inside =
+				rel !== "" && !rel.startsWith("..") && !rel.startsWith(sep);
+			return {
+				...wt,
+				id: this.worktreeId(wt.path, wt.primary),
+				displayPath: wt.primary ? "." : inside ? rel : wt.path,
+				exists,
+				dirty,
+				ahead,
+				behind,
+			} satisfies RepoWorktree;
 		});
-		const rows = await mapPool(
-			base,
-			STATUS_CONCURRENCY,
-			async ({ wt, run }) => {
-				const exists = await stat(wt.path).then(
-					() => true,
-					() => false,
-				);
-				const dirty =
-					exists && !wt.bare && !wt.prunable
-						? await this.dirtyCount(wt.path)
-						: null;
-				let ahead: number | null = null;
-				let behind: number | null = null;
-				if (integ && wt.head) {
-					const ab = await this.aheadBehind(integ, wt.head);
-					ahead = ab?.ahead ?? null;
-					behind = ab?.behind ?? null;
-				}
-				const rel = relative(root, wt.path);
-				const inside =
-					rel !== "" && !rel.startsWith("..") && !rel.startsWith(sep);
-				return {
-					...wt,
-					id: this.worktreeId(wt.path, wt.primary, run),
-					displayPath: wt.primary ? "." : inside ? rel : wt.path,
-					exists,
-					run: this.ownerOf(run),
-					mergeJob: run ? (jobs.get(run.id) ?? null) : null,
-					wipBranches: run ? (wipByRun.get(run.id) ?? []) : [],
-					dirty,
-					ahead,
-					behind,
-				} satisfies RepoWorktree;
-			},
-		);
 		return { integrationBranch: this.deps.integrationBranch, worktrees: rows };
 	}
 
@@ -579,24 +543,6 @@ export class RepoViewService {
 		if (!r.ok && !r.truncated) return null;
 		const records = r.stdout.split("\0").filter(Boolean);
 		return { changed: records.length, truncated: r.truncated };
-	}
-
-	private async wipByRun(): Promise<Map<string, string[]>> {
-		const r = await this.git([
-			"for-each-ref",
-			"--format=%(refname:short)",
-			"refs/heads/wip/",
-		]);
-		const out = new Map<string, string[]>();
-		if (!r.ok) return out;
-		for (const name of r.stdout.split("\n")) {
-			const m = WIP_BRANCH.exec(name);
-			if (!m?.[2]) continue;
-			const list = out.get(m[2]) ?? [];
-			list.push(name);
-			out.set(m[2], list);
-		}
-		return out;
 	}
 
 	private async aheadBehind(
@@ -694,11 +640,7 @@ export class RepoViewService {
 		const worktreeByBranch = new Map<string, string>();
 		for (const wt of wts) {
 			if (!wt.branch) continue;
-			const run = runs.byPath.get(wt.path) ?? runs.byBranch.get(wt.branch);
-			worktreeByBranch.set(
-				wt.branch,
-				this.worktreeId(wt.path, wt.primary, run),
-			);
+			worktreeByBranch.set(wt.branch, this.worktreeId(wt.path, wt.primary));
 		}
 		const parsed = lines.slice(0, MAX_BRANCHES).flatMap((line) => {
 			const [

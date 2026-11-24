@@ -17,7 +17,6 @@ import {
 	ChangedFiles,
 	rowsOfWorktree,
 	ShaLink,
-	TaskLinks,
 	WorktreeDiff,
 } from "./parts";
 
@@ -43,45 +42,13 @@ function DirtyChip({ wt }: { wt: Worktree }) {
 	);
 }
 
-/** The run, merge job and wip archive a worktree is tied to. */
-function Ownership({ project, wt }: { project: string; wt: Worktree }) {
+/** What a worktree is: the project checkout or one of the owner's own. Runs never have one. */
+function Ownership({ wt }: { wt: Worktree }) {
 	return (
 		<div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-			{wt.run ? (
-				<>
-					{wt.run.taskId ? (
-						<TaskLinks project={project} ids={[wt.run.taskId]} />
-					) : null}
-					<AppLink
-						to={href.run(project, wt.run.runId)}
-						style={FAINT}
-						title={`run ${wt.run.runId}`}
-					>
-						run {wt.run.live ? "live" : `ended (${wt.run.state})`}
-					</AppLink>
-				</>
-			) : wt.primary ? (
-				<span style={FAINT}>the project checkout</span>
-			) : (
-				<span style={FAINT}>not owned by an mfw run</span>
-			)}
-			{wt.mergeJob ? (
-				<Chip
-					tone={
-						wt.mergeJob.state === "parked"
-							? "critical"
-							: wt.mergeJob.state === "merged"
-								? "ok"
-								: "info"
-					}
-					title={wt.mergeJob.error ?? undefined}
-				>
-					merge {wt.mergeJob.state}
-				</Chip>
-			) : null}
-			{wt.wipBranches.map((w) => (
-				<BranchLink key={w} project={project} name={w} />
-			))}
+			<span style={FAINT}>
+				{wt.primary ? "the project checkout" : "a git worktree of the project"}
+			</span>
 			{wt.locked ? <Chip tone="neutral">locked</Chip> : null}
 			{wt.prunable ? (
 				<Chip tone="warn" title={wt.prunable}>
@@ -154,7 +121,7 @@ export function WorktreesPage({ project }: { project: string }) {
 									<AheadBehind ahead={wt.ahead} behind={wt.behind} />
 									<DirtyChip wt={wt} />
 								</div>
-								<Ownership project={project} wt={wt} />
+								<Ownership wt={wt} />
 							</li>
 						))}
 					</ul>
@@ -237,17 +204,13 @@ export function WorktreePage({
 						</span>
 					</Field>
 					<Field label="Owner">
-						<Ownership project={project} wt={wt} />
+						<Ownership wt={wt} />
 					</Field>
 					<div
 						className="flex flex-wrap items-center gap-3"
 						style={{ fontSize: "var(--mfw-text-xs)" }}
 					>
-						{wt.run ? (
-							<AppLink to={href.files(project, { run: wt.run.runId })}>
-								Browse the working copy
-							</AppLink>
-						) : wt.primary ? (
+						{wt.primary ? (
 							<AppLink to={href.files(project)}>
 								Browse the working copy
 							</AppLink>
