@@ -15,6 +15,7 @@ import {
 	resolveDevEnv,
 } from "../src/containment/dev-env-resolve.ts";
 import { allowEnv, EnvTrustStore } from "../src/containment/dev-env-trust.ts";
+import { git } from "../src/git.ts";
 import { VerifierClones } from "../src/run-workspace/verifier-clone.ts";
 import { verifyInClone } from "../src/verifier.ts";
 import { cagedSteps } from "./support/caged-launch.ts";
@@ -177,5 +178,30 @@ describe.skipIf(skip !== null)(
 				"mine\n",
 			);
 		});
+
+		test("a dependency bump alone reinstalls in its sandbox, with no approval", async () => {
+			const before = installs;
+			const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+			pkg.dependencies["is-number"] = "6.0.0";
+			await Bun.write(
+				join(root, "package.json"),
+				`${JSON.stringify(pkg, null, 2)}\n`,
+			);
+			await git(["commit", "-q", "-am", "bump"], root);
+			const r = await resolve(true);
+			if (r.kind === "refused") console.log(r.reason, r.log);
+			expect(r.kind).toBe("ready");
+			if (r.kind !== "ready" || !r.deps) throw new Error("no deps");
+			expect(installs).toBe(before + 1);
+			const v = JSON.parse(
+				readFileSync(
+					join(r.deps.dir, "node_modules/is-number/package.json"),
+					"utf8",
+				),
+			).version;
+			expect(v).toBe("6.0.0");
+			// The approval itself did not move.
+			expect(new EnvTrustStore(lab.mfwHome).read(root)?.commit).toBe(commit);
+		}, 300_000);
 	},
 );

@@ -27,6 +27,7 @@ import {
 	EnvTrustStore,
 	envStatusAt,
 	hasSetup,
+	lockfileKey,
 } from "./dev-env-trust.ts";
 
 export type DevEnvRefusalCode =
@@ -208,7 +209,15 @@ export async function resolveDevEnv(
 	}
 	let deps: DepsEntry | null = null;
 	if (hasSetup(input.config)) {
-		deps = await loadDeps(input.mfwHome, input.root, status.fingerprint);
+		// Keyed by the base's lockfiles: a lockfile-only change installs again,
+		// in its sandbox, with no approval (the merge left a notify-after item).
+		const lockKey = lockfileKey(status.lockfiles);
+		deps = await loadDeps(
+			input.mfwHome,
+			input.root,
+			status.fingerprint,
+			lockKey,
+		);
 		if (!deps) {
 			if (!input.build) return notBuilt("dependencies");
 			try {
@@ -219,6 +228,8 @@ export async function resolveDevEnv(
 					record: status.record,
 					capture,
 					config: input.config,
+					commit: status.commit,
+					lockfiles: status.lockfiles,
 					...(input.seams?.run ? { run: input.seams.run } : {}),
 					...(input.seams?.steps ? { steps: input.seams.steps } : {}),
 				});

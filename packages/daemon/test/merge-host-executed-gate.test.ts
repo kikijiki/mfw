@@ -424,6 +424,9 @@ describe("package.json asks only when what it executes changes", () => {
 		"bun.lock",
 		"pnpm-lock.yaml",
 		"yarn.lock",
+		"Cargo.lock",
+		"uv.lock",
+		"poetry.lock",
 	])("a %s-only change lands with a notify-after item", async (lock) => {
 		const g = await gate();
 		const runId = await g.branchRun("mfw/lock", { [lock]: "locked\n" });
@@ -626,5 +629,49 @@ describe("a project's approved environment protects its own files", () => {
 		});
 		await plain.enqueue(lands, "mfw/sourced");
 		expect(await plain.queue.tick()).toBe("merged");
+	});
+});
+
+describe("lockfile classes in a project with an approved environment", () => {
+	// What `protectedEnvPaths` returns for an approval with env.setup.
+	const approval = [".envrc", "flake.lock", "flake.nix"];
+	const inboxItems = async (g: Gate) =>
+		new InboxService({
+			handle: g.handle,
+			project: "p",
+			tasks: await makeTasks(g.handle, new EventBus(), join(g.root, ".mfw")),
+		}).list();
+
+	test("a package lockfile change lands with a notify-after item, no card", async () => {
+		const g = await gate({ envProtected: approval });
+		const runId = await g.branchRun("mfw/bump", { "bun.lock": "v2\n" });
+		await g.enqueue(runId, "mfw/bump");
+		expect(await g.queue.tick()).toBe("merged");
+		expect(await g.card()).toBeUndefined();
+		expect(
+			(await inboxItems(g)).find((i) => i.kind === "dependency_change")?.title,
+		).toContain("dependencies changed");
+	});
+
+	test.each([
+		"flake.lock",
+		"devenv.lock",
+	])("a %s change is held: a nix input fetches and builds outside the proxy", async (lock) => {
+		const g = await gate({ envProtected: approval });
+		const runId = await g.branchRun("mfw/nix", { [lock]: "{}\n" });
+		await g.enqueue(runId, "mfw/nix");
+		expect(await g.queue.tick()).not.toBe("merged");
+		expect((await g.card())?.args).toMatchObject({ paths: [lock] });
+	});
+
+	test("a package lockfile together with an .envrc change is held", async () => {
+		const g = await gate({ envProtected: approval });
+		const runId = await g.branchRun("mfw/mixed", {
+			"bun.lock": "v3\n",
+			".envrc": "use flake\ndotenv\n",
+		});
+		await g.enqueue(runId, "mfw/mixed");
+		expect(await g.queue.tick()).not.toBe("merged");
+		expect((await g.card())?.args).toMatchObject({ paths: [".envrc"] });
 	});
 });

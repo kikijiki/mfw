@@ -75,18 +75,30 @@ approve: changing it asks again.
 
 An approval names **one commit** and records the content hash of every
 environment file at it: the source's files, every other environment file
-present, and, with `setup`, the lockfiles and `package.json`. Files the
+present, and, with `setup`, the package lockfiles and `package.json`. Files the
 evaluation reports reading, such as a file an `.envrc` sources or watches, are
 added after the first evaluation. They belong to the approved commit, so adding
 them grants nothing; they widen what counts as a change.
 
+The hash is split in two classes:
+
+| Class | Files | A change to it alone |
+| --- | --- | --- |
+| Environment definition | `.envrc` and what it sources, mise files, `flake.nix`, `flake.lock`, devenv files, `.tool-versions`, the `env` config (including `setup`), and the executing fields of `package.json` (`scripts`, `bin`, `workspaces`, ...) | asks again (an ask-first card on merge, then `mfw env allow`) |
+| Package lockfiles | `bun.lock`, `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `Cargo.lock`, `uv.lock`, `poetry.lock`, `requirements.txt`, and the dependency fields of `package.json` | needs no approval: the merge leaves a notify-after "dependencies changed" item, and the dependencies are installed again, in the env-install sandbox with registry egress only, from that commit's lockfiles |
+
+Nix lockfiles are in the definition class because a changed input makes the
+nix daemon fetch and build from a new origin, outside the proxy. A change that
+touches both classes asks again.
+
 - Evaluation happens only at the approved commit.
-- A later commit is covered while every recorded file, and the set of
-  environment files itself, is byte-identical. Runs at that commit get the
-  cached result; nothing is evaluated again.
-- A merge that changes a recorded file is an ask-first card (the host-executed
-  path class), and after it lands the approval no longer covers the base: runs
-  are refused, and a new card asks you to allow the new commit.
+- A later commit is covered while its environment definition is
+  byte-identical, and the set of environment files itself is unchanged. Runs at
+  that commit get the cached evaluation; nothing is evaluated again. Its
+  dependencies are cached by its own lockfiles.
+- A merge that changes a definition file is an ask-first card (the
+  host-executed path class), and after it lands the approval no longer covers
+  the base: runs are refused, and a new card asks you to allow the new commit.
 - A run that edits its own `.envrc` is checked with the **approved**
   environment, never its own: an edit is evaluated only once you allow the
   commit it lands in.
@@ -97,12 +109,13 @@ them grants nothing; they widen what counts as a change.
 | --- | --- | --- | --- |
 | Detect and hash the files | host, reading the repository's objects | nothing | nothing |
 | Evaluate (`env-build` role) | a disposable clone of the approved commit | the per-run proxy, with the flake and mise hosts (`containment/dev-env-egress.ts`) and `extraHosts`; the nix daemon's socket | the clone, a private home, the environment's data directory (mise installs) |
-| Install (`env-install` role) | a disposable clone of the approved commit, with the evaluated environment applied | the per-run proxy, with the registries only | the clone; `outputs` are then moved into the cache |
+| Install (`env-install` role) | a disposable clone of the approved commit, or of a later one whose package lockfiles alone changed, with the evaluated environment applied | the per-run proxy, with the registries only | the clone; `outputs` are then moved into the cache |
 | Run (`task`, `repair`) and check (`verifier`, `merge-verify`) | the run's or check's own clone | as before: the run's harness hosts, or no network for a check | as before |
 
 The evaluated environment is cached under `$MFW_HOME/env/cache`, keyed by the
-approval: the filtered variables, the `PATH` entries, the Nix store paths they
-need, the environment's data, and the installed dependencies. A run binds those
+approval's definition: the filtered variables, the `PATH` entries, the Nix
+store paths they need, and the environment's data. The installed dependencies
+are cached beside it, keyed also by the package lockfiles they came from. A run binds those
 store paths and the data read-only, one by one; the rest of the store stays
 hidden. Dependencies are copied into each fresh clone, with a reflink where the
 filesystem has one.

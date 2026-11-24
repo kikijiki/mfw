@@ -28,6 +28,8 @@ import { KeyedLock } from "@mfw/board-core";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
 import { z } from "zod";
 import {
+	DEPS_LOCKFILES,
+	definitionHash,
 	detectEnvSource,
 	type EnvDetection,
 	type EnvFile,
@@ -43,6 +45,7 @@ const EnvFileSchema = z.strictObject({
 	path: z.string().min(1).max(4096),
 	oid: z.string().regex(OBJECT_ID),
 	sha256: z.string().regex(HEX64),
+	defSha256: z.string().regex(HEX64).optional(),
 });
 
 export const EnvTrustRecordSchema = z.strictObject({
@@ -111,15 +114,35 @@ export function envFingerprint(
 		"root" | "commit" | "source" | "files" | "configHash"
 	>,
 ): string {
-	const files = record.files.map((f) => `${f.path}\0${f.sha256}`).sort();
+	// The environment's definition only: a package lockfile is keyed apart
+	// (`lockfileKey`), so a lockfile-only change keeps the evaluated environment.
+	const files = record.files
+		.flatMap((f) => {
+			const h = definitionHash(f);
+			return h === null ? [] : [`${f.path}\0${h}`];
+		})
+		.sort();
 	return sha256(
 		[
-			"mfw-env:1",
+			"mfw-env:2",
 			record.root,
 			record.commit,
 			record.source ?? "",
 			record.configHash,
 			...files,
+		].join("\n"),
+	);
+}
+
+/** Identifies the package lockfiles (and `package.json`) an install reads, at one commit. */
+export function lockfileKey(files: readonly EnvFile[]): string {
+	return sha256(
+		[
+			"mfw-deps:1",
+			...files
+				.filter((f) => DEPS_LOCKFILES.includes(f.path))
+				.map((f) => `${f.path}\0${f.sha256}`)
+				.sort(),
 		].join("\n"),
 	);
 }
@@ -291,15 +314,32 @@ export type EnvStatus =
 			record: EnvTrustRecord;
 			fingerprint: string;
 			source: EnvSourceKind | null;
+			/** The commit asked about: dependencies are installed from its lockfiles. */
+			commit: string;
+			/** The package lockfiles and `package.json` at that commit (with `env.setup`). */
+			lockfiles: EnvFile[];
+			/** Package lockfiles that differ from the approved commit's: no approval needed. */
+			lockfilesChanged: string[];
 	  };
 
-/** Pure: the paths whose bytes differ between the approval and `now`. */
+/**
+ * Pure: the paths whose environment definition differs between the approval
+ * and `now`. A package lockfile never does; a `package.json` only by its
+ * executing fields.
+ */
 export function changedFiles(
 	approved: readonly EnvFile[],
 	now: readonly EnvFile[],
 ): string[] {
-	const a = new Map(approved.map((f) => [f.path, f.sha256]));
-	const b = new Map(now.map((f) => [f.path, f.sha256]));
+	const defs = (files: readonly EnvFile[]) =>
+		new Map(
+			files.flatMap((f) => {
+				const h = definitionHash(f);
+				return h === null ? [] : [[f.path, h] as const];
+			}),
+		);
+	const a = defs(approved);
+	const b = defs(now);
 	const out = new Set<string>();
 	for (const [p, h] of a) if (b.get(p) !== h) out.add(p);
 	for (const [p, h] of b) if (a.get(p) !== h) out.add(p);
@@ -358,16 +398,41 @@ export async function envStatusAt(input: {
 			configChanged,
 		};
 	}
+	const lockfiles = detection.files.filter((f) =>
+		DEPS_LOCKFILES.includes(f.path),
+	);
+	const before = new Map(record.files.map((f) => [f.path, f.sha256]));
+	const lockfilesChanged = [
+		...new Set([
+			...lockfiles
+				.filter((f) => before.get(f.path) !== f.sha256)
+				.map((f) => f.path),
+			...record.files
+				.filter((f) => DEPS_LOCKFILES.includes(f.path))
+				.filter((f) => !lockfiles.some((l) => l.path === f.path))
+				.map((f) => f.path),
+		]),
+	].sort();
 	return {
 		state: "approved",
 		record,
 		fingerprint: envFingerprint(record),
 		source: record.source,
+		commit: input.commit,
+		lockfiles,
+		lockfilesChanged,
 	};
 }
 
-/** Repository paths an approval protects: a merge changing one is ask-first. */
+/**
+ * Repository paths an approval protects: a merge changing one is ask-first.
+ * Package lockfiles and `package.json` are not among them: a lockfile change
+ * is notify-after and reinstalls in its sandbox, and the merge gate already
+ * holds a `package.json` whose executing fields change.
+ */
 export function protectedEnvPaths(record: EnvTrustRecord | null): string[] {
 	if (record?.state !== "allowed") return [];
-	return approvedFiles(record).map((f) => f.path);
+	return approvedFiles(record)
+		.map((f) => f.path)
+		.filter((p) => !DEPS_LOCKFILES.includes(p));
 }

@@ -24,6 +24,7 @@ import {
 	envConfigHash,
 	envFingerprint,
 	envStatusAt,
+	lockfileKey,
 	protectedEnvPaths,
 } from "../src/containment/dev-env-trust.ts";
 import { git } from "../src/git.ts";
@@ -301,5 +302,134 @@ describe("the trust store and drift", () => {
 		);
 		const rec = store.read(repo);
 		expect(rec?.state === "allowed" || rec?.state === "denied").toBe(true);
+	});
+});
+
+describe("package lockfiles are not the environment's definition", () => {
+	let r: string;
+	let store: EnvTrustStore;
+	const config = { setup: ["bun install --frozen-lockfile"] };
+	const commitIn = async (files: Record<string, string>, msg: string) => {
+		for (const [p, t] of Object.entries(files)) writeFileSync(join(r, p), t);
+		await git(["add", "-A"], r);
+		await git(["commit", "-q", "-m", msg], r);
+		return (await git(["rev-parse", "HEAD"], r)).stdout;
+	};
+	const status = (commit: string) =>
+		envStatusAt({ store, root: r, commit, setting: "auto", config });
+	const pkg = (
+		deps: Record<string, string>,
+		scripts: Record<string, string> = {},
+	) => `${JSON.stringify({ name: "x", dependencies: deps, scripts })}\n`;
+	let approved: string;
+
+	beforeAll(async () => {
+		r = join(base, "locks");
+		mkdirSync(r);
+		await git(["init", "-q", "-b", "main", "."], r);
+		await git(["config", "user.email", "t@t"], r);
+		await git(["config", "user.name", "t"], r);
+		approved = await commitIn(
+			{
+				".envrc": "use flake\n",
+				"flake.nix": "{ outputs = _: {}; }\n",
+				"flake.lock": "{}\n",
+				"bun.lock": "v1\n",
+				"package.json": pkg({ a: "1" }),
+			},
+			"base",
+		);
+		store = new EnvTrustStore(join(base, "mfw-locks"));
+		await allowEnv(store, {
+			project: "l",
+			root: r,
+			commit: approved,
+			setting: "auto",
+			config,
+			via: "cli",
+		});
+	});
+
+	test("the approval still records the lockfiles' bytes", () => {
+		expect(store.read(r)?.files.map((f) => f.path)).toEqual([
+			".envrc",
+			"bun.lock",
+			"flake.lock",
+			"flake.nix",
+			"package.json",
+		]);
+	});
+
+	test("a lockfile-only change stays approved, under the same environment fingerprint", async () => {
+		const before = await status(approved);
+		const c = await commitIn({ "bun.lock": "v2\n" }, "lock");
+		const s = await status(c);
+		expect(s.state).toBe("approved");
+		if (s.state !== "approved" || before.state !== "approved") return;
+		expect(s.fingerprint).toBe(before.fingerprint);
+		expect(s.lockfilesChanged).toEqual(["bun.lock"]);
+		expect(s.commit).toBe(c);
+		expect(lockfileKey(s.lockfiles)).not.toBe(lockfileKey(before.lockfiles));
+	});
+
+	test("a dependency bump in package.json is part of the lockfile class", async () => {
+		const c = await commitIn(
+			{ "package.json": pkg({ a: "2", b: "1" }), "bun.lock": "v3\n" },
+			"bump",
+		);
+		const s = await status(c);
+		expect(s.state).toBe("approved");
+		expect(s.state === "approved" && s.lockfilesChanged).toEqual([
+			"bun.lock",
+			"package.json",
+		]);
+	});
+
+	test("a changed install script in package.json asks again", async () => {
+		const c = await commitIn(
+			{
+				"package.json": pkg({ a: "2", b: "1" }, { postinstall: "curl x | sh" }),
+			},
+			"script",
+		);
+		const s = await status(c);
+		expect(s.state === "drifted" && s.changed).toEqual(["package.json"]);
+		await commitIn({ "package.json": pkg({ a: "2", b: "1" }) }, "unscript");
+	});
+
+	test("a nix lockfile change asks again", async () => {
+		const c = await commitIn({ "flake.lock": '{"v":2}\n' }, "nix lock");
+		const s = await status(c);
+		expect(s.state === "drifted" && s.changed).toEqual(["flake.lock"]);
+		await commitIn({ "flake.lock": "{}\n" }, "nix lock back");
+	});
+
+	test("a lockfile together with an .envrc change asks again", async () => {
+		const c = await commitIn(
+			{ "bun.lock": "v4\n", ".envrc": "use flake\ndotenv\n" },
+			"mixed",
+		);
+		const s = await status(c);
+		expect(s.state).toBe("drifted");
+		expect(s.state === "drifted" && s.changed).toEqual([".envrc"]);
+	});
+
+	test("a changed setup command asks again", async () => {
+		const s = await envStatusAt({
+			store,
+			root: r,
+			commit: approved,
+			setting: "auto",
+			config: { setup: ["npm ci"] },
+		});
+		expect(s.state === "drifted" && s.configChanged).toBe(true);
+	});
+
+	test("the merge gate protects the definition, not the package lockfiles", () => {
+		expect(protectedEnvPaths(store.read(r))).toEqual([
+			".envrc",
+			"flake.lock",
+			"flake.nix",
+		]);
 	});
 });

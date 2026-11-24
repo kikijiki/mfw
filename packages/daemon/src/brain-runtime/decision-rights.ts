@@ -235,6 +235,9 @@ const DEPENDENCY_FILES = [
 	"package-lock.json",
 	"npm-shrinkwrap.json",
 	"yarn.lock",
+	"cargo.lock",
+	"uv.lock",
+	"poetry.lock",
 ];
 
 const baseName = (path: string) =>

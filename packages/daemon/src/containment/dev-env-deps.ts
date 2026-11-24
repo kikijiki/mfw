@@ -49,12 +49,13 @@ import {
 	type EnvConfig,
 } from "./dev-env-config.ts";
 import { envInstallAllowlist } from "./dev-env-egress.ts";
-import { DEPS_LOCKFILES } from "./dev-env-sources.ts";
+import { DEPS_LOCKFILES, type EnvFile } from "./dev-env-sources.ts";
 import {
 	type EnvTrustRecord,
 	envFingerprint,
 	envHome,
 	hasSetup,
+	lockfileKey,
 } from "./dev-env-trust.ts";
 import { readRegularFile } from "./safe-file.ts";
 
@@ -67,6 +68,9 @@ export const DEFAULT_DEPS_OUTPUTS: readonly string[] = [
 const DepsManifestSchema = z.strictObject({
 	version: z.literal(1),
 	fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
+	lockKey: z.string().regex(/^[0-9a-f]{64}$/),
+	/** The commit installed from: the approved one, or a later one whose lockfiles alone changed. */
+	commit: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/),
 	outputs: z.array(z.string()).max(1024),
 	egress: z.strictObject({
 		allowed: z.array(z.string()).max(256),
@@ -83,21 +87,30 @@ export interface DepsEntry {
 	egress: { allowed: string[]; denied: string[] };
 }
 
-export const depsDir = (mfwHome: string, root: string, fingerprint: string) =>
-	join(devEnvCacheDir(mfwHome, root, fingerprint), "deps");
+/** One install per environment definition and package lockfile content. */
+export const depsDir = (
+	mfwHome: string,
+	root: string,
+	fingerprint: string,
+	lockKey: string,
+) => {
+	if (!/^[0-9a-f]{64}$/.test(lockKey)) throw new Error("not a lockfile key");
+	return join(devEnvCacheDir(mfwHome, root, fingerprint), "deps", lockKey);
+};
 
 /** The installed dependencies of an approval, or null. */
 export async function loadDeps(
 	mfwHome: string,
 	root: string,
 	fingerprint: string,
+	lockKey: string,
 ): Promise<DepsEntry | null> {
-	const dir = depsDir(mfwHome, root, fingerprint);
+	const dir = depsDir(mfwHome, root, fingerprint, lockKey);
 	const r = await readRegularFile(join(dir, "deps.json"), 1024 * 1024);
 	if (!r || r.size > 1024 * 1024) return null;
 	try {
 		const m = DepsManifestSchema.parse(JSON.parse(r.buffer.toString("utf8")));
-		if (m.fingerprint !== fingerprint) return null;
+		if (m.fingerprint !== fingerprint || m.lockKey !== lockKey) return null;
 		return { dir: join(dir, "tree"), outputs: m.outputs, egress: m.egress };
 	} catch {
 		return null;
@@ -195,6 +208,13 @@ export interface InstallDepsInput {
 	record: EnvTrustRecord;
 	capture: DevEnvCapture;
 	config: EnvConfig | undefined;
+	/**
+	 * The commit to install from. Its environment definition is the approved
+	 * one (the caller checked), so only its package lockfiles may differ.
+	 */
+	commit: string;
+	/** The package lockfiles and `package.json` at `commit`. */
+	lockfiles: readonly EnvFile[];
 	run?: (req: EnvRunRequest) => Promise<EnvRunResult>;
 	steps?: EnvRunRequest["steps"];
 	now?: () => Date;
@@ -208,7 +228,8 @@ export function installDeps(
 ): Promise<DepsEntry | null> {
 	if (!hasSetup(input.config)) return Promise.resolve(null);
 	const fingerprint = envFingerprint(input.record);
-	const key = `${input.root}\0${fingerprint}`;
+	const lockKey = lockfileKey(input.lockfiles);
+	const key = `${input.root}\0${fingerprint}\0${lockKey}`;
 	const running = inFlight.get(key);
 	if (running) return running;
 	const lock = new KeyedLock(join(envHome(input.mfwHome), "locks"), {
@@ -217,9 +238,14 @@ export function installDeps(
 			120_000,
 	});
 	const p = lock
-		.with(`deps-${fingerprint}`, async () => {
-			const cached = await loadDeps(input.mfwHome, input.root, fingerprint);
-			return cached ?? install(input, fingerprint);
+		.with(`deps-${fingerprint}-${lockKey}`, async () => {
+			const cached = await loadDeps(
+				input.mfwHome,
+				input.root,
+				fingerprint,
+				lockKey,
+			);
+			return cached ?? install(input, fingerprint, lockKey);
 		})
 		.finally(() => inFlight.delete(key));
 	inFlight.set(key, p);
@@ -229,12 +255,13 @@ export function installDeps(
 async function install(
 	input: InstallDepsInput,
 	fingerprint: string,
+	lockKey: string,
 ): Promise<DepsEntry> {
 	const config = input.config ?? {};
-	const dir = depsDir(input.mfwHome, input.root, fingerprint);
+	const dir = depsDir(input.mfwHome, input.root, fingerprint, lockKey);
 	const staging = join(dirname(dir), `deps.tmp-${randomUUID()}`);
 	mkdirSync(staging, { recursive: true, mode: 0o700 });
-	const lockfiles = input.record.files
+	const lockfiles = input.lockfiles
 		.map((f) => f.path)
 		.filter((p) => DEPS_LOCKFILES.includes(p));
 	let outputs: string[] = [];
@@ -245,7 +272,7 @@ async function install(
 			projectRoot: input.root,
 			stateDir: input.stateDir,
 			mfwHome: input.mfwHome,
-			commit: input.record.commit,
+			commit: input.commit,
 			allow: envInstallAllowlist(lockfiles, config.registries),
 			timeoutMs: (config.timeoutSeconds ?? DEFAULT_ENV_TIMEOUT_SECONDS) * 1000,
 			devEnv: {
@@ -280,6 +307,8 @@ async function install(
 				{
 					version: 1,
 					fingerprint,
+					lockKey,
+					commit: input.commit,
 					outputs,
 					egress,
 					builtAt: (input.now ?? (() => new Date()))().toISOString(),

@@ -40,6 +40,8 @@ export interface EnvFile {
 	oid: string;
 	/** sha256 of its exact bytes. */
 	sha256: string;
+	/** `package.json` only: sha256 of its executing fields, what defines the environment. */
+	defSha256?: string;
 }
 
 export type EnvDetection =
@@ -100,11 +102,14 @@ export const EVALUATED_ENV_PATHS: readonly string[] = [
 ];
 
 /**
- * Lockfiles a setup step installs from. Part of the approval only when the
- * project has `env.setup`: then a new lockfile is new code that runs with
- * registry egress, and asks the owner again.
+ * Package-manager lockfiles a setup step installs from. Hashed into an
+ * approval only when the project has `env.setup`, and in their own class: a
+ * change to them alone needs no approval, because the install it causes runs
+ * in the env-install sandbox with registry egress only (dev-env-deps.ts). Nix
+ * lockfiles are not here: a changed input makes the nix daemon fetch and build
+ * from a new origin outside the proxy, so they define the environment.
  */
-export const DEPS_LOCKFILES: readonly string[] = [
+export const PACKAGE_LOCKFILES: readonly string[] = [
 	"bun.lock",
 	"bun.lockb",
 	"package-lock.json",
@@ -115,8 +120,79 @@ export const DEPS_LOCKFILES: readonly string[] = [
 	"uv.lock",
 	"poetry.lock",
 	"requirements.txt",
-	"package.json",
 ];
+
+/**
+ * Hashed with the lockfiles when the project has `env.setup`. Only its fields
+ * that make an install or a command run something define the environment (as
+ * the merge gate judges it); its dependency lists change with the lockfile.
+ */
+export const PACKAGE_MANIFEST = "package.json";
+
+export const DEPS_LOCKFILES: readonly string[] = [
+	...PACKAGE_LOCKFILES,
+	PACKAGE_MANIFEST,
+];
+
+/** The `package.json` fields that make an install or a command run something. */
+export const MANIFEST_EXEC_FIELDS = [
+	"scripts",
+	"bin",
+	"directories",
+	"workspaces",
+	"preinstall",
+	"install",
+	"postinstall",
+	"prepare",
+	"trustedDependencies",
+] as const;
+
+/** Key order carries no meaning in a manifest. */
+export function canonicalJson(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+	if (value && typeof value === "object") {
+		const record = value as Record<string, unknown>;
+		return `{${Object.keys(record)
+			.sort()
+			.map((k) => `${JSON.stringify(k)}:${canonicalJson(record[k])}`)
+			.join(",")}}`;
+	}
+	return JSON.stringify(value) ?? "null";
+}
+
+/** Whether a repository path is a package lockfile, which never defines the environment. */
+export function isPackageLockfile(path: string): boolean {
+	return PACKAGE_LOCKFILES.includes(path);
+}
+
+/**
+ * What of a file defines the environment: its whole bytes, except a
+ * `package.json`, whose executing fields alone count. Null for a lockfile.
+ */
+export function definitionHash(f: EnvFile): string | null {
+	if (isPackageLockfile(f.path)) return null;
+	return f.defSha256 ?? f.sha256;
+}
+
+function manifestDefinitionHash(bytes: Buffer): string {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(bytes.toString("utf8"));
+	} catch {
+		parsed = null;
+	}
+	// Unreadable: every byte counts, so any change asks again.
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		return createHash("sha256").update(bytes).digest("hex");
+	}
+	const m = parsed as Record<string, unknown>;
+	const fields = Object.fromEntries(
+		MANIFEST_EXEC_FIELDS.map((f) => [f, m[f] ?? null]),
+	);
+	return createHash("sha256")
+		.update(`mfw-manifest-exec:1\n${canonicalJson(fields)}`)
+		.digest("hex");
+}
 
 /** Every root-level path that defines an environment, for hashing and detection. */
 export const ENV_FILE_PATHS: readonly string[] = [
@@ -293,6 +369,9 @@ export async function hashCommitFiles(
 			path: e.path,
 			oid: e.oid,
 			sha256: createHash("sha256").update(bytes).digest("hex"),
+			...(e.path === PACKAGE_MANIFEST
+				? { defSha256: manifestDefinitionHash(bytes) }
+				: {}),
 		});
 	}
 	return files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));

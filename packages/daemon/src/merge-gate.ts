@@ -8,6 +8,10 @@ import {
 	isHostExecutedPath,
 	isPackageManifest,
 } from "./brain-runtime/decision-rights.ts";
+import {
+	canonicalJson,
+	MANIFEST_EXEC_FIELDS,
+} from "./containment/dev-env-sources.ts";
 import { git, gitComplete } from "./git.ts";
 import { ESCALATE_AFTER_SWEEPS } from "./maintenance.ts";
 
@@ -65,32 +69,6 @@ function parseRawDiff(out: string): RawEntry[] {
 		entries.push({ oldMode, newMode, oldOid, newOid, path });
 	}
 	return entries;
-}
-
-/** The `package.json` fields that make an install or a command run something. */
-const MANIFEST_EXEC_FIELDS = [
-	"scripts",
-	"bin",
-	"directories",
-	"workspaces",
-	"preinstall",
-	"install",
-	"postinstall",
-	"prepare",
-	"trustedDependencies",
-] as const;
-
-/** Key order carries no meaning in a manifest. */
-function canonicalJson(value: unknown): string {
-	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-	if (value && typeof value === "object") {
-		const record = value as Record<string, unknown>;
-		const fields = Object.keys(record)
-			.sort()
-			.map((k) => `${JSON.stringify(k)}:${canonicalJson(record[k])}`);
-		return `{${fields.join(",")}}`;
-	}
-	return JSON.stringify(value) ?? "null";
 }
 
 async function readManifest(
