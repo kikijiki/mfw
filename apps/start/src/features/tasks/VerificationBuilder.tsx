@@ -63,7 +63,7 @@ export function VerificationBuilder({
 	onChange,
 }: {
 	value: VerificationPlan | null;
-	/** Legacy llm-judge plans remain readable for spikes. */
+	/** The llm-judge verifier is offered for spikes only. */
 	taskType: string;
 	onChange: (next: VerificationPlan | null) => void;
 }) {

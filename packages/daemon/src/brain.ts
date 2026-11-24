@@ -369,11 +369,12 @@ function scopeSection(s: SubjectFacts): string[] {
 	];
 }
 
-const LEGACY_ACCEPTANCE =
-	"Deliver the task goal described above (legacy implicit criterion).";
+/** The one criterion of a task that names none. */
+const IMPLICIT_ACCEPTANCE =
+	"Deliver the task goal described above (implicit criterion).";
 
 function acceptanceCriteria(subject: SubjectFacts): string[] {
-	return subject.criteria.length > 0 ? subject.criteria : [LEGACY_ACCEPTANCE];
+	return subject.criteria.length > 0 ? subject.criteria : [IMPLICIT_ACCEPTANCE];
 }
 
 /**

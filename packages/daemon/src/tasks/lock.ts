@@ -12,8 +12,6 @@ import { acquireKernelLock } from "../kernel-lock.ts";
  */
 
 export interface LockOptions {
-	/** Legacy compatibility only; kernel-proven owners are never broken by age. */
-	staleMs?: number;
 	/** Give up waiting after this long. */
 	timeoutMs?: number;
 	log?: { warn: (o: Record<string, unknown>, m: string) => void };

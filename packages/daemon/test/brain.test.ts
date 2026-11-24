@@ -198,7 +198,7 @@ const CRITIC_OK = JSON.stringify({
 	criteria: [
 		{
 			criterion:
-				"Deliver the task goal described above (legacy implicit criterion).",
+				"Deliver the task goal described above (implicit criterion).",
 			verdict: "met",
 			evidenceClass: "source-confirmed",
 			evidence: "The diff implements the requested change.",
@@ -209,7 +209,7 @@ const CRITIC_OK = JSON.stringify({
 	concerns: [],
 });
 const CRITIC_FLAGGED =
-	'```json\n{"accepted":false,"criteria":[{"criterion":"Deliver the task goal described above (legacy implicit criterion).","verdict":"unmet","evidenceClass":"source-confirmed","evidence":"Tests were removed instead of implementing the goal."}],"fakeDone":true,"scopeCreep":false,"concerns":["tests were gutted"]}\n```';
+	'```json\n{"accepted":false,"criteria":[{"criterion":"Deliver the task goal described above (implicit criterion).","verdict":"unmet","evidenceClass":"source-confirmed","evidence":"Tests were removed instead of implementing the goal."}],"fakeDone":true,"scopeCreep":false,"concerns":["tests were gutted"]}\n```';
 
 describe("BrainService: happy path per decision point", () => {
 	test("critic: validated JSON becomes an ok decision with a full audit trail", async () => {
@@ -668,7 +668,7 @@ describe("BrainService: orphans, supersede, caps, disabled", () => {
 });
 
 const LEGACY =
-	"Deliver the task goal described above (legacy implicit criterion).";
+	"Deliver the task goal described above (implicit criterion).";
 
 function criticAnswer(
 	verdict: string,
