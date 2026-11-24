@@ -138,10 +138,12 @@ export function isPasskeyChoice(v: unknown): v is PasskeyChoice {
 	);
 }
 
-/** What re-verifies the owner before a passkey is added. */
-export type PasskeyProof =
-	| { password: string }
-	| { ceremonyId: unknown; credential: unknown };
+/**
+ * What re-verifies the owner before a passkey is added: the password only.
+ * A passkey is not proof, so one passkey cannot mint another without it, and a
+ * password change (which deletes passkeys) remains a complete eviction.
+ */
+export type PasskeyProof = { password: string };
 
 /** Options for `navigator.credentials.create()` / `get()`, plus the ceremony to finish. */
 export interface PasskeyCeremony<T> {
@@ -983,33 +985,10 @@ export class AuthService {
 		});
 	}
 
-	/** A re-verification challenge for a signed-in session, over its own passkeys. */
-	async beginPasskeyReauth(
-		sessionId: string,
-		rp: RelyingParty,
-	): Promise<PasskeyCeremony<ReturnType<typeof requestOptions>>> {
-		if (!(await this.isSessionLive(sessionId)))
-			throw new AuthRefused(
-				"session_ended",
-				"this session has ended; sign in again",
-			);
-		const { all } = await this.descriptors(rp.rpId);
-		if (all.length === 0)
-			throw new AuthRefused(
-				"passkey_refused",
-				"no passkey is registered for this address; confirm with the password",
-			);
-		const ceremony = this.beginCeremony("reauth", rp, { sessionId });
-		return {
-			ceremonyId: ceremony.id,
-			publicKey: requestOptions(ceremony, all),
-		};
-	}
-
 	/**
 	 * Start adding a passkey. The session alone is not enough: the owner proves
-	 * the password or an existing passkey again, so a stolen session cannot
-	 * plant a lasting way back in. Failed proofs are charged like sign-ins.
+	 * the password again, so a stolen session cannot plant a lasting way back
+	 * in. A wrong password is charged like a sign-in.
 	 */
 	async beginPasskeyRegistration(
 		sessionId: string,
@@ -1017,41 +996,20 @@ export class AuthService {
 		proof: PasskeyProof,
 		source?: AuthSource,
 	): Promise<PasskeyCeremony<ReturnType<typeof creationOptions>>> {
+		if (typeof (proof as { password?: unknown })?.password !== "string")
+			throw new AuthRefused(
+				"invalid_request",
+				"adding a passkey needs the current password",
+			);
 		const why = relyingPartyError(rp);
 		if (why) throw new AuthRefused("passkey_unavailable", why);
 		const scope = `login:${throttleSource(sourceAddress(source))}`;
 		return this.oneAtATime("login", scope, source, async () => {
-			const charge = async () => {
+			const owner = await this.checkOwnerPassword(proof.password);
+			if (!owner) {
 				await this.recordFailure(scope);
 				if (isProxied(source)) await this.recordFailure(PROXIED_LOGIN_SCOPE);
-			};
-			let owner: { id: string } | null;
-			if ("password" in proof) {
-				owner = await this.checkOwnerPassword(proof.password);
-				if (!owner) {
-					await charge();
-					throw new AuthRefused("invalid_password", "wrong password");
-				}
-			} else {
-				owner = await this.ownerRow();
-				const ceremony = this.ceremonies.take(proof.ceremonyId);
-				const ok =
-					owner &&
-					(await this.verifyPasskeyUse(
-						ceremony,
-						"reauth",
-						proof.credential,
-						rp,
-						owner.id,
-						sessionId,
-					));
-				if (!ok) {
-					await charge();
-					throw new AuthRefused(
-						"passkey_refused",
-						"that passkey was not accepted; try again",
-					);
-				}
+				throw new AuthRefused("invalid_password", "wrong password");
 			}
 			await this.clearThrottle(scope);
 			if (!owner || !(await this.isSessionLive(sessionId)))

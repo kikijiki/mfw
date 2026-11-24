@@ -19,7 +19,7 @@ const when = (ms: number | null) =>
 
 /**
  * Passkeys: an extra way for the owner to sign in. The password stays, and
- * adding one asks for the password (or an existing passkey) again.
+ * adding one asks for the password again.
  */
 export function PasskeysPanel() {
 	const [passkeys, setPasskeys] = useState<Passkey[]>([]);
@@ -45,11 +45,11 @@ export function PasskeysPanel() {
 		void refresh();
 	}, [refresh]);
 
-	async function add(proof: { password: string } | "passkey") {
+	async function add() {
 		setBusy(true);
 		setMessage(null);
 		try {
-			await addPasskey(name.trim() || "Passkey", proof);
+			await addPasskey(name.trim() || "Passkey", password);
 			setName("");
 			setPassword("");
 			setMessage({ tone: "ok", text: "Passkey added." });
@@ -63,7 +63,7 @@ export function PasskeysPanel() {
 
 	function onSubmit(event: FormEvent) {
 		event.preventDefault();
-		void add({ password });
+		void add();
 	}
 
 	async function onRevoke(id: string) {
@@ -132,17 +132,6 @@ export function PasskeysPanel() {
 						<Button type="submit" size="sm" disabled={busy}>
 							Add passkey
 						</Button>
-						{passkeys.length > 0 && (
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								disabled={busy}
-								onClick={() => void add("passkey")}
-							>
-								Confirm with a passkey instead
-							</Button>
-						)}
 					</div>
 				</form>
 			) : (

@@ -30,7 +30,7 @@ const MAX_TOTAL = 1024;
 export const MAX_PASSKEYS = 16;
 export const PASSKEY_NAME_MAX = 64;
 
-export type CeremonyKind = "login" | "register" | "reauth";
+export type CeremonyKind = "login" | "register";
 
 export interface Ceremony {
 	id: string;

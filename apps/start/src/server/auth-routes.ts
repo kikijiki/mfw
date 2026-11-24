@@ -44,7 +44,6 @@ export const AUTH_ACTIONS: Readonly<
 	"token-revoke": { access: "session", methods: ["POST"] },
 	"token-audit": { access: "session", methods: ["GET"] },
 	passkeys: { access: "session", methods: ["GET"] },
-	"passkey-reauth-options": { access: "session", methods: ["POST"] },
 	"passkey-register-options": { access: "session", methods: ["POST"] },
 	"passkey-register": { access: "session", methods: ["POST"] },
 	"passkey-revoke": { access: "session", methods: ["POST"] },
@@ -212,22 +211,10 @@ async function handlePasskeyAction(
 					),
 					base,
 				);
-			case "passkey-reauth-options":
-				return jsonResponse(
-					200,
-					await auth.beginPasskeyReauth(
-						(session as NonNullable<typeof session>).sessionId,
-						rp,
-					),
-				);
 			case "passkey-register-options": {
-				const proof =
-					typeof body.password === "string"
-						? { password: body.password }
-						: body.credential !== undefined
-							? { ceremonyId: body.ceremonyId, credential: body.credential }
-							: null;
-				if (!proof) return badRequest();
+				// The password only: an existing passkey is not proof.
+				if (typeof body.password !== "string") return badRequest();
+				const proof = { password: body.password };
 				return jsonResponse(
 					200,
 					await auth.beginPasskeyRegistration(

@@ -329,42 +329,9 @@ describe("registration", () => {
 		).toBe("invalid_request");
 	});
 
-	test("an existing passkey can be the re-verification", async () => {
+	test("only the password is proof: a passkey cannot mint another passkey", async () => {
 		const first = await addPasskey();
-		const reauth = await auth.beginPasskeyReauth(owner.sessionId, RP);
-		const proof = soft.get(reauth.publicKey, { use: first });
-		const begun = await auth.beginPasskeyRegistration(owner.sessionId, RP, {
-			ceremonyId: reauth.ceremonyId,
-			credential: proof,
-		});
-		const { json } = soft.create(begun.publicKey);
-		await auth.finishPasskeyRegistration(
-			owner.sessionId,
-			RP,
-			begun.ceremonyId,
-			json,
-			"second",
-		);
-		expect((await auth.listPasskeys()).map((p) => p.name)).toEqual([
-			"laptop",
-			"second",
-		]);
-		// A re-verification ceremony is this session's, and used once.
-		const other = await auth.login(PASSWORD);
-		const again = await auth.beginPasskeyReauth(owner.sessionId, RP);
-		const proof2 = soft.get(again.publicKey, { use: first });
-		expect(
-			await code(
-				auth.beginPasskeyRegistration(other.sessionId, RP, {
-					ceremonyId: again.ceremonyId,
-					credential: proof2,
-				}),
-			),
-		).toBe("passkey_refused");
-	});
-
-	test("a sign-in ceremony is not a re-verification", async () => {
-		const first = await addPasskey();
+		// Even a valid assertion from an existing passkey is not accepted.
 		const login = await auth.beginPasskeyLogin(RP);
 		const proof = soft.get(login.publicKey, { use: first });
 		expect(
@@ -372,9 +339,15 @@ describe("registration", () => {
 				auth.beginPasskeyRegistration(owner.sessionId, RP, {
 					ceremonyId: login.ceremonyId,
 					credential: proof,
-				}),
+				} as never),
 			),
-		).toBe("passkey_refused");
+		).toBe("invalid_request");
+		expect(
+			await code(
+				auth.beginPasskeyRegistration(owner.sessionId, RP, {} as never),
+			),
+		).toBe("invalid_request");
+		expect(await auth.listPasskeys()).toHaveLength(1);
 	});
 });
 

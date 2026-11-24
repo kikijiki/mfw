@@ -492,28 +492,14 @@ export const revokePasskey = async (id: string): Promise<void> => {
 	await passkeyCall("passkey-revoke", { id });
 };
 
-/**
- * Add a passkey. The server wants a fresh proof first: the password, or an
- * existing passkey (`"passkey"`).
- */
+/** Add a passkey. The server wants the current password again first. */
 export async function addPasskey(
 	name: string,
-	proof: { password: string } | "passkey",
+	password: string,
 ): Promise<void> {
-	let body: unknown = proof;
-	if (proof === "passkey") {
-		const reauth = await passkeyCall<Begun<RequestJSON>>(
-			"passkey-reauth-options",
-			{},
-		);
-		body = {
-			ceremonyId: reauth.ceremonyId,
-			credential: await getAssertion(reauth),
-		};
-	}
 	const begun = await passkeyCall<Begun<CreationJSON>>(
 		"passkey-register-options",
-		body,
+		{ password },
 	);
 	const cred = (await navigator.credentials
 		.create({

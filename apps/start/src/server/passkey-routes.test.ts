@@ -224,9 +224,19 @@ describe("passkey sign-in over HTTP", () => {
 		);
 	});
 
-	test("registration without a password or a passkey proof is refused", async () => {
+	test("registration without the password is refused; there is no passkey proof", async () => {
 		expect((await call("passkey-register-options", { body: {} })).status).toBe(
 			400,
+		);
+		expect(
+			(
+				await call("passkey-register-options", {
+					body: { ceremonyId: "x", credential: {} },
+				})
+			).status,
+		).toBe(400);
+		expect((await call("passkey-reauth-options", { body: {} })).status).toBe(
+			404,
 		);
 		const wrong = await call("passkey-register-options", {
 			body: { password: "not it at all" },
