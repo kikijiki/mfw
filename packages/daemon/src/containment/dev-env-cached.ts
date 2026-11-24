@@ -18,7 +18,8 @@ export const DevEnvCaptureSchema = z.strictObject({
 	fingerprint: z.string().regex(HEX64),
 	root: z.string().startsWith("/"),
 	commit: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/),
-	source: z.enum(["direnv", "mise", "flake", "devenv"]),
+	/** Null: no environment source, only setup on the host toolchain. */
+	source: z.enum(["direnv", "mise", "flake", "devenv"]).nullable(),
 	env: z.record(z.string(), z.string()),
 	path: z.array(z.string()).max(DEV_ENV_LIMITS.maxPathEntries),
 	closure: z

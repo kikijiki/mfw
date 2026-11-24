@@ -491,3 +491,40 @@ describe("the host-side cache and the resolver", () => {
 		expect(r.kind === "refused" && r.log).toBe("error: boom");
 	});
 });
+
+describe("seeding cached dependencies into a clone", () => {
+	test("refuses a tracked link among the parents, before creating anything", async () => {
+		const { seedDeps, expandOutputs } = await import(
+			"../src/containment/dev-env-deps.ts"
+		);
+		const { symlinkSync } = await import("node:fs");
+		const base = realpathSync(mkdtempSync(join(tmpdir(), "seed-deps-")));
+		try {
+			const cache = join(base, "cache");
+			mkdirSync(join(cache, "packages/a/node_modules/x"), { recursive: true });
+			writeFileSync(join(cache, "packages/a/node_modules/x/index.js"), "1\n");
+			const outside = join(base, "outside");
+			mkdirSync(outside);
+			const tree = join(base, "tree");
+			mkdirSync(tree);
+			symlinkSync(outside, join(tree, "packages"));
+			await expect(
+				seedDeps(tree, {
+					dir: cache,
+					outputs: ["packages/a/node_modules"],
+					egress: { allowed: [], denied: [] },
+				}),
+			).rejects.toThrow("not a directory");
+			expect(Bun.spawnSync(["find", outside]).stdout.toString().trim()).toBe(
+				outside,
+			);
+			// expandOutputs never follows a link either.
+			expect(expandOutputs(tree, ["packages/*/node_modules"])).toEqual([]);
+			expect(
+				expandOutputs(cache, ["packages/*/node_modules", "node_modules"]),
+			).toEqual(["packages/a/node_modules"]);
+		} finally {
+			rmSync(base, { recursive: true, force: true });
+		}
+	});
+});

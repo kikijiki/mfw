@@ -80,6 +80,12 @@ function canonical(value: unknown): string {
 
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 
+/** Whether the project's config runs setup commands, which need an approval of their own. */
+export function hasSetup(config: unknown): boolean {
+	const setup = (config as { setup?: unknown } | null | undefined)?.setup;
+	return Array.isArray(setup) && setup.length > 0;
+}
+
 /** The hash an approval binds the project's `env` config to. */
 export function envConfigHash(config: unknown): string {
 	return sha256(`mfw-env-config:1\n${canonical(config ?? {})}`);
@@ -212,6 +218,7 @@ export async function proposeApproval(
 		input.root,
 		input.commit,
 		input.setting,
+		{ lockfiles: hasSetup(input.config) },
 	);
 	return { detection, configHash: envConfigHash(input.config) };
 }
@@ -313,6 +320,7 @@ export async function envStatusAt(input: {
 		input.root,
 		input.commit,
 		input.setting,
+		{ lockfiles: hasSetup(input.config) },
 	);
 	if (detection.kind === "unsupported") {
 		return {
@@ -322,8 +330,8 @@ export async function envStatusAt(input: {
 		};
 	}
 	const record = input.store.read(input.root);
-	if (detection.kind === "none") {
-		// Nothing to evaluate. A denial still stands for a later commit that adds one.
+	if (detection.kind === "none" && !hasSetup(input.config)) {
+		// Nothing to evaluate or install. A denial still stands for a later commit that adds one.
 		return { state: "none" };
 	}
 	if (!record) return { state: "not_approved", detection };
@@ -338,7 +346,8 @@ export async function envStatusAt(input: {
 		...discoveredNow,
 	]);
 	const configChanged = envConfigHash(input.config) !== record.configHash;
-	const sourceChanged = record.source !== detection.kind;
+	const sourceChanged =
+		record.source !== (detection.kind === "none" ? null : detection.kind);
 	if (changed.length > 0 || configChanged || sourceChanged) {
 		return {
 			state: "drifted",

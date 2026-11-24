@@ -57,7 +57,11 @@ import type { AllowEntry } from "./egress-policy.ts";
 import { prepareRunEgress } from "./egress-run.ts";
 import { type EgressStats, parseEgressStats } from "./egress-stats.ts";
 import { startRealProxy } from "./oneshot-agent.ts";
-import { ProfileRejectedError, type SandboxProfile } from "./profile.ts";
+import {
+	type DevEnvGrant,
+	ProfileRejectedError,
+	type SandboxProfile,
+} from "./profile.ts";
 import { buildEnvProfile, VERIFIER_TOOLS } from "./role-profiles.ts";
 import {
 	ensureRunDirLayout,
@@ -195,8 +199,10 @@ export interface EnvRunRequest {
 	/** A full commit id the owner approved. */
 	commit: string;
 	allow: readonly (AllowEntry & { host: string; port: number })[];
-	/** Host directory bound at /cache/env-data, read-write. */
-	dataDir: string;
+	/** Host directory bound at /cache/env-data, read-write (an evaluation's). */
+	dataDir?: string;
+	/** The evaluated environment the step runs in (setup), with the root its data is bound from. */
+	devEnv?: { grant: DevEnvGrant; bindRoot: string };
 	timeoutMs: number;
 	/** Before the launch: put the deps or anything else into the fresh tree. */
 	prepareTree?: (tree: string) => Promise<void>;
@@ -322,8 +328,11 @@ export async function runEnvStep(req: EnvRunRequest): Promise<EnvRunResult> {
 	const runDir = join(stateDir, "runs", runId);
 	ensureRunDirLayout(runDir);
 	const layout = runDirLayout(runDir);
-	mkdirSync(req.dataDir, { recursive: true, mode: 0o700 });
-	const dataDir = realpathSync(req.dataDir);
+	let dataDir: string | undefined;
+	if (req.dataDir) {
+		mkdirSync(req.dataDir, { recursive: true, mode: 0o700 });
+		dataDir = realpathSync(req.dataDir);
+	}
 	const clones = new VerifierClones({
 		workspaceRoot: join(mfwHome, "workspaces"),
 		primaryRoot: projectRoot,
@@ -377,7 +386,8 @@ export async function runEnvStep(req: EnvRunRequest): Promise<EnvRunResult> {
 					dirname(clone.path),
 					runDir,
 					dirname(prepared.socketDir),
-					dirname(dataDir),
+					...(dataDir ? [dirname(dataDir)] : []),
+					...(req.devEnv ? [req.devEnv.bindRoot] : []),
 				],
 			);
 			const found = new Set(looked.toolchain.resolved.map((b) => b.name));
@@ -405,7 +415,8 @@ export async function runEnvStep(req: EnvRunRequest): Promise<EnvRunResult> {
 				runDir,
 				binaries,
 				egressSocketDir: prepared.socketDir,
-				dataDir,
+				...(dataDir ? { dataDir } : {}),
+				...(req.devEnv ? { devEnv: req.devEnv.grant } : {}),
 				nixDaemon: nix,
 			});
 			profile = req.profile ? req.profile(base) : base;
@@ -513,9 +524,15 @@ export async function runEnvStep(req: EnvRunRequest): Promise<EnvRunResult> {
 			watchTreeSize(clone.path, req.maxTreeBytes ?? DEFAULT_TREE_BYTES, (w) =>
 				kill("size_cap", `the tree (${w})`),
 			),
-			watchTreeSize(dataDir, req.maxDataBytes ?? DEFAULT_DATA_BYTES, (w) =>
-				kill("size_cap", `the data directory (${w})`),
-			),
+			...(dataDir
+				? [
+						watchTreeSize(
+							dataDir,
+							req.maxDataBytes ?? DEFAULT_DATA_BYTES,
+							(w) => kill("size_cap", `the data directory (${w})`),
+						),
+					]
+				: []),
 			watchTreeSize(layout.outbox, OUTBOX_BYTES, (w) =>
 				kill("size_cap", `the outbox (${w})`),
 			),

@@ -99,6 +99,25 @@ export const EVALUATED_ENV_PATHS: readonly string[] = [
 	...new Set(SOURCE_PRIORITY.flatMap((k) => SOURCE_FILES[k])),
 ];
 
+/**
+ * Lockfiles a setup step installs from. Part of the approval only when the
+ * project has `env.setup`: then a new lockfile is new code that runs with
+ * registry egress, and asks the owner again.
+ */
+export const DEPS_LOCKFILES: readonly string[] = [
+	"bun.lock",
+	"bun.lockb",
+	"package-lock.json",
+	"npm-shrinkwrap.json",
+	"pnpm-lock.yaml",
+	"yarn.lock",
+	"Cargo.lock",
+	"uv.lock",
+	"poetry.lock",
+	"requirements.txt",
+	"package.json",
+];
+
 /** Every root-level path that defines an environment, for hashing and detection. */
 export const ENV_FILE_PATHS: readonly string[] = [
 	...new Set([
@@ -328,8 +347,12 @@ export async function detectEnvSource(
 	root: string,
 	commit: string,
 	setting: EnvSourceSetting = "auto",
+	opts: { lockfiles?: boolean } = {},
 ): Promise<EnvDetection> {
-	const files = await hashCommitFiles(root, commit, ENV_FILE_PATHS);
+	const files = await hashCommitFiles(root, commit, [
+		...ENV_FILE_PATHS,
+		...(opts.lockfiles ? DEPS_LOCKFILES : []),
+	]);
 	const picked = classifySource(
 		files.map((f) => f.path),
 		setting,

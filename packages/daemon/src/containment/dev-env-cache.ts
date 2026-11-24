@@ -199,7 +199,7 @@ async function evaluate(
 	fingerprint: string,
 ): Promise<DevEnvCapture> {
 	const { record } = input;
-	if (record.state !== "allowed" || !record.source) {
+	if (record.state !== "allowed") {
 		throw new DevEnvBuildError(
 			"env_not_approved",
 			"the environment is not approved",
@@ -210,6 +210,35 @@ async function evaluate(
 	const source = record.source;
 	const dir = devEnvCacheDir(input.mfwHome, input.root, fingerprint);
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
+	if (source === null) {
+		// Setup only: the host toolchain, nothing to evaluate.
+		const empty: DevEnvCapture = {
+			version: 1,
+			fingerprint,
+			root: input.root,
+			commit: record.commit,
+			source: null,
+			env: {},
+			path: [],
+			closure: [],
+			closureMethod: "none",
+			hasData: false,
+			dropped: [],
+			droppedPath: [],
+			watches: [],
+			egress: { allowed: [], denied: [] },
+			gcRooted: true,
+			builtAt: (input.now ?? (() => new Date()))().toISOString(),
+		};
+		await writeFileAtomic(
+			join(dir, "capture.json"),
+			`${JSON.stringify(empty, null, 2)}\n`,
+			{
+				mode: 0o600,
+			},
+		);
+		return empty;
+	}
 	const staging = join(dir, `data.tmp-${randomUUID()}`);
 	const result = await (input.run ?? runEnvStep)({
 		step: source,

@@ -2,10 +2,12 @@
  * What a dev environment's evaluation and setup may reach (design "Egress"):
  * exact host and port, no wildcards, each entry with where it was observed.
  *
- * Provenance: every entry below was contacted by a fixture of the live suite
- * (`dev-env-build-live.test.ts`, `dev-env-deps-live.test.ts`) through the
- * per-run proxy, which records allowed and denied destinations; the fixture
- * named in `source` fails if its entry is removed. Substitution from a binary
+ * Provenance: the flake, mise and npm entries were each contacted by a
+ * fixture of the live suite (`dev-env-build-live.test.ts`,
+ * `dev-env-deps-live.test.ts`) through the per-run proxy, which records
+ * allowed and denied destinations, starting from an empty allowlist; those
+ * fixtures fail if an entry is removed. The yarn, cargo and python entries are
+ * the tools' documented default registries and say so: no fixture runs them. Substitution from a binary
  * cache (cache.nixos.org) is done by the nix daemon on the host, with its own
  * configuration, and never passes through this proxy: it is not listed.
  *
@@ -98,7 +100,7 @@ export const REGISTRY_EGRESS: Readonly<
 			port: 443,
 			purpose: "package-registry",
 			source:
-				"deps fixture (bun.lock / package-lock.json): bun and npm fetch metadata and tarballs here",
+				"deps fixture (bun install of a package.json): metadata and tarballs",
 		},
 	],
 	yarn: [
@@ -106,7 +108,8 @@ export const REGISTRY_EGRESS: Readonly<
 			host: "registry.yarnpkg.com",
 			port: 443,
 			purpose: "package-registry",
-			source: "yarn.lock: yarn classic's default registry",
+			source:
+				"documented default (not observed by a fixture): yarn classic's registry",
 		},
 	],
 	cargo: [
@@ -114,13 +117,15 @@ export const REGISTRY_EGRESS: Readonly<
 			host: "index.crates.io",
 			port: 443,
 			purpose: "package-registry",
-			source: "Cargo.lock: the sparse index",
+			source:
+				"documented default (not observed by a fixture): the crates.io sparse index",
 		},
 		{
 			host: "static.crates.io",
 			port: 443,
 			purpose: "package-registry",
-			source: "Cargo.lock: crate downloads",
+			source:
+				"documented default (not observed by a fixture): crates.io downloads",
 		},
 	],
 	python: [
@@ -128,13 +133,15 @@ export const REGISTRY_EGRESS: Readonly<
 			host: "pypi.org",
 			port: 443,
 			purpose: "package-registry",
-			source: "uv.lock / poetry.lock / requirements: the simple index",
+			source:
+				"documented default (not observed by a fixture): the PyPI simple index",
 		},
 		{
 			host: "files.pythonhosted.org",
 			port: 443,
 			purpose: "package-registry",
-			source: "uv.lock / poetry.lock / requirements: distribution files",
+			source:
+				"documented default (not observed by a fixture): PyPI distribution files",
 		},
 	],
 };
@@ -152,6 +159,8 @@ export const LOCKFILE_REGISTRIES: Readonly<Record<string, readonly string[]>> =
 		"uv.lock": ["python"],
 		"poetry.lock": ["python"],
 		"requirements.txt": ["python"],
+		// A manifest without a lockfile still installs from npm.
+		"package.json": ["npm"],
 	};
 
 function parseHostPort(

@@ -19,8 +19,14 @@ import {
 	loadDevEnv,
 } from "./dev-env-cache.ts";
 import type { EnvConfig } from "./dev-env-config.ts";
+import { type DepsEntry, installDeps, loadDeps } from "./dev-env-deps.ts";
 import { EnvSourceError, resolveCommit } from "./dev-env-sources.ts";
-import { type EnvStatus, EnvTrustStore, envStatusAt } from "./dev-env-trust.ts";
+import {
+	type EnvStatus,
+	EnvTrustStore,
+	envStatusAt,
+	hasSetup,
+} from "./dev-env-trust.ts";
 
 export type DevEnvRefusalCode =
 	| "env_unsupported"
@@ -32,7 +38,13 @@ export type DevEnvRefusalCode =
 
 export type DevEnvResolution =
 	| { kind: "none" }
-	| { kind: "ready"; capture: DevEnvCapture; fingerprint: string }
+	| {
+			kind: "ready";
+			capture: DevEnvCapture;
+			fingerprint: string;
+			/** The installed dependencies, when the project has `env.setup`. */
+			deps: DepsEntry | null;
+	  }
 	| {
 			kind: "refused";
 			code: DevEnvRefusalCode;
@@ -116,7 +128,7 @@ export async function resolveDevEnv(
 			return {
 				kind: "refused",
 				code: "env_not_approved",
-				reason: `the ${status.detection.kind} environment of ${input.project} at ${shortSha(commit)} is not approved (${status.detection.files.map((f) => f.path).join(", ")})`,
+				reason: `the ${status.detection.kind === "none" ? "setup" : status.detection.kind} environment of ${input.project} at ${shortSha(commit)} is not approved (${status.detection.files.map((f) => f.path).join(", ")})`,
 				fix: `review those files at ${shortSha(commit)}, then run \`${allow}\` or approve the card in the inbox`,
 				commit,
 				status,
@@ -145,44 +157,63 @@ export async function resolveDevEnv(
 		case "approved":
 			break;
 	}
-	const cached = await loadDevEnv(
-		input.mfwHome,
-		input.root,
-		status.fingerprint,
-	);
-	if (cached)
-		return { kind: "ready", capture: cached, fingerprint: status.fingerprint };
-	if (!input.build) {
-		return {
-			kind: "refused",
-			code: "env_not_built",
-			reason: `the approved environment of ${input.project} has not been evaluated yet`,
-			fix: `run \`mfw env build ${input.project}\`, or let the next dispatch build it`,
-			commit,
-			status,
-		};
+	const notBuilt = (what: string): DevEnvResolution => ({
+		kind: "refused",
+		code: "env_not_built",
+		reason: `the approved ${what} of ${input.project} has not been prepared yet`,
+		fix: `run \`mfw env build ${input.project}\`, or let the next dispatch build it`,
+		commit,
+		status,
+	});
+	const failed = (err: DevEnvBuildError): DevEnvResolution => ({
+		kind: "refused",
+		code: "env_build_failed",
+		reason: `preparing the environment of ${input.project} at ${shortSha(status.record.commit)} failed: ${err.message}`,
+		fix: err.fix,
+		commit,
+		log: err.log,
+		status,
+	});
+	const stateDir = input.stateDir ?? join(input.root, ".mfw");
+	let capture = await loadDevEnv(input.mfwHome, input.root, status.fingerprint);
+	if (!capture) {
+		if (!input.build) return notBuilt("environment");
+		try {
+			capture = await buildDevEnv({
+				mfwHome: input.mfwHome,
+				root: input.root,
+				stateDir,
+				record: status.record,
+				config: input.config,
+				store,
+				...(input.seams ?? {}),
+			});
+		} catch (err) {
+			if (!(err instanceof DevEnvBuildError)) throw err;
+			return failed(err);
+		}
 	}
-	try {
-		const capture = await buildDevEnv({
-			mfwHome: input.mfwHome,
-			root: input.root,
-			stateDir: input.stateDir ?? join(input.root, ".mfw"),
-			record: status.record,
-			config: input.config,
-			store,
-			...(input.seams ?? {}),
-		});
-		return { kind: "ready", capture, fingerprint: status.fingerprint };
-	} catch (err) {
-		if (!(err instanceof DevEnvBuildError)) throw err;
-		return {
-			kind: "refused",
-			code: "env_build_failed",
-			reason: `evaluating the environment of ${input.project} at ${shortSha(status.record.commit)} failed: ${err.message}`,
-			fix: err.fix,
-			commit,
-			log: err.log,
-			status,
-		};
+	let deps: DepsEntry | null = null;
+	if (hasSetup(input.config)) {
+		deps = await loadDeps(input.mfwHome, input.root, status.fingerprint);
+		if (!deps) {
+			if (!input.build) return notBuilt("dependencies");
+			try {
+				deps = await installDeps({
+					mfwHome: input.mfwHome,
+					root: input.root,
+					stateDir,
+					record: status.record,
+					capture,
+					config: input.config,
+					...(input.seams?.run ? { run: input.seams.run } : {}),
+					...(input.seams?.steps ? { steps: input.seams.steps } : {}),
+				});
+			} catch (err) {
+				if (!(err instanceof DevEnvBuildError)) throw err;
+				return failed(err);
+			}
+		}
 	}
+	return { kind: "ready", capture, fingerprint: status.fingerprint, deps };
 }
