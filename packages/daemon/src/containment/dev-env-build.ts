@@ -128,6 +128,16 @@ devenv)
 	exec devenv print-dev-env --json >"$out/${ENV_OUTPUT_FILE}" 2>>"$log"
 	;;
 setup)
+	scripts="$1"
+	shift
+	if [ "$scripts" != on ]; then
+		# Lifecycle scripts off: bun reads a global bunfig, npm, pnpm and yarn
+		# classic npm_config_ignore_scripts, yarn berry YARN_ENABLE_SCRIPTS.
+		mkdir -p "$XDG_CONFIG_HOME"
+		printf '[install]\nignoreScripts = true\n' >"$HOME/.bunfig.toml"
+		cp "$HOME/.bunfig.toml" "$XDG_CONFIG_HOME/.bunfig.toml"
+		export npm_config_ignore_scripts=true YARN_ENABLE_SCRIPTS=false
+	fi
 	for cmd in "$@"; do
 		echo "mfw: setup: $cmd" >>"$log"
 		sh -c "$cmd" >>"$log" 2>&1 </dev/null || exit 123
@@ -202,6 +212,8 @@ export interface EnvRunRequest {
 	step: EnvSourceKind | "setup";
 	/** For `setup`: the commands, run in order. */
 	commands?: readonly string[];
+	/** For `setup`: let lifecycle scripts run (`env.trustedDependencies` is not empty). */
+	lifecycleScripts?: boolean;
 	projectRoot: string;
 	stateDir: string;
 	mfwHome: string;
@@ -543,6 +555,9 @@ export async function runEnvStep(req: EnvRunRequest): Promise<EnvRunResult> {
 			tool("sh"),
 			`/mfw-run/control/${ENV_ENTRY_FILE}`,
 			req.step,
+			...(req.step === "setup"
+				? [req.lifecycleScripts === true ? "on" : "off"]
+				: []),
 			...(req.commands ?? []),
 		]);
 		const compiled = compileBwrap(profile, argv, host);

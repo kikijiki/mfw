@@ -51,6 +51,14 @@ export const EnvConfigSchema = z.strictObject({
 	 * there and nowhere else.
 	 */
 	setup: z.array(z.string().min(1).max(2000)).max(16).optional(),
+	/**
+	 * Packages whose lifecycle scripts may run during `setup`. Empty (the
+	 * default): lifecycle scripts are off for bun, npm, pnpm and yarn. Any entry
+	 * turns them on for the install, and the card shows the list; per-package
+	 * enforcement is the package manager's (bun's own `trustedDependencies`).
+	 * Build scripts of cargo (`build.rs`) and python builds cannot be turned off.
+	 */
+	trustedDependencies: z.array(z.string().min(1).max(214)).max(256).optional(),
 	/** What `setup` produces and runs reuse. Default: the node_modules directories. */
 	outputs: z.array(OutputPath).max(32).optional(),
 	/** Registry hosts `setup` may reach. Default: from the lockfiles present. */

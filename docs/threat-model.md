@@ -204,10 +204,12 @@ are **the one place mfw runs project code with network**. What limits them
   lifecycle scripts off, before any secret is read.
 - **Limited:** a change to an executing `package.json` field needs an approval.
 - **Limited further with `env.setup`:** dependencies are installed in the
-  `env-install` sandbox, where lifecycle scripts run with registry egress only
-  and no credentials. A lockfile-only change installs again there with no
-  approval and leaves a notify-after item; a change to an install script, a
-  setup command or a nix lockfile waits on a card.
+  `env-install` sandbox with registry egress only and no credentials, and with
+  lifecycle scripts off unless `env.trustedDependencies` names some. A
+  lockfile-only change installs again there with no approval and leaves a
+  notify-after item. A change to `package.json`'s `scripts` (or another
+  executing field), a setup command or a nix lockfile waits on a card; a change
+  to a file such a script runs, a workspace's code or a patch does not.
 - **Still possible:** a changed lockfile or dependency version is a
   notify-after item and does not wait for approval, so a new dependency's
   lifecycle script runs in the install sandbox and can send that commit's code

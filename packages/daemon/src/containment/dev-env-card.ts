@@ -55,6 +55,8 @@ export interface EnvCardArgs {
 	configHash: string;
 	/** The project's `env.nixDaemon` opt-in, shown prominently. */
 	nixDaemon: boolean;
+	/** `env.trustedDependencies`: lifecycle scripts run when not empty. */
+	trustedDependencies?: string[];
 	/** What the owner reads: the whole-tree diff, or the files that shape it. */
 	plan?: ApprovalPlan;
 }
@@ -93,6 +95,9 @@ export function envCardArgs(
 		...(config?.setup?.length ? { setup: [...config.setup] } : {}),
 		configHash: envConfigHash(config),
 		nixDaemon: config?.nixDaemon === true,
+		...(config?.trustedDependencies?.length
+			? { trustedDependencies: [...config.trustedDependencies] }
+			: {}),
 	};
 }
 
@@ -159,6 +164,12 @@ export function describeEnvCard(raw: Record<string, unknown>): {
 		Array.isArray(a.changed) && a.changed.length
 			? ` Changed since the approved commit ${String(a.previousCommit ?? "").slice(0, 12)}: ${a.changed.join(", ")}.`
 			: "";
+	const trusted =
+		Array.isArray(a.trustedDependencies) && a.trustedDependencies.length
+			? ` LIFECYCLE SCRIPTS ON for the install (trustedDependencies: ${a.trustedDependencies.join(", ")}).`
+			: Array.isArray(a.setup) && a.setup.length
+				? " Lifecycle scripts are off for the install."
+				: "";
 	const setup =
 		Array.isArray(a.setup) && a.setup.length
 			? ` Setup commands: ${a.setup.map((c) => JSON.stringify(c)).join(", ")}.`
@@ -166,7 +177,7 @@ export function describeEnvCard(raw: Record<string, unknown>): {
 	const plan = a.plan ? ` ${planLines(a.plan).join("\n").slice(0, 6000)}` : "";
 	return {
 		title: `decide: dev environment of ${a.project} at ${String(a.commit).slice(0, 12)}`,
-		detail: `${a.nixDaemon === true ? "NIX DAEMON: ON. " : ""}Approving lets mfw evaluate this ${a.source} environment, once, at commit ${a.commit}, and give the result to every run. ${envReachStatement(String(a.source), a.nixDaemon === true)} It records these files: ${files}.${changed}${setup} Declining refuses the project's runs until \`mfw env allow\`.${plan}`,
+		detail: `${a.nixDaemon === true ? "NIX DAEMON: ON. " : ""}Approving lets mfw evaluate this ${a.source} environment, once, at commit ${a.commit}, and give the result to every run. ${envReachStatement(String(a.source), a.nixDaemon === true)} It records these files: ${files}.${changed}${setup} ${trusted} Declining refuses the project's runs until \`mfw env allow\`.${plan}`,
 	};
 }
 

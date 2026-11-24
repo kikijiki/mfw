@@ -43,8 +43,11 @@ describe.skipIf(skip !== null)(
 		let root: string;
 		let commit: string;
 		let installs = 0;
+		// The root package's postinstall is the case under test: opted in here,
+		// and off by default (the last test).
 		const config: EnvConfig = {
 			setup: ["bun install --no-save"],
+			trustedDependencies: ["fixture"],
 		};
 		const steps = () =>
 			cagedSteps({
@@ -202,6 +205,41 @@ describe.skipIf(skip !== null)(
 			expect(v).toBe("6.0.0");
 			// The approval itself did not move.
 			expect(new EnvTrustStore(lab.mfwHome).read(root)?.commit).toBe(commit);
+		}, 300_000);
+
+		test("lifecycle scripts are off unless trustedDependencies names some", async () => {
+			const off: EnvConfig = { setup: ["bun install --no-save"] };
+			const o = await lab.repo("deps-off", {
+				"package.json": `${JSON.stringify({
+					name: "fixture",
+					private: true,
+					dependencies: { "is-number": "7.0.0" },
+					scripts: { postinstall: "echo ran > node_modules/.postinstall-ran" },
+				})}\n`,
+				".gitignore": ".mfw/\nnode_modules/\n",
+			});
+			await allowEnv(new EnvTrustStore(lab.mfwHome), {
+				project: "off",
+				root: o.root,
+				commit: o.commit,
+				setting: "auto",
+				config: off,
+				via: "cli",
+			});
+			const r = await resolveDevEnv({
+				mfwHome: lab.mfwHome,
+				project: "off",
+				root: o.root,
+				config: off,
+				rev: "main",
+				build: true,
+				seams: { steps: steps() } as ResolveDevEnvInput["seams"],
+			});
+			if (r.kind === "refused") console.log(r.reason, r.log);
+			if (r.kind !== "ready" || !r.deps) throw new Error("no deps");
+			const nm = join(r.deps.dir, "node_modules");
+			expect(existsSync(join(nm, "is-number/package.json"))).toBe(true);
+			expect(existsSync(join(nm, ".postinstall-ran"))).toBe(false);
 		}, 300_000);
 	},
 );

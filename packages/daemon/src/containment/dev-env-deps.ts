@@ -269,6 +269,7 @@ async function install(
 		const result = await (input.run ?? runEnvStep)({
 			step: "setup",
 			commands: config.setup ?? [],
+			lifecycleScripts: (config.trustedDependencies ?? []).length > 0,
 			projectRoot: input.root,
 			stateDir: input.stateDir,
 			mfwHome: input.mfwHome,

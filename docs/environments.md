@@ -76,6 +76,7 @@ approve: changing it asks again.
 | --- | --- | --- |
 | `source` | `auto`, `none`, `direnv`, `mise`, `flake` or `devenv` | `auto` |
 | `setup` | commands that install dependencies, run in order in the env-install sandbox | none |
+| `trustedDependencies` | packages whose lifecycle scripts may run during `setup`; any entry turns lifecycle scripts on for the install (per-package enforcement is the package manager's) | none: lifecycle scripts off for bun, npm, pnpm and yarn |
 | `outputs` | what `setup` produces that runs reuse; one `*` segment allowed | the `node_modules` directories |
 | `registries` | exact `host:port` pairs `setup` may reach | from the lockfiles present |
 | `extraHosts` | further hosts the evaluation may reach, such as a flake input on another forge | none |
