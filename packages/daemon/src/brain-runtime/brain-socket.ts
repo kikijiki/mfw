@@ -80,8 +80,6 @@ interface TurnEndpoint {
 }
 
 export class BrainSocket {
-	/** Where turns lived before sockets moved out of `$MFW_HOME`. */
-	private readonly legacyTurnRoot: string;
 	private handler: BrainSocketHandler | null = null;
 	private prepared: Promise<void> | null = null;
 	/** sha256(token) -> binding. */
@@ -96,9 +94,7 @@ export class BrainSocket {
 		}
 	};
 
-	constructor(private readonly home: string) {
-		this.legacyTurnRoot = join(resolve(home), "run", "b");
-	}
+	constructor(private readonly home: string) {}
 
 	/**
 	 * Short and outside `$MFW_HOME`, because a unix socket path is limited to
@@ -199,7 +195,6 @@ export class BrainSocket {
 	private async sweepTurns(): Promise<void> {
 		// The directory is the real barrier (0700); the socket mode is belt and braces.
 		ensureSocketRoot(this.home);
-		await rm(this.legacyTurnRoot, { recursive: true, force: true });
 		// A previous daemon's tokens are dead with it: never leave their files around.
 		await rm(this.turnRoot, { recursive: true, force: true });
 		await mkdir(this.turnRoot, { recursive: true, mode: 0o700 });
