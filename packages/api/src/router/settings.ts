@@ -97,13 +97,6 @@ export const settingsRouter = createTRPCRouter({
 					approvalMode: z.enum(["autonomous", "interactive"]).optional(),
 					leaseMs: z.number().int().min(1000).optional(),
 					checkPrefix: z.string().nullish(),
-					/** What a verification check may read from the ambient environment (`EnvPolicy` in `verifier.ts`). */
-					envPolicy: z
-						.object({
-							allow: z.array(z.string()).optional(),
-							inherit: z.boolean().optional(),
-						})
-						.nullish(),
 					/** Repository-wide checks applied to every merge candidate. */
 					mergeChecks: VerificationPlanSchema.nullish(),
 					notify: notifyInput.nullish(),

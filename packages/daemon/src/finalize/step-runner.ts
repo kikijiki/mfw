@@ -71,11 +71,7 @@ import {
 	type ModelTier,
 } from "../tasks/types.ts";
 import type { RateLimitObserver } from "../usage/claude-weekly.ts";
-import {
-	type EnvPolicy,
-	type VerificationResult,
-	verifyInClone,
-} from "../verifier.ts";
+import { type VerificationResult, verifyInClone } from "../verifier.ts";
 import {
 	type Directive,
 	type FinalizeCtx,
@@ -244,9 +240,6 @@ export interface StepRunnerDeps {
 	/** Wrapper command for DoD checks (e.g. a sandbox entrypoint, or the
 	 *  project's own dev-environment entrypoint). */
 	checkPrefix?: string;
-	/** What a DoD check may read from the ambient environment. See
-	 *  `verifier.ts`'s `EnvPolicy`. */
-	envPolicy?: EnvPolicy;
 	verification?: {
 		foreground<T>(work: () => Promise<T>): Promise<T>;
 	};
@@ -1378,11 +1371,10 @@ export class StepRunner {
 				],
 			};
 		}
-		// Hardened verifier: scrubbed env, per-check timeouts, declared
-		// checkPrefix/envPolicy, no guessing at the project (see verifier.ts).
+		// Hardened verifier: per-check timeouts, the declared checkPrefix, no
+		// guessing at the project (see verifier.ts).
 		const verifyOpts = {
 			checkPrefix: this.deps.checkPrefix,
-			envPolicy: this.deps.envPolicy,
 			gate: {
 				primaryRoot: this.deps.projectRoot,
 				baseRev: run.baseSha || "HEAD",

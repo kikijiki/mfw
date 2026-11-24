@@ -179,7 +179,6 @@ describe("get", () => {
 			},
 			leaseMs: 900_000,
 			checkPrefix: null,
-			envPolicy: null,
 			mergeChecks: FALLBACK_MERGE_CHECKS,
 			notify: null,
 			runpod: null,

@@ -3,13 +3,11 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { git } from "../src/git.ts";
-import { pinnedTool } from "../src/sandbox.ts";
 import {
-	buildRunner,
 	describeVerificationEnvironment,
-	scrubEnv,
-	verify as verifyHostOrRefuse,
+	verify as verifyInSandbox,
 } from "../src/verifier.ts";
+import { cloneCheckRunner } from "./support/check-clones.ts";
 
 async function repo(): Promise<string> {
 	const root = await mkdtemp(join(tmpdir(), "mfw-verify-"));
@@ -25,12 +23,16 @@ async function repo(): Promise<string> {
 const dod = (checks: unknown[]) =>
 	({ verifier: "deterministic", checks }) as never;
 
-/** These cover the check semantics, on the one path that may use the host. */
+/**
+ * These cover the check semantics, through a stand-in for the verifier
+ * sandbox. The real sandbox (and its non-interactive, empty environment) is
+ * covered by check-sandbox-live.
+ */
 const verify = (
-	...[cwd, checks, base, opts]: Parameters<typeof verifyHostOrRefuse>
+	...[cwd, checks, base, opts]: Parameters<typeof verifyInSandbox>
 ) =>
-	verifyHostOrRefuse(cwd, checks, base, {
-		hostExecution: "interactive-worktree",
+	verifyInSandbox(cwd, checks, base, {
+		sandbox: { run: cloneCheckRunner, role: "verifier" },
 		...opts,
 	});
 
@@ -175,134 +177,28 @@ describe("verifier v2: checks", () => {
 
 describe("verifier v2: hardening", () => {
 	test("describes the check environment without exposing values", () => {
-		const description = describeVerificationEnvironment({
+		const sandboxed = describeVerificationEnvironment({
 			checkPrefix: "nix develop -c",
-			envPolicy: { allow: ["PATH", "CI"] },
-			env: { TEST_DATABASE_URL: "secret-value" },
+			sandbox: { run: cloneCheckRunner, role: "verifier" },
 		});
-		expect(description).toContain("nix develop -c");
-		expect(description).toContain("PATH, CI");
-		expect(description).toContain("TEST_DATABASE_URL");
-		expect(description).not.toContain("secret-value");
+		expect(sandboxed).toContain("nix develop -c");
+		expect(sandboxed).toContain("no network");
+		expect(sandboxed).toContain("no ambient environment");
+		expect(describeVerificationEnvironment({})).toContain("refused");
 	});
 
-	test("checks run with a scrubbed env: no ambient secrets reachable", async () => {
-		// DoD commands come verbatim from task files, which agents write.
+	test("without a verifier sandbox a run check is refused, never run on the host", async () => {
 		const root = await repo();
-		process.env.MFW_TEST_SECRET = "super-secret-token";
-		try {
-			const r = await verify(
-				root,
-				dod([
-					{ run: 'test -z "$MFW_TEST_SECRET"', expect_exit: 0 },
-					{ run: 'test -n "$PATH"', expect_exit: 0 }, // still usable
-					{ run: 'test "$MFW_VERIFY" = 1', expect_exit: 0 },
-				]),
-				"x",
-			);
-			expect(r.passed).toBe(true);
-		} finally {
-			delete process.env.MFW_TEST_SECRET;
-		}
-		await rm(root, { recursive: true, force: true });
-	});
-
-	test("scrubEnv keeps the allowlist and drops everything else", () => {
-		const env = scrubEnv({
-			PATH: "/usr/bin",
-			HOME: "/home/x",
-			ANTHROPIC_API_KEY: "sk-leak",
-			AWS_SECRET_ACCESS_KEY: "leak",
-			RANDOM_THING: "leak",
-		});
-		expect(env.PATH).toBe("/usr/bin");
-		expect(env.HOME).toBe("/home/x");
-		expect(env.ANTHROPIC_API_KEY).toBeUndefined();
-		expect(env.AWS_SECRET_ACCESS_KEY).toBeUndefined();
-		expect(env.RANDOM_THING).toBeUndefined();
-	});
-
-	/** A project declares variables outside the built-in default (a token, `DOCKER_HOST`, ...). */
-	test("envPolicy.allow replaces the default list with the project's own", () => {
-		const env = scrubEnv(
-			{ PATH: "/usr/bin", DOCKER_HOST: "unix:///var/run/docker.sock" },
-			{},
-			{ allow: ["DOCKER_HOST"] },
-		);
-		expect(env.DOCKER_HOST).toBe("unix:///var/run/docker.sock");
-		// PATH is not in the declared list, so it does not survive: the project owns the list once set.
-		expect(env.PATH).toBeUndefined();
-	});
-
-	test("envPolicy.inherit passes the whole ambient environment through", () => {
-		const env = scrubEnv(
-			{ PATH: "/usr/bin", ANYTHING: "goes" },
-			{},
-			{ inherit: true },
-		);
-		expect(env.PATH).toBe("/usr/bin");
-		expect(env.ANYTHING).toBe("goes");
-	});
-
-	test("envPolicy.inherit still cannot reopen the non-interactive overrides", () => {
-		const env = scrubEnv({ EDITOR: "vim" }, {}, { inherit: true });
-		expect(env.EDITOR).toBe("true");
-	});
-
-	/** A check has no TTY and nobody to answer prompts; anything interactive must be told not to ask (e.g. `git rebase --continue` needs an editor). */
-	test("checks run non-interactively: no editor, no credential prompt", () => {
-		const env = scrubEnv({ PATH: "/usr/bin", EDITOR: "vim" });
-		// Set, not passed through: the operator's editor would hang the check.
-		expect(env.EDITOR).toBe("true");
-		expect(env.GIT_EDITOR).toBe("true");
-		expect(env.VISUAL).toBe("true");
-		expect(env.GIT_TERMINAL_PROMPT).toBe("0");
-	});
-
-	test("a check that would open an editor completes instead of hanging", async () => {
-		const root = await repo();
-		// `git commit --amend` with no -m opens the editor; under a scrubbed env
-		// that must resolve to the no-op `true` and accept the message as-is.
-		const r = await verify(
+		const marker = join(root, "ran-on-host");
+		const r = await verifyInSandbox(
 			root,
-			dod([{ run: "git commit --amend --allow-empty", expect_exit: 0 }]),
+			dod([{ run: `touch '${marker}'`, expect_exit: 0 }]),
 			"x",
 		);
-		expect(r.passed).toBe(true);
+		expect(r.passed).toBe(false);
+		expect(r.checks[0]?.detail).toContain("no_verifier_sandbox");
+		expect(await Bun.file(marker).exists()).toBe(false);
 		await rm(root, { recursive: true, force: true });
-	}, 20_000);
-
-	/** `checkPrefix` (e.g. `"direnv exec ."`, `"nix develop -c"`) is the only way into the dev environment; mfw never inspects `.envrc` itself. */
-	test("checkPrefix is the only thing that enters an environment, no detection", () => {
-		expect(buildRunner({})("echo hi")).toEqual([
-			pinnedTool("sh") as string,
-			"-c",
-			"echo hi",
-		]);
-		const argv = buildRunner({ checkPrefix: "direnv exec ." })("echo hi");
-		expect(argv[0]).toBe(pinnedTool("sh") as string);
-		expect(argv[2]).toContain("direnv exec . sh -c");
-	});
-
-	test("checkPrefix is quoted, so a check cannot break out of it", () => {
-		const runner = buildRunner({ checkPrefix: "env FOO=bar" });
-		const argv = runner("echo 'quoted; rm -rf /'");
-		expect(argv[0]).toBe(pinnedTool("sh") as string);
-		// the check text is a single quoted argument to the inner sh
-		expect(argv[2]).toContain("env FOO=bar sh -c ");
-		expect(argv[2]).toContain("'\\''");
-	});
-
-	test("checkPrefix composes WITH a sandbox rather than being replaced by it", () => {
-		// Env entrypoint and containment are composed by the operator, e.g. `"direnv exec . bwrap --ro-bind / / --"`.
-		const argv = buildRunner({
-			checkPrefix: "direnv exec . bwrap --ro-bind / / --",
-		})("make test");
-		expect(argv).toEqual([
-			pinnedTool("sh") as string,
-			"-c",
-			"direnv exec . bwrap --ro-bind / / -- sh -c 'make test'",
-		]);
 	});
 
 	test("runaway output is capped rather than growing daemon memory", async () => {

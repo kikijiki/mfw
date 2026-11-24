@@ -912,25 +912,6 @@ export class RunRegistry {
 			.where(eq(runs.id, runId));
 	}
 
-	/**
-	 * Record the mode the agent is about to launch under. Autonomous always
-	 * wins: a relaunch without a person approving each action must not keep an
-	 * earlier `interactive`, which would let its checks run on the host.
-	 */
-	async recordApprovalMode(
-		runId: string,
-		mode: "autonomous" | "interactive",
-	): Promise<void> {
-		await this.handle.db
-			.update(runs)
-			.set({ approvalMode: mode })
-			.where(
-				mode === "autonomous"
-					? eq(runs.id, runId)
-					: and(eq(runs.id, runId), isNull(runs.approvalMode)),
-			);
-	}
-
 	/** What the agent left at `outbox/exit`. Stored as a claim, never read for a verdict. */
 	async recordAgentExitClaim(
 		runId: string,

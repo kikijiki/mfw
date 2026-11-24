@@ -870,7 +870,6 @@ describe("regression sweep: the red-main safety net", () => {
 			log: silentLogger(),
 			projectRoot: f.root,
 			integrationBranch: "main",
-			envPolicy: { allow: ["PATH", "CI"] },
 			diagnose: {
 				enabled: true,
 				diagnose: async (ctx) => {

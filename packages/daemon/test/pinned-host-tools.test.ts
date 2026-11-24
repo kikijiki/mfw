@@ -6,7 +6,6 @@ import { AgentHost } from "../src/agent-host.ts";
 import { SecretEnvironment } from "../src/execution-environment.ts";
 import { git } from "../src/git.ts";
 import { pinnedTool, resetBwrapAvailableCache } from "../src/sandbox.ts";
-import { buildRunner } from "../src/verifier.ts";
 import {
 	baseSpec,
 	fakeHome,
@@ -31,9 +30,6 @@ describe("X8: git, mkfifo and sh are resolved from a trusted PATH only", () => {
 		process.env.PATH = `${join(home, "bin")}:${savedEnv.PATH}`;
 		resetBwrapAvailableCache();
 		expect((await git(["--version"], base)).exitCode).toBe(0);
-		expect(buildRunner({} as never)("true")[0]).toBe(
-			pinnedTool("sh") as string,
-		);
 		expect(pinnedTool("sh")).not.toContain(home);
 		// mkfifo runs when a launch carries a secret.
 		const why = await usable();

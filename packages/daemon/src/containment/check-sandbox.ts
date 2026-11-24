@@ -10,7 +10,7 @@
  *
  * The check sees its clone's tree (writable, for build outputs), a read-only
  * gitdir, a synthetic home and tmpfs scratch. It has no network, no credentials
- * and no ambient environment: `envPolicy` no longer reaches it.
+ * and no ambient environment.
  *
  * `checkPrefix` still wraps the command, but inside the sandbox, where it is
  * only a convenience. Entering a real dev shell there is P8.

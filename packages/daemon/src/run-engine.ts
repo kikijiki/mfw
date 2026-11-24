@@ -1441,10 +1441,6 @@ export class RunEngine {
 				secretEnvironment?.names() ?? [],
 				workloadSecrets?.binding ?? null,
 			);
-			await this.deps.registry.recordApprovalMode(
-				run.id,
-				this.deps.defaults.approvalMode ?? "autonomous",
-			);
 			// Before the launch: a crash after it must still find the marker.
 			if (target.kind === "local" && this.deps.isolation) {
 				await this.deps.registry.markRunDirSplit(run.id);

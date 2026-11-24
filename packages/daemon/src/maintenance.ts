@@ -21,7 +21,6 @@ import type { DefinitionOfDone, DoDCheck } from "./tasks/types.ts";
 import { summarizeTranscript } from "./transcript-summary.ts";
 import {
 	describeVerificationEnvironment,
-	type EnvPolicy,
 	type VerificationResult,
 	type VerifyOptions,
 	verifyInClone,
@@ -69,7 +68,6 @@ export interface MaintenanceDeps {
 	integrationBranch: string;
 	mfwHome?: string;
 	checkPrefix?: string;
-	envPolicy?: EnvPolicy;
 	/** Renewal window applied to a live run's lease during a groom pass. */
 	leaseMs?: number;
 	now?: () => number;
@@ -341,7 +339,6 @@ export class Maintenance {
 		{
 			const opts: VerifyOptions = {
 				checkPrefix: this.deps.checkPrefix,
-				envPolicy: this.deps.envPolicy,
 				// A sweep must not be held up by one pathological check.
 				defaultTimeoutMs: 5 * 60_000,
 				signal,
@@ -1085,7 +1082,6 @@ export class Maintenance {
 						"",
 						{
 							checkPrefix: this.deps.checkPrefix,
-							envPolicy: this.deps.envPolicy,
 							defaultTimeoutMs: 5 * 60_000,
 							signal,
 							role: "merge-verify",

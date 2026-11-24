@@ -56,7 +56,6 @@ import type {
 } from "./runpod-policy.ts";
 import type { WatchdogLimits } from "./supervisor.ts";
 import type { ModelTier, VerificationPlan } from "./tasks/types.ts";
-import type { EnvPolicy } from "./verifier.ts";
 
 /**
  * Per-project operating settings.
@@ -111,8 +110,6 @@ export interface ProjectSettingsValues {
 	approvalMode: "autonomous" | "interactive";
 	leaseMs: number;
 	checkPrefix: string | null;
-	/** What a verification check may read from the ambient environment. */
-	envPolicy: EnvPolicy | null;
 	/** Repository-wide mechanical policy applied to every candidate. */
 	mergeChecks: VerificationPlan | null;
 	notify: NotifyConfigInput | null;
@@ -222,7 +219,6 @@ export const RESTART_KEYS = [
 	"approvalMode",
 	"leaseMs",
 	"checkPrefix",
-	"envPolicy",
 	"mergeChecks",
 	"notify",
 	"runpod",
@@ -481,7 +477,6 @@ export class SettingsService {
 			approvalMode: entry.approvalMode ?? PROJECT_DEFAULTS.approvalMode,
 			leaseMs: entry.leaseMs ?? PROJECT_DEFAULTS.leaseMs,
 			checkPrefix: entry.checkPrefix ?? null,
-			envPolicy: entry.envPolicy ?? null,
 			mergeChecks:
 				entry.mergeChecks !== undefined
 					? entry.mergeChecks
@@ -612,9 +607,6 @@ function applyPatch(
 	}
 	if (patch.checkPrefix !== undefined) {
 		entry.checkPrefix = patch.checkPrefix ?? undefined;
-	}
-	if (patch.envPolicy !== undefined) {
-		entry.envPolicy = patch.envPolicy ?? undefined;
 	}
 	if (patch.mergeChecks !== undefined) {
 		entry.mergeChecks = patch.mergeChecks;

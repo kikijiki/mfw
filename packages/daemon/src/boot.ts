@@ -197,11 +197,7 @@ import {
 } from "./usage/default-probes.ts";
 import { UsageMonitor, type UsageSubscription } from "./usage-monitor.ts";
 import { VerificationCoordinator } from "./verification-coordinator.ts";
-import {
-	type EnvPolicy,
-	type VerificationResult,
-	verifyInClone,
-} from "./verifier.ts";
+import { type VerificationResult, verifyInClone } from "./verifier.ts";
 import { WorkspaceService } from "./workspace.ts";
 
 /**
@@ -257,8 +253,6 @@ export interface ProjectConfig {
 	budgets?: import("./config.ts").StoredBudgets;
 	/** Wrapper command for verification checks (sandbox or dev-env entrypoint, e.g. `direnv exec .`). Never auto-detected. */
 	checkPrefix?: string;
-	/** Ambient environment a verification check may read. */
-	envPolicy?: EnvPolicy;
 	/** Repository-wide checks applied to every candidate before merge. */
 	mergeChecks?: VerificationPlan | null;
 	/** Exempt the task that broke main from the red-main dispatch gate so it can repair itself. */
@@ -823,7 +817,6 @@ export async function attachProject(
 			// the baseline its check entry points must match.
 			const opts = {
 				checkPrefix: cfg.checkPrefix,
-				envPolicy: cfg.envPolicy,
 				gate: { primaryRoot: root, baseRev: baseSha },
 			};
 			// The merge queue never executes a check on the host. It checks the
@@ -887,7 +880,6 @@ export async function attachProject(
 					run.baseSha as string,
 					{
 						checkPrefix: cfg.checkPrefix,
-						envPolicy: cfg.envPolicy,
 						// The target as it was before this merge commit.
 						gate: { primaryRoot: root, baseRev: `${mergeSha}^1` },
 						role: "merge-verify",
@@ -1234,7 +1226,6 @@ export async function attachProject(
 		},
 		projectRoot: root,
 		checkPrefix: cfg.checkPrefix,
-		envPolicy: cfg.envPolicy,
 		verification,
 		providerHolds,
 		projectName: cfg.name,
@@ -1310,7 +1301,6 @@ export async function attachProject(
 		mfwHome: opts.mfwHome,
 		integrationBranch,
 		checkPrefix: cfg.checkPrefix,
-		envPolicy: cfg.envPolicy,
 		leaseMs: cfg.leaseMs ?? DEFAULTS.leaseMs,
 		// `scheduler` is built later; safe because this is only called from the maintenance loop.
 		dispatching: () => scheduler.status().then((s) => s.playing),

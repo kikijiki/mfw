@@ -353,25 +353,6 @@ async function claimedTask(
 	return t.id;
 }
 
-describe("recordApprovalMode", () => {
-	test("autonomous replaces interactive; interactive never replaces autonomous", async () => {
-		const env = await makeEnv();
-		try {
-			const run = await seedRun(env, { kind: "task" });
-			const mode = async () => (await env.registry.get(run.id))?.approvalMode;
-			expect(await mode()).toBeNull();
-			await env.registry.recordApprovalMode(run.id, "interactive");
-			expect(await mode()).toBe("interactive");
-			await env.registry.recordApprovalMode(run.id, "autonomous");
-			expect(await mode()).toBe("autonomous");
-			await env.registry.recordApprovalMode(run.id, "interactive");
-			expect(await mode()).toBe("autonomous");
-		} finally {
-			await env.cleanup();
-		}
-	});
-});
-
 describe("StepRunner v2: finalization end to end", () => {
 	test("(a) verified task run enqueues a merge and parks the run in `merging` (T16)", async () => {
 		const env = await makeEnv();

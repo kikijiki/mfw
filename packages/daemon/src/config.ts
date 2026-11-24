@@ -306,13 +306,6 @@ const projectSchema = z.object({
 	 * measures the tree and stops the check at this size. Default 20480 (20 GiB).
 	 */
 	checkMaxTreeMb: z.number().int().positive().optional(),
-	/** Env vars a check may read. Absent = `DEFAULT_ENV_ALLOWLIST` in `verifier.ts`. */
-	envPolicy: z
-		.object({
-			allow: z.array(z.string()).optional(),
-			inherit: z.boolean().optional(),
-		})
-		.optional(),
 	/** Repository-wide gates for every candidate; task verification adds to them, never replaces them. */
 	mergeChecks: VerificationPlanSchema.nullable().optional(),
 	notify: notifySchema.optional(),
