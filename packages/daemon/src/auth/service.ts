@@ -733,10 +733,12 @@ export class AuthService {
 	}
 
 	/**
-	 * Revoke every session and API token, and bump the epoch so a login already
-	 * past its password check cannot create a new session afterwards.
+	 * The panic button: revoke every session and API token, delete every
+	 * passkey, and bump the epoch so a sign-in already past its check cannot
+	 * create a session afterwards. A passkey someone added with a stolen
+	 * password must not survive this. `keepPasskeys` is for the CLI flag only.
 	 */
-	async revokeAll(): Promise<void> {
+	async revokeAll(opts: { keepPasskeys?: boolean } = {}): Promise<void> {
 		const now = this.now();
 		const [, revoked, revokedTokens] = await this.db.client.batch(
 			[
@@ -749,6 +751,9 @@ export class AuthService {
 					sql: "UPDATE api_tokens SET revoked_at = ? WHERE revoked_at IS NULL RETURNING id",
 					args: [now],
 				},
+				...(opts.keepPasskeys
+					? []
+					: ["DELETE FROM passkeys", "DELETE FROM passkey_notices"]),
 			],
 			"write",
 		);

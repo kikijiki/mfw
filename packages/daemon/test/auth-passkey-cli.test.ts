@@ -89,3 +89,19 @@ describe("mfw auth passkey", () => {
 		expect(err.join("\n")).toContain("no auth database");
 	});
 });
+
+describe("mfw auth sign-out-everywhere and passkeys", () => {
+	test("deletes passkeys by default; --keep-passkeys keeps them", async () => {
+		await seed();
+		expect(await run("sign-out-everywhere", "--keep-passkeys")).toBe(0);
+		let auth = await AuthService.open(authDbPath(home));
+		expect(await auth.listPasskeys()).toHaveLength(1);
+		auth.close();
+		expect(await run("sign-out-everywhere")).toBe(0);
+		expect(out.at(-1)).toContain("every passkey was deleted");
+		auth = await AuthService.open(authDbPath(home));
+		expect(await auth.listPasskeys()).toEqual([]);
+		auth.close();
+		expect(await run("sign-out-everywhere", "--bogus")).toBe(2);
+	});
+});

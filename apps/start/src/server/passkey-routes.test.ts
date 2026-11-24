@@ -237,6 +237,17 @@ describe("passkey sign-in over HTTP", () => {
 		);
 	});
 
+	test("sign out everywhere over HTTP deletes every passkey, whatever the body says", async () => {
+		const soft = new SoftAuthenticator(ORIGIN);
+		await register(soft);
+		const r = await call("sign-out-everywhere", {
+			body: { keepPasskeys: true },
+		});
+		expect(r.status).toBe(200);
+		expect(await auth.listPasskeys()).toEqual([]);
+		expect((await login(soft)).status).toBe(401);
+	});
+
 	test("revoke over HTTP ends that passkey's sessions", async () => {
 		const soft = new SoftAuthenticator(ORIGIN);
 		await register(soft);

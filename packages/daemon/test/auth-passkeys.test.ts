@@ -538,13 +538,57 @@ describe("credential epoch and revocation", () => {
 		expect((await passkeyLogin()).token).toBeString();
 	});
 
-	test("sign out everywhere revokes passkey sessions and keeps the passkeys", async () => {
-		await addPasskey();
-		const viaPasskey = await passkeyLogin();
+	test("sign out everywhere deletes every passkey: a passkey sign-in then fails", async () => {
+		const cred = await addPasskey();
+		const viaPasskey = await passkeyLogin({ use: cred });
 		await auth.revokeAll();
 		expect(await auth.authenticate(viaPasskey.token)).toBeNull();
+		expect(await auth.listPasskeys()).toEqual([]);
+		expect(await code(passkeyLogin({ use: cred }))).toBe("passkey_refused");
+	});
+
+	test("sign out everywhere can keep passkeys only when asked (the CLI flag)", async () => {
+		const cred = await addPasskey();
+		const viaPasskey = await passkeyLogin({ use: cred });
+		await auth.revokeAll({ keepPasskeys: true });
+		expect(await auth.authenticate(viaPasskey.token)).toBeNull();
 		expect(await auth.listPasskeys()).toHaveLength(1);
-		expect((await passkeyLogin()).token).toBeString();
+		expect((await passkeyLogin({ use: cred })).token).toBeString();
+	});
+
+	test("a registration racing sign out everywhere stores nothing, in either order", async () => {
+		// Sign-out first: the insert needs a live session.
+		const begun = await auth.beginPasskeyRegistration(owner.sessionId, RP, {
+			password: PASSWORD,
+		});
+		const { json } = soft.create(begun.publicKey);
+		await auth.revokeAll();
+		expect(
+			await code(
+				auth.finishPasskeyRegistration(
+					owner.sessionId,
+					RP,
+					begun.ceremonyId,
+					json,
+					"x",
+				),
+			),
+		).not.toBe("ok");
+		// Insert first: the sign-out's batch deletes it.
+		const again = await auth.login(PASSWORD);
+		const begun2 = await auth.beginPasskeyRegistration(again.sessionId, RP, {
+			password: PASSWORD,
+		});
+		const second = soft.create(begun2.publicKey);
+		await auth.finishPasskeyRegistration(
+			again.sessionId,
+			RP,
+			begun2.ceremonyId,
+			second.json,
+			"y",
+		);
+		await auth.revokeAll();
+		expect(await auth.listPasskeys()).toEqual([]);
 	});
 
 	test("a passkey sign-in racing a password change does not outlive it", async () => {

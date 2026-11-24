@@ -32,7 +32,9 @@ export const AUTH_USAGE = [
 	"usage: mfw auth <command>",
 	"",
 	"  unlock        clear failed sign-in attempts for every address",
-	"  sign-out-everywhere   revoke every session, including stolen ones",
+	"  sign-out-everywhere [--keep-passkeys]",
+	"                revoke every session and API token, including stolen ones, and",
+	"                delete every passkey (--keep-passkeys keeps them)",
 	"  setup-token   print a new first-run setup token (before an owner exists)",
 	"  reset --yes   remove the owner and all sessions, then repeat first-run setup;",
 	"                refused while the server or any agent session is alive",
@@ -476,12 +478,23 @@ export async function runAuthCommand(
 				d.out("mfw auth: cleared all failed sign-in attempts.");
 				return 0;
 			});
-		case "sign-out-everywhere":
+		case "sign-out-everywhere": {
+			const rest = args.slice(1);
+			const keepPasskeys = rest[0] === "--keep-passkeys";
+			if (rest.length > (keepPasskeys ? 1 : 0)) {
+				d.err("usage: mfw auth sign-out-everywhere [--keep-passkeys]");
+				return 2;
+			}
 			return withStore(d, async (auth) => {
-				await auth.revokeAll();
-				d.out("mfw auth: every session is signed out.");
+				await auth.revokeAll({ keepPasskeys });
+				d.out(
+					keepPasskeys
+						? "mfw auth: every session and API token is revoked. Passkeys were kept."
+						: "mfw auth: every session and API token is revoked, and every passkey was deleted.",
+				);
 				return 0;
 			});
+		}
 		case "setup-token":
 			return withStore(d, async (auth) => {
 				try {
