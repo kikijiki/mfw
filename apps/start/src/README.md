@@ -154,9 +154,6 @@ Beyond the primitives the app does have real dependencies: `@codemirror/*` and
 `@tanstack/*`. **Do not add more without a good reason**; the diff engine and
 the virtual list are hand-written.
 
-`anser` and `@xyflow/react` are in `apps/start/package.json` and imported by
-nothing (`@xyflow/react` was for the unbuilt Graph screen).
-
 ---
 
 ## Looking at it in a real browser
@@ -493,7 +490,7 @@ and machine settings are built. What ui.md describes and this does **not** have:
 
 - **Graph** (`/p/$project/graph`): no route, feature directory or tab.
   `tasks.graph` ships on the API and `applyEvent` invalidates it (currently
-  dead code); `@xyflow/react` is an unused dependency for it.
+  dead code).
 - ~~**Scheduler control**~~: built. `features/dispatch/` renders a play/stop
   per project in each desktop sidebar row and, where that sidebar is absent, in
   the mobile project-route header. A separate tri-state global mfw control lives

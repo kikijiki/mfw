@@ -9,7 +9,6 @@
 	},
 	"main": "src/main.ts",
 	"dependencies": {
-		"@mfw/board": "workspace:*",
 		"@mfw/mcp": "workspace:*"
 	}
 }
