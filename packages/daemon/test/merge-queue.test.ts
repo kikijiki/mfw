@@ -1749,7 +1749,7 @@ describe("a clone run is merged from its quarantine ref", () => {
 			async () => {
 				seen.push(
 					await gitOk(
-						["rev-parse", "refs/mfw/quarantine/" + calls[0]],
+						["rev-parse", `refs/mfw/quarantine/${calls[0]}`],
 						f?.root as string,
 					),
 				);

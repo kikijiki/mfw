@@ -1,5 +1,5 @@
 import { rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { ProjectDbHandle } from "@mfw/db/client";
 import { ulid } from "@mfw/db/ids";
 import type { RunReasoningEffort, RunRelation, RunRole } from "@mfw/db/schema";

@@ -304,7 +304,7 @@ describe("hostile bundles", () => {
 		const bad = join(t.workspaceRoot, "outbox", "bad.bundle");
 		for (const body of [
 			"hello\n\n",
-			"# v2 git bundle\n" + "0".repeat(40) + " refs/heads/x",
+			`# v2 git bundle\n${"0".repeat(40)} refs/heads/x`,
 			"# v2 git bundle\nnot-a-ref-line\n\n",
 			"# v3 git bundle\n@filter=blob:none\n\n",
 		]) {

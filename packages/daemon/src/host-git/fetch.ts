@@ -270,7 +270,7 @@ async function copyBundle(
 		if (end === -1) {
 			throw new HostGitError("bad_bundle", "bundle header is not terminated");
 		}
-		return text.slice(0, end + 1) + "\n";
+		return `${text.slice(0, end + 1)}\n`;
 	} finally {
 		await from.close();
 	}
@@ -487,7 +487,7 @@ export async function fetchRunResult(
 		const priOpts = { cwd: o.primaryRepo, repo: o.primaryRepo };
 		const incoming = [
 			`${inc}head`,
-			...wipNames.map((n) => inc + "wip/" + n.slice(BARE_WIP.length)),
+			...wipNames.map((n) => `${inc}wip/${n.slice(BARE_WIP.length)}`),
 		];
 		try {
 			await host.runOk(
@@ -503,7 +503,7 @@ export async function fetchRunResult(
 				{ ...priOpts, allowFile: true },
 			);
 			const have = await host.runOk(
-				["for-each-ref", "--format=%(refname)", qWip.slice(0, -1) + "/"],
+				["for-each-ref", "--format=%(refname)", `${qWip.slice(0, -1)}/`],
 				priOpts,
 			);
 			const keep = new Set(

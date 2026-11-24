@@ -23,7 +23,7 @@ describe("the units' tool path", () => {
 		for (const tool of ["pkgs.bun", "pkgs.tmux", "pkgs.bubblewrap"]) {
 			expect(nix).toContain(tool);
 		}
-		expect(nix).toContain('"PATH=${binPath}');
+		expect(nix).toContain(`"PATH=\${binPath}`);
 	});
 
 	test("the home-manager unit rebuilds an output with no host script manifest", async () => {

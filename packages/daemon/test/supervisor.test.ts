@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { openProjectDb, type ProjectDbHandle } from "@mfw/db/client";
 import { EventBus } from "@mfw/db/eventlog";
 import { ulid } from "@mfw/db/ids";
-import { engineKv, runSpans, runs } from "@mfw/db/schema";
+import { engineKv, runSpans } from "@mfw/db/schema";
 import { eq } from "drizzle-orm";
 import type { StepRunner } from "../src/finalize/step-runner.ts";
 import { git } from "../src/git.ts";
