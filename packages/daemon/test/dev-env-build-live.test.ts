@@ -43,7 +43,7 @@ const noMise = liveGate(
 );
 const noDevenv = liveGate(
 	"dev-env-build-live devenv",
-	Bun.which("devenv") ? null : "no devenv on PATH",
+	toolSkipReason(["devenv"]),
 	"nix",
 );
 

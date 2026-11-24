@@ -103,8 +103,13 @@ export function toolSkipReason(
 	const refused = plan.unresolved.filter(
 		(u) => u.reason !== "not found on PATH",
 	);
+	const pkgs = [
+		...new Set([...plan.unresolved.map((u) => u.name), "mise", "direnv"]),
+	]
+		.map((n) => `nixpkgs#${n}`)
+		.join(" ");
 	const fix = (what: string) =>
-		`add ${what} to your environment (nix shell nixpkgs#mise nixpkgs#direnv, or the repo dev shell) or unset MFW_REQUIRE_LIVE_NIX`;
+		`add ${what} to your environment (nix shell ${pkgs}, or the repo dev shell) or unset MFW_REQUIRE_LIVE_NIX`;
 	const parts: string[] = [];
 	if (absent.length > 0) {
 		const list =
