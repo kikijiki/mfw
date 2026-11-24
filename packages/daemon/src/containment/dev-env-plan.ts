@@ -63,6 +63,32 @@ export function namedPaths(
 	return [...out].sort();
 }
 
+/** Tracked paths the root environment files at `commit` name: a sourced script, an imported module. */
+export async function rootNamedPaths(
+	root: string,
+	commit: string,
+): Promise<string[]> {
+	const listing = await gitComplete(
+		["ls-tree", "-r", "-z", "--full-tree", commit],
+		root,
+	);
+	const tracked = new Map<string, string>();
+	for (const rec of listing.split("\0")) {
+		const tab = rec.indexOf("\t");
+		if (tab < 0) continue;
+		const [, type, oid] = rec.slice(0, tab).split(" ");
+		if (type === "blob" && oid) tracked.set(rec.slice(tab + 1), oid);
+	}
+	const texts: string[] = [];
+	for (const p of ENV_FILE_PATHS) {
+		const oid = tracked.get(p);
+		if (oid) texts.push((await readCommitBlob(root, oid)).toString("utf8"));
+	}
+	return namedPaths(texts, new Set(tracked.keys())).filter(
+		(p) => !ENV_FILE_PATHS.includes(p),
+	);
+}
+
 export async function approvalPlan(
 	root: string,
 	commit: string,

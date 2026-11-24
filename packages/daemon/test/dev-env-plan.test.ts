@@ -145,6 +145,9 @@ describe("what an approval protects", () => {
 		expect(p("a/b/c/deep.nix")).toBe(true);
 		expect(p(".envrc")).toBe(true);
 		expect(p("src/a.ts")).toBe(false);
+		// `source scripts/env.sh` in the .envrc: a plain bash source, not watched by direnv.
+		expect(p("scripts/env.sh")).toBe(true);
+		expect(rec?.referenced).toContain("scripts/env.sh");
 	});
 
 	test("a mise source: .config/mise/conf.d", async () => {

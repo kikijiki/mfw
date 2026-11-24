@@ -27,6 +27,7 @@ import { join } from "node:path";
 import { KeyedLock } from "@mfw/board-core";
 import { writeFileAtomic } from "@mfw/core/fsatomic";
 import { z } from "zod";
+import { rootNamedPaths } from "./dev-env-plan.ts";
 import {
 	DEPS_LOCKFILES,
 	definitionHash,
@@ -58,6 +59,8 @@ export const EnvTrustRecordSchema = z.strictObject({
 	source: z.enum(["direnv", "mise", "flake", "devenv"]).nullable(),
 	files: z.array(EnvFileSchema).max(256),
 	discovered: z.array(EnvFileSchema).max(256).default([]),
+	/** Tracked paths the root environment files name (a `source`d script): protected too. */
+	referenced: z.array(z.string().min(1).max(4096)).max(1024).default([]),
 	/** sha256 of the project's canonical `env` config at approval. */
 	configHash: z.string().regex(HEX64),
 	at: z.string(),
@@ -265,6 +268,7 @@ export async function allowEnv(
 		source: detection.kind === "none" ? null : detection.kind,
 		files: detection.files,
 		discovered: [],
+		referenced: (await rootNamedPaths(input.root, input.commit)).slice(0, 1024),
 		configHash,
 		at: (input.now ?? (() => new Date()))().toISOString(),
 		via: input.via,
@@ -287,6 +291,7 @@ export async function denyEnv(
 		source: null,
 		files: [],
 		discovered: [],
+		referenced: [],
 		configHash: envConfigHash(input.config),
 		at: (input.now ?? (() => new Date()))().toISOString(),
 		via: input.via,
@@ -440,8 +445,10 @@ export function envProtection(
 		record.source === "devenv" ||
 		record.source === "direnv";
 	const mise = record.source === "mise" || record.source === "direnv";
+	const named = new Set(record.referenced);
 	return (path) =>
 		exact.has(path) ||
+		named.has(path) ||
 		(nix && path.toLowerCase().endsWith(".nix")) ||
 		(mise && path.startsWith(".config/mise/"));
 }
