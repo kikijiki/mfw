@@ -272,15 +272,12 @@ export const ROUTES = {
 		notes:
 			"Machine-wide OpenRouter usage, credits, provider/model activity, and live account health. Credentials remain in Settings.",
 	},
-	legacyFleet: {
+	notFound: {
 		path: "/$",
 		file: "routes/$.tsx",
-		component: "redirect → fleet",
+		component: "not found",
 		queries: [],
-		notes:
-			"/models, /resources, /runpod and /openrouter (and their sub-paths) " +
-			"redirect to the Fleet pages that replaced them (`legacyFleetPath`). " +
-			"Any other unmatched path is a not-found.",
+		notes: "Any path no other route owns is a not-found.",
 	},
 	settings: {
 		path: "/settings",
@@ -519,27 +516,6 @@ export const ROUTES = {
 } as const satisfies Record<string, RouteSpec>;
 
 export type RouteName = keyof typeof ROUTES;
-
-/**
- * Where the pre-Fleet machine pages went. `/models` is the Fleet page itself
- * (its outcomes table is a section there); the rest are Fleet sub-routes.
- * Null for any path that was never one of them.
- */
-export function legacyFleetPath(pathname: string): string | null {
-	const first = pathname.split("/").filter(Boolean)[0];
-	switch (first) {
-		case "models":
-			return "/fleet";
-		case "resources":
-			return "/fleet/resources";
-		case "runpod":
-			return "/fleet/runpod";
-		case "openrouter":
-			return "/fleet/openrouter";
-		default:
-			return null;
-	}
-}
 
 /** Must stay empty: `"/"` would double every link (`//now`), and `//p/...` is protocol-relative. */
 export const APP_ROOT = "";

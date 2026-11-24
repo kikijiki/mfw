@@ -5,7 +5,6 @@ import { appRouter } from "@mfw/api";
 import { formatFlowFilter, parseFlowFilter } from "./features/flow/flowModel";
 import {
 	href,
-	legacyFleetPath,
 	NODE_SEARCH_KEYS,
 	parseNodeSearch,
 	ROUTES,
@@ -365,15 +364,10 @@ describe("the Fleet routes", () => {
 		}
 	});
 
-	test("the old machine pages redirect, anything else is not a redirect", () => {
-		expect(legacyFleetPath("/models")).toBe("/fleet");
-		expect(legacyFleetPath("/resources")).toBe("/fleet/resources");
-		expect(legacyFleetPath("/runpod")).toBe("/fleet/runpod");
-		expect(legacyFleetPath("/openrouter/")).toBe("/fleet/openrouter");
-		expect(legacyFleetPath("/p/mfw/board")).toBeNull();
-		expect(legacyFleetPath("/nowhere")).toBeNull();
+	test("an unknown path is a not-found, never a redirect", () => {
 		const splat = readFileSync(here("routes/$.tsx"), "utf8");
-		expect(splat).toContain("legacyFleetPath(location.pathname)");
-		expect(splat).toContain("redirect(");
+		expect(splat).toContain("notFound()");
+		expect(splat).not.toContain("redirect(");
 	});
+
 });

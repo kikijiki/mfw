@@ -107,7 +107,7 @@ nothing.
 | `/` | `home/HomePage`: needs queue (`clarify/AnswerBox`, `agents/RunConsole` for approvals, `sessions/SessionCard` escalations), live runs, since you left (`history/ProjectEventFeed` behind a disclosure) |
 | `/settings` | `settings/SettingsPage`: projects, providers, appearance |
 | `/fleet` | `fleet/FleetPage` (`fleet.summary`: hosts, harness accounts, RunPod, OpenRouter, budgets, plus a Subscriptions panel from `usage.subscriptions`; every occupant chip opens `?node=run:<id>` in its project's Flow) + the Models outcomes table (`stats.outcomes`). Replaces the Models, Resources, RunPod and OpenRouter pages |
-| `/fleet/resources`, `/fleet/runpod`, `/fleet/openrouter` | `resources/ResourcesPage`, `runpod/RunPodGlobalPage`, `openrouter/OpenRouterGlobalPage`: the per-resource detail views. `/models`, `/resources`, `/runpod`, `/openrouter` redirect here (`routes/$.tsx`, `legacyFleetPath`) |
+| `/fleet/resources`, `/fleet/runpod`, `/fleet/openrouter` | `resources/ResourcesPage`, `runpod/RunPodGlobalPage`, `openrouter/OpenRouterGlobalPage`: the per-resource detail views. |
 | `/p/$project` | `shell/ProjectLayout` (header: lenses Board \| Flow, plus an overflow for ADRs, Triggers, Files, Settings; `projectNav.ts`) |
 | `/p/$project/flow` | `flow/FlowPage`: the work tree beside a shared time axis; `?f=` filter, `?w=` window (absent = `fit`: first run of the last day to now), `?t=` right edge (absent = LIVE), `?node=` docks `inspector/Inspector` |
 | `/p/$project` | `shell/ProjectLayout` (header: lenses Board \| Flow, plus an overflow for Docs, Triggers, Files, Settings; `projectNav.ts`) |
