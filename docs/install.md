@@ -138,6 +138,13 @@ sudo mkdir -p /opt/mfw && sudo tar -C /opt/mfw --no-same-owner -xzf mfw.tar.gz
 Then point `packaging/mfw-server.service` at `/opt/mfw/bin/mfw server` (the
 compiled line in the unit).
 
+Sandboxed runs also need a `bun` on the service's `PATH`: the egress relay and
+the WIP helper run on it inside the sandbox. It must be in a root-owned directory
+(a distribution package, `/usr/local/bin` installed as root, or the Nix profile);
+mfw ignores one in a directory you can write, and refuses the launch. Do not add
+`~/.bun/bin` to make it work: anything you can write, an unsandboxed agent can
+replace.
+
 ## Upgrading
 
 An install is replaced whole, never edited:
