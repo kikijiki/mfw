@@ -630,11 +630,11 @@ export class BrainActionExecutor {
 					pick: pickOf(v),
 					...(typeof v.target === "string" ? { target: v.target } : {}),
 					...(typeof v.brief === "string" ? { brief: v.brief } : {}),
-					worktree: { mode: "new" as const },
+					workspace: { mode: "new" as const },
 				};
 			});
 		}
-		const wt = String(a.worktree ?? "new");
+		const wt = String(a.workspace ?? "new");
 		return [
 			{
 				...base,
@@ -643,7 +643,7 @@ export class BrainActionExecutor {
 				pick: pickOf(a),
 				...(typeof a.target === "string" ? { target: a.target } : {}),
 				...(typeof a.brief === "string" ? { brief: a.brief } : {}),
-				worktree: wt.startsWith("continue:")
+				workspace: wt.startsWith("continue:")
 					? { mode: "continue" as const, runId: wt.slice("continue:".length) }
 					: { mode: "new" as const },
 			},
@@ -1373,7 +1373,7 @@ export class BrainActionExecutor {
 		return changed;
 	}
 
-	/** Save a loser's work to `wip/<task>-<run>`, then drop its worktree and keep its branch. */
+	/** Save a loser's work to `wip/<task>-<run>`, then drop its workspace and keep its branch. */
 	private async archiveLoser(run: RunRow): Promise<boolean> {
 		if (!run.workspacePath || !run.branch || !run.baseSha) return false;
 		const wt = createRunWorkspace(this.deps.projectRoot);

@@ -125,7 +125,7 @@ async function makeRepo(): Promise<string> {
 	await git(["config", "user.email", "t@t"], root);
 	await git(["config", "user.name", "t"], root);
 	await writeFile(join(root, "README.md"), "# e2e\n");
-	// Real projects track this, and run worktrees must keep it: it is how an
+	// Real projects track this, and run workspaces must keep it: it is how an
 	// agent learns the rules it is about to be judged against.
 	await mkdir(join(root, ".mfw"), { recursive: true });
 	await writeFile(join(root, ".mfw/AGENTS.md"), "the rules\n");
@@ -538,7 +538,7 @@ describe("v2 end-to-end: goal → verified → merged", () => {
 /**
  * An import is the only run kind that may file work as already finished. Full
  * path against the real composition root: proposal JSON, statuses, specs linked
- * to minted ids, worktree destroyed, board committed.
+ * to minted ids, workspace destroyed, board committed.
  */
 const IMPORT_PROPOSAL = {
 	tasks: [

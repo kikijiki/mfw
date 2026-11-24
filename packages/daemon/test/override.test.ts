@@ -179,7 +179,7 @@ describe("override", () => {
 		expect(u.effects.find((e) => e.tool === "stop")?.args).toEqual([runId]);
 	});
 
-	test("overriding a stop continues the stopped run's worktree under the override decision", async () => {
+	test("overriding a stop continues the stopped run's workspace under the override decision", async () => {
 		const a = await u.tasks.create({ title: "A", status: "ready" });
 		await act("spawn", { taskId: a.id, role: "implement" });
 		for (const job of await u.runtime.executor.pendingSpawns()) {
@@ -212,13 +212,13 @@ describe("override", () => {
 			taskId: string;
 			decisionId: number;
 			originRef: string;
-			worktree: { mode: string; runId: string };
+			workspace: { mode: string; runId: string };
 		};
 		expect(start).toMatchObject({
 			taskId: a.id,
 			decisionId: done.decisionId,
 			originRef: `human:override-${done.decisionId}`,
-			worktree: { mode: "continue", runId },
+			workspace: { mode: "continue", runId },
 		});
 	});
 

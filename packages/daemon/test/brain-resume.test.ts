@@ -62,7 +62,7 @@ describe("native resume", () => {
 		const s = await session(fx);
 		expect(s.nativeSessionId).toBe(minted ?? null);
 		expect(s.generation).toBe(0);
-		// A fixed cwd: the scratch dir, never a worktree.
+		// A fixed cwd: the scratch dir, never a workspace.
 		expect(first.cwd).toBe(second.cwd);
 		expect(first.cwd).toEndWith(join(".mfw", "brain", s.id));
 		expect(first.projectDir).toBe(`mfw-brain-${s.id}`);

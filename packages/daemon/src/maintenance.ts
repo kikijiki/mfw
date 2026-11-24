@@ -1213,7 +1213,7 @@ export class Maintenance {
 		);
 		const allTasks = await this.deps.tasks.list();
 		const preserved = new Set(
-			allTasks.map((t) => t.preservedWorktree).filter((p): p is string => !!p),
+			allTasks.map((t) => t.preservedWorkspace).filter((p): p is string => !!p),
 		);
 		// Tasks in review or blocked keep their worktree even without a preserved pointer (T14/T15 release without a gc step).
 		const awaitingHuman = new Set(

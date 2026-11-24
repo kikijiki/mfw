@@ -39,24 +39,24 @@ export interface LocalExecutionHost {
 	kill(runDir: string, runId: string, reason: string): Promise<void>;
 }
 
-export type LocalWorktreePort = WorkspacePort;
+export type LocalWorkspacePort = WorkspacePort;
 
 export interface LocalExecutionTargetDeps {
 	projectRoot: string;
 	integrationBranch: string;
 	host: LocalExecutionHost;
-	worktrees?: LocalWorktreePort;
+	workspaces?: LocalWorkspacePort;
 }
 
 const LOCAL_OBSERVED_SHAPE = { host: "daemon", transport: "tmux" } as const;
 
-/** Current local worktree + tmux behavior expressed through the shared target contract. */
+/** Current local workspace + tmux behavior expressed through the shared target contract. */
 export class LocalExecutionTarget implements ExecutionTarget {
 	readonly kind = "local";
-	private readonly worktrees: LocalWorktreePort;
+	private readonly workspaces: LocalWorkspacePort;
 
 	constructor(private readonly deps: LocalExecutionTargetDeps) {
-		this.worktrees = deps.worktrees ?? projectWorkspacePort(deps.projectRoot);
+		this.workspaces = deps.workspaces ?? projectWorkspacePort(deps.projectRoot);
 	}
 
 	async prepare(request: PrepareExecutionRequest): Promise<PreparedExecution> {
@@ -92,7 +92,7 @@ export class LocalExecutionTarget implements ExecutionTarget {
 					this.deps.projectRoot,
 					request.reuse.workspacePath,
 				)) ?? baseSha;
-			const clone = await this.worktrees.create(request.owner.runId, from);
+			const clone = await this.workspaces.create(request.owner.runId, from);
 			return {
 				targetKind: this.kind,
 				workspace: {
@@ -106,17 +106,17 @@ export class LocalExecutionTarget implements ExecutionTarget {
 				observedShape: LOCAL_OBSERVED_SHAPE,
 			};
 		}
-		const worktree = await this.worktrees.create(
+		const workspace = await this.workspaces.create(
 			request.owner.runId,
 			request.integrationBranch,
 		);
 		return {
 			targetKind: this.kind,
 			workspace: {
-				canonicalPath: worktree.path,
-				executionPath: worktree.path,
-				branch: worktree.branch,
-				baseSha: worktree.baseSha,
+				canonicalPath: workspace.path,
+				executionPath: workspace.path,
+				branch: workspace.branch,
+				baseSha: workspace.baseSha,
 			},
 			globalLeaseRef: null,
 			observedShape: LOCAL_OBSERVED_SHAPE,
@@ -130,7 +130,7 @@ export class LocalExecutionTarget implements ExecutionTarget {
 		if (request.reuse && !isRunWorkspacePath(request.reuse.workspacePath)) {
 			return;
 		}
-		await this.worktrees.remove({
+		await this.workspaces.remove({
 			path: prepared.workspace.canonicalPath,
 			branch: prepared.workspace.branch,
 			baseSha: prepared.workspace.baseSha,
@@ -221,7 +221,7 @@ export class LocalExecutionTarget implements ExecutionTarget {
 	}
 
 	async collect(_ref: ExecutionTargetRef): Promise<CollectExecutionResult> {
-		// The canonical worktree and run directory already are local.
+		// The canonical workspace and run directory already are local.
 		return { observedShape: LOCAL_OBSERVED_SHAPE };
 	}
 

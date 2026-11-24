@@ -413,7 +413,7 @@ async function ensureGitExclude(root: string, log: Logger): Promise<void> {
 		await writeFile(path, next);
 		log.info("git exclude block rewritten");
 	} catch (e) {
-		// Not a standard repo layout (bare, worktree, permissions), worth
+		// Not a standard repo layout (bare, workspace, permissions), worth
 		// knowing about, since the DB is then visible to `git add`.
 		log.warn({ err: e, path }, "could not update .git/info/exclude");
 	}
@@ -468,14 +468,14 @@ export async function attachProject(
 	if (sourceRefusal) throw new Error(sourceRefusal);
 	// A typo in `boardRoot` must not be "fixed" by mkdir(recursive) below.
 	if (cfg.boardRoot) await assertBoardRoot(cfg.boardRoot, cfg.root);
-	// Canonical root: git cwd, worktree base and path-escape prefix all compare
+	// Canonical root: git cwd, workspace base and path-escape prefix all compare
 	// as strings, and boot() can be called without loadConfig's normalization.
 	const root = normalizeRoot(cfg.root);
 	const mfwDir = join(root, ".mfw");
 	// The board (task.md/spec.md/adrs/board.yaml/templates) can live in a
 	// completely separate checkout from the code being orchestrated — e.g. the
 	// repo is `~/dev/app` but its board is tracked in `~/docs/projects/app`.
-	// Everything orchestration-only (worktrees, runs, mfw.db, the daemon lock,
+	// Everything orchestration-only (workspaces, runs, mfw.db, the daemon lock,
 	// triggers, per-task sidecars) lives in `mfwDir`, the repository's `.mfw/`.
 	// The board itself sits at the ROOT of `boardDir` (board.yaml, tasks/,
 	// adrs/, templates/): the repository root unless `boardRoot` is set.
@@ -646,7 +646,7 @@ export async function attachProject(
 		registry,
 	});
 	// A planner's answers re-plan; a task run's answer wakes the brain, which
-	// continues the run with `spawn worktree: continue:<runId>` (no autonomous
+	// continues the run with `spawn workspace: continue:<runId>` (no autonomous
 	// resume path).
 	const clarify: ClarifyService = new ClarifyService({
 		handle,
@@ -1441,7 +1441,7 @@ export async function attachProject(
 			checkBudget: (input): ReturnType<BudgetService["checkBrainLimit"]> =>
 				budgets.checkBrainLimit(input),
 			// The same listing as the finalize scope check: from the host's repo,
-			// never from the run's agent-writable worktree.
+			// never from the run's agent-writable workspace.
 			// A run's work is in the primary only as its imported quarantine ref.
 			changedFiles: async (run) => {
 				if (!run.baseSha) return null;
@@ -1901,7 +1901,7 @@ const RUN_RULES = [
 	"If you cannot continue without a decision only the operator can make, write",
 	'MFW_REPORT.json (at `$MFW_REPORT_PATH`) as `{"status": "question",',
 	'"question": "...", "options": ["...", "..."]}` and end your turn. The',
-	"answer resumes your work in this same worktree. A question asked only in",
+	"answer resumes your work in this same workspace. A question asked only in",
 	"your final message is not seen as one.",
 ].join("\n");
 
@@ -1988,7 +1988,7 @@ export function reviewFixOf(
 			: []),
 		...(r.reason ? ["", "### Reviewer notes", r.reason] : []),
 		"",
-		"The work so far is in this worktree. Address every blocker and major finding,",
+		"The work so far is in this workspace. Address every blocker and major finding,",
 		"and show each criterion is met. Verification and review run again afterwards.",
 	].join("\n");
 }
@@ -2038,7 +2038,7 @@ export function buildPrompts(
 			[
 				await describeTask(taskId),
 				"",
-				"Implement this task in the current worktree. Commit your work.",
+				"Implement this task in the current workspace. Commit your work.",
 				"Project and task verification checks run independently after you finish.",
 				"Semantic acceptance is also reviewed against the goal and every criterion;",
 				"claiming success is evidence, not the acceptance decision.",
@@ -2084,7 +2084,7 @@ export function buildPrompts(
 						a.answer,
 					]),
 					"",
-					"Its work is already in this worktree: inspect `git status` and `git log`",
+					"Its work is already in this workspace: inspect `git status` and `git log`",
 					"before continuing, and do not redo what is done. Continue the task with",
 					"this answer.",
 				].join("\n");
@@ -2101,7 +2101,7 @@ export function buildPrompts(
 					"```",
 					parent?.note ?? "(no reason recorded)",
 					"```",
-					"Resolve it in this worktree: rebase onto the target branch and fix",
+					"Resolve it in this workspace: rebase onto the target branch and fix",
 					"the conflict (or otherwise make the branch mergeable), keeping the",
 					"task's actual work intact. Verification and acceptance run again",
 					"afterwards, and a passing result re-enters the merge queue like any",
@@ -2122,7 +2122,7 @@ export function buildPrompts(
 						? `A previous run (${parentRunId}) ended its session while commands it started were still running.`
 						: `A previous run (${parentRunId}) was ${cls === "watchdog_killed" ? "stopped by a watchdog" : "interrupted"} before finishing.`,
 					parent?.workspacePath
-						? "Its work is already in this worktree: inspect `git status` and `git log` before continuing, and do not redo what is done."
+						? "Its work is already in this workspace: inspect `git status` and `git log` before continuing, and do not redo what is done."
 						: "",
 					...(leftovers.length > 0
 						? [
@@ -2169,7 +2169,7 @@ export function buildPrompts(
 				"",
 				"## Continuing earlier work",
 				`A previous run (${parentRunId}) worked on this task${cls ? ` and settled as ${cls}` : ""}.`,
-				"Its work is already in this worktree: inspect `git status` and `git log`",
+				"Its work is already in this workspace: inspect `git status` and `git log`",
 				"before continuing, and do not redo what is done.",
 			].join("\n");
 		},
@@ -2990,7 +2990,7 @@ export async function boot(opts: BootOptions): Promise<Orchestrator> {
 	};
 }
 
-/** A project must be a git repository (worktrees, merge queue, tracked board). Checked before anything is written. */
+/** A project must be a git repository (workspaces, merge queue, tracked board). Checked before anything is written. */
 /** The board folder must already exist; it is not required to be a git repository. */
 async function assertBoardRoot(
 	rawBoardRoot: string,

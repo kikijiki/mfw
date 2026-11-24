@@ -64,7 +64,7 @@ export async function recordSettled(
 /**
  * A merge job that exhausted its automatic retries (rebase and re-verify
  * against the current tip, each time) is the `merge_parked` settle: the
- * task goes back to `ready` with its worktree and branch kept, the run ends
+ * task goes back to `ready` with its workspace and branch kept, the run ends
  * failed, the job is closed (the inbox does not carry it) and the brain is
  * woken to choose a conflict-resolution run, another attempt, or a person.
  * Nothing here spawns a run or pages anyone.
@@ -74,7 +74,7 @@ export async function settleParkedMerge(
 		handle: ProjectDbHandle;
 		bus: EventBus;
 		registry: Pick<RunRegistry, "get" | "finish">;
-		tasks: Pick<TaskService, "release" | "recordPreservedWorktree">;
+		tasks: Pick<TaskService, "release" | "recordPreservedWorkspace">;
 		mergeQueue: { abandon(jobId: number): Promise<void> };
 		log: Logger;
 	},
@@ -86,7 +86,7 @@ export async function settleParkedMerge(
 	if (job.taskId) {
 		if (run?.workspacePath && run.branch) {
 			await deps.tasks
-				.recordPreservedWorktree(job.taskId, run.workspacePath, run.branch)
+				.recordPreservedWorkspace(job.taskId, run.workspacePath, run.branch)
 				.catch(() => {
 					// best-effort: the pointer only helps the brain's continuation
 				});
@@ -115,7 +115,7 @@ export async function settleParkedMerge(
 			target: job.targetBranch,
 			branch: job.branch,
 			retries: job.parkRetries,
-			worktree: run?.workspacePath ?? null,
+			workspace: run?.workspacePath ?? null,
 		},
 	});
 }

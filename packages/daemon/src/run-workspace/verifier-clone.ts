@@ -3,7 +3,7 @@
  *
  * A DoD check runs the candidate's own code, so it must not run in the run's
  * workspace (agent-writable, possibly tampered) nor in the host's integration
- * worktree. Instead the host seeds a fresh clone of exactly the commit to
+ * workspace. Instead the host seeds a fresh clone of exactly the commit to
  * verify (a run's quarantine tip, or the merge commit the queue is about to
  * land) from the trusted primary, runs the checks there, and throws it away.
  *

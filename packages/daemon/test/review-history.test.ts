@@ -34,7 +34,7 @@ async function fixture(): Promise<F> {
 	await git(["commit", "-q", "-m", "init"], root);
 	// Production writes these into .git/info/exclude at attach; without them a
 	// test's `git add -A` commits the live database into the branch.
-	await writeFile(join(root, ".git/info/exclude"), ".mfw/\nworktrees/\n");
+	await writeFile(join(root, ".git/info/exclude"), ".mfw/\nworkspaces/\n");
 
 	const mfwDir = join(root, ".mfw");
 	const handle = await openProjectDb(mfwDir);

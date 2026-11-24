@@ -36,7 +36,7 @@ describe("executor outcomes wake the brain", () => {
 			args: { taskId: t.id, role: "implement", rationale: "go" },
 		});
 		expect(r.status).toBe("accepted");
-		u.hooks.failLaunch = "no worktree";
+		u.hooks.failLaunch = "no workspace";
 		for (const job of await u.runtime.executor.pendingSpawns()) {
 			await u.runtime.executor.launch(job.actionId);
 		}

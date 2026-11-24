@@ -185,7 +185,7 @@ describe("the loop guard", () => {
 });
 
 describe("continue: spawns", () => {
-	test("a run whose worktree is gone cannot be continued; one that is there can", async () => {
+	test("a run whose workspace is gone cannot be continued; one that is there can", async () => {
 		const id = await readyTask();
 		const dir = await mkdtemp(join(tmpdir(), "mfw-continue-"));
 		try {
@@ -194,12 +194,12 @@ describe("continue: spawns", () => {
 				workspacePath: join(dir, "does-not-exist"),
 			});
 
-			const ok = await spawn(id, { worktree: `continue:${present.id}` });
+			const ok = await spawn(id, { workspace: `continue:${present.id}` });
 			expect(ok.status).toBe("accepted");
 
-			const refused = await spawn(id, { worktree: `continue:${gone.id}` });
-			expect(refused.rejection?.code).toBe("worktree_gone");
-			expect(refused.rejection?.fix?.text).toContain("worktree: new");
+			const refused = await spawn(id, { workspace: `continue:${gone.id}` });
+			expect(refused.rejection?.code).toBe("workspace_gone");
+			expect(refused.rejection?.fix?.text).toContain("workspace: new");
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
@@ -217,7 +217,7 @@ describe("continue: spawns", () => {
 			branch: "mfw/x",
 		});
 		await u.registry.transition(live.id, "running");
-		const r = await spawn(id, { worktree: `continue:${live.id}` });
-		expect(r.rejection?.code).toBe("worktree_live");
+		const r = await spawn(id, { workspace: `continue:${live.id}` });
+		expect(r.rejection?.code).toBe("workspace_live");
 	});
 });

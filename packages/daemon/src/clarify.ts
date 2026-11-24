@@ -13,7 +13,7 @@ import type { Logger } from "./log.ts";
  * (`replan`). A task run's question (`kind: "task"`, from its MFW_REPORT) does
  * not continue anything by itself: answering it resolves the set and wakes the
  * project brain (`clarify.resolved`), which continues the run with a
- * `spawn` of `worktree: continue:<runId>` (the answer is in that prompt).
+ * `spawn` of `workspace: continue:<runId>` (the answer is in that prompt).
  * `replan` is injected so this service does not depend on RunEngine.
  */
 

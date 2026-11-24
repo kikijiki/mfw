@@ -8,7 +8,7 @@ import { type GroupFixture, groupFixture } from "./support/group-fixture.ts";
 
 /**
  * Competing attempts of one task: siblings share the task's claim, each has
- * its own worktree, and one winner (chosen by the brain, or the first verified
+ * its own workspace, and one winner (chosen by the brain, or the first verified
  * one) goes through the merge queue. Real git, tmux and finalize; the brain is
  * the test, acting through the action service.
  */
@@ -79,7 +79,7 @@ describe("attempt groups", () => {
 			owns: ["feature.txt"],
 		});
 
-		// Both are live at once, in separate worktrees, holding one claim.
+		// Both are live at once, in separate workspaces, holding one claim.
 		const rows = await Promise.all(runIds.map((id) => f.svc.registry.get(id)));
 		expect(rows.map((r) => r?.role)).toEqual(["attempt", "attempt"]);
 		expect(rows.every((r) => r?.groupId === groupId)).toBe(true);

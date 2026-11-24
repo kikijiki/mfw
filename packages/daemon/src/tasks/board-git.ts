@@ -8,8 +8,8 @@ import type { Logger } from "../log.ts";
  * Commits the board (`tasks/`, `adrs/`, `board.yaml` at the root of the board folder) on the
  * integration branch, path-scoped and debounced, so the human's staged and
  * unstaged work is left untouched. Refuses to commit when the checkout is in
- * a state where that would be wrong (see `canCommit()`). Run worktrees
- * exclude the board (`worktree.ts`) and the merge queue restores it
+ * a state where that would be wrong (see `canCommit()`). Run workspaces
+ * exclude the board (`workspace.ts`) and the merge queue restores it
  * (`merge-queue.ts`).
  */
 

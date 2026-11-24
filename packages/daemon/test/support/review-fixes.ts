@@ -12,7 +12,7 @@ import {
 
 /**
  * Shared scaffolding for the security-review regression tests (wave 1, C):
- * a temporary HOME and worktree tree, planted binaries, and an environment that
+ * a temporary HOME and workspace tree, planted binaries, and an environment that
  * is put back after every test. Nothing here touches the real home.
  */
 

@@ -23,7 +23,7 @@ import {
  * `SettingsService` owns persistence (`~/.local/share/mfw/config.json`) and
  * live-apply rules; this file owns the shape of the safe subset. Identity
  * fields (name, root, integrationBranch, taskKey) are excluded from the patch:
- * changing a root at runtime would orphan worktrees, runs and the database.
+ * changing a root at runtime would orphan workspaces, runs and the database.
  *
  * `provider`, `model`, `modelTiers`, `reasoningEffort` and `routing` apply
  * live: each run is routed at prepare and launches with the route persisted

@@ -14,7 +14,7 @@ import { type Logger, silentLogger } from "../src/log.ts";
 
 /**
  * Wave 2 exit review, M1: the default config used to be refused at preflight
- * (bwrap with worktrees) and nothing said so. Every run is a clone now, so the
+ * (bwrap with workspaces) and nothing said so. Every run is a clone now, so the
  * default dispatches; what still refuses (an .envrc) is reported at boot, in
  * the inbox and in Settings.
  */

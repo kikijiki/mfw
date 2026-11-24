@@ -230,7 +230,7 @@ export const runsRouter = createTRPCRouter({
 			return { ok: true };
 		}),
 
-	/** Saves the run's worktree and branch to `wip/<task>-<run>`, then removes both. PRECONDITION_FAILED (`RunLiveError`) while the run is live. */
+	/** Saves the run's workspace and branch to `wip/<task>-<run>`, then removes both. PRECONDITION_FAILED (`RunLiveError`) while the run is live. */
 	discard: projectProcedure
 		.input(z.object({ runId: z.string() }))
 		.mutation(({ ctx, input }) => ctx.svc.lifecycle.discardRun(input.runId)),
@@ -345,7 +345,7 @@ export const runsRouter = createTRPCRouter({
 
 	/**
 	 * Move a run's work to another harness, model or host: stop it (the
-	 * worktree is kept), then spawn `continue:<runId>` there through the brain's
+	 * workspace is kept), then spawn `continue:<runId>` there through the brain's
 	 * own launch path. Recorded as a human decision that wakes the brain.
 	 * PRECONDITION_FAILED with `data.fix` when it cannot be done.
 	 */

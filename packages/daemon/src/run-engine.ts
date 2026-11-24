@@ -59,11 +59,11 @@ import {
 
 /**
  * RunEngine v2: starts runs of every kind. Every run gets a
- * canonical worktree off the recorded integration branch: the primary
+ * canonical workspace off the recorded integration branch: the primary
  * checkout is never branched, checked out, or reset. Start order is
  * journal-shaped and split at the admission-safe seam:
  *
- *   prepare: resolve → claim → starting row/run dir → status move → worktree
+ *   prepare: resolve → claim → starting row/run dir → status move → workspace
  *   launch:  invocation → selected target launch → "running"
  *
  * A throw anywhere transitions the run to ended/start_failed; the supervisor
@@ -292,10 +292,10 @@ export interface GroupRunSpec {
 	pick?: NonNullable<RouteInput["brain"]>;
 	/** Placement in `execution_target` syntax (`local`, `ssh:<host>`, `runpod`). */
 	target?: string;
-	worktree: { mode: "new" } | { mode: "continue"; runId: string };
+	workspace: { mode: "new" } | { mode: "continue"; runId: string };
 }
 
-/** A brain turn has no worktree; its row records this in place of a base commit. */
+/** A brain turn has no workspace; its row records this in place of a base commit. */
 export const BRAIN_BASE_SHA = "0".repeat(40);
 
 export class RunEngine {
@@ -345,7 +345,7 @@ export class RunEngine {
 	 * Start one run of an attempt group, with a pre-minted id. The brain's
 	 * `spawn` / `spawn_attempts` land here (through the action executor): the
 	 * route rule is `brain`, the claim is the group's (taken once, by whichever
-	 * member prepares first), and every member gets its own worktree unless it
+	 * member prepares first), and every member gets its own workspace unless it
 	 * continues a settled run's.
 	 *
 	 * Idempotent by `runId`: a replay after a crash finds the prepared or
@@ -384,7 +384,7 @@ export class RunEngine {
 		const task = await this.deps.tasks.get(spec.taskId);
 		if (!task) throw new TaskNotClaimableError(spec.taskId);
 		// A `continue:<runId>` spawn is what repair, resume, an answered question
-		// and a parked merge used to be: the same worktree and branch, with what
+		// and a parked merge used to be: the same workspace and branch, with what
 		// the parent's settle recorded in the prompt. The brain's pick wins; with
 		// none, the continuation keeps the parent's harness, model and effort.
 		let reuse: RunLaunchSpec["reuse"];
@@ -392,11 +392,11 @@ export class RunEngine {
 		let parentAttempt = 0;
 		let pick = spec.pick;
 		let base: string;
-		if (spec.worktree.mode === "continue") {
-			const parent = await this.deps.registry.get(spec.worktree.runId);
+		if (spec.workspace.mode === "continue") {
+			const parent = await this.deps.registry.get(spec.workspace.runId);
 			if (!parent?.workspacePath || !parent.branch) {
 				throw new Error(
-					`run ${spec.worktree.runId} has no worktree to continue`,
+					`run ${spec.workspace.runId} has no workspace to continue`,
 				);
 			}
 			parentRunId = parent.id;
@@ -495,7 +495,7 @@ export class RunEngine {
 	}
 
 	/**
-	 * Claim and durably prepare one task attempt. May create the worktree but
+	 * Claim and durably prepare one task attempt. May create the workspace but
 	 * never launches a driver or process, so admission can lease capacity
 	 * before `launchPreparedRun`.
 	 */
@@ -876,8 +876,8 @@ export class RunEngine {
 
 	/**
 	 * `SessionService.open()`'s hand-started `action` run. Like `startAction`,
-	 * but reuses the session's worktree when named (blocked task or parked merge
-	 * job run); without `reuse` it gets a fresh worktree off the integration branch.
+	 * but reuses the session's workspace when named (blocked task or parked merge
+	 * job run); without `reuse` it gets a fresh workspace off the integration branch.
 	 */
 	async startSession(
 		prompt: string,
@@ -931,7 +931,7 @@ export class RunEngine {
 
 	/**
 	 * One project-brain turn: a `kind: brain` run in tmux, in the session's
-	 * scratch dir (no worktree, no claim, no task). The caller pre-minted
+	 * scratch dir (no workspace, no claim, no task). The caller pre-minted
 	 * `runId` and journaled the turn before this launch, so a crash anywhere
 	 * in here leaves a turn row recovery can close.
 	 */
@@ -1003,7 +1003,7 @@ export class RunEngine {
 	}
 
 	/**
-	 * Pull remote evidence into the local worktree, then dispose the provider
+	 * Pull remote evidence into the local workspace, then dispose the provider
 	 * allocation even if collection failed. Only confirmed absence counts as
 	 * cleaned up; a provider error leaves the intent for boot/shutdown retry.
 	 */
@@ -1389,7 +1389,7 @@ export class RunEngine {
 			throw new Error(`prepared run ${run.id} is in state ${run.state}`);
 		}
 		if (!run.workspacePath || !run.branch || !run.baseSha) {
-			throw new Error(`prepared run ${run.id} has no canonical worktree`);
+			throw new Error(`prepared run ${run.id} has no canonical workspace`);
 		}
 		const target = this.requireTarget(run.executionTarget);
 		const owner = this.owner(run);

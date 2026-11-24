@@ -107,7 +107,7 @@ export async function findLeftoverProcesses(
 				const root = run.workspacePath.replace(/\/$/, "");
 				if (cwd === root || cwd?.startsWith(root + sep))
 					throw new Error(
-						`Unknown worktree occupant ${pid}: run ownership unreadable`,
+						`Unknown workspace occupant ${pid}: run ownership unreadable`,
 					);
 			}
 			continue;

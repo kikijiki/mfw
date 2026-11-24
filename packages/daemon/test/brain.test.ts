@@ -650,7 +650,7 @@ describe("BrainService: diagnose (MFW-58)", () => {
 		check: "run: bun test",
 		outputTail: "1 failing, timing assertion off by 4ms",
 		exitCode: 1,
-		environment: "regression sweep, ephemeral worktree off main",
+		environment: "regression sweep, ephemeral workspace off main",
 		passesAtGreenSha: true,
 	};
 

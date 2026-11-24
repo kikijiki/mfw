@@ -19,7 +19,7 @@ import {
 	materializeRemoteStage,
 	RemoteCollectionConflictError,
 	RemoteWorkspaceError,
-} from "../src/remote-worktree.ts";
+} from "../src/remote-workspace.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -51,24 +51,24 @@ async function fixture() {
 	const path = join(root, "canonical");
 	await gitOk(["clone", "-q", "--no-hardlinks", root, path], root);
 	await gitOk(["checkout", "-q", "-b", "mfw/run-97"], path);
-	const worktree = { path, branch: "mfw/run-97", baseSha };
+	const workspace = { path, branch: "mfw/run-97", baseSha };
 	const runDir = join(root, "run-dir");
 	await mkdir(runDir, { recursive: true });
-	return { root, baseSha, worktree, runDir };
+	return { root, baseSha, workspace, runDir };
 }
 
-describe("remote worktree staging and collection", () => {
+describe("remote workspace staging and collection", () => {
 	test("stages a fresh protected mirror from a clean shell and collects repeatably", async () => {
-		const { root, baseSha, worktree, runDir } = await fixture();
+		const { root, baseSha, workspace, runDir } = await fixture();
 		const secret = "MFW97_SECRET_CANARY_4x9";
-		await writeFile(join(worktree.path, "tracked.txt"), "canonical edit\n");
-		await writeFile(join(worktree.path, "untracked.txt"), "payload\n");
-		await writeFile(join(worktree.path, ".env"), `${secret}\n`);
+		await writeFile(join(workspace.path, "tracked.txt"), "canonical edit\n");
+		await writeFile(join(workspace.path, "untracked.txt"), "payload\n");
+		await writeFile(join(workspace.path, ".env"), `${secret}\n`);
 
 		const stage = await createRemoteStage({
-			canonicalPath: worktree.path,
+			canonicalPath: workspace.path,
 			runDir,
-			branch: worktree.branch,
+			branch: workspace.branch,
 			baseSha,
 		});
 		const stageRaw = await readFile(stage.stagePath, "utf8");
@@ -127,7 +127,7 @@ describe("remote worktree staging and collection", () => {
 			stagePath: stage.stagePath,
 		});
 		const first = await applyRemoteCollection({
-			canonicalPath: worktree.path,
+			canonicalPath: workspace.path,
 			runDir,
 			stagePath: stage.stagePath,
 			collectionPath: collection.collectionPath,
@@ -137,13 +137,13 @@ describe("remote worktree staging and collection", () => {
 			"remote-only.txt",
 			"tracked.txt",
 		]);
-		expect(await readFile(join(worktree.path, "tracked.txt"), "utf8")).toBe(
+		expect(await readFile(join(workspace.path, "tracked.txt"), "utf8")).toBe(
 			"remote edit\n",
 		);
 		expect((await stat(first.evidencePath)).isFile()).toBe(true);
 
 		const second = await applyRemoteCollection({
-			canonicalPath: worktree.path,
+			canonicalPath: workspace.path,
 			runDir,
 			stagePath: stage.stagePath,
 			collectionPath: collection.collectionPath,
@@ -153,11 +153,11 @@ describe("remote worktree staging and collection", () => {
 	});
 
 	test("detects divergent local and remote edits before collection writes", async () => {
-		const { root, baseSha, worktree, runDir } = await fixture();
+		const { root, baseSha, workspace, runDir } = await fixture();
 		const stage = await createRemoteStage({
-			canonicalPath: worktree.path,
+			canonicalPath: workspace.path,
 			runDir,
-			branch: worktree.branch,
+			branch: workspace.branch,
 			baseSha,
 		});
 		const remote = join(root, "remote-conflict");
@@ -172,27 +172,27 @@ describe("remote worktree staging and collection", () => {
 			runDir,
 			stagePath: stage.stagePath,
 		});
-		await writeFile(join(worktree.path, "tracked.txt"), "local review\n");
+		await writeFile(join(workspace.path, "tracked.txt"), "local review\n");
 		const error = await applyRemoteCollection({
-			canonicalPath: worktree.path,
+			canonicalPath: workspace.path,
 			runDir,
 			stagePath: stage.stagePath,
 			collectionPath: collection.collectionPath,
 		}).catch((caught) => caught);
 		expect(error).toBeInstanceOf(RemoteCollectionConflictError);
 		expect(error.paths).toEqual(["tracked.txt"]);
-		expect(await readFile(join(worktree.path, "tracked.txt"), "utf8")).toBe(
+		expect(await readFile(join(workspace.path, "tracked.txt"), "utf8")).toBe(
 			"local review\n",
 		);
 		expect((await stat(error.evidencePath)).isFile()).toBe(true);
 	});
 
-	test("rejects a remote symlink that could collect outside-worktree data", async () => {
-		const { root, baseSha, worktree, runDir } = await fixture();
+	test("rejects a remote symlink that could collect outside-workspace data", async () => {
+		const { root, baseSha, workspace, runDir } = await fixture();
 		const stage = await createRemoteStage({
-			canonicalPath: worktree.path,
+			canonicalPath: workspace.path,
 			runDir,
-			branch: worktree.branch,
+			branch: workspace.branch,
 			baseSha,
 		});
 		const remote = join(root, "remote-attack");
@@ -213,11 +213,11 @@ describe("remote worktree staging and collection", () => {
 	});
 
 	test("refuses to materialize through a symlink posing as a fresh root", async () => {
-		const { root, baseSha, worktree, runDir } = await fixture();
+		const { root, baseSha, workspace, runDir } = await fixture();
 		const stage = await createRemoteStage({
-			canonicalPath: worktree.path,
+			canonicalPath: workspace.path,
 			runDir,
-			branch: worktree.branch,
+			branch: workspace.branch,
 			baseSha,
 		});
 		const outside = join(root, "outside-empty");

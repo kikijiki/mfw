@@ -37,8 +37,8 @@ import { ImageView, MarkdownView } from "./RenderedFile";
 /**
  * FILES: the read-only workspace browser. Everything shown is the daemon's answer.
  *
- *  - The base is the project root or ONE run's worktree (`files.worktrees`);
- *    cleaned-up worktrees are not offered.
+ *  - The base is the project root or ONE run's workspace (`files.workspaces`);
+ *    cleaned-up workspaces are not offered.
  *  - `WorkspaceService` reports FORBIDDEN (path resolved outside the tree) and
  *    NOT_FOUND separately; merging them would make a refusal look like a deletion.
  *  - Truncated and binary files show the server's marker text, not partial content.
@@ -51,7 +51,7 @@ import { ImageView, MarkdownView } from "./RenderedFile";
  */
 
 export interface FilesLocation {
-	/** Run whose worktree is being browsed; absent means the project root. */
+	/** Run whose workspace is being browsed; absent means the project root. */
 	run?: string;
 	/**
 	 * Browse a branch, tag or commit tree (`repo.tree` / `repo.blob`) instead of
@@ -66,7 +66,7 @@ export interface FilesLocation {
 }
 
 type Entry = RouterOutputs["files"]["listDir"]["entries"][number];
-type Bases = RouterOutputs["files"]["worktrees"];
+type Bases = RouterOutputs["files"]["workspaces"];
 
 export function FilesPage({
 	project,
@@ -82,7 +82,7 @@ export function FilesPage({
 	const [diffView, setDiffView] = useState(false);
 
 	const byRef = Boolean(at.ref);
-	const worktrees = useQuery(trpc.files.worktrees.queryOptions({ project }));
+	const workspaces = useQuery(trpc.files.workspaces.queryOptions({ project }));
 	const refs = useQuery(trpc.repo.refs.queryOptions({ project }));
 	const wsListing = useQuery({
 		...trpc.files.listDir.queryOptions({
@@ -159,7 +159,7 @@ export function FilesPage({
 		retry: false,
 	});
 
-	const bases = worktrees.data ?? [];
+	const bases = workspaces.data ?? [];
 	const here = at.path ?? "";
 	const entries = listing.data?.entries ?? [];
 
@@ -215,7 +215,7 @@ export function FilesPage({
 					aria-label="Refresh"
 					title="Re-read the workspace"
 					onClick={() => {
-						void worktrees.refetch();
+						void workspaces.refetch();
 						void listing.refetch();
 						void status.refetch();
 						if (at.file) void contents.refetch();
@@ -364,7 +364,7 @@ function BaseControl({
 	branch: string | null;
 	onChange: (run: string | undefined) => void;
 }) {
-	// A run whose worktree is gone can still be in the URL; keep it selectable.
+	// A run whose workspace is gone can still be in the URL; keep it selectable.
 	const missing = value != null && !bases.some((b) => b.runId === value);
 
 	const icon = (

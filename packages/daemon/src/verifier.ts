@@ -427,7 +427,7 @@ export async function verify(
 /**
  * Verify a commit in a fresh, host-owned clone that is thrown away afterwards.
  * `rev` is the run's quarantine tip, or the merge commit about to land; the
- * checks never run in the run's workspace or the integration worktree.
+ * checks never run in the run's workspace or the integration workspace.
  */
 export async function verifyInClone(
 	clones: Pick<VerifierClones, "with" | "checkRunner" | "fileInCommit">,

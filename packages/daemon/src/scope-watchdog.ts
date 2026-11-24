@@ -90,7 +90,7 @@ export interface ScopeOwners {
 /**
  * The claimed tasks whose `owns` count as foreign to `run`. The sibling rule:
  * a claim held by the run's own attempt group is never foreign, so competing
- * attempts of one task (and a continuation of the same worktree chain) cannot
+ * attempts of one task (and a continuation of the same workspace chain) cannot
  * kill each other over the files their shared task owns.
  */
 export function foreignClaims(

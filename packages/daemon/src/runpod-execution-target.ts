@@ -34,7 +34,10 @@ import {
 	assertRemoteTargetEnabled,
 	remoteTargetEnabled,
 } from "./remote-experimental.ts";
-import { applyRemoteCollection, createRemoteStage } from "./remote-worktree.ts";
+import {
+	applyRemoteCollection,
+	createRemoteStage,
+} from "./remote-workspace.ts";
 import {
 	newestImportedWork,
 	projectWorkspacePort,
@@ -88,7 +91,7 @@ export interface RunPodExecutionTargetOptions {
 	integrationBranch: string;
 	/** Experimental, off by default: omitted reads MFW_EXPERIMENTAL_REMOTE=1. */
 	enabled?: boolean;
-	worktrees?: WorkspacePort;
+	workspaces?: WorkspacePort;
 	transport?: (connection: RunPodLeaseConnection) => RunPodExecutionTransport;
 	readinessMs?: number;
 	maxTransferBytes?: number;
@@ -99,7 +102,7 @@ export interface RunPodExecutionTargetOptions {
 
 interface RemotePaths {
 	root: string;
-	worktree: string;
+	workspace: string;
 	runDir: string;
 	stage: string;
 	runtime: string;
@@ -114,7 +117,7 @@ function paths(ref: string, remoteRoot: string): RemotePaths {
 	const root = `${remoteRoot}/${ref}`;
 	return {
 		root,
-		worktree: `${root}/worktree`,
+		workspace: `${root}/workspace`,
 		runDir: `${root}/run`,
 		stage: `${root}/support/stage.json`,
 		runtime: `${root}/support/runtime.js`,
@@ -127,14 +130,14 @@ function paths(ref: string, remoteRoot: string): RemotePaths {
 /** Provider capacity + secure SSH expressed through the shared target contract. */
 export class RunPodExecutionTarget implements ExecutionTarget {
 	readonly kind = "runpod";
-	private readonly worktrees: NonNullable<
-		RunPodExecutionTargetOptions["worktrees"]
+	private readonly workspaces: NonNullable<
+		RunPodExecutionTargetOptions["workspaces"]
 	>;
 	private readonly remoteRoot: string;
 
 	constructor(private readonly options: RunPodExecutionTargetOptions) {
-		this.worktrees =
-			options.worktrees ?? projectWorkspacePort(options.projectRoot);
+		this.workspaces =
+			options.workspaces ?? projectWorkspacePort(options.projectRoot);
 		this.remoteRoot = options.remoteRoot ?? "/workspace/mfw";
 	}
 
@@ -150,25 +153,25 @@ export class RunPodExecutionTarget implements ExecutionTarget {
 			requestedShape: request.requestedShape,
 		});
 		try {
-			const worktree = request.reuse
+			const workspace = request.reuse
 				? {
 						path: request.reuse.workspacePath,
 						branch: request.reuse.branch,
 						baseSha: request.reuse.baseSha ?? "",
 					}
-				: await this.worktrees.create(
+				: await this.workspaces.create(
 						request.owner.runId,
 						request.integrationBranch,
 					);
-			if (!worktree.baseSha)
-				throw new Error("remote canonical worktree has no base SHA");
+			if (!workspace.baseSha)
+				throw new Error("remote canonical workspace has no base SHA");
 			return {
 				targetKind: this.kind,
 				workspace: {
-					canonicalPath: worktree.path,
-					executionPath: paths(lease.ref, this.remoteRoot).worktree,
-					branch: worktree.branch,
-					baseSha: worktree.baseSha,
+					canonicalPath: workspace.path,
+					executionPath: paths(lease.ref, this.remoteRoot).workspace,
+					branch: workspace.branch,
+					baseSha: workspace.baseSha,
 				},
 				globalLeaseRef: lease.ref,
 				observedShape: lease.observedShape,
@@ -195,7 +198,7 @@ export class RunPodExecutionTarget implements ExecutionTarget {
 			);
 		}
 		if (!request.reuse) {
-			await this.worktrees.remove({
+			await this.workspaces.remove({
 				path: prepared.workspace.canonicalPath,
 				branch: prepared.workspace.branch,
 				baseSha: prepared.workspace.baseSha,
@@ -275,7 +278,7 @@ export class RunPodExecutionTarget implements ExecutionTarget {
 				remote.runtime,
 				"stage",
 				remote.stage,
-				remote.worktree,
+				remote.workspace,
 				this.options.remoteGitPath ?? "/usr/bin/git",
 			],
 			{ timeoutMs: 10 * 60_000 },
@@ -286,18 +289,18 @@ export class RunPodExecutionTarget implements ExecutionTarget {
 		);
 		const publicEnvironment = {
 			...request.driver.env,
-			MFW_REPORT_PATH: `${remote.worktree}/MFW_REPORT.json`,
+			MFW_REPORT_PATH: `${remote.workspace}/MFW_REPORT.json`,
 		};
 		const config = {
 			runDir: remote.runDir,
-			executionPath: remote.worktree,
+			executionPath: remote.workspace,
 			driverScript: remote.driver,
 			secretNames: request.driver.secretEnvironment?.names() ?? [],
 			driver: {
 				argv: request.driver.agentArgv,
 				bridgeArgv: bridgeArgv ?? request.driver.agentArgv,
 				providerArgv: request.driver.providerArgv ?? [],
-				cwd: remote.worktree,
+				cwd: remote.workspace,
 				env: publicEnvironment,
 				model: request.driver.model,
 				reasoningEffort: request.driver.reasoningEffort,
@@ -431,7 +434,7 @@ export class RunPodExecutionTarget implements ExecutionTarget {
 				"run",
 				remote.runtime,
 				"collect",
-				remote.worktree,
+				remote.workspace,
 				remote.runDir,
 				remote.stage,
 			],
@@ -456,11 +459,11 @@ export class RunPodExecutionTarget implements ExecutionTarget {
 		);
 		const collectionPath = join(
 			ref.runDir,
-			"remote-worktree",
+			"remote-workspace",
 			"collections",
 			`${manifest.digest}.json`,
 		);
-		await mkdir(join(ref.runDir, "remote-worktree", "collections"), {
+		await mkdir(join(ref.runDir, "remote-workspace", "collections"), {
 			recursive: true,
 			mode: 0o700,
 		});
@@ -468,7 +471,7 @@ export class RunPodExecutionTarget implements ExecutionTarget {
 		await applyRemoteCollection({
 			canonicalPath: ref.workspace.canonicalPath,
 			runDir: ref.runDir,
-			stagePath: join(ref.runDir, "remote-worktree", "stage.json"),
+			stagePath: join(ref.runDir, "remote-workspace", "stage.json"),
 			collectionPath,
 			maxTransferBytes: this.maxTransferBytes,
 		});

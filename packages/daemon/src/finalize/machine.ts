@@ -6,7 +6,7 @@ import type { NotificationType } from "../notify.ts";
  * Two transition tables: task runs, and import / plan / action / brain runs.
  *
  * Mechanical rows (classify, reap, ingest, verify, scope check, the review
- * floor, merge enqueue, worktree gc) are decided here. Every row that used to
+ * floor, merge enqueue, workspace gc) are decided here. Every row that used to
  * decide what happens NEXT to a failed or questioned run (repair, replan,
  * resume, stall escalation, blocked, human review) ends in the `settle` step
  * instead: it records the run's settle class and wakes the project brain,
@@ -49,7 +49,7 @@ export type StepName =
 	| "enqueue_merge"
 	| "release_task"
 	| "clear_stall"
-	| "gc_worktree"
+	| "gc_workspace"
 	| "archive_wip"
 	| "scope_check"
 	| "notify"
@@ -123,7 +123,7 @@ export interface FinalizeCtx {
 		/** Agent-declared escalation from MFW_REPORT. `question`: it asked the operator something and ended its turn. */
 		escalation: "drop" | "needs-replan" | "blocked" | "question" | null;
 		attempt: number;
-		worktreeDirty: boolean;
+		workspaceDirty: boolean;
 		exitCode: number | null;
 	} | null;
 	gates: {
@@ -157,10 +157,10 @@ export interface FinalizeCtx {
 	/** Whether the ingested report carried at least one valid follow-up. */
 	reportHasFollowUps: boolean;
 	/**
-	 * A run executed locally in a worktree. Code-running task, repair, plan,
+	 * A run executed locally in a workspace. Code-running task, repair, plan,
 	 * import and action sessions all require process cleanup before disposal.
 	 */
-	localWorktree: boolean;
+	localWorkspace: boolean;
 	/** `reap_leftovers` found processes the agent left running. */
 	leftBackground: boolean;
 	/**
@@ -204,7 +204,7 @@ function seq(
 export function next(ctx: FinalizeCtx): Directive | Terminal {
 	if (
 		ctx.done.has("classify") &&
-		ctx.localWorktree &&
+		ctx.localWorkspace &&
 		!ctx.done.has("reap_leftovers")
 	)
 		return step("local-reap", "reap_leftovers");
@@ -220,7 +220,7 @@ export function next(ctx: FinalizeCtx): Directive | Terminal {
 		case "action":
 			if (!ctx.done.has("classify")) return step("A0", "classify");
 			if (!ctx.done.has("ingest_report")) return step("A0", "ingest_report");
-			return seq("A0", ctx, [["gc_worktree", { force: false }]], {
+			return seq("A0", ctx, [["gc_workspace", { force: false }]], {
 				state: outcomeState(ctx.outcome),
 			});
 		case "brain":
@@ -246,7 +246,7 @@ function nextRecovery(ctx: FinalizeCtx): Directive | Terminal {
 			"repair left unfinished background work",
 		);
 	if (ctx.outcome !== "completed") {
-		return seq("R1", ctx, [["gc_worktree", { force: false }]], {
+		return seq("R1", ctx, [["gc_workspace", { force: false }]], {
 			state: outcomeState(ctx.outcome),
 		});
 	}
@@ -312,14 +312,14 @@ function nextTask(ctx: FinalizeCtx): Directive | Terminal {
 
 	// A task run whose task row vanished mid-run has nothing to release.
 	if (!t?.exists) {
-		return seq("T-orphan", ctx, [["gc_worktree"]], {
+		return seq("T-orphan", ctx, [["gc_workspace"]], {
 			state: outcomeState(ctx.outcome),
 			note: "task no longer exists",
 		});
 	}
 	if (ctx.group?.competing) return nextAttempt(ctx, t);
 
-	// T1, rate limit: hold dispatch, no attempt consumed, worktree kept.
+	// T1, rate limit: hold dispatch, no attempt consumed, workspace kept.
 	if (ctx.outcome === "rate_limited") {
 		return seq(
 			"T1",
@@ -333,7 +333,7 @@ function nextTask(ctx: FinalizeCtx): Directive | Terminal {
 		return seq(
 			"T2",
 			ctx,
-			[["release_task", { to: "ready" }], ["gc_worktree"]],
+			[["release_task", { to: "ready" }], ["gc_workspace"]],
 			{
 				state: "failed",
 				note: "start failed",
@@ -345,12 +345,12 @@ function nextTask(ctx: FinalizeCtx): Directive | Terminal {
 		return seq(
 			"T3",
 			ctx,
-			[["ingest_report"], ["release_task", { to: "ready" }], ["gc_worktree"]],
+			[["ingest_report"], ["release_task", { to: "ready" }], ["gc_workspace"]],
 			{ state: "killed" },
 		);
 	}
 	// T4s, scope watchdog kill (another claimed task's files, or too many
-	// files). The work is saved to a `wip/` branch BEFORE the worktree is
+	// files). The work is saved to a `wip/` branch BEFORE the workspace is
 	// force-removed; the order is the safety property. What happens to the task
 	// is the brain's: the settle names the class and the archived ref.
 	if (
@@ -364,7 +364,7 @@ function nextTask(ctx: FinalizeCtx): Directive | Terminal {
 				["ingest_report"],
 				["archive_wip"],
 				["settle", { settle: "scope_violation" }],
-				["gc_worktree", { force: true }],
+				["gc_workspace", { force: true }],
 			],
 			{
 				state: "killed",
@@ -383,18 +383,18 @@ function nextTask(ctx: FinalizeCtx): Directive | Terminal {
 			[
 				["ingest_report"],
 				["settle", { settle: "watchdog_killed" }],
-				["gc_worktree"],
+				["gc_workspace"],
 			],
 			{ state: "killed" },
 		);
 	}
-	// T5, interrupted (reboot/crash without exit record). The worktree is kept
+	// T5, interrupted (reboot/crash without exit record). The workspace is kept
 	// when it holds work; the brain chooses to continue it or start over.
 	if (ctx.outcome === "interrupted") {
 		return seq(
 			"T5",
 			ctx,
-			[["settle", { settle: "interrupted" }], ["gc_worktree"]],
+			[["settle", { settle: "interrupted" }], ["gc_workspace"]],
 			{ state: "interrupted" },
 		);
 	}
@@ -405,7 +405,7 @@ function nextTask(ctx: FinalizeCtx): Directive | Terminal {
 		return seq(
 			"T8",
 			ctx,
-			[["settle", { settle: "report_drop" }], ["gc_worktree"]],
+			[["settle", { settle: "report_drop" }], ["gc_workspace"]],
 			{ state: "failed", note: "agent dropped the task" },
 		);
 	}
@@ -413,7 +413,7 @@ function nextTask(ctx: FinalizeCtx): Directive | Terminal {
 		return seq(
 			"T9",
 			ctx,
-			[["settle", { settle: "report_replan" }], ["gc_worktree"]],
+			[["settle", { settle: "report_replan" }], ["gc_workspace"]],
 			{ state: "failed", note: "agent requested replan" },
 		);
 	}
@@ -421,13 +421,13 @@ function nextTask(ctx: FinalizeCtx): Directive | Terminal {
 		return seq(
 			"T10",
 			ctx,
-			[["settle", { settle: "report_blocked" }], ["gc_worktree"]],
+			[["settle", { settle: "report_blocked" }], ["gc_workspace"]],
 			{ state: "failed", note: "agent reported blocked" },
 		);
 	}
 	// T10Q, the agent asked a question (MFW_REPORT `question`) and ended its
 	// turn. Not a failure. The question is recorded as a clarification the
-	// brain can answer (`answer_question`) or take to a person; the worktree is
+	// brain can answer (`answer_question`) or take to a person; the workspace is
 	// kept so a `continue:` spawn carries the answer.
 	if (t.escalation === "question") {
 		return seq(
@@ -464,7 +464,7 @@ function nextTask(ctx: FinalizeCtx): Directive | Terminal {
 	if (t.hasDod && !ctx.done.has("verify")) return step("T12", "verify");
 
 	// T12i, verify crashed: a check process died to a signal, which says
-	// nothing about the code. Back to ready with the worktree preserved. Twin
+	// nothing about the code. Back to ready with the workspace preserved. Twin
 	// of the sweep's `infra` path (maintenance.ts); StepRunner records the
 	// `verify_infra` alarm alongside.
 	if (t.hasDod && ctx.verify?.crashed === true) {
@@ -549,7 +549,7 @@ function nextTask(ctx: FinalizeCtx): Directive | Terminal {
  * One attempt among siblings that share the task's claim. The mechanical
  * gates run (verify, finish-time scope check, the review floor) and the
  * result is recorded, but nothing that decides the task's fate: the claim
- * stays with the group, the worktree stays for `select_winner` or a
+ * stays with the group, the workspace stays for `select_winner` or a
  * `continue:` spawn, and the settle says how the attempt ended. The brain
  * is woken by it and chooses (design §4.1: competing groups always wait for
  * `select_winner`).
@@ -570,7 +570,7 @@ function nextAttempt(
 		return seq(
 			"TA2",
 			ctx,
-			[["settle", { settle: "infra_failure" }], ["gc_worktree"]],
+			[["settle", { settle: "infra_failure" }], ["gc_workspace"]],
 			{ state: "failed", note: "attempt failed to start" },
 		);
 	}
@@ -590,7 +590,7 @@ function nextAttempt(
 			[
 				["archive_wip"],
 				["settle", { settle: "scope_violation" }],
-				["gc_worktree", { force: true }],
+				["gc_workspace", { force: true }],
 			],
 			{
 				state: "killed",
@@ -700,7 +700,7 @@ function nextImport(ctx: FinalizeCtx): Directive | Terminal {
 			[
 				["ingest_report"],
 				["settle", { settle: outcomeClass(ctx) }],
-				["gc_worktree", { force: false }],
+				["gc_workspace", { force: false }],
 			],
 			{ state: outcomeState(ctx.outcome) },
 		);
@@ -713,7 +713,7 @@ function nextImport(ctx: FinalizeCtx): Directive | Terminal {
 		ctx,
 		[
 			["settle", { settle: "plan_output" }],
-			["gc_worktree", { force: true }],
+			["gc_workspace", { force: true }],
 		],
 		ctx.planParsed === true
 			? { state: "completed" }
@@ -739,7 +739,7 @@ function nextPlan(ctx: FinalizeCtx): Directive | Terminal {
 			ctx,
 			draftFailureSteps(ctx, [
 				["settle", { settle: outcomeClass(ctx) }],
-				["gc_worktree", { force: true }],
+				["gc_workspace", { force: true }],
 			]),
 			{ state: outcomeState(ctx.outcome) },
 		);
@@ -751,7 +751,7 @@ function nextPlan(ctx: FinalizeCtx): Directive | Terminal {
 			ctx,
 			draftFailureSteps(ctx, [
 				["settle", { settle: "plan_output" }],
-				["gc_worktree", { force: true }],
+				["gc_workspace", { force: true }],
 			]),
 			{ state: "failed", note: "no valid plan JSON" },
 		);
@@ -763,7 +763,7 @@ function nextPlan(ctx: FinalizeCtx): Directive | Terminal {
 		ctx,
 		[
 			["settle", { settle: "plan_output" }],
-			["gc_worktree", { force: true }],
+			["gc_workspace", { force: true }],
 		],
 		{ state: "completed" },
 	);

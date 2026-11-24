@@ -1057,7 +1057,7 @@ describe("Supervisor: diff-scope watchdog", () => {
 				{ scope: { sampleMs: 1000 } },
 				{
 					scopeFiles: async () => {
-						if (fail) throw new Error("index.lock: worktree mid-rewrite");
+						if (fail) throw new Error("index.lock: workspace mid-rewrite");
 						return { files: ["src/other/x.ts"], truncated: false };
 					},
 				},

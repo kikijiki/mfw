@@ -190,14 +190,14 @@ async function makeEnv(
 	};
 }
 
-interface Worktree {
+interface Workspace {
 	path: string;
 	branch: string;
 	baseSha: string;
 }
 
 /** A run's private clone, seeded as a launch would. */
-async function addWorktree(root: string, name: string): Promise<Worktree> {
+async function addWorkspace(root: string, name: string): Promise<Workspace> {
 	return createRunWorkspace(root).seed(name, "main");
 }
 
@@ -221,7 +221,7 @@ async function seedRun(
 		/** Must match the id `claimedTask` used for the lease (release() is keyed on it). */
 		runId?: string;
 		taskId?: string;
-		wt?: Worktree;
+		wt?: Workspace;
 		events?: string;
 		exit?: string;
 		report?: unknown;
@@ -357,7 +357,7 @@ describe("StepRunner v2: finalization end to end", () => {
 	test("(a) verified task run enqueues a merge and parks the run in `merging` (T16)", async () => {
 		const env = await makeEnv();
 		env.brain.enabled = true;
-		const wt = await addWorktree(env.root, "t-a");
+		const wt = await addWorkspace(env.root, "t-a");
 		await commitIn(wt.path, "a.txt", "work\n");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
@@ -404,7 +404,7 @@ describe("StepRunner v2: finalization end to end", () => {
 
 	test("verification records the exact commit it passed", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-pin");
+		const wt = await addWorkspace(env.root, "t-pin");
 		await commitIn(wt.path, "a.txt", "work\n");
 		const head = (await agentGit(wt.path, ["rev-parse", "HEAD"])).stdout;
 		const runId = ulid();
@@ -431,7 +431,7 @@ describe("StepRunner v2: finalization end to end", () => {
 
 	test("a file left uncommitted is never what was verified: the commit is checked and queued as it is", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-uncommitted");
+		const wt = await addWorkspace(env.root, "t-uncommitted");
 		await commitIn(wt.path, "a.txt", "work\n");
 		await writeFile(join(wt.path, "only-on-disk.txt"), "not committed\n");
 		const runId = ulid();
@@ -467,7 +467,7 @@ describe("StepRunner v2: finalization end to end", () => {
 
 	test("remote collection failure is durable result evidence and cannot reach verify or merge", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "collection-failed");
+		const wt = await addWorkspace(env.root, "collection-failed");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "remote output was not collected",
@@ -506,9 +506,9 @@ describe("StepRunner v2: finalization end to end", () => {
 		await env.cleanup();
 	});
 
-	test("(b) a watchdog kill settles watchdog_killed: task back to ready awaiting the brain, no block, no ping, clean worktree gc'd (T4)", async () => {
+	test("(b) a watchdog kill settles watchdog_killed: task back to ready awaiting the brain, no block, no ping, clean workspace gc'd (T4)", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-b");
+		const wt = await addWorkspace(env.root, "t-b");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, { title: "idle agent" });
 		const run = await seedRun(env, {
@@ -528,7 +528,7 @@ describe("StepRunner v2: finalization end to end", () => {
 			"reap_leftovers",
 			"ingest_report",
 			"settle",
-			"gc_worktree",
+			"gc_workspace",
 		]);
 		const task = await env.tasks.get(taskId);
 		expect(task?.status).toBe("ready");
@@ -549,14 +549,14 @@ describe("StepRunner v2: finalization end to end", () => {
 			runId: run.id,
 			class: "watchdog_killed",
 		});
-		// The report is already captured by ingest_report, so it does not make the worktree dirty.
+		// The report is already captured by ingest_report, so it does not make the workspace dirty.
 		expect(existsSync(wt.path)).toBe(false);
 		await env.cleanup();
 	});
 
 	test("(c) a step that throws resumes from the journal without re-running earlier steps", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-c");
+		const wt = await addWorkspace(env.root, "t-c");
 		await commitIn(wt.path, "c.txt", "work\n");
 		const counter = join(env.root, "verify-count.txt");
 		const runId = ulid();
@@ -616,7 +616,7 @@ describe("StepRunner v2: finalization end to end", () => {
 
 	test("(d) a rate-limited run holds dispatch and requeues the task without consuming an attempt (T1)", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-d");
+		const wt = await addWorkspace(env.root, "t-d");
 		await commitIn(wt.path, "d.txt", "partial\n");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, { title: "limited" });
@@ -660,7 +660,7 @@ describe("StepRunner v2: finalization end to end", () => {
 		expect(task?.status).toBe("ready");
 		expect(task?.stallCount).toBe(0);
 		expect(task?.attemptCount).toBe(0); // no attempt consumed
-		expect(task?.preservedWorktree).toBe(wt.path); // dirty work kept for resume
+		expect(task?.preservedWorkspace).toBe(wt.path); // dirty work kept for resume
 		const row = await env.registry.get(run.id);
 		expect(row?.state).toBe("rate_limited");
 		expect(row?.outcome).toBe("rate_limited");
@@ -680,7 +680,7 @@ describe("StepRunner v2: finalization end to end", () => {
 			},
 			projectName: "demo",
 		});
-		const wt = await addWorktree(env.root, "limited-endpoint");
+		const wt = await addWorkspace(env.root, "limited-endpoint");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, { title: "limited" });
 		const resetsAtSec = Math.floor((Date.now() + 3_600_000) / 1000);
@@ -740,7 +740,7 @@ describe("StepRunner v2: finalization end to end", () => {
 			},
 			projectName: "demo",
 		});
-		const wt = await addWorktree(env.root, "auth-failed");
+		const wt = await addWorkspace(env.root, "auth-failed");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, { title: "logged out" });
 		const run = await seedRun(env, {
@@ -811,7 +811,7 @@ describe("StepRunner v2: finalization end to end", () => {
 			utilization: 0.8,
 		});
 		for (const providerId of ["claude-cli", "codex-cli"]) {
-			const wt = await addWorktree(env.root, `obs-${providerId}`);
+			const wt = await addWorkspace(env.root, `obs-${providerId}`);
 			const runId = ulid();
 			const taskId = await claimedTask(env, runId, { title: providerId });
 			const run = await seedRun(env, {
@@ -839,7 +839,7 @@ describe("StepRunner v2: finalization end to end", () => {
 	test("(e) failed verification settles verify_failed with the failing checks: no replan call, no block, no ping (T17)", async () => {
 		const env = await makeEnv();
 		env.brain.enabled = true;
-		const wt = await addWorktree(env.root, "t-e");
+		const wt = await addWorkspace(env.root, "t-e");
 		await commitIn(wt.path, "e.txt", "half done\n");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
@@ -868,7 +868,7 @@ describe("StepRunner v2: finalization end to end", () => {
 		expect(task?.status).toBe("ready");
 		expect(task?.stallCount).toBe(1);
 		// The work is kept for a `continue:` spawn.
-		expect(task?.preservedWorktree).toBe(wt.path);
+		expect(task?.preservedWorkspace).toBe(wt.path);
 		expect(existsSync(wt.path)).toBe(true);
 		expect(env.notifications).toEqual([]);
 		const row = await env.registry.get(run.id);
@@ -884,7 +884,7 @@ describe("StepRunner v2: finalization end to end", () => {
 
 	test("(e-settle) a crash between the settle's effects and its journal row replays to exactly one event, one awaiting entry and one stall", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-e-settle");
+		const wt = await addWorkspace(env.root, "t-e-settle");
 		await commitIn(wt.path, "e.txt", "half done\n");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
@@ -922,7 +922,7 @@ describe("StepRunner v2: finalization end to end", () => {
 
 	test("(e2) a check killed by a signal is not blamed on the task and is recorded loudly (T12i, MFW-47)", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-e2");
+		const wt = await addWorkspace(env.root, "t-e2");
 		await commitIn(wt.path, "e2.txt", "half done\n");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
@@ -948,11 +948,11 @@ describe("StepRunner v2: finalization end to end", () => {
 			"release_task",
 		]);
 		const task = await env.tasks.get(taskId);
-		// Not blamed: back to ready, no stall or attempt consumed, dirty worktree kept for resume.
+		// Not blamed: back to ready, no stall or attempt consumed, dirty workspace kept for resume.
 		expect(task?.status).toBe("ready");
 		expect(task?.stallCount).toBe(0);
 		expect(task?.attemptCount).toBe(0);
-		expect(task?.preservedWorktree).toBe(wt.path);
+		expect(task?.preservedWorkspace).toBe(wt.path);
 		const row = await env.registry.get(run.id);
 		expect(row?.state).toBe("failed");
 		expect(row?.note).toBe("verify crashed: infrastructure, not a regression");
@@ -992,7 +992,7 @@ describe("StepRunner v2: finalization end to end", () => {
 
 	test("(f) an import run that proposed nothing settles plan_output with parsed: false, creates nothing, merges nothing", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-f");
+		const wt = await addWorkspace(env.root, "t-f");
 		const run = await seedRun(env, {
 			kind: "import",
 			wt,
@@ -1007,7 +1007,7 @@ describe("StepRunner v2: finalization end to end", () => {
 			"reap_leftovers",
 			"parse_plan",
 			"settle",
-			"gc_worktree",
+			"gc_workspace",
 		]);
 		const row = await env.registry.get(run.id);
 		expect(row?.state).toBe("failed");
@@ -1022,7 +1022,7 @@ describe("StepRunner v2: finalization end to end", () => {
 
 	test("(f2) an import proposal rides the settle for the brain: no task is created, no merge, nobody paged (I7)", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-f2");
+		const wt = await addWorkspace(env.root, "t-f2");
 		const proposal = {
 			tasks: [
 				{ title: "Delete the dead adapter", body: "it has no callers" },
@@ -1045,7 +1045,7 @@ describe("StepRunner v2: finalization end to end", () => {
 			"reap_leftovers",
 			"parse_plan",
 			"settle",
-			"gc_worktree",
+			"gc_workspace",
 		]);
 		expect(env.merges).toEqual([]);
 		expect(env.notifications).toEqual([]);
@@ -1063,7 +1063,7 @@ describe("StepRunner v2: finalization end to end", () => {
 
 	test("(f3) specs, statuses, owns and questions are normalized into the proposal; nothing is written or asked", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-f3");
+		const wt = await addWorkspace(env.root, "t-f3");
 		const proposal = {
 			tasks: [
 				{ title: "Ship the parser", status: "done" },
@@ -1113,7 +1113,7 @@ describe("StepRunner v2: finalization end to end", () => {
 
 	test("(g) a plan run settles plan_output once; re-finalization after a lost journal row neither duplicates the event nor creates tasks (P3)", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-g");
+		const wt = await addWorkspace(env.root, "t-g");
 		const plan = {
 			tasks: [
 				{
@@ -1141,7 +1141,7 @@ describe("StepRunner v2: finalization end to end", () => {
 			"reap_leftovers",
 			"parse_plan",
 			"settle",
-			"gc_worktree",
+			"gc_workspace",
 		]);
 		expect(await env.tasks.list()).toEqual([]);
 		const p = await proposalOf(env, run.id);
@@ -1151,7 +1151,7 @@ describe("StepRunner v2: finalization end to end", () => {
 			"Beta",
 		]);
 		expect((await env.registry.get(run.id))?.state).toBe("completed");
-		expect(existsSync(wt.path)).toBe(false); // plan worktrees are always gc'd
+		expect(existsSync(wt.path)).toBe(false); // plan workspaces are always gc'd
 
 		// Crash between the settle's effect and its journal row.
 		await env.handle.db
@@ -1172,7 +1172,7 @@ describe("StepRunner v2: finalization end to end", () => {
 
 	test("a plan with many tasks is capped in the settle facts, and says so", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-cap");
+		const wt = await addWorkspace(env.root, "t-cap");
 		const plan = {
 			tasks: Array.from({ length: 45 }, (_, i) => ({ title: `Task ${i}` })),
 		};
@@ -1193,7 +1193,7 @@ describe("StepRunner v2: finalization end to end", () => {
 	describe("a plan run expanding a draft task", () => {
 		test("success leaves the draft a draft, releases its claim, and parks it awaiting the brain with the proposal", async () => {
 			const env = await makeEnv();
-			const wt = await addWorktree(env.root, "t-draft-ok");
+			const wt = await addWorkspace(env.root, "t-draft-ok");
 			const draft = await env.tasks.captureQuick("build the thing");
 			const plan = {
 				tasks: [
@@ -1224,7 +1224,7 @@ describe("StepRunner v2: finalization end to end", () => {
 				"reap_leftovers",
 				"parse_plan",
 				"settle",
-				"gc_worktree",
+				"gc_workspace",
 			]);
 			// The draft is untouched: applying the expansion is the brain's
 			// update_task, with a rationale.
@@ -1248,7 +1248,7 @@ describe("StepRunner v2: finalization end to end", () => {
 
 		test("an unparseable proposal bumps the attempt counter but leaves the draft pending, below the cap", async () => {
 			const env = await makeEnv({ draftExpandMaxAttempts: 3 });
-			const wt = await addWorktree(env.root, "t-draft-fail");
+			const wt = await addWorkspace(env.root, "t-draft-fail");
 			const draft = await env.tasks.captureQuick("do the thing");
 			const run = await seedRun(env, {
 				kind: "plan",
@@ -1269,7 +1269,7 @@ describe("StepRunner v2: finalization end to end", () => {
 				"parse_plan",
 				"draft_expand_failed",
 				"settle",
-				"gc_worktree",
+				"gc_workspace",
 			]);
 			const after = await env.tasks.get(draft.id);
 			expect(after?.status).toBe("draft");
@@ -1282,7 +1282,7 @@ describe("StepRunner v2: finalization end to end", () => {
 
 		test("bounded retries exhausted: the draft stays failed in the record and nobody is paged by finalize", async () => {
 			const env = await makeEnv({ draftExpandMaxAttempts: 1 });
-			const wt = await addWorktree(env.root, "t-draft-exhausted");
+			const wt = await addWorkspace(env.root, "t-draft-exhausted");
 			const draft = await env.tasks.captureQuick("do the thing");
 			const run = await seedRun(env, {
 				kind: "plan",
@@ -1306,7 +1306,7 @@ describe("StepRunner v2: finalization end to end", () => {
 
 		test("a stopped expansion settles stopped and records the failed attempt", async () => {
 			const env = await makeEnv();
-			const wt = await addWorktree(env.root, "t-draft-stopped");
+			const wt = await addWorkspace(env.root, "t-draft-stopped");
 			const draft = await env.tasks.captureQuick("do the thing");
 			const run = await seedRun(env, {
 				kind: "plan",
@@ -1329,7 +1329,7 @@ describe("StepRunner v2: finalization end to end", () => {
 
 		test("a draft archived while its expansion is finalizing is not resurrected", async () => {
 			const env = await makeEnv();
-			const wt = await addWorktree(env.root, "t-draft-archived");
+			const wt = await addWorkspace(env.root, "t-draft-archived");
 			const draft = await env.tasks.captureQuick("never mind");
 			const run = await seedRun(env, {
 				kind: "plan",
@@ -1359,9 +1359,9 @@ describe("StepRunner v2: finalization end to end", () => {
 });
 
 describe("scope watchdog: T4s kill and the finish-time scope gate", () => {
-	test("a scope kill saves the work to wip/ before the worktree goes, settles scope_violation with the ref, and never repairs", async () => {
+	test("a scope kill saves the work to wip/ before the workspace goes, settles scope_violation with the ref, and never repairs", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-scope");
+		const wt = await addWorkspace(env.root, "t-scope");
 		await commitIn(wt.path, "committed.txt", "committed\n");
 		await writeFile(join(wt.path, "other.ts"), "uncommitted drift\n");
 		const runId = ulid();
@@ -1394,7 +1394,7 @@ describe("scope watchdog: T4s kill and the finish-time scope gate", () => {
 			"ingest_report",
 			"archive_wip",
 			"settle",
-			"gc_worktree",
+			"gc_workspace",
 		]);
 		const row = await env.registry.get(run.id);
 		expect(row?.state).toBe("killed");
@@ -1403,7 +1403,7 @@ describe("scope watchdog: T4s kill and the finish-time scope gate", () => {
 		expect(task?.status).toBe("ready");
 		expect(task?.stallCount).toBe(1);
 		expect(env.notifications).toEqual([]);
-		// The worktree is gone, the work is not: the wip branch holds the
+		// The workspace is gone, the work is not: the wip branch holds the
 		// committed file AND the uncommitted one.
 		expect(existsSync(wt.path)).toBe(false);
 		const ref = `wip/${taskId}-${run.id}`;
@@ -1421,7 +1421,7 @@ describe("scope watchdog: T4s kill and the finish-time scope gate", () => {
 
 	test("verified work that changed files outside its owns settles scope_outside (T14s), is not merged and is not sent to a person", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-outside");
+		const wt = await addWorkspace(env.root, "t-outside");
 		await commitIn(wt.path, "src/owned.ts", "owned\n");
 		await commitIn(wt.path, "docs/stray.md", "stray\n");
 		const runId = ulid();
@@ -1468,7 +1468,7 @@ describe("scope watchdog: T4s kill and the finish-time scope gate", () => {
 
 	test("with onFinish off the same run merges", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-outside-off");
+		const wt = await addWorkspace(env.root, "t-outside-off");
 		await commitIn(wt.path, "docs/stray.md", "stray\n");
 		const runId = ulid();
 		const t = await env.tasks.create({
@@ -1499,7 +1499,7 @@ describe("scope watchdog: T4s kill and the finish-time scope gate", () => {
 describe("the task-level review gate (requireReview, T11)", () => {
 	test("a no-DoD task merges on a passing exit code when nobody asked to look", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-skip");
+		const wt = await addWorkspace(env.root, "t-skip");
 		await commitIn(wt.path, "feature.txt", "done\n");
 		const taskId = (await env.tasks.create({ title: "no dod, nobody asked" }))
 			.id;
@@ -1538,7 +1538,7 @@ describe("the task-level review gate (requireReview, T11)", () => {
 
 	test("the task's OWN requireReview stops it", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-req");
+		const wt = await addWorkspace(env.root, "t-req");
 		await commitIn(wt.path, "feature.txt", "done\n");
 		const taskId = (
 			await env.tasks.create({
@@ -1566,9 +1566,9 @@ describe("the task-level review gate (requireReview, T11)", () => {
 });
 
 describe("report ingestion is the non-forced cleanup boundary", () => {
-	test("a transient report read failure preserves the worktree until retry journals it", async () => {
+	test("a transient report read failure preserves the workspace until retry journals it", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "report-read-failure");
+		const wt = await addWorkspace(env.root, "report-read-failure");
 		const reportPath = join(wt.path, "MFW_REPORT.json");
 		await writeFile(reportPath, JSON.stringify({ summary: "must survive" }));
 		const run = await seedRun(env, {
@@ -1586,7 +1586,7 @@ describe("report ingestion is the non-forced cleanup boundary", () => {
 				(step) => step.step === "ingest_report",
 			)?.status,
 		).toBe("failed");
-		expect(await journal(env, run.id)).not.toContain("gc_worktree");
+		expect(await journal(env, run.id)).not.toContain("gc_workspace");
 
 		await chmod(reportPath, 0o600);
 		await env.runner.finalize(run.id);
@@ -1599,9 +1599,9 @@ describe("report ingestion is the non-forced cleanup boundary", () => {
 		await env.cleanup();
 	});
 
-	test("action cleanup journals its worktree report before removal", async () => {
+	test("action cleanup journals its workspace report before removal", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "report-action");
+		const wt = await addWorkspace(env.root, "report-action");
 		const report = { summary: "action evidence", status: "completed" };
 		await writeFile(join(wt.path, "MFW_REPORT.json"), JSON.stringify(report));
 		const run = await seedRun(env, {
@@ -1617,14 +1617,14 @@ describe("report ingestion is the non-forced cleanup boundary", () => {
 			"classify",
 			"reap_leftovers",
 			"ingest_report",
-			"gc_worktree",
+			"gc_workspace",
 		]);
 		const ingested = (await env.registry.steps(run.id)).find(
 			(step) => step.step === "ingest_report",
 		);
 		expect(ingested?.result).toEqual({
 			report,
-			worktreeReport: {
+			workspaceReport: {
 				state: "present",
 				sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
 			},
@@ -1635,7 +1635,7 @@ describe("report ingestion is the non-forced cleanup boundary", () => {
 
 	test("failed repair cleanup journals its report before removal", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "report-failed-repair");
+		const wt = await addWorkspace(env.root, "report-failed-repair");
 		const report = { summary: "repair interrupted after diagnostics" };
 		await writeFile(join(wt.path, "MFW_REPORT.json"), JSON.stringify(report));
 		const run = await seedRun(env, { kind: "repair", wt });
@@ -1646,7 +1646,7 @@ describe("report ingestion is the non-forced cleanup boundary", () => {
 			"classify",
 			"reap_leftovers",
 			"ingest_report",
-			"gc_worktree",
+			"gc_workspace",
 		]);
 		expect(
 			(await env.registry.steps(run.id)).find(
@@ -1654,7 +1654,7 @@ describe("report ingestion is the non-forced cleanup boundary", () => {
 			)?.result,
 		).toEqual({
 			report,
-			worktreeReport: {
+			workspaceReport: {
 				state: "present",
 				sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
 			},
@@ -1665,7 +1665,7 @@ describe("report ingestion is the non-forced cleanup boundary", () => {
 
 	test("interrupted task cleanup cannot discard an uningested report", async () => {
 		const env = await makeEnv({ mergeChecks: null });
-		const wt = await addWorktree(env.root, "report-interrupted-task");
+		const wt = await addWorkspace(env.root, "report-interrupted-task");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "interrupted report",
@@ -1681,7 +1681,7 @@ describe("report ingestion is the non-forced cleanup boundary", () => {
 			"reap_leftovers",
 			"ingest_report",
 			"settle",
-			"gc_worktree",
+			"gc_workspace",
 		]);
 		expect(
 			(await env.registry.steps(run.id)).find(
@@ -1689,7 +1689,7 @@ describe("report ingestion is the non-forced cleanup boundary", () => {
 			)?.result,
 		).toEqual({
 			report,
-			worktreeReport: {
+			workspaceReport: {
 				state: "present",
 				sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
 			},
@@ -1701,7 +1701,7 @@ describe("report ingestion is the non-forced cleanup boundary", () => {
 
 	test("a report rewritten after journaled ingestion survives cleanup", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "report-post-ingest-rewrite");
+		const wt = await addWorkspace(env.root, "report-post-ingest-rewrite");
 		const original = '{"summary":"first version"}\n';
 		const reportPath = join(wt.path, "MFW_REPORT.json");
 		await writeFile(reportPath, original);
@@ -1714,7 +1714,7 @@ describe("report ingestion is the non-forced cleanup boundary", () => {
 		await env.registry.beginStep(run.id, "ingest_report");
 		await env.registry.finishStep(run.id, "ingest_report", {
 			report: { summary: "first version" },
-			worktreeReport: {
+			workspaceReport: {
 				state: "present",
 				sha256: createHash("sha256").update(original).digest("hex"),
 			},
@@ -1728,7 +1728,7 @@ describe("report ingestion is the non-forced cleanup boundary", () => {
 		expect(await readFile(reportPath, "utf8")).toContain("late rewrite");
 		expect(
 			(await env.registry.steps(run.id)).find(
-				(step) => step.step === "gc_worktree",
+				(step) => step.step === "gc_workspace",
 			)?.result,
 		).toEqual({ removed: false, preserved: true });
 		await env.cleanup();
@@ -1738,7 +1738,7 @@ describe("report ingestion is the non-forced cleanup boundary", () => {
 describe("MFW-48: a project default DoD stands in for a task with none", () => {
 	test("a no-DoD task is actually verified, and merges when the default passes", async () => {
 		const env = await makeEnv({ mergeChecks: PASSING_DOD });
-		const wt = await addWorktree(env.root, "t-default-pass");
+		const wt = await addWorkspace(env.root, "t-default-pass");
 		await commitIn(wt.path, "feature.txt", "done\n");
 		const taskId = (await env.tasks.create({ title: "quick-captured, no dod" }))
 			.id;
@@ -1781,7 +1781,7 @@ describe("MFW-48: a project default DoD stands in for a task with none", () => {
 
 	test("a no-DoD task does not merge on exit 0 when the default fails", async () => {
 		const env = await makeEnv({ mergeChecks: FAILING_DOD });
-		const wt = await addWorktree(env.root, "t-default-fail");
+		const wt = await addWorkspace(env.root, "t-default-fail");
 		await commitIn(wt.path, "feature.txt", "done\n");
 		const taskId = (await env.tasks.create({ title: "quick-captured, broken" }))
 			.id;
@@ -1838,7 +1838,7 @@ describe("follow-ups reported by a task run", () => {
 
 	test("become manual backlog tasks once, across re-execution and a later run", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-followups");
+		const wt = await addWorkspace(env.root, "t-followups");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "parser work",
@@ -1906,7 +1906,7 @@ describe("follow-ups reported by a task run", () => {
 			kind: "task",
 			runId: run2Id,
 			taskId,
-			wt: await addWorktree(env.root, "t-followups-2"),
+			wt: await addWorkspace(env.root, "t-followups-2"),
 			exit: "killed:manual",
 			report,
 		});
@@ -1921,7 +1921,7 @@ describe("follow-ups reported by a task run", () => {
 describe("processes a task run left running", () => {
 	test("are stopped, journaled, and a completed run settles background_work instead of being verified", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-leftover");
+		const wt = await addWorkspace(env.root, "t-leftover");
 		await commitIn(wt.path, "a.txt", "work\n");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
@@ -1973,7 +1973,7 @@ describe("processes a task run left running", () => {
 			"stopped 1 of 1 leftover processes",
 		);
 		expect(env.merges).toEqual([]);
-		// The work stays in the worktree for the brain's `continue:` spawn.
+		// The work stays in the workspace for the brain's `continue:` spawn.
 		expect(existsSync(wt.path)).toBe(true);
 		expect((await env.tasks.get(taskId))?.status).toBe("ready");
 		const [settled] = await settledEvents(env, run.id);
@@ -1984,7 +1984,7 @@ describe("processes a task run left running", () => {
 
 	test("nothing left running: nothing stopped, verification as usual", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-no-leftover");
+		const wt = await addWorkspace(env.root, "t-no-leftover");
 		await commitIn(wt.path, "a.txt", "work\n");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
@@ -2013,7 +2013,7 @@ describe("processes a task run left running", () => {
 describe("plan entries: owns and model_tier", () => {
 	test("valid owns patterns and a known tier reach the proposal the brain applies", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "t-plan-owns");
+		const wt = await addWorkspace(env.root, "t-plan-owns");
 		const plan = {
 			tasks: [
 				{
@@ -2051,7 +2051,7 @@ describe("plan entries: owns and model_tier", () => {
 describe("durable cleanup", () => {
 	async function backgroundRun(exit = "exit:0") {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "durable-cleanup");
+		const wt = await addWorkspace(env.root, "durable-cleanup");
 		await commitIn(wt.path, "a.txt", "work\n");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
@@ -2080,7 +2080,7 @@ describe("durable cleanup", () => {
 	test.each([
 		"exit:0",
 		"",
-	])("a run that left work running settles background_work and keeps its worktree (%s)", async (exit) => {
+	])("a run that left work running settles background_work and keeps its workspace (%s)", async (exit) => {
 		const { env, run, taskId, wt } = await backgroundRun(exit);
 		await env.runner.finalize(run.id);
 		expect((await settledEvents(env, run.id))[0]?.payload.class).toBe(
@@ -2192,7 +2192,7 @@ describe("durable cleanup", () => {
 			status: "done",
 			dod: PASSING_DOD,
 		});
-		const wt = await addWorktree(env.root, "repair-cleanup");
+		const wt = await addWorkspace(env.root, "repair-cleanup");
 		const run = await seedRun(env, {
 			kind: "repair",
 			taskId: task.id,
@@ -2230,7 +2230,7 @@ describe("durable cleanup", () => {
 describe("usage accounting", () => {
 	test("classify keeps cached-input and reasoning-output tokens from the last usage event", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "usage");
+		const wt = await addWorkspace(env.root, "usage");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, { title: "count me" });
 		const run = await seedRun(env, {
@@ -2271,7 +2271,7 @@ describe("a human stop-and-move survives finalization", () => {
 	for (const to of ["backlog", "done"] as const) {
 		test(`cancel-and-move to ${to}, then finalize T3: the task stays ${to}`, async () => {
 			const env = await makeEnv();
-			const wt = await addWorktree(env.root, `cancel-${to}`);
+			const wt = await addWorkspace(env.root, `cancel-${to}`);
 			const runId = ulid();
 			const taskId = await claimedTask(env, runId, { title: "stop me" });
 			const run = await seedRun(env, {
@@ -2298,9 +2298,9 @@ describe("a human stop-and-move survives finalization", () => {
 });
 
 describe("activity at finalize: questions and background work", () => {
-	test("a question report settles question without a stall, raises a task clarification and keeps the worktree; nobody is pinged", async () => {
+	test("a question report settles question without a stall, raises a task clarification and keeps the workspace; nobody is pinged", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "asks");
+		const wt = await addWorkspace(env.root, "asks");
 		await commitIn(wt.path, "half.txt", "half done\n");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
@@ -2336,7 +2336,7 @@ describe("activity at finalize: questions and background work", () => {
 		const task = await env.tasks.get(taskId);
 		expect(task?.status).toBe("ready");
 		expect(task?.stallCount).toBe(0);
-		expect(task?.preservedWorktree).toBe(wt.path);
+		expect(task?.preservedWorkspace).toBe(wt.path);
 		expect(existsSync(wt.path)).toBe(true);
 		const [question] = await env.clarify.list({ open: true });
 		expect(question).toMatchObject({ runId: run.id, kind: "task" });
@@ -2360,7 +2360,7 @@ describe("activity at finalize: questions and background work", () => {
 
 	test("a question report without question text is ignored (verification decides)", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "asks-nothing");
+		const wt = await addWorkspace(env.root, "asks-nothing");
 		await commitIn(wt.path, "done.txt", "done\n");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
@@ -2387,7 +2387,7 @@ describe("activity at finalize: questions and background work", () => {
 
 	test('the scope prompt\'s `"status": "blocked"` report is honoured like `escalation`', async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "status-blocked");
+		const wt = await addWorkspace(env.root, "status-blocked");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "out of scope",
@@ -2417,7 +2417,7 @@ describe("activity at finalize: questions and background work", () => {
 
 	test("a turn that ended on a background job settles background_work instead of failing verify, and the run is labelled stalled", async () => {
 		const env = await makeEnv();
-		const wt = await addWorktree(env.root, "bg-job");
+		const wt = await addWorkspace(env.root, "bg-job");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, {
 			title: "runs tests in the background",
@@ -2487,7 +2487,7 @@ describe("StepRunner: review verdicts", () => {
 		const runner = env.makeRunner({
 			brain: { ...env.brain, enabled: true, criticEnabled: true, critic },
 		});
-		const wt = await addWorktree(env.root, `rv-${ulid().slice(-6)}`);
+		const wt = await addWorkspace(env.root, `rv-${ulid().slice(-6)}`);
 		await commitIn(wt.path, "a.txt", "work\n");
 		const runId = ulid();
 		const t = await env.tasks.create({
@@ -2593,7 +2593,7 @@ describe("StepRunner: review verdicts", () => {
 describe("provenance: a forged outbox never renders as host-observed", () => {
 	/** A run the host launched split, ended with `hostExit`, and an agent's forgeries. */
 	async function forgedRun(env: Env, name: string, hostExit: string) {
-		const wt = await addWorktree(env.root, name);
+		const wt = await addWorkspace(env.root, name);
 		await commitIn(wt.path, `${name}.txt`, "work\n");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, { title: name });
@@ -2651,7 +2651,7 @@ describe("provenance: a forged outbox never renders as host-observed", () => {
 
 	test("a control/exit planted in a flat run dir earns no host-observed tag", async () => {
 		const env = await makeEnv({ mergeChecks: null });
-		const wt = await addWorktree(env.root, "planted");
+		const wt = await addWorkspace(env.root, "planted");
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, { title: "planted" });
 		const run = await seedRun(env, { kind: "task", runId, taskId, wt });
@@ -2778,7 +2778,7 @@ describe("a run on the default config", () => {
 		dod: ReturnType<typeof dodOn>,
 		content: string,
 	) {
-		const wt = await addWorktree(env.root, name);
+		const wt = await addWorkspace(env.root, name);
 		await commitIn(wt.path, "state.txt", content);
 		const runId = ulid();
 		const taskId = await claimedTask(env, runId, { title: name, dod });

@@ -59,7 +59,7 @@ export type ProcedurePath =
 	| "docs.search"
 	| "docs.recent"
 	| "docs.suggestions"
-	| "files.worktrees"
+	| "files.workspaces"
 	| "files.listDir"
 	| "files.readFile"
 	| "files.gitStatus"
@@ -467,7 +467,7 @@ export const ROUTES = {
 		component: "redirect → /p/$project/repo/files (same search)",
 		queries: [
 			"files.listDir",
-			"files.worktrees",
+			"files.workspaces",
 			"files.gitStatus",
 			"files.readFile",
 		],

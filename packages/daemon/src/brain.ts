@@ -140,7 +140,7 @@ function inferenceArgv(
  * Brain prompts are self-contained (the diff and facts are inlined), so the
  * model gets no tools, no MCP servers and no permission bypass, and runs in a
  * fresh empty directory that is removed afterwards: never the project root or
- * a run worktree, so it cannot read or write the code it is judging.
+ * a run workspace, so it cannot read or write the code it is judging.
  */
 export class ClaudeCliInference implements InferenceClient {
 	constructor(private readonly opts: { bin?: string; tmpRoot?: string } = {}) {}
@@ -345,7 +345,7 @@ const EMPTY_FACTS: DiffFacts = { patch: "", stat: "", commits: "", files: [] };
 const GIT_TIMEOUT_MS = 30_000;
 const GIT_MAX_BYTES = 8 * 1024 * 1024;
 
-/** Real git in the subject run's worktree. Missing worktree/baseSha yields empty facts. */
+/** Real git in the subject run's workspace. Missing workspace/baseSha yields empty facts. */
 export class GitDiffSource implements DiffSource {
 	async collect(ctx: BrainCallCtx): Promise<DiffFacts> {
 		const cwd = ctx.workspacePath;
@@ -691,7 +691,7 @@ export interface BrainServiceDeps {
 	enabled: boolean;
 	/** Hard budget per decision, §6.3 default 120 s. */
 	timeoutMs?: number;
-	/** Where brain runs are rooted when the subject has no worktree. */
+	/** Where brain runs are rooted when the subject has no workspace. */
 	projectRoot?: string;
 	diffs?: DiffSource;
 	/** Task title/stall count for prompt context; a missing board only degrades the prompt. */
@@ -705,7 +705,7 @@ export interface BrainServiceDeps {
 	 */
 	agentReview?: (subject: {
 		branch: string;
-		runWorktree: string | null;
+		runWorkspace: string | null;
 	}) => InferenceClient | null;
 	/** Budget for one agent review (it reads code and may run tests). */
 	agentReviewTimeoutMs?: number;
@@ -832,7 +832,7 @@ export class BrainService implements BrainPort {
 			wantsAgent && ctx.branch
 				? (this.deps.agentReview?.({
 						branch: ctx.branch,
-						runWorktree: ctx.workspacePath,
+						runWorkspace: ctx.workspacePath,
 					}) ?? null)
 				: null;
 		const mode: ReviewMode = agentInference ? "agent" : "critic";

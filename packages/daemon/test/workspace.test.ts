@@ -13,7 +13,7 @@ import {
 } from "../src/workspace.ts";
 
 /**
- * Real temp git repo, symlinks and worktree directory. Containment (`..` and
+ * Real temp git repo, symlinks and workspace directory. Containment (`..` and
  * symlinks out of the tree) is asserted against the filesystem, not a mock.
  */
 
@@ -36,7 +36,7 @@ async function freshEnv(): Promise<Env> {
 	await writeFile(join(root, "README.md"), "# hello\n");
 	await writeFile(join(root, "src", "index.ts"), "export const x = 1;\n");
 	// Keep mfw runtime files out of `gitStatus` assertions.
-	await writeFile(join(root, ".gitignore"), ".mfw/\nworktrees/\n");
+	await writeFile(join(root, ".gitignore"), ".mfw/\nworkspaces/\n");
 
 	await git(["init", "-q"], root);
 	await git(["config", "user.email", "t@example.com"], root);
@@ -138,17 +138,17 @@ describe("containment", () => {
 		);
 	});
 
-	test("a run's worktree is its own root: `..` cannot climb back to the repo", async () => {
+	test("a run's workspace is its own root: `..` cannot climb back to the repo", async () => {
 		const env = await freshEnv();
-		const worktree = join(env.root, "worktrees", "run-1");
-		await mkdir(worktree, { recursive: true });
-		await writeFile(join(worktree, "work.txt"), "wip\n");
+		const workspace = join(env.root, "workspaces", "run-1");
+		await mkdir(workspace, { recursive: true });
+		await writeFile(join(workspace, "work.txt"), "wip\n");
 		const run = await env.registry.create({
 			kind: "task",
 			label: "MFW-1",
 			model: "sonnet",
-			cwd: worktree,
-			workspacePath: worktree,
+			cwd: workspace,
+			workspacePath: workspace,
 		});
 
 		const listing = await env.ws.listDir({ runId: run.id });
@@ -169,7 +169,7 @@ describe("containment", () => {
 				.catch((e: Error) => e),
 		).toBeInstanceOf(PathEscapeError);
 
-		// No worktree or unknown run: NOT_FOUND, not a fallback to the root.
+		// No workspace or unknown run: NOT_FOUND, not a fallback to the root.
 		const bare = await env.registry.create({
 			kind: "action",
 			label: "bare",
@@ -185,8 +185,8 @@ describe("containment", () => {
 	});
 });
 
-describe("worktrees", () => {
-	test("lists runs whose worktree still exists on disk, newest first", async () => {
+describe("workspaces", () => {
+	test("lists runs whose workspace still exists on disk, newest first", async () => {
 		const env = await freshEnv();
 
 		const older = await env.registry.create({
@@ -196,7 +196,7 @@ describe("worktrees", () => {
 			model: "sonnet",
 			cwd: env.root,
 		});
-		const olderDir = join(env.root, "worktrees", older.id);
+		const olderDir = join(env.root, "workspaces", older.id);
 		await mkdir(olderDir, { recursive: true });
 		await env.registry.transition(older.id, "running", {
 			workspacePath: olderDir,
@@ -210,14 +210,14 @@ describe("worktrees", () => {
 			model: "sonnet",
 			cwd: env.root,
 		});
-		const newerDir = join(env.root, "worktrees", newer.id);
+		const newerDir = join(env.root, "workspaces", newer.id);
 		await mkdir(newerDir, { recursive: true });
 		await env.registry.transition(newer.id, "running", {
 			workspacePath: newerDir,
 			branch: `mfw/${newer.id}`,
 		});
 
-		// Never left "starting" (no worktree): must not appear.
+		// Never left "starting" (no workspace): must not appear.
 		await env.registry.create({
 			kind: "action",
 			label: "bare",
@@ -225,7 +225,7 @@ describe("worktrees", () => {
 			cwd: env.root,
 		});
 
-		const bases = await env.ws.worktrees();
+		const bases = await env.ws.workspaces();
 		expect(bases.map((b) => b.runId)).toEqual([newer.id, older.id]);
 		expect(bases[0]).toMatchObject({
 			runId: newer.id,
@@ -236,7 +236,7 @@ describe("worktrees", () => {
 		});
 	});
 
-	test("a run whose worktree directory was since cleaned up drops out", async () => {
+	test("a run whose workspace directory was since cleaned up drops out", async () => {
 		const env = await freshEnv();
 		const run = await env.registry.create({
 			kind: "task",
@@ -245,20 +245,20 @@ describe("worktrees", () => {
 			model: "sonnet",
 			cwd: env.root,
 		});
-		const dir = join(env.root, "worktrees", run.id);
+		const dir = join(env.root, "workspaces", run.id);
 		await mkdir(dir, { recursive: true });
 		await env.registry.transition(run.id, "running", {
 			workspacePath: dir,
 			branch: `mfw/${run.id}`,
 		});
 
-		expect((await env.ws.worktrees()).map((b) => b.runId)).toEqual([run.id]);
+		expect((await env.ws.workspaces()).map((b) => b.runId)).toEqual([run.id]);
 
 		// The row keeps its workspacePath after cleanup; the picker follows the disk.
 		await rm(dir, { recursive: true, force: true });
 		await env.registry.transition(run.id, "completed");
 
-		expect(await env.ws.worktrees()).toEqual([]);
+		expect(await env.ws.workspaces()).toEqual([]);
 	});
 });
 

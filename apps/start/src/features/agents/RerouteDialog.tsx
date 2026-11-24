@@ -27,7 +27,7 @@ import {
 /**
  * Pick another harness, model, effort or host from the routing catalogue
  * (`settings.providers.catalogue`, `hosts.list`). Two uses, one form:
- * Reroute (stop a run, keep its worktree, continue it there) and Add attempt
+ * Reroute (stop a run, keep its workspace, continue it there) and Add attempt
  * (one more competing attempt in a group). The server's refusal, with its
  * fix, is shown in the dialog and the dialog stays open.
  */
@@ -220,7 +220,7 @@ function RoutePickDialog({
 	);
 }
 
-/** Reroute: stop the run (worktree kept) and continue it on the picked route. */
+/** Reroute: stop the run (workspace kept) and continue it on the picked route. */
 export function RerouteDialog({
 	open,
 	onOpenChange,
@@ -248,8 +248,8 @@ export function RerouteDialog({
 			title={`Reroute ${label}`}
 			description={
 				live
-					? "The run is stopped with its worktree kept, then continued there on the route you pick. The brain is told."
-					: "A new run continues in this run's worktree on the route you pick. The brain is told."
+					? "The run is stopped with its workspace kept, then continued there on the route you pick. The brain is told."
+					: "A new run continues in this run's workspace on the route you pick. The brain is told."
 			}
 			submitLabel={live ? "Stop and reroute" : "Reroute"}
 			current={current}
@@ -282,7 +282,7 @@ export function AddAttemptDialog({
 			open={open}
 			onOpenChange={onOpenChange}
 			title="Add attempt"
-			description="Another competing attempt starts in its own worktree. The group's attempt cap and the task's live-run cap apply."
+			description="Another competing attempt starts in its own workspace. The group's attempt cap and the task's live-run cap apply."
 			submitLabel="Add attempt"
 			current={current}
 			requireChange={false}

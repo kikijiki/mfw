@@ -84,7 +84,7 @@ import type { ModelTier, VerificationPlan } from "./tasks/types.ts";
  *
  * The write surface is a subset: `name`, `root` and `integrationBranch`
  * identify the project and are read-only (changing a root mid-flight would
- * orphan worktrees, runs and the DB itself).
+ * orphan workspaces, runs and the DB itself).
  */
 
 export interface ProjectSettingsValues {

@@ -356,7 +356,7 @@ describe("RunEngine v2", () => {
 		expect(task?.status).toBe("in_progress");
 		expect(task?.claimedByRunId).toBe(runId);
 
-		// the fake driver ran inside the worktree via tmux
+		// the fake driver ran inside the workspace via tmux
 		await waitFor(async () => {
 			const exit = await f.host.readExit(f.registry.runDir(runId));
 			return exit.kind === "exit" && exit.code === 0;
@@ -641,10 +641,10 @@ describe("RunEngine v2", () => {
 					workspace: {
 						canonicalPath: join(
 							request.projectRoot,
-							"worktrees",
+							"workspaces",
 							request.owner.runId,
 						),
-						executionPath: "/remote/worktree",
+						executionPath: "/remote/workspace",
 						branch: `mfw/${request.owner.runId}`,
 						baseSha: "abc123",
 					},
@@ -709,7 +709,7 @@ describe("RunEngine v2", () => {
 			executionTarget: "remote-test",
 			targetProjectId: "project-stable-1",
 			targetLeaseRef: "global-lease-1",
-			targetExecutionPath: "/remote/worktree",
+			targetExecutionPath: "/remote/workspace",
 			targetRequestedShape: { cpu: 8 },
 			targetObservedShape: { cpu: 8 },
 		});
@@ -717,7 +717,7 @@ describe("RunEngine v2", () => {
 		await f.engine.launchPreparedRun(prepared);
 		expect(calls).toEqual([
 			`prepare:project-stable-1/${prepared.runId}/1`,
-			`launch:project-stable-1/${prepared.runId}/1:/remote/worktree`,
+			`launch:project-stable-1/${prepared.runId}/1:/remote/workspace`,
 			"observe",
 		]);
 		expect((await f.registry.get(prepared.runId))?.state).toBe("running");
@@ -734,7 +734,7 @@ describe("RunEngine v2", () => {
 					targetKind: "remote-test",
 					workspace: {
 						canonicalPath: request.projectRoot,
-						executionPath: "/remote/worktree",
+						executionPath: "/remote/workspace",
 						branch: "main",
 						baseSha: "abc123",
 					},
@@ -805,7 +805,7 @@ describe("RunEngine v2", () => {
 					targetKind: this.kind,
 					workspace: {
 						canonicalPath: request.projectRoot,
-						executionPath: "/remote/worktree",
+						executionPath: "/remote/workspace",
 						branch: "main",
 						baseSha: "abc123",
 					},
@@ -886,7 +886,7 @@ describe("RunEngine v2", () => {
 					targetKind: this.kind,
 					workspace: {
 						canonicalPath: request.projectRoot,
-						executionPath: "/remote/worktree",
+						executionPath: "/remote/workspace",
 						branch: "main",
 						baseSha: "abc123",
 					},
@@ -968,7 +968,7 @@ describe("RunEngine v2", () => {
 						targetKind: this.kind,
 						workspace: {
 							canonicalPath: request.projectRoot,
-							executionPath: "/remote/worktree",
+							executionPath: "/remote/workspace",
 							branch: "main",
 							baseSha: "abc123",
 						},
@@ -1156,7 +1156,7 @@ describe("RunEngine v2", () => {
 			groupKind: "single" as const,
 			role: "implement" as const,
 			actionId: "act-1",
-			worktree: { mode: "continue" as const, runId },
+			workspace: { mode: "continue" as const, runId },
 		};
 
 		await f.engine.startGroupRun(spec);
@@ -1201,9 +1201,9 @@ describe("RunEngine v2", () => {
 	test("a continuation never re-asks the parent's journaled question: its report is in neither clone", async () => {
 		const f = await fixture();
 		const { taskId, runId, parent } = await settledParent(f, "asks");
-		const worktree = parent?.workspacePath as string;
+		const workspace = parent?.workspacePath as string;
 		await writeFile(
-			join(worktree, "MFW_REPORT.json"),
+			join(workspace, "MFW_REPORT.json"),
 			JSON.stringify({ status: "question", question: "Keep v1?" }),
 		);
 
@@ -1216,13 +1216,13 @@ describe("RunEngine v2", () => {
 			role: "implement",
 			actionId: "act-2",
 			brief: "The answer is: until March.",
-			worktree: { mode: "continue", runId },
+			workspace: { mode: "continue", runId },
 		});
 
 		const child = await f.registry.get(childId);
-		expect(child?.workspacePath).not.toBe(worktree);
+		expect(child?.workspacePath).not.toBe(workspace);
 		expect(child?.initialPrompt).toContain("until March");
-		expect(existsSync(join(worktree, "MFW_REPORT.json"))).toBe(false);
+		expect(existsSync(join(workspace, "MFW_REPORT.json"))).toBe(false);
 		expect(
 			existsSync(join(child?.workspacePath as string, "MFW_REPORT.json")),
 		).toBe(false);
@@ -1243,7 +1243,7 @@ describe("RunEngine v2", () => {
 				groupKind: "single",
 				role: "implement",
 				actionId: "act-3",
-				worktree: { mode: "continue", runId },
+				workspace: { mode: "continue", runId },
 			}),
 		).rejects.toThrow(TaskNotClaimableError);
 		expect((await f.tasks.get(taskId))?.status).toBe("backlog");

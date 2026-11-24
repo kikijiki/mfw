@@ -291,7 +291,7 @@ export function summarize(
 	}
 	lines.push({
 		label: "Kept in the repository",
-		value: `${basename(state.repo)}/.mfw holds runs, worktrees and the index`,
+		value: `${basename(state.repo)}/.mfw holds runs, workspaces and the index`,
 	});
 	return lines;
 }

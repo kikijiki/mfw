@@ -5,7 +5,7 @@ import type { ReopenCondition } from "./types.ts";
 
 /**
  * Daemon-only run bookkeeping with no home in `@mfw/board`: attempt/stall/
- * resume counters, preserved-worktree pointers, and draft-expansion state.
+ * resume counters, preserved-workspace pointers, and draft-expansion state.
  * `@mfw/board`'s `TaskLease` (`.mfw/state/tasks/<ID>.json`) only carries the
  * claim itself (`claimedByRunId`/`claimedAt`/`leaseExpiresAt`/
  * `statusChangedAt`) — this is everything else the old `TaskState` had,
@@ -16,7 +16,7 @@ export interface RunState {
 	attemptCount: number;
 	stallCount: number;
 	resumeCount: number;
-	preservedWorktree: string | null;
+	preservedWorkspace: string | null;
 	preservedBranch: string | null;
 	/** Consecutive failed expansion runs against a `draft` task. */
 	draftAttempts: number;
@@ -51,7 +51,7 @@ export function emptyRunState(): RunState {
 		attemptCount: 0,
 		stallCount: 0,
 		resumeCount: 0,
-		preservedWorktree: null,
+		preservedWorkspace: null,
 		preservedBranch: null,
 		draftAttempts: 0,
 		draftExhausted: false,

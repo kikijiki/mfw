@@ -109,7 +109,7 @@ export function AddProjectDialog({
 
 	const description =
 		step === "folder"
-			? "Choose the folder that will hold this project's board: board.yaml, tasks and ADRs. Worktrees, runs and the database stay with the repository."
+			? "Choose the folder that will hold this project's board: board.yaml, tasks and ADRs. Workspaces, runs and the database stay with the repository."
 			: step === "board"
 				? "Decide where the board lives. Nothing is created until you press Add."
 				: "Choose a Git repository visible to the MFW daemon.";

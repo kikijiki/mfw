@@ -100,9 +100,9 @@ export interface ProjectServices {
 	docs: DocsService;
 	/** Planner/importer questions and the answers that re-plan against them. */
 	clarify: ClarifyService;
-	/** Read-only, containment-checked browser over the repo and worktrees. */
+	/** Read-only, containment-checked browser over the repo and workspaces. */
 	workspace: WorkspaceService;
-	/** Read-only branches, worktrees, commits and compare over the project repo. */
+	/** Read-only branches, workspaces, commits and compare over the project repo. */
 	repoView: RepoViewService;
 	/** Resource definitions + the slot semaphore's admin surface. */
 	resources: ResourceService;

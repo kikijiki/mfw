@@ -15,7 +15,7 @@ import type { DefinitionOfDone } from "../../src/tasks/types.ts";
  * path would stage nothing and every board assertion would pass vacuously.
  */
 export const MFW_EXCLUDE = [
-	"worktrees/",
+	"workspaces/",
 	"MFW_REPORT.json",
 	"/.mfw/*",
 	"!/.mfw/config.yaml",

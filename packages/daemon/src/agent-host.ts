@@ -238,7 +238,7 @@ export type RunExit =
 export interface LaunchSpec {
 	runId: string;
 	runDir: string;
-	cwd: string; // the run's worktree
+	cwd: string; // the run's workspace
 	projectRoot: string; // primary checkout (for the .envrc trust check)
 	driverScript: string; // absolute path; every run goes through a driver
 	agentArgv: string[];
@@ -331,8 +331,11 @@ async function isPrivateClone(
 	}
 }
 
-/** The commit a host-created worktree was checked out at. */
-async function worktreeHead(cwd: string, projectRoot: string): Promise<string> {
+/** The commit a host-created workspace was checked out at. */
+async function workspaceHead(
+	cwd: string,
+	projectRoot: string,
+): Promise<string> {
 	const head = await git(["rev-parse", "HEAD"], cwd);
 	if (head.exitCode === 0 && head.stdout.trim()) return head.stdout.trim();
 	const primary = await git(["rev-parse", "HEAD"], projectRoot);
@@ -884,7 +887,7 @@ export class AgentHost {
 					: {}),
 			}),
 		);
-		// A brain's cwd is its scratch directory and a worktree's gitdir is in the
+		// A brain's cwd is its scratch directory and a workspace's gitdir is in the
 		// primary, so neither can be mounted: those get a private clone.
 		let tree: string;
 		let roleCloneRoot: string | undefined;
@@ -892,7 +895,7 @@ export class AgentHost {
 			const rev =
 				role === "brain"
 					? "HEAD"
-					: await worktreeHead(spec.cwd, spec.projectRoot);
+					: await workspaceHead(spec.cwd, spec.projectRoot);
 			const clone = await createRoleClone(spec.projectRoot, spec.runId, rev);
 			tree = clone.tree;
 			roleCloneRoot = clone.root;

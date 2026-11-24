@@ -368,7 +368,7 @@ describe("RunPod ExecutionTarget integration", () => {
 						f.root,
 						"remote-machine",
 						f.account.ref,
-						"worktree",
+						"workspace",
 						"driver-start-count.txt",
 					),
 					"utf8",
@@ -449,7 +449,7 @@ describe("RunPod ExecutionTarget integration", () => {
 		);
 		expect(
 			await Bun.file(
-				join(f.runDir, "remote-worktree", "collection-receipt.json"),
+				join(f.runDir, "remote-workspace", "collection-receipt.json"),
 			).exists(),
 		).toBe(true);
 		expect((await f.target.dispose(ref)).absenceConfirmed).toBe(true);
@@ -559,7 +559,9 @@ await Bun.sleep(750);
 			false,
 		);
 		expect(
-			await Bun.file(join(f.runDir, "remote-worktree", "collections")).exists(),
+			await Bun.file(
+				join(f.runDir, "remote-workspace", "collections"),
+			).exists(),
 		).toBe(false);
 		expect((await f.target.dispose(ref)).absenceConfirmed).toBe(true);
 		expect(`${raw}${events}`).not.toContain(canary);

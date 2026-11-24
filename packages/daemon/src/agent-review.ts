@@ -21,7 +21,7 @@ import { SandboxUnavailableError } from "./sandbox.ts";
  * It must not change the work it judges, and we never trust it to say so. The
  * copy is mounted read-only in the `reviewer` role, through the same probe,
  * attestation and single-use gate as every launch (`containment/role-profiles`).
- * Before it starts we record the branch tip and the run worktree's state;
+ * Before it starts we record the branch tip and the run workspace's state;
  * afterwards both must be unchanged. Any difference throws
  * `ReviewerModifiedError` and the verdict is discarded (the task goes to a
  * human).
@@ -38,8 +38,8 @@ export interface AgentReviewSubject {
 	projectRoot: string;
 	/** The run branch under review. */
 	branch: string;
-	/** The run's own worktree, checked for edits too; null when gone. */
-	runWorktree: string | null;
+	/** The run's own workspace, checked for edits too; null when gone. */
+	runWorkspace: string | null;
 }
 
 export interface AgentReviewOpts {
@@ -62,7 +62,7 @@ async function gitOut(args: string[], cwd: string): Promise<string> {
 }
 
 /** HEAD plus every tracked and untracked change, as one comparable string. */
-export async function worktreeState(path: string): Promise<string | null> {
+export async function workspaceState(path: string): Promise<string | null> {
 	const head = await git(["rev-parse", "HEAD"], path);
 	if (head.exitCode !== 0) return null;
 	// The tamper check compares two of these. A status that cannot be read in
@@ -99,8 +99,8 @@ export class AgentReviewInference implements InferenceClient {
 			["rev-parse", "--verify", `${subject.branch}^{commit}`],
 			subject.projectRoot,
 		);
-		const runBefore = subject.runWorktree
-			? await worktreeState(subject.runWorktree)
+		const runBefore = subject.runWorkspace
+			? await workspaceState(subject.runWorkspace)
 			: null;
 		return this.completeSandboxed(prompt, opts, tip, runBefore);
 	}
@@ -150,7 +150,7 @@ export class AgentReviewInference implements InferenceClient {
 		}
 	}
 
-	/** What a reviewer must never move: the branch and the run's own worktree. */
+	/** What a reviewer must never move: the branch and the run's own workspace. */
 	private async subjectChanges(
 		tip: string,
 		runBefore: string | null,
@@ -163,9 +163,9 @@ export class AgentReviewInference implements InferenceClient {
 		);
 		if (branchNow.stdout.trim() !== tip)
 			changes.push(`branch ${subject.branch} moved off ${tip.slice(0, 12)}`);
-		if (subject.runWorktree && runBefore !== null) {
-			const runAfter = await worktreeState(subject.runWorktree);
-			if (runAfter !== runBefore) changes.push("the run worktree changed");
+		if (subject.runWorkspace && runBefore !== null) {
+			const runAfter = await workspaceState(subject.runWorkspace);
+			if (runAfter !== runBefore) changes.push("the run workspace changed");
 		}
 		return changes;
 	}

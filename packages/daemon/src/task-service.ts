@@ -160,7 +160,7 @@ export interface TaskRow {
 	resumeCount: number;
 	/** Review `fix` rounds consumed by the current attempt (sidecar `reviewRound`). */
 	reviewRound: number;
-	preservedWorktree: string | null;
+	preservedWorkspace: string | null;
 	preservedBranch: string | null;
 	/**
 	 * The run to show as the claim's holder: the lead run of the holding group
@@ -663,7 +663,7 @@ export function toRow(
 		stallCount: rec.state.stallCount,
 		resumeCount: rec.state.resumeCount,
 		reviewRound: rec.state.reviewRound ?? 0,
-		preservedWorktree: rec.state.preservedWorktree,
+		preservedWorkspace: rec.state.preservedWorkspace,
 		preservedBranch: rec.state.preservedBranch,
 		claimedByRunId: rec.state.leadRunId ?? rec.state.claimedByGroupId,
 		claimedByGroupId: rec.state.claimedByGroupId,
@@ -2850,20 +2850,20 @@ export class TaskService {
 	}
 
 	/** Resume-not-restart pointer; cleared on merge/GC. */
-	async recordPreservedWorktree(
+	async recordPreservedWorkspace(
 		id: string,
-		worktree: string,
+		workspace: string,
 		branch: string,
 	): Promise<void> {
 		await this.store.patchState(id, {
-			preservedWorktree: worktree,
+			preservedWorkspace: workspace,
 			preservedBranch: branch,
 		});
 	}
 
-	async clearPreservedWorktree(id: string): Promise<void> {
+	async clearPreservedWorkspace(id: string): Promise<void> {
 		await this.store.patchState(id, {
-			preservedWorktree: null,
+			preservedWorkspace: null,
 			preservedBranch: null,
 		});
 	}

@@ -29,6 +29,7 @@ import type { CacheDeclaration } from "./caches.ts";
 import { preRebasePrefix } from "./rebase-clone.ts";
 import type {
 	OwnedRunWorkspace,
+	ReportIdentity,
 	RunWorkspace,
 	RunWorkspaceHandle,
 	RunWorkspacePaths,
@@ -36,7 +37,6 @@ import type {
 	WipArchive,
 	WorkspaceContentOptions,
 	WorkspaceName,
-	WorktreeReportIdentity,
 } from "./run-workspace.ts";
 import { cloneConfig, seedWorkspace } from "./seed.ts";
 import { type WipAck, wipAckFile, wipControlLine } from "./wip-helper.ts";
@@ -855,7 +855,7 @@ export class CloneRunWorkspace implements RunWorkspace {
 		opts?: {
 			force?: boolean;
 			deleteBranch?: boolean;
-			reportIdentity?: WorktreeReportIdentity;
+			reportIdentity?: ReportIdentity;
 		},
 	): Promise<void> {
 		const owned = await this.ownership(handle.path);

@@ -4,7 +4,7 @@ import { getOrchestrator } from "~/server/orchestrator";
 
 /**
  * Raw bytes of an image for `<img>` in the Files and Repo viewers: from the
- * working tree (`?run=<id>` for a run's worktree) or, with `?ref=`, from that
+ * working tree (`?run=<id>` for a run's workspace) or, with `?ref=`, from that
  * branch, tag or commit. The daemon owns the rules: `WorkspaceService.readImage`
  * (realpath containment) and `RepoViewService.blobBytes` (the same ref and path
  * validation as `repo.blob`). Only image extensions are served, capped at 5 MiB,

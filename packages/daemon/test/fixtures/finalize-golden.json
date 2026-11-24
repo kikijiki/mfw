@@ -11,7 +11,7 @@
 				"hasDod": false,
 				"escalation": null,
 				"attempt": 1,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -25,7 +25,7 @@
 			"critic": null,
 			"planParsed": null,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false
 		},
 		"script": {},
@@ -71,7 +71,7 @@
 				"hasDod": true,
 				"escalation": null,
 				"attempt": 1,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -85,7 +85,7 @@
 			"critic": null,
 			"planParsed": null,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false
 		},
 		"script": {},
@@ -136,7 +136,7 @@
 				"hasDod": true,
 				"escalation": null,
 				"attempt": 1,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -150,7 +150,7 @@
 			"critic": null,
 			"planParsed": null,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false
 		},
 		"script": {
@@ -213,7 +213,7 @@
 				"hasDod": true,
 				"escalation": null,
 				"attempt": 1,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -227,7 +227,7 @@
 			"critic": null,
 			"planParsed": null,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false
 		},
 		"script": {
@@ -287,7 +287,7 @@
 				"hasDod": true,
 				"escalation": null,
 				"attempt": 1,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -301,7 +301,7 @@
 			"critic": null,
 			"planParsed": null,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false
 		},
 		"script": {
@@ -360,7 +360,7 @@
 				"hasDod": true,
 				"escalation": null,
 				"attempt": 1,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -374,7 +374,7 @@
 			"critic": null,
 			"planParsed": null,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false
 		},
 		"script": {
@@ -434,7 +434,7 @@
 				"hasDod": true,
 				"escalation": null,
 				"attempt": 1,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -448,7 +448,7 @@
 			"critic": null,
 			"planParsed": null,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false
 		},
 		"script": {
@@ -508,7 +508,7 @@
 				"hasDod": true,
 				"escalation": null,
 				"attempt": 1,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -522,7 +522,7 @@
 			"critic": null,
 			"planParsed": null,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false
 		},
 		"script": {
@@ -583,7 +583,7 @@
 				"hasDod": true,
 				"escalation": null,
 				"attempt": 1,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -597,7 +597,7 @@
 			"critic": null,
 			"planParsed": null,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false
 		},
 		"script": {
@@ -666,7 +666,7 @@
 				"hasDod": true,
 				"escalation": null,
 				"attempt": 1,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -680,7 +680,7 @@
 			"critic": null,
 			"planParsed": null,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false
 		},
 		"script": {},
@@ -740,7 +740,7 @@
 				"hasDod": true,
 				"escalation": null,
 				"attempt": 1,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -754,7 +754,7 @@
 			"critic": null,
 			"planParsed": null,
 			"reportHasFollowUps": false,
-			"localWorktree": false,
+			"localWorkspace": false,
 			"leftBackground": false
 		},
 		"script": {
@@ -796,7 +796,7 @@
 		}
 	},
 	{
-		"name": "12 scope watchdog kill in a local worktree: reap, archive wip, block",
+		"name": "12 scope watchdog kill in a local workspace: reap, archive wip, block",
 		"ctx": {
 			"kind": "task",
 			"outcome": null,
@@ -807,7 +807,7 @@
 				"hasDod": true,
 				"escalation": null,
 				"attempt": 1,
-				"worktreeDirty": false,
+				"workspaceDirty": false,
 				"exitCode": 0
 			},
 			"gates": {
@@ -821,7 +821,7 @@
 			"critic": null,
 			"planParsed": null,
 			"reportHasFollowUps": false,
-			"localWorktree": true,
+			"localWorkspace": true,
 			"leftBackground": false
 		},
 		"script": {
@@ -860,7 +860,7 @@
 				},
 				{
 					"row": "T4s",
-					"step": "gc_worktree",
+					"step": "gc_workspace",
 					"args": {
 						"force": true
 					}

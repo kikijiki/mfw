@@ -83,7 +83,7 @@ async function gate(): Promise<Gate> {
 		parked,
 		bare,
 		branchRun: async (name, files) => {
-			const wt = join(root, "worktrees", name);
+			const wt = join(root, "workspaces", name);
 			await git(["worktree", "add", "-q", "-b", name, wt, "main"], root);
 			for (const [file, content] of Object.entries(files)) {
 				await mkdir(dirname(join(wt, file)), { recursive: true });
@@ -210,7 +210,7 @@ describe("a merge of host-executed files waits for the owner", () => {
 		const first = await g.card();
 		await g.decide(first?.id as string, true);
 		// The branch moves after the owner said yes.
-		const wt = join(g.root, "worktrees", "mfw/a");
+		const wt = join(g.root, "workspaces", "mfw/a");
 		await writeFile(join(wt, "flake.nix"), "{ evil = true; }\n");
 		await git(["add", "-A"], wt);
 		await git(["commit", "-q", "-m", "swap"], wt);
@@ -237,7 +237,7 @@ describe("a merge of host-executed files waits for the owner", () => {
 		// Merging conflicts (A to "target" here, A to "branch" there), while a
 		// rebase drops the shared first commit and applies the second cleanly.
 		const runId = await g.branchRun("mfw/r", { "base.txt": "target\n" });
-		const wt = join(g.root, "worktrees", "mfw/r");
+		const wt = join(g.root, "workspaces", "mfw/r");
 		await writeFile(join(wt, "base.txt"), "branch\n");
 		await writeFile(
 			join(wt, "package.json"),
@@ -290,7 +290,7 @@ describe("a merge of host-executed files waits for the owner", () => {
 		const g = await gate();
 		const wtName = "mfw/s";
 		const runId = await g.branchRun(wtName, { "cfg/settings.json": "{}\n" });
-		const wt = join(g.root, "worktrees", wtName);
+		const wt = join(g.root, "workspaces", wtName);
 		await symlink("cfg", join(wt, ".claude"));
 		await git(["add", "-A", "-f"], wt);
 		await git(["commit", "-q", "-m", "link"], wt);
@@ -306,7 +306,7 @@ describe("a merge of host-executed files waits for the owner", () => {
 		await git(["add", "-A", "-f"], g.root);
 		await git(["commit", "-q", "-m", "linked envrc"], g.root);
 		const from = await g.tip();
-		const wt = join(g.root, "worktrees", "mfw/t");
+		const wt = join(g.root, "workspaces", "mfw/t");
 		await git(["worktree", "add", "-q", "-b", "mfw/t", wt, "main"], g.root);
 		await writeFile(join(wt, "cfg/env.sh"), "evil\n");
 		await git(["add", "-A"], wt);
@@ -434,7 +434,7 @@ describe("package.json asks only when what it executes changes", () => {
 	test("a symlinked manifest is still held", async () => {
 		const g = await gate();
 		const runId = await g.branchRun("mfw/link", { "real.json": "{}" });
-		const wt = join(g.root, "worktrees", "mfw/link");
+		const wt = join(g.root, "workspaces", "mfw/link");
 		await symlink("real.json", join(wt, "package.json"));
 		await git(["add", "-A", "-f"], wt);
 		await git(["commit", "-q", "-m", "link"], wt);
@@ -539,7 +539,7 @@ describe("one owner decision covers the merge of the same content", () => {
 	test("the approval follows the same content through the queue's rebase", async () => {
 		const g = await gate();
 		const runId = await g.branchRun("mfw/r", { "base.txt": "target\n" });
-		const wt = join(g.root, "worktrees", "mfw/r");
+		const wt = join(g.root, "workspaces", "mfw/r");
 		await writeFile(join(wt, "base.txt"), "branch\n");
 		await writeFile(join(wt, ".envrc"), "use flake\n");
 		await git(["add", "-A"], wt);
@@ -557,7 +557,7 @@ describe("one owner decision covers the merge of the same content", () => {
 		const g = await gate();
 		const runId = await g.branchRun("mfw/a", { "flake.nix": "{ }\n" });
 		await g.enqueueApproved(runId, "mfw/a");
-		const wt = join(g.root, "worktrees", "mfw/a");
+		const wt = join(g.root, "workspaces", "mfw/a");
 		await writeFile(join(wt, "flake.nix"), "{ evil = true; }\n");
 		await git(["add", "-A"], wt);
 		await git(["commit", "-q", "-m", "swap"], wt);

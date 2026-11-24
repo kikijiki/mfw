@@ -7,7 +7,7 @@ import {
 
 /**
  * `action: agent` (§8.2): a thin wrapper over `RunEngine.startAction(prompt)`
- * (fresh worktree, counted against `maxConcurrent` via `COUNTED_KINDS`).
+ * (fresh workspace, counted against `maxConcurrent` via `COUNTED_KINDS`).
  *
  * Fire-and-forget: the delivery is terminal once the run has started. The
  * supervisor pass that finalizes runs also awaits `TriggerService.dispatch()`

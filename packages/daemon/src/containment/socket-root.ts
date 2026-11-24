@@ -2,7 +2,7 @@
  * Where per-run unix sockets live on the host (egress proxy, brain turns).
  *
  * `sun_path` holds 107 bytes, and `$MFW_HOME` is the owner's: a long home
- * directory, a long user name or a deep worktree would push a socket under it
+ * directory, a long user name or a deep workspace would push a socket under it
  * past the limit and break every sandboxed run with network. So sockets never
  * live under `$MFW_HOME`. They live in a short, private, per-uid directory:
  *

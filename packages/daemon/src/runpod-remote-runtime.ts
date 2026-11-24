@@ -21,7 +21,7 @@ import {
 import {
 	createRemoteCollection,
 	materializeRemoteStage,
-} from "./remote-worktree.ts";
+} from "./remote-workspace.ts";
 
 interface RuntimeConfig {
 	runDir: string;

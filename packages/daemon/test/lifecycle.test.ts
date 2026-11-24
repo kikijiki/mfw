@@ -110,7 +110,7 @@ async function runWithWork(
 }
 
 describe("discard saves work to wip/ before removing it", () => {
-	test("a finished run is archived, its worktree and mfw branch removed, and the discard audited", async () => {
+	test("a finished run is archived, its workspace and mfw branch removed, and the discard audited", async () => {
 		const f = await fixture();
 		const t = await f.tasks.create({ title: "throw away" });
 		const wt = await runWithWork(f, "run-a", t.id, { commit: false });

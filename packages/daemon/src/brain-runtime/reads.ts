@@ -562,7 +562,7 @@ export class BrainReadService {
 		if (!run.workspacePath || !run.baseSha || run.kind === "brain") {
 			throw new BrainReadError(
 				"not_found",
-				`run ${runId} has no worktree diff`,
+				`run ${runId} has no workspace diff`,
 			);
 		}
 		const r = await git(

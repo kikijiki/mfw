@@ -110,7 +110,7 @@ async function fixture(
 		file: string,
 		content: string,
 	): Promise<string> => {
-		const wt = join(root, "worktrees", name);
+		const wt = join(root, "workspaces", name);
 		await git(["worktree", "add", "-q", "-b", name, wt, "main"], root);
 		await writeFile(join(wt, file), content);
 		await git(["add", "-A"], wt);
@@ -338,7 +338,7 @@ describe("MergeQueue v2, real git matrix", () => {
 		await f.cleanup();
 	});
 
-	test("the merge runs outside the primary: no integration worktree appears", async () => {
+	test("the merge runs outside the primary: no integration workspace appears", async () => {
 		const f = await fixture();
 		const runId = await f.makeBranchRun("mfw/t1", "a.txt", "hello\n");
 		await f.queue.enqueue({
@@ -560,7 +560,7 @@ describe("MergeQueue v2, real git matrix", () => {
 		await f.cleanup();
 	});
 
-	test("conflict → rebase in run worktree → re-verify → retry merge succeeds", async () => {
+	test("conflict → rebase in run workspace → re-verify → retry merge succeeds", async () => {
 		const f = await fixture();
 		// both branches edit base.txt: the second merge conflicts
 		const r1 = await f.makeBranchRun("mfw/t1", "base.txt", "from t1\n");
@@ -767,7 +767,7 @@ describe("MergeQueue v2, real git matrix", () => {
 			},
 		});
 		const mkRun = async (name: string, content: string) => {
-			const wt = join(root, "worktrees", name);
+			const wt = join(root, "workspaces", name);
 			await git(["worktree", "add", "-q", "-b", name, wt, "main"], root);
 			await writeFile(join(wt, "base.txt"), content);
 			await git(["add", "-A"], wt);
@@ -840,7 +840,7 @@ describe("MergeQueue v2, real git matrix", () => {
 			},
 		});
 		const mkRun = async (name: string, content: string) => {
-			const wt = join(root, "worktrees", name);
+			const wt = join(root, "workspaces", name);
 			await git(["worktree", "add", "-q", "-b", name, wt, "main"], root);
 			await writeFile(join(wt, "base.txt"), content);
 			await git(["add", "-A"], wt);
@@ -1022,7 +1022,7 @@ describe("MergeQueue v2, real git matrix", () => {
 		await f.cleanup();
 	});
 
-	test("resetInFlight requeues crashed jobs after resetting the worktree", async () => {
+	test("resetInFlight requeues crashed jobs after resetting the workspace", async () => {
 		const f = await fixture();
 		const runId = await f.makeBranchRun("mfw/t1", "a.txt", "x\n");
 		await f.queue.enqueue({ runId, branch: "mfw/t1", targetBranch: "main" });
@@ -1093,7 +1093,7 @@ describe("the merge commit is verified before it lands", () => {
 		await f.cleanup();
 	});
 
-	test("without verifyMerge nothing changes for worktree projects", async () => {
+	test("without verifyMerge nothing changes for workspace projects", async () => {
 		const f = await fixture();
 		const runId = await f.makeBranchRun("mfw/v3", "a.txt", "hello\n");
 		await f.queue.enqueue({
@@ -1109,7 +1109,7 @@ describe("the merge commit is verified before it lands", () => {
 
 describe("the primary checkout is never left inconsistent", () => {
 	test("a merge that WOULD clobber a local edit defers, and lands once committed", async () => {
-		// Ref, index and worktree must move together: a ref ahead of the working tree
+		// Ref, index and workspace must move together: a ref ahead of the working tree
 		// shows phantom deletions and lets `git commit -a` revert the merge. The
 		// collision must be real (same path), not an unrelated dirty file.
 		const f = await fixture();
@@ -1146,7 +1146,7 @@ describe("the primary checkout is never left inconsistent", () => {
 		const headBefore = await gitOk(["rev-parse", "HEAD"], f.root);
 
 		expect(await f.queue.tick()).toBe("merged");
-		// main advanced; the primary's branch and worktree did not
+		// main advanced; the primary's branch and workspace did not
 		expect(await gitOk(["rev-parse", "HEAD"], f.root)).toBe(headBefore);
 		expect((await gitOk(["status", "--porcelain"], f.root)).trim()).toBe("");
 		expect((await git(["show", "main:a.txt"], f.root)).stdout).toBe("hello");
@@ -1182,8 +1182,8 @@ describe("an unrelated dirty file does not block the queue", () => {
 });
 
 /**
- * The board firewall. Run worktrees are sparse-checked-out (`worktree.test.ts`);
- * this covers what gets past that: pre-sparse worktrees, `git sparse-checkout
+ * The board firewall. Run workspaces are sparse-checked-out (`workspace.test.ts`);
+ * this covers what gets past that: pre-sparse workspaces, `git sparse-checkout
  * disable`, or a human editing a task file on a feature branch.
  */
 describe("no branch may change the board on its way in", () => {
@@ -1239,13 +1239,13 @@ describe("no branch may change the board on its way in", () => {
 		return out;
 	}
 
-	/** A branch whose agent did `body(worktree)` to the board, then committed. */
+	/** A branch whose agent did `body(workspace)` to the board, then committed. */
 	async function hostileRun(
 		f: Fixture,
 		name: string,
 		body: (wt: string) => Promise<void>,
 	): Promise<string> {
-		const wt = join(f.root, "worktrees", name);
+		const wt = join(f.root, "workspaces", name);
 		await git(["worktree", "add", "-q", "-b", name, wt, "main"], f.root);
 		// real code work that must still land
 		await writeFile(join(wt, "shipped.txt"), "real work\n");
@@ -1283,7 +1283,7 @@ describe("no branch may change the board on its way in", () => {
 		[
 			"fabricates a status transition",
 			async (wt) => {
-				// git does not track empty directories, so `done/` is absent from the worktree.
+				// git does not track empty directories, so `done/` is absent from the workspace.
 				await mkdir(join(wt, ".mfw/tasks/done"), { recursive: true });
 				await rename(
 					join(wt, ".mfw/tasks/ready/MFW-1-alpha.md"),
@@ -1373,7 +1373,7 @@ describe("no branch may change the board on its way in", () => {
 	test("trigger additions, edits and deletions survive the queue byte-for-byte", async () => {
 		const f = await fixture();
 		await withBoard(f);
-		const wt = join(f.root, "worktrees", "mfw/triggers");
+		const wt = join(f.root, "workspaces", "mfw/triggers");
 		await git(
 			["worktree", "add", "-q", "-b", "mfw/triggers", wt, "main"],
 			f.root,
@@ -1526,7 +1526,7 @@ describe("operator actions on a parked job", () => {
 
 		// The queue's aborted rebase left mfw/t2 on the original main; as an operator
 		// would, rebase by hand and resolve so it applies cleanly before retrying.
-		const wt = join(f.root, "worktrees", "mfw/t2");
+		const wt = join(f.root, "workspaces", "mfw/t2");
 		const rebase = await git(["rebase", "main"], wt);
 		expect(rebase.exitCode).not.toBe(0); // same conflict the queue hit
 		await writeFile(join(wt, "base.txt"), "from t1\nfrom t2\n");

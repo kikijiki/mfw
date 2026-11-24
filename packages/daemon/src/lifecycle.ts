@@ -14,7 +14,7 @@ import { runHoldsClaim, type TaskService } from "./task-service.ts";
  * not closed while its branch holds work that never landed.
  */
 
-/** Run states in which the run still owns its worktree and branch. */
+/** Run states in which the run still owns its workspace and branch. */
 const LIVE_RUN_STATES = new Set<string>([
 	"starting",
 	"running",
@@ -185,7 +185,7 @@ export class LifecycleService {
 		if (run.taskId) {
 			const task = await this.deps.tasks.get(run.taskId);
 			if (task?.preservedBranch === run.branch) {
-				await this.deps.tasks.clearPreservedWorktree(run.taskId);
+				await this.deps.tasks.clearPreservedWorkspace(run.taskId);
 			}
 		}
 		const event = await this.deps.handle.withTx((tx) =>

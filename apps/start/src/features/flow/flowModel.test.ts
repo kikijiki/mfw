@@ -406,7 +406,7 @@ describe("lineage", () => {
 		]);
 	});
 
-	test("siblings are the worktree chain, from any member, oldest first; judges are not in it", () => {
+	test("siblings are the workspace chain, from any member, oldest first; judges are not in it", () => {
 		for (const ref of ["run:r1", "run:r2", "run:r3"]) {
 			expect(lineageOf(nodes, ref)?.family.map((n) => n.ref)).toEqual([
 				"run:r1",

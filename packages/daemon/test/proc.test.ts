@@ -122,7 +122,7 @@ describe("runProc", () => {
 describe("spawn failures are results, not exceptions", () => {
 	test("a cwd that does not exist reports exit 127 instead of throwing", async () => {
 		// Callers legitimately probe paths that may not exist yet (the merge
-		// queue asks whether its integration worktree is a repo). Bun.spawn
+		// queue asks whether its integration workspace is a repo). Bun.spawn
 		// throws there, while every caller is written against ProcResult.
 		const r = await runProc(["git", "status"], {
 			cwd: "/definitely/not/a/real/path",

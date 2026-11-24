@@ -61,7 +61,7 @@ export interface WatchdogLimits {
 	wallMs: number;
 	/** Kill after this many assistant turns (0 = off). */
 	maxTurns: number;
-	/** Diff-scope watchdog over a local run's worktree (`scope-watchdog.ts`). */
+	/** Diff-scope watchdog over a local run's workspace (`scope-watchdog.ts`). */
 	scope: ScopePolicy;
 }
 
@@ -641,7 +641,7 @@ export class Supervisor {
 	 * Diff-scope watchdog for one live local run. Throttled to one sample per
 	 * `sampleMs`, and only once events.jsonl moved since the last one (an agent
 	 * that wrote nothing changed nothing). A sample that fails (git error,
-	 * timeout, worktree mid-rewrite) is skipped and retried next time: a
+	 * timeout, workspace mid-rewrite) is skipped and retried next time: a
 	 * failed sample never kills.
 	 */
 	private async watchScope(
@@ -748,7 +748,7 @@ export class Supervisor {
 		return {
 			owns: own?.owns ?? [],
 			// The sibling rule: a claim held by this run's own group (its attempt
-			// siblings, or a continuation of the same worktree chain) is never foreign.
+			// siblings, or a continuation of the same workspace chain) is never foreign.
 			others: foreignClaims(run, claimed),
 		};
 	}

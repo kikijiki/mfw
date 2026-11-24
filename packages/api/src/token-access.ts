@@ -300,7 +300,7 @@ export const OWNER_ONLY_PROCEDURES: ReadonlySet<string> = new Set([
 	"clarify.answer",
 	"clarify.archiveDraft",
 	"clarify.dismiss",
-	"files.worktrees",
+	"files.workspaces",
 	"files.listDir",
 	"files.readFile",
 	"files.gitStatus",

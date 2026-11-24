@@ -105,7 +105,7 @@ export interface RunControls extends RunControlState {
 	};
 	/** Which of pause, resume and reroute this run's state allows. */
 	moves: RunMoves;
-	/** Stop and keep the worktree; Resume continues it. */
+	/** Stop and keep the workspace; Resume continues it. */
 	pause: { send: () => void; pending: boolean };
 	/** Continue a settled run on its own route. */
 	resume: { send: () => void; pending: boolean };
@@ -118,7 +118,7 @@ export interface RunControls extends RunControlState {
 		/** The server's refusal, with its fix, while the dialog is open. */
 		error: string | null;
 	};
-	/** The run's open question, answered (the agent resumes in its worktree). */
+	/** The run's open question, answered (the agent resumes in its workspace). */
 	answer: {
 		send: (
 			text: string,
@@ -459,7 +459,7 @@ export function useNodeActions(target: NodeActionTarget): NodeActions {
 					toast({
 						tone: "success",
 						title: `Paused ${label}`,
-						description: "The worktree is kept. Resume continues it.",
+						description: "The workspace is kept. Resume continues it.",
 					}),
 				),
 			pending: stop.isPending,

@@ -1126,7 +1126,7 @@ describe("move refuses a human hand on a live claim (MFW-44)", () => {
 });
 
 describe("runtime counters", () => {
-	test("stall + preserved-worktree columns", async () => {
+	test("stall + preserved-workspace columns", async () => {
 		const { svc } = await freshEnv();
 		const t = await svc.create({ title: "t" });
 		expect(await svc.bumpStall(t.id)).toBe(1);
@@ -1142,13 +1142,13 @@ describe("runtime counters", () => {
 		await svc.release(t.id, null, "done", "verifier");
 		expect((await svc.get(t.id))?.resumeCount).toBe(0);
 
-		await svc.recordPreservedWorktree(t.id, "/wt/MFW-1", "mfw/MFW-1");
+		await svc.recordPreservedWorkspace(t.id, "/wt/MFW-1", "mfw/MFW-1");
 		let row = await svc.get(t.id);
-		expect(row?.preservedWorktree).toBe("/wt/MFW-1");
+		expect(row?.preservedWorkspace).toBe("/wt/MFW-1");
 		expect(row?.preservedBranch).toBe("mfw/MFW-1");
-		await svc.clearPreservedWorktree(t.id);
+		await svc.clearPreservedWorkspace(t.id);
 		row = await svc.get(t.id);
-		expect(row?.preservedWorktree).toBeNull();
+		expect(row?.preservedWorkspace).toBeNull();
 		expect(row?.preservedBranch).toBeNull();
 	});
 });

@@ -87,7 +87,7 @@ export interface SchedulerDeps {
 	log: Logger;
 	config: SchedulerConfig;
 	/**
-	 * Periodic housekeeping (groomer, regression sweep, run-dir prune, worktree
+	 * Periodic housekeeping (groomer, regression sweep, run-dir prune, workspace
 	 * GC). Runs BEFORE the gates on purpose: the regression sweep is what
 	 * clears `main_red`, so gating it behind that would wedge the breaker shut.
 	 */

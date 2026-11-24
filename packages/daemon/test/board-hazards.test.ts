@@ -320,7 +320,7 @@ describe("board writes and merges at the same time", () => {
 		// Four runs, each touching its own file, all queued at once.
 		for (let i = 0; i < 4; i++) {
 			const branch = `mfw/run-${i}`;
-			const wt = join(e.root, "worktrees", `run-${i}`);
+			const wt = join(e.root, "workspaces", `run-${i}`);
 			await git(["worktree", "add", "-q", "-b", branch, wt, "main"], e.root);
 			await writeFile(join(wt, `f-${i}.txt`), `work ${i}\n`);
 			await git(["add", "-A"], wt);

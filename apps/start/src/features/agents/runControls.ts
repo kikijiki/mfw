@@ -145,7 +145,7 @@ export function approvalSettled(
 // moves a run allows beyond stop and steer (U4-04)
 // ---------------------------------------------------------------------------
 
-/** Settled states whose worktree is still there to continue in. */
+/** Settled states whose workspace is still there to continue in. */
 const CONTINUABLE_STATES: ReadonlySet<string> = new Set([
 	"failed",
 	"killed",
@@ -156,7 +156,7 @@ const CONTINUABLE_STATES: ReadonlySet<string> = new Set([
 ]);
 
 export interface RunMoves {
-	/** Stop it and keep the worktree (design §10.1 "Pause"). */
+	/** Stop it and keep the workspace (design §10.1 "Pause"). */
 	pause: boolean;
 	/** Continue a settled run on its own route. */
 	resume: boolean;
@@ -164,7 +164,7 @@ export interface RunMoves {
 	reroute: boolean;
 }
 
-/** What the run-level moves are for a run in `state`; the server still has the last word (it refuses a merged run's missing worktree with a fix). */
+/** What the run-level moves are for a run in `state`; the server still has the last word (it refuses a merged run's missing workspace with a fix). */
 export function runMoves(state: string): RunMoves {
 	const live = state === "running";
 	const settled = CONTINUABLE_STATES.has(state);

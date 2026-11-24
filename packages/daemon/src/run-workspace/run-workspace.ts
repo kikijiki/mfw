@@ -26,13 +26,13 @@ export interface WipArchive {
 	created: boolean;
 }
 
-export type WorktreeReportIdentity =
+export type ReportIdentity =
 	| { state: "absent" }
 	| { state: "present"; sha256: string };
 
 export interface WorkspaceContentOptions {
 	/** Exact report state committed by ingest_report. */
-	reportIdentity?: WorktreeReportIdentity;
+	reportIdentity?: ReportIdentity;
 }
 
 export interface WorkspaceName {
@@ -88,7 +88,7 @@ export interface RunWorkspace {
 		opts?: {
 			force?: boolean;
 			deleteBranch?: boolean;
-			reportIdentity?: WorktreeReportIdentity;
+			reportIdentity?: ReportIdentity;
 		},
 	): Promise<void>;
 

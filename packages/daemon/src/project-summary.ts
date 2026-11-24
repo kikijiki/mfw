@@ -19,10 +19,10 @@ export interface ProjectSummary {
 		/** Live runs an inbox item is waiting on (question, approval, ...). */
 		waiting: number;
 	};
-	worktrees: {
-		/** Worktrees of live runs. */
+	workspaces: {
+		/** Workspaces of live runs. */
 		active: number;
-		/** Worktrees still on disk whose run has ended (parked work). */
+		/** Workspaces still on disk whose run has ended (parked work). */
 		parked: number;
 	};
 	/** `inbox.list` length for this project. */
@@ -54,7 +54,7 @@ export interface SummaryInputs {
 	project: string;
 	taskStatuses: readonly TaskStatus[];
 	runs: readonly { id: string; kind: string; state: string }[];
-	worktrees: readonly { runId: string; state: string }[];
+	workspaces: readonly { runId: string; state: string }[];
 	inboxItems: readonly { runId?: string }[];
 	brain: { enabled: boolean; state: ProjectSummary["brain"]["state"] };
 	spendTodayUsd: number;
@@ -78,7 +78,7 @@ export function buildProjectSummary(input: SummaryInputs): ProjectSummary {
 	);
 	let active = 0;
 	let parked = 0;
-	for (const wt of input.worktrees) {
+	for (const wt of input.workspaces) {
 		if (LIVE_RUN_STATES.has(wt.state)) active += 1;
 		else parked += 1;
 	}
@@ -86,7 +86,7 @@ export function buildProjectSummary(input: SummaryInputs): ProjectSummary {
 		project: input.project,
 		tasks,
 		sessions: { live: live.length, waiting: waitingIds.size },
-		worktrees: { active, parked },
+		workspaces: { active, parked },
 		needsYou: input.inboxItems.length,
 		brain: input.brain,
 		spendTodayUsd: input.spendTodayUsd,
@@ -104,7 +104,7 @@ export interface SummarySource {
 		}): Promise<readonly { id: string; kind: string; state: string }[]>;
 	};
 	workspace: {
-		worktrees(): Promise<readonly { runId: string; state: string }[]>;
+		workspaces(): Promise<readonly { runId: string; state: string }[]>;
 	};
 	inbox: { list(): Promise<readonly { runId?: string }[]> };
 	brainState(): Promise<ProjectSummary["brain"]>;
@@ -119,18 +119,18 @@ export function startOfLocalDay(now: number): Date {
 	return d;
 }
 
-/** Read every fact for one project concurrently. Never throws on a missing worktree. */
+/** Read every fact for one project concurrently. Never throws on a missing workspace. */
 export async function collectProjectSummary(
 	src: SummarySource,
 	now = Date.now(),
 ): Promise<ProjectSummary> {
-	const [tasks, runs, worktrees, inbox, brain, spend, last] = await Promise.all(
-		[
+	const [tasks, runs, workspaces, inbox, brain, spend, last] =
+		await Promise.all([
 			src.tasks.list(),
 			src.registry.list({
 				states: ["starting", "running", "ended", "finalizing", "merging"],
 			}),
-			src.workspace.worktrees().catch(() => []),
+			src.workspace.workspaces().catch(() => []),
 			src.inbox.list().catch(() => []),
 			src.brainState().catch((): ProjectSummary["brain"] => ({
 				enabled: false,
@@ -138,13 +138,12 @@ export async function collectProjectSummary(
 			})),
 			src.spendSince(startOfLocalDay(now)).catch(() => 0),
 			src.lastEventAt().catch(() => null),
-		],
-	);
+		]);
 	return buildProjectSummary({
 		project: src.name,
 		taskStatuses: tasks.map((t) => t.status),
 		runs,
-		worktrees,
+		workspaces,
 		inboxItems: inbox,
 		brain,
 		spendTodayUsd: spend,

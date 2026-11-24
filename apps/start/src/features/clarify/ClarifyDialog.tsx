@@ -24,7 +24,7 @@ import { href } from "../../routes";
 
 /**
  * Answers a clarify set: a planner's questions (answers feed a re-plan) or a
- * task run's own question (answers resume the agent in its worktree). Opens
+ * task run's own question (answers resume the agent in its workspace). Opens
  * from the inbox because `clarify.open` is cross-project.
  */
 
@@ -407,7 +407,7 @@ function ClarifyForm({
 						The agent stopped its run to ask this. The project brain answers
 						what it can; once you answer every question,{" "}
 						<strong>Answer and resume</strong> wakes it, and it continues the
-						work in the same worktree with your answers. Dismissing leaves the
+						work in the same workspace with your answers. Dismissing leaves the
 						decision to the brain.
 					</>
 				) : replannable ? (

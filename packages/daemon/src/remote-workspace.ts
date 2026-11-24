@@ -249,7 +249,7 @@ function assertSafeSymlink(path: string, target: string): void {
 	) {
 		throw new RemoteWorkspaceError(
 			"unsafe_entry",
-			`workspace symlink '${path}' escapes the worktree`,
+			`workspace symlink '${path}' escapes the workspace`,
 		);
 	}
 }
@@ -390,9 +390,10 @@ async function baseEntries(
 	maxFileBytes: number,
 ): Promise<RemoteWorkspaceEntry[]> {
 	const parent = await mkdtemp(join(dirname(root), ".mfw-stage-base-"));
-	const worktree = join(parent, "worktree");
+	// A detached git worktree of a trusted commit: git's own temporary checkout.
+	const checkout = join(parent, "checkout");
 	const added = await git(
-		["worktree", "add", "--detach", worktree, baseSha],
+		["worktree", "add", "--detach", checkout, baseSha],
 		root,
 	);
 	if (added.exitCode !== 0) {
@@ -403,15 +404,15 @@ async function baseEntries(
 		);
 	}
 	try {
-		const paths = await listing(["ls-files", "--cached", "-z"], worktree);
+		const paths = await listing(["ls-files", "--cached", "-z"], checkout);
 		const entries: RemoteWorkspaceEntry[] = [];
 		for (const path of paths.split("\0").filter(Boolean).sort()) {
-			const entry = await readEntry(worktree, path, "tracked", maxFileBytes);
+			const entry = await readEntry(checkout, path, "tracked", maxFileBytes);
 			if (entry) entries.push(entry);
 		}
 		return entries;
 	} finally {
-		await git(["worktree", "remove", "--force", worktree], root);
+		await git(["worktree", "remove", "--force", checkout], root);
 		await rm(parent, { recursive: true, force: true });
 	}
 }
@@ -544,7 +545,7 @@ async function loadBundle(
 	return validateBundle(await readFile(path, "utf8"), limits);
 }
 
-/** Capture the canonical worktree without ignored files or protected .mfw state. */
+/** Capture the canonical workspace without ignored files or protected .mfw state. */
 export async function createRemoteStage(
 	opts: CreateRemoteStageOptions,
 ): Promise<{ stagePath: string; digest: string }> {
@@ -568,7 +569,7 @@ export async function createRemoteStage(
 		baseline,
 		snapshot,
 	});
-	const stagePath = join(opts.runDir, "remote-worktree", "stage.json");
+	const stagePath = join(opts.runDir, "remote-workspace", "stage.json");
 	await writeBundle(stagePath, bundle, opts);
 	return { stagePath, digest: bundle.digest };
 }
@@ -680,7 +681,7 @@ export async function materializeRemoteStage(
 		if (opts.setup.argv.length === 0) {
 			throw new RemoteWorkspaceError(
 				"setup_failed",
-				"configured worktree setup argv is empty",
+				"configured workspace setup argv is empty",
 			);
 		}
 		const setupEnvironment = new ExecutionEnvironmentBuilder(
@@ -699,8 +700,8 @@ export async function materializeRemoteStage(
 			throw new RemoteWorkspaceError(
 				"setup_failed",
 				result.timedOut
-					? "configured worktree setup exceeded its deadline"
-					: `configured worktree setup exited with code ${result.exitCode}`,
+					? "configured workspace setup exceeded its deadline"
+					: `configured workspace setup exited with code ${result.exitCode}`,
 			);
 		}
 	}
@@ -729,7 +730,7 @@ export async function createRemoteCollection(
 		baseline: stage.snapshot,
 		snapshot,
 	});
-	const collectionDir = join(opts.runDir, "remote-worktree", "collections");
+	const collectionDir = join(opts.runDir, "remote-workspace", "collections");
 	const collectionPath = join(collectionDir, `${bundle.digest}.json`);
 	await writeBundle(collectionPath, bundle, opts);
 	return { collectionPath, digest: bundle.digest };
@@ -844,7 +845,7 @@ export async function applyRemoteCollection(
 	}
 	const receiptPath = join(
 		opts.runDir,
-		"remote-worktree",
+		"remote-workspace",
 		"collection-receipt.json",
 	);
 	await writeFileAtomic(

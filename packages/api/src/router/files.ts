@@ -2,7 +2,7 @@ import { z } from "zod";
 import { createTRPCRouter, projectProcedure } from "../trpc.ts";
 
 /**
- * Workspace browser - READ ONLY, over the project root or a run's worktree.
+ * Workspace browser - READ ONLY, over the project root or a run's workspace.
  *
  * Every procedure is a one-line delegation on purpose. Path containment is a
  * security property, not a validation nicety, so it lives in
@@ -11,8 +11,10 @@ import { createTRPCRouter, projectProcedure } from "../trpc.ts";
  * doing the checking; it is not, and it must not start.
  */
 export const filesRouter = createTRPCRouter({
-	/** Browsable bases: the repo itself plus every live run worktree. */
-	worktrees: projectProcedure.query(({ ctx }) => ctx.svc.workspace.worktrees()),
+	/** Browsable bases: the repo itself plus every live run workspace. */
+	workspaces: projectProcedure.query(({ ctx }) =>
+		ctx.svc.workspace.workspaces(),
+	),
 
 	listDir: projectProcedure
 		.input(

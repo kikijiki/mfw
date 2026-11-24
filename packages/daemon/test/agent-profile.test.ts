@@ -53,8 +53,8 @@ describe("cloneLayout", () => {
 		expect(cloneLayout(tree).gitDir).toBe(join(base, "workspaces/r1/git"));
 	});
 
-	test("refuses a plain worktree path", () => {
-		const tree = join(base, "worktrees/r1");
+	test("refuses a plain workspace path", () => {
+		const tree = join(base, "workspaces/r1");
 		mkdirSync(tree, { recursive: true });
 		expect(() => cloneLayout(tree)).toThrow(AgentProfileError);
 	});

@@ -52,7 +52,7 @@ function ctx(over: Partial<FinalizeCtx> = {}): FinalizeCtx {
 			hasDod: true,
 			escalation: null,
 			attempt: 1,
-			worktreeDirty: false,
+			workspaceDirty: false,
 			exitCode: 0,
 		},
 		gates: { mainRed: false, reviewGated: false, brainEnabled: true },
@@ -60,7 +60,7 @@ function ctx(over: Partial<FinalizeCtx> = {}): FinalizeCtx {
 		critic: null,
 		planParsed: null,
 		reportHasFollowUps: false,
-		localWorktree: false,
+		localWorkspace: false,
 		leftBackground: false,
 		...over,
 	};
@@ -189,7 +189,7 @@ const MACHINE: Record<
 		row: "T10Q",
 	},
 	background_work: {
-		ctx: ctx({ localWorktree: true }),
+		ctx: ctx({ localWorkspace: true }),
 		script: { leftovers: true },
 		row: "T10L",
 	},
@@ -461,7 +461,7 @@ describe("C. a parked merge settles merge_parked", () => {
 		u = undefined;
 	});
 
-	test("the task goes back to ready with its worktree kept, the job closes, the brain is woken; nobody is paged", async () => {
+	test("the task goes back to ready with its workspace kept, the job closes, the brain is woken; nobody is paged", async () => {
 		u = await brainUnit();
 		u.clock.t = Date.now();
 		await u.runtime.tick();
@@ -513,7 +513,7 @@ describe("C. a parked merge settles merge_parked", () => {
 		const task = await u.tasks.get(t.id);
 		expect(task?.status).toBe("ready");
 		expect(task?.claimedByRunId).toBeNull();
-		expect(task?.preservedWorktree).toBe(u.root);
+		expect(task?.preservedWorkspace).toBe(u.root);
 		expect((await u.registry.get(run.id))?.state).toBe("failed");
 		// The wake: one tick after the debounce.
 		u.advance(11_000);
@@ -615,7 +615,7 @@ describe("D. a failed run waits for the brain, which continues it", () => {
 		const cont = await f.act("spawn", {
 			taskId,
 			role: "implement",
-			worktree: `continue:${runId}`,
+			workspace: `continue:${runId}`,
 			brief: "Create feature.txt.",
 		});
 		expect(cont.status).toBe("accepted");

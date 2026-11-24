@@ -309,7 +309,7 @@ describe("the single launch path", () => {
 	});
 
 	test("a tree that is not a private run clone is refused, and nothing launches", async () => {
-		const tree = join(base, "project/worktrees/r1");
+		const tree = join(base, "project/workspaces/r1");
 		mkdirSync(tree, { recursive: true });
 		const d = deps();
 		const r = await launchAgentSandbox({ ...req, tree }, ARGV, d.value);

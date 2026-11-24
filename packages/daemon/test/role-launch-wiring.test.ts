@@ -128,7 +128,7 @@ describe("the reviewer's sandboxed path", () => {
 
 	const reviewer = (launch: (r: OneShotAgentRequest) => Promise<ProcResult>) =>
 		new AgentReviewInference({
-			subject: { projectRoot: project, branch: BRANCH, runWorktree: null },
+			subject: { projectRoot: project, branch: BRANCH, runWorkspace: null },
 			harness: "claude-cli",
 			host: { mfwHome: join(root, "mfw"), stateDir: join(project, ".mfw") },
 			launch: launch as never,
@@ -169,7 +169,7 @@ describe("the reviewer's sandboxed path", () => {
 	test("without host settings it refuses and nothing runs", async () => {
 		let ran = false;
 		const r = new AgentReviewInference({
-			subject: { projectRoot: project, branch: BRANCH, runWorktree: null },
+			subject: { projectRoot: project, branch: BRANCH, runWorkspace: null },
 			harness: "claude-cli",
 			launch: (async () => {
 				ran = true;

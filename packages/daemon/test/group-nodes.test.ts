@@ -245,7 +245,7 @@ describe("reroute", () => {
 		await f.svc.scheduler.tick();
 		const live = await f.svc.registry.get(oldId);
 		expect(live?.state).toBe("running");
-		const worktree = live?.workspacePath;
+		const workspace = live?.workspacePath;
 		// The driver reads the control file when it starts, which can be after
 		// the registry already says "running": clearing slow mode here let the
 		// agent finish on its own. Slow mode stays on, so only the stop ends it.
@@ -281,7 +281,7 @@ describe("reroute", () => {
 			spawnedByDecisionId: out.decisionId,
 		});
 		// A clone of its own, seeded from what the stopped run left.
-		expect(next?.workspacePath).not.toBe(worktree);
+		expect(next?.workspacePath).not.toBe(workspace);
 		const [d] = await f.svc.handle.db
 			.select()
 			.from(decisions)

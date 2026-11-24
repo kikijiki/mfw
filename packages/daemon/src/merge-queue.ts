@@ -65,7 +65,7 @@ import {
  *
  * A park is usually a stale conflict (target moved while the job queued), so
  * `park()` retries automatically, bounded by `MAX_PARK_RETRIES`, before calling
- * `onParked` to escalate. Retries reuse the same run, worktree and branch;
+ * `onParked` to escalate. Retries reuse the same run, workspace and branch;
  * nothing is discarded. `retryParked()` runs off the maintenance cadence,
  * which is enough backoff.
  *
@@ -95,7 +95,7 @@ export interface MergeQueueDeps {
 	log: Logger;
 	/**
 	 * Re-run the task's DoD on the rebased branch (a disposable clone on clone
-	 * projects, the run worktree otherwise). `crashed`
+	 * projects, the run workspace otherwise). `crashed`
 	 * mirrors `VerificationResult.crashed`: a check process died to a signal,
 	 * so `!passed` alone does not mean the rebase broke anything.
 	 */
@@ -113,7 +113,7 @@ export interface MergeQueueDeps {
 	hasChecks?: (job: MergeJobView) => Promise<boolean>;
 	/**
 	 * Verify the merge commit itself (after the board restore) before it lands, in a disposable host-owned clone.
-	 * Absent (worktree projects) means no pre-landing verification. A failure
+	 * Absent (workspace projects) means no pre-landing verification. A failure
 	 * parks the job as `reverify`.
 	 */
 	verifyMerge?: (
@@ -122,7 +122,7 @@ export interface MergeQueueDeps {
 	) => Promise<{ passed: boolean; detail?: string; crashed?: boolean }>;
 	/**
 	 * Rebase a clone run's quarantine ref onto `onto` in a host-owned scratch
-	 * clone, moving the ref to the result on success. Absent (worktree
+	 * clone, moving the ref to the result on success. Absent (workspace
 	 * projects) means a clone run's conflict parks without a rebase.
 	 */
 	rebaseClone?: (
@@ -135,7 +135,7 @@ export interface MergeQueueDeps {
 	>;
 	/** Post-merge tail of the owning run's journal (release task → done, etc.). */
 	onMerged: (job: MergeJobView, sha: string) => Promise<void>;
-	/** Parked tail: settle `merge_parked` for the brain (task back to ready, run terminal, worktree preserved, job abandoned). */
+	/** Parked tail: settle `merge_parked` for the brain (task back to ready, run terminal, workspace preserved, job abandoned). */
 	onParked: (
 		job: MergeJobView,
 		reason: string,
@@ -487,7 +487,7 @@ export class MergeQueue {
 		}
 
 		// Conflict: rebase the run onto the target, re-verify, retry once. A
-		// worktree run rebases in its own worktree; a clone run rebases in a
+		// workspace run rebases in its own workspace; a clone run rebases in a
 		// host-owned scratch clone of its quarantine ref.
 		if ((await this.mergeSource(job)) !== job.branch) {
 			if (!this.deps.rebaseClone) {
@@ -516,7 +516,7 @@ export class MergeQueue {
 			if (!job.workspacePath) {
 				await this.park(
 					job,
-					"merge conflict and no run worktree to rebase",
+					"merge conflict and no run workspace to rebase",
 					"conflict",
 				);
 				return "parked";
@@ -706,7 +706,7 @@ export class MergeQueue {
 	/**
 	 * What to merge. A clone run's work reaches the primary only as the
 	 * host-verified quarantine ref (`refs/mfw/quarantine/<runId>`), so that is
-	 * read when it exists; a worktree run's branch lives in the primary itself.
+	 * read when it exists; a workspace run's branch lives in the primary itself.
 	 */
 	private async mergeSource(job: {
 		runId: string;
@@ -924,7 +924,7 @@ export class MergeQueue {
 	): Promise<"merged" | "deferred"> {
 		// Not checked out in the primary: compare-and-swap the ref.
 		// Checked out: `merge --ff-only` in the primary, which moves ref, index
-		// and worktree together and refuses rather than clobbering. A refusal
+		// and workspace together and refuses rather than clobbering. A refusal
 		// defers; unrelated local edits do not.
 		const checkedOut = await this.primaryHasCheckedOut(job.targetBranch);
 		if (!checkedOut) {
@@ -1280,7 +1280,7 @@ export class MergeQueue {
 	 * not (or no longer) parked, so a stale click cannot repeat a decision.
 	 */
 
-	/** Re-queue a parked job; reuses the same run worktree and branch. */
+	/** Re-queue a parked job; reuses the same run workspace and branch. */
 	async retry(jobId: number): Promise<void> {
 		const job = await this.requireParked(jobId);
 		const tip = await this.sourceTip(job);

@@ -37,7 +37,7 @@ const slow = Number(control.slowMs ?? 0);
 if (slow > 0) await Bun.sleep(slow);
 if ((control.dirty ?? []).some((id) => cfg.cwd.includes(id))) {
   // Work in progress that never satisfies the DoD: left uncommitted, so the
-  // worktree survives finalization for a continue: spawn.
+  // workspace survives finalization for a continue: spawn.
   await Bun.write(cfg.cwd + "/scratch.txt", "half done by " + runId + "\\n");
 } else if (!(control.fail ?? []).some((id) => cfg.cwd.includes(id))) {
   await Bun.write(cfg.cwd + "/feature.txt", "implemented by " + runId + "\\n");

@@ -10,7 +10,7 @@ import { CLAIM_HOLDING_RUN_STATES } from "./run-registry.ts";
 
 /**
  * Reroute (U4-04): a person moves a run's work to another harness, model or
- * host. Stop the run (its worktree is kept: an interrupted run's work is never
+ * host. Stop the run (its workspace is kept: an interrupted run's work is never
  * deleted), wait for it to settle, then spawn `continue:<runId>` through the
  * same `startGroupRun` path the brain's `spawn` uses, with the human's pick
  * ranked above a task pin. Recorded as one `role: human` decision that
@@ -19,7 +19,7 @@ import { CLAIM_HOLDING_RUN_STATES } from "./run-registry.ts";
 
 export type RerouteCode =
 	| "run_not_found"
-	| "no_worktree"
+	| "no_workspace"
 	| "not_a_task_run"
 	| "nothing_to_change"
 	| "not_settled"
@@ -93,8 +93,8 @@ export async function rerouteRun(
 	}
 	if (!run.workspacePath || !run.branch) {
 		throw new RerouteError(
-			"no_worktree",
-			`${run.id} has no worktree to continue`,
+			"no_workspace",
+			`${run.id} has no workspace to continue`,
 			"Start the task again from the board instead.",
 		);
 	}
@@ -137,7 +137,7 @@ export async function rerouteRun(
 			"Its task is no longer waiting on it. Open the task and start it again, or reopen it first, if more work is needed.",
 		);
 
-	// 1. stop, keeping the worktree.
+	// 1. stop, keeping the workspace.
 	if (await live(run.id)) {
 		await deps.engine.stop(run.id);
 		deps.wake?.();
@@ -147,7 +147,7 @@ export async function rerouteRun(
 				throw new RerouteError(
 					"not_settled",
 					`${run.id} was stopped but has not settled yet`,
-					"Try Reroute again in a moment; the worktree is kept.",
+					"Try Reroute again in a moment; the workspace is kept.",
 				);
 			}
 			await Bun.sleep(deps.pollMs ?? 100);
@@ -212,10 +212,10 @@ export async function rerouteRun(
 		originRef: "human:ui",
 		brief:
 			input.brief?.trim() ||
-			`A person moved this work from ${run.harness ?? run.providerId ?? "another harness"}:${run.model} to a new route. Continue in the existing worktree; do not start over.`,
+			`A person moved this work from ${run.harness ?? run.providerId ?? "another harness"}:${run.model} to a new route. Continue in the existing workspace; do not start over.`,
 		pick,
 		...(input.target ? { target: input.target } : {}),
-		worktree: { mode: "continue", runId: run.id },
+		workspace: { mode: "continue", runId: run.id },
 	};
 	try {
 		await deps.engine.startGroupRun(spec);

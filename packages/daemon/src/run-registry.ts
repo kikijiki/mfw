@@ -155,7 +155,7 @@ export interface NewRunSpec {
 	hostId?: string | null;
 	/** Typed lineage. Derived from kind/label/parent when absent (the same rules the backfill uses). */
 	relation?: RunRelation;
-	/** First run of the worktree chain; derived from the parent's chain when absent. */
+	/** First run of the workspace chain; derived from the parent's chain when absent. */
 	chainRootId?: string;
 	/** The `decisions.id` whose action created this run. */
 	spawnedByDecisionId?: number;
@@ -699,7 +699,7 @@ export class RunRegistry {
 	}
 
 	/** Record a new worktree while the run is still starting. Not a transition/event; closes the crash window between `git worktree add` and agent launch. */
-	async setStartingWorktree(
+	async setStartingWorkspace(
 		runId: string,
 		patch: {
 			workspacePath: string;

@@ -56,7 +56,7 @@ import {
 	createCheckClones,
 	createRunWorkspace,
 } from "../run-workspace/factory.ts";
-import type { WorktreeReportIdentity } from "../run-workspace/run-workspace.ts";
+import type { ReportIdentity } from "../run-workspace/run-workspace.ts";
 import {
 	asScopeSample,
 	changedFilesInRef,
@@ -600,11 +600,9 @@ function auditDetail(step: StepName, result: unknown): string | undefined {
 	return undefined;
 }
 
-function foldReportIdentity(
-	result: unknown,
-): WorktreeReportIdentity | undefined {
-	const identity = (result as { worktreeReport?: unknown } | undefined)
-		?.worktreeReport;
+function foldReportIdentity(result: unknown): ReportIdentity | undefined {
+	const identity = (result as { workspaceReport?: unknown } | undefined)
+		?.workspaceReport;
 	if (
 		typeof identity === "object" &&
 		identity !== null &&
@@ -811,7 +809,7 @@ export class StepRunner {
 		const scopeRes = results.get("scope_check") as ScopeCheckResult | undefined;
 
 		const task = run.taskId ? await this.deps.tasks.get(run.taskId) : null;
-		const worktreeDirty =
+		const workspaceDirty =
 			run.kind === "task" && run.workspacePath
 				? await this.isDirty(
 						run,
@@ -842,7 +840,7 @@ export class StepRunner {
 								) != null,
 							escalation: report?.escalation ?? null,
 							attempt: run.attempt,
-							worktreeDirty,
+							workspaceDirty,
 							exitCode: classify?.exitCode ?? run.exitCode ?? null,
 						}
 					: null,
@@ -880,7 +878,7 @@ export class StepRunner {
 				: null,
 			planParsed: planRes ? planRes.parsed === true : null,
 			reportHasFollowUps: (report?.followUps.length ?? 0) > 0,
-			localWorktree:
+			localWorkspace:
 				run.kind !== "brain" &&
 				run.executionTarget === "local" &&
 				run.workspacePath !== null,
@@ -902,7 +900,7 @@ export class StepRunner {
 	/** Dirty = uncommitted changes OR commits beyond the run's base. */
 	private async isDirty(
 		run: RunRow,
-		reportIdentity?: WorktreeReportIdentity,
+		reportIdentity?: ReportIdentity,
 	): Promise<boolean> {
 		const wt = run.workspacePath;
 		if (!wt) return false;
@@ -1030,8 +1028,8 @@ export class StepRunner {
 				return this.releaseTask(built, d);
 			case "clear_stall":
 				return this.clearStall(built);
-			case "gc_worktree":
-				return this.gcWorktree(built, d.args?.force === true);
+			case "gc_workspace":
+				return this.gcWorkspace(built, d.args?.force === true);
 			case "archive_wip":
 				return this.archiveWip(built);
 			case "scope_check":
@@ -1310,13 +1308,13 @@ export class StepRunner {
 	/** Read MFW_REPORT.json from the run dir; absent/corrupt = no report. The
 	 *  report lives in the journal, nothing else is mutated here. */
 	private async ingestReport(built: Built): Promise<unknown> {
-		// The agent writes MFW_REPORT_PATH = <worktree>/MFW_REPORT.json; the run
-		// dir is only a fallback for runs without a worktree.
-		const worktreeReportPath = built.run.workspacePath
+		// The agent writes MFW_REPORT_PATH = <workspace>/MFW_REPORT.json; the run
+		// dir is only a fallback for runs without a workspace.
+		const workspaceReportPath = built.run.workspacePath
 			? join(built.run.workspacePath, "MFW_REPORT.json")
 			: null;
 		const candidates = [
-			worktreeReportPath,
+			workspaceReportPath,
 			join(
 				runDirLayout(this.deps.registry.runDir(built.run.id)).outbox,
 				"MFW_REPORT.json",
@@ -1325,14 +1323,14 @@ export class StepRunner {
 		].filter((p): p is string => p !== null);
 
 		let report: Record<string, unknown> | null = null;
-		let worktreeReport: WorktreeReportIdentity = { state: "absent" };
+		let workspaceReport: ReportIdentity = { state: "absent" };
 		for (const path of candidates) {
 			// A transient/permission failure throws: it is not "no report", and
 			// cleanup must never erase bytes we could not read.
 			const content = await readAgentReport(path);
 			if (content === null) continue;
-			if (path === worktreeReportPath) {
-				worktreeReport = {
+			if (path === workspaceReportPath) {
+				workspaceReport = {
 					state: "present",
 					sha256: createHash("sha256").update(content).digest("hex"),
 				};
@@ -1350,7 +1348,7 @@ export class StepRunner {
 		if (report) await this.deps.registry.recordReportFact(built.run.id, report);
 		const question = foldReport({ report })?.question ?? null;
 		if (question) await this.labelActivity(built.run, question);
-		return { report, worktreeReport };
+		return { report, workspaceReport };
 	}
 
 	/** Run project merge checks plus focused task checks on the run's imported result. */
@@ -1683,7 +1681,7 @@ export class StepRunner {
 
 	/**
 	 * T10Q: the agent's question becomes a clarification on its run (answering
-	 * it resumes a child in the same worktree), and the worktree pointer is kept
+	 * it resumes a child in the same workspace), and the workspace pointer is kept
 	 * so housekeeping never collects the work the answer continues. Idempotent
 	 * by runId.
 	 */
@@ -1701,7 +1699,7 @@ export class StepRunner {
 			questions: [text],
 		});
 		if (run.taskId && run.workspacePath && run.branch) {
-			await this.deps.tasks.recordPreservedWorktree(
+			await this.deps.tasks.recordPreservedWorkspace(
 				run.taskId,
 				run.workspacePath,
 				run.branch,
@@ -1714,7 +1712,7 @@ export class StepRunner {
 	 * The terminal that replaces every policy row (design §6.2): the run's
 	 * finalize ends here with a CLASS and the facts the brain decides from.
 	 *
-	 *  - the task's claim is released to `ready` (a dirty worktree keeps its
+	 *  - the task's claim is released to `ready` (a dirty workspace keeps its
 	 *    pointer so a `continue:` spawn can reuse it); a competing attempt
 	 *    leaves the group's claim alone;
 	 *  - the task is parked `awaiting_brain` (a hold, not a board status);
@@ -1847,7 +1845,7 @@ export class StepRunner {
 			exitCode: classify?.exitCode ?? run.exitCode ?? null,
 			...(classify?.killReason ? { killReason: classify.killReason } : {}),
 			branch: run.branch,
-			worktree: run.workspacePath,
+			workspace: run.workspacePath,
 			...(ctx.task && !verifyRes && ctx.task.exitCode !== 0
 				? { noChecks: true }
 				: {}),
@@ -1968,7 +1966,7 @@ export class StepRunner {
 		}
 		const terminal = this.simulateTerminal(built.ctx);
 		const reason = terminal?.note ?? terminal?.state ?? `finalize ${d.row}`;
-		// Resume-not-restart: a dirty worktree going back to ready keeps its
+		// Resume-not-restart: a dirty workspace going back to ready keeps its
 		// pointer so the next attempt reuses the work.
 		if (
 			to === "ready" &&
@@ -1979,7 +1977,7 @@ export class StepRunner {
 				foldReportIdentity(built.results.get("ingest_report")),
 			))
 		) {
-			await this.deps.tasks.recordPreservedWorktree(
+			await this.deps.tasks.recordPreservedWorkspace(
 				run.taskId,
 				run.workspacePath,
 				run.branch,
@@ -2062,13 +2060,13 @@ export class StepRunner {
 		return {};
 	}
 
-	/** Remove the worktree + branch when clean (or forced); preserve dirty
-	 *  work with a task pointer otherwise. Absent worktree = already done. */
-	private async gcWorktree(built: Built, force: boolean): Promise<unknown> {
+	/** Remove the workspace + branch when clean (or forced); preserve dirty
+	 *  work with a task pointer otherwise. Absent workspace = already done. */
+	private async gcWorkspace(built: Built, force: boolean): Promise<unknown> {
 		const { run } = built;
 		if (!force && !built.ctx.done.has("ingest_report")) {
 			throw new Error(
-				"refusing non-forced worktree cleanup before report ingestion is journaled",
+				"refusing non-forced workspace cleanup before report ingestion is journaled",
 			);
 		}
 		const wt = run.workspacePath;
@@ -2078,7 +2076,7 @@ export class StepRunner {
 			() => false,
 		);
 		if (!exists) {
-			if (run.taskId) await this.deps.tasks.clearPreservedWorktree(run.taskId);
+			if (run.taskId) await this.deps.tasks.clearPreservedWorkspace(run.taskId);
 			return { removed: false, missing: true };
 		}
 		const reportIdentity = foldReportIdentity(
@@ -2086,12 +2084,12 @@ export class StepRunner {
 		);
 		if (!force && !reportIdentity) {
 			throw new Error(
-				"refusing non-forced worktree cleanup without journaled report identity",
+				"refusing non-forced workspace cleanup without journaled report identity",
 			);
 		}
 		if (!force && (await this.isDirty(run, reportIdentity))) {
 			if (run.taskId && run.branch) {
-				await this.deps.tasks.recordPreservedWorktree(
+				await this.deps.tasks.recordPreservedWorkspace(
 					run.taskId,
 					wt,
 					run.branch,
@@ -2101,7 +2099,7 @@ export class StepRunner {
 		}
 		if (!run.branch || !run.baseSha) {
 			if (run.taskId && run.branch) {
-				await this.deps.tasks.recordPreservedWorktree(
+				await this.deps.tasks.recordPreservedWorkspace(
 					run.taskId,
 					wt,
 					run.branch,
@@ -2110,14 +2108,14 @@ export class StepRunner {
 			return {
 				removed: false,
 				preserved: true,
-				reason: "durable worktree ownership is incomplete",
+				reason: "durable workspace ownership is incomplete",
 			};
 		}
 		await createRunWorkspace(this.deps.projectRoot).remove(
 			{ path: wt, branch: run.branch, baseSha: run.baseSha },
 			{ force, reportIdentity },
 		);
-		if (run.taskId) await this.deps.tasks.clearPreservedWorktree(run.taskId);
+		if (run.taskId) await this.deps.tasks.clearPreservedWorkspace(run.taskId);
 		return { removed: true };
 	}
 

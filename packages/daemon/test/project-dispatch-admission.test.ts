@@ -906,8 +906,8 @@ describe("project-to-host task admission", () => {
 		const task = await hostTask(service, "continue lineage");
 		const parent = await service.engine.startTask(task.id);
 		const parentRow = await service.registry.get(parent.runId);
-		if (!parentRow?.workspacePath) throw new Error("parent has no worktree");
-		// Work in the worktree, so it survives finalization for the continuation.
+		if (!parentRow?.workspacePath) throw new Error("parent has no workspace");
+		// Work in the workspace, so it survives finalization for the continuation.
 		await writeFile(join(parentRow.workspacePath, "wip.txt"), "work\n");
 		await service.engine.stop(parent.runId);
 		for (let i = 0; i < 40; i++) {
@@ -930,7 +930,7 @@ describe("project-to-host task admission", () => {
 			groupKind: "single",
 			role: "implement",
 			actionId: "act-continue",
-			worktree: { mode: "continue", runId: parent.runId },
+			workspace: { mode: "continue", runId: parent.runId },
 		});
 
 		const leases = orchestrator.hostResources.readModel().leases;
